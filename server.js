@@ -88,23 +88,24 @@ function initWhatsApp() {
 io.on('connection', (socket) => {
   console.log('Cliente conectado via Socket.io');
   
-  // Si WhatsApp ya está conectado, avisar al cliente
-  if (client && client.info) {
-    socket.emit('whatsapp_ready');
-  }
-  
-  socket.on('check_status', () => {
-    if (client && client.info) {
-      socket.emit('whatsapp_ready');
-    }
-  });
-});
-
   if (!whatsappClient) {
     initWhatsApp();
   }
 
+  // Si WhatsApp ya está conectado, avisar inmediatamente
+  if (isReady && whatsappClient) {
+    socket.emit('whatsapp_ready', { status: 'connected' });
+  } else if (qrCode) {
+    socket.emit('qr', qrCode);
+  }
+  
   socket.emit('whatsapp_status', { isReady, qrCode });
+
+  socket.on('check_status', () => {
+    if (isReady && whatsappClient) {
+      socket.emit('whatsapp_ready', { status: 'connected' });
+    }
+  });
 
   socket.on('send_message', async (data) => {
     const { to, message } = data;
@@ -165,7 +166,6 @@ app.get('/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-
 server.listen(PORT, () => {
   console.log(`🚀 Servidor en puerto ${PORT}`);
 });
