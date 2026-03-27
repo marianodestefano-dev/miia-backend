@@ -86,7 +86,19 @@ function initWhatsApp() {
 }
 
 io.on('connection', (socket) => {
-  console.log('🔌 Cliente conectado');
+  console.log('Cliente conectado via Socket.io');
+  
+  // Si WhatsApp ya está conectado, avisar al cliente
+  if (client && client.info) {
+    socket.emit('whatsapp_ready');
+  }
+  
+  socket.on('check_status', () => {
+    if (client && client.info) {
+      socket.emit('whatsapp_ready');
+    }
+  });
+});
 
   if (!whatsappClient) {
     initWhatsApp();
