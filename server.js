@@ -47,9 +47,10 @@ let isReady = false;
 let conversations = {}; // { phone: [{ role, content, timestamp }] }
 let contactTypes = {}; // { phone: 'familia' | 'lead' | 'cliente' }
 let leadNames = {}; // { phone: 'nombre' }
+let lastResponse = {}; // { phone: timestamp } - Anti-spam
 
 // ============================================
-// GEMINI AI (deberás agregar tu API key)
+// GEMINI AI
 // ============================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
@@ -71,7 +72,8 @@ async function callGeminiAPI(messages, systemPrompt) {
     });
 
     if (!response.ok) {
-      throw new Error('Gemini API error');
+      console.error('Gemini API error:', response.status);
+      return null;
     }
 
     const data = await response.json();
@@ -153,8 +155,6 @@ Responde de forma natural y profesional.`;
 // SISTEMA DE RESPUESTA AUTOMÁTICA
 // ============================================
 
-let lastResponse = {}; // { phone: timestamp } - Anti-spam
-
 async function handleIncomingMessage(message) {
   try {
     const phone = message.from;
@@ -198,6 +198,7 @@ async function handleIncomingMessage(message) {
     const systemPrompt = generateSystemPrompt(phone, contactType, leadNames[phone]);
     
     // Llamar a Gemini AI
+    console.log(`[AI] Generando respuesta para ${leadNames[phone]} (${contactType})...`);
     const aiResponse = await callGeminiAPI(conversations[phone], systemPrompt);
     
     if (!aiResponse) {
@@ -218,7 +219,7 @@ async function handleIncomingMessage(message) {
     // Actualizar timestamp de última respuesta
     lastResponse[phone] = Date.now();
     
-    // Emitir evento a frontend
+    // Emitir eventos a frontend
     io.emit('new_message', {
       from: phone,
       fromName: leadNames[phone] || contactName,
@@ -235,7 +236,7 @@ async function handleIncomingMessage(message) {
       type: contactType
     });
     
-    console.log(`[MIIA] Respondió a ${leadNames[phone]} (${contactType})`);
+    console.log(`[MIIA] ✅ Respondió a ${leadNames[phone]} (${contactType})`);
     
   } catch (error) {
     console.error('[ERROR] handleIncomingMessage:', error);
@@ -243,7 +244,7 @@ async function handleIncomingMessage(message) {
 }
 
 // ============================================
-// WHATSAPP CLIENT
+// WHATSAPP CLIENT INITIALIZATION
 // ============================================
 
 function initWhatsApp() {
@@ -282,13 +283,27 @@ function initWhatsApp() {
   });
 
   whatsappClient.on('ready', () => {
-    console.log('✅ WhatsApp listo - MIIA activada');
+    console.log('✅ WhatsApp listo - MIIA ACTIVADA CON RESPUESTA AUTOMÁTICA');
     isReady = true;
     io.emit('whatsapp_ready', { status: 'connected' });
   });
 
-  // ⭐ EVENTO PRINCIPAL - RESPUESTA AUTOMÁTICA
+  // ⭐⭐⭐ EVENTO PRINCIPAL - RESPUESTA AUTOMÁTICA ⭐⭐⭐
   whatsappClient.on('message', handleIncomingMessage);
+
+  whatsappClient.on('message_create', async (message) => {
+    // Emitir mensajes enviados por Mariano también
+    if (message.fromMe) {
+      const contact = await message.getContact();
+      io.emit('new_message', {
+        from: message.to,
+        fromName: contact.name || contact.pushname || 'Desconocido',
+        body: message.body,
+        timestamp: Date.now(),
+        fromMe: true
+      });
+    }
+  });
 
   whatsappClient.on('disconnected', (reason) => {
     console.log('❌ Desconectado:', reason);
@@ -305,7 +320,7 @@ function initWhatsApp() {
 // ============================================
 
 io.on('connection', (socket) => {
-  console.log('Cliente conectado via Socket.io');
+  console.log('👤 Cliente conectado via Socket.io');
   
   if (!whatsappClient) {
     initWhatsApp();
@@ -338,22 +353,69 @@ io.on('connection', (socket) => {
     try {
       await whatsappClient.sendMessage(to, message);
       socket.emit('message_sent', { to, message });
+      console.log(`[MANUAL] Mensaje enviado a ${to}`);
     } catch (error) {
+      console.error('[ERROR] send_message:', error);
       socket.emit('error', { message: error.message });
     }
   });
 
-  // Obtener lista de conversaciones
+  // Obtener lista de chats
+  socket.on('get_chats', async () => {
+    if (!isReady) {
+      socket.emit('error', { message: 'WhatsApp no conectado' });
+      return;
+    }
+
+    try {
+      const chats = await whatsappClient.getChats();
+      const chatList = [];
+      
+      for (let i = 0; i < Math.min(chats.length, 50); i++) {
+        const chat = chats[i];
+        const contact = await chat.getContact();
+        chatList.push({
+          id: chat.id._serialized,
+          name: contact.pushname || contact.number,
+          lastMessage: chat.lastMessage?.body || '',
+          timestamp: chat.timestamp
+        });
+      }
+
+      socket.emit('chats_list', chatList);
+    } catch (error) {
+      console.error('[ERROR] get_chats:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // Obtener lista de conversaciones (memoria interna)
   socket.on('get_conversations', () => {
     const conversationList = Object.keys(conversations).map(phone => ({
       phone,
       name: leadNames[phone] || 'Desconocido',
       type: contactTypes[phone] || 'lead',
       lastMessage: conversations[phone][conversations[phone].length - 1]?.content || '',
-      timestamp: conversations[phone][conversations[phone].length - 1]?.timestamp || Date.now()
+      timestamp: conversations[phone][conversations[phone].length - 1]?.timestamp || Date.now(),
+      messageCount: conversations[phone].length
     }));
     
     socket.emit('conversations_list', conversationList);
+  });
+
+  // Obtener conversación específica
+  socket.on('get_conversation', (data) => {
+    const { phone } = data;
+    if (conversations[phone]) {
+      socket.emit('conversation_data', {
+        phone,
+        name: leadNames[phone],
+        type: contactTypes[phone],
+        messages: conversations[phone]
+      });
+    } else {
+      socket.emit('error', { message: 'Conversación no encontrada' });
+    }
   });
 });
 
@@ -365,7 +427,14 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'MIIA Backend Running',
     whatsapp: isReady ? 'connected' : 'disconnected',
-    version: '2.0 - Auto-Response'
+    version: '2.0 - Auto-Response FULL',
+    features: [
+      'Auto-response WhatsApp',
+      'Family detection',
+      'Gemini AI integration',
+      'Anti-spam protection',
+      'Conversation memory'
+    ]
   });
 });
 
@@ -373,13 +442,38 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok',
     whatsapp: isReady,
-    conversations: Object.keys(conversations).length
+    conversations: Object.keys(conversations).length,
+    activeContacts: Object.keys(contactTypes).length
   });
 });
 
 // Endpoint para obtener conversaciones (para Firebase sync futuro)
 app.get('/api/conversations', (req, res) => {
-  res.json({ conversations, contactTypes, leadNames });
+  res.json({ 
+    conversations, 
+    contactTypes, 
+    leadNames,
+    totalConversations: Object.keys(conversations).length,
+    familyContacts: Object.values(contactTypes).filter(t => t === 'familia').length,
+    leadContacts: Object.values(contactTypes).filter(t => t === 'lead').length
+  });
+});
+
+// Endpoint para obtener estadísticas
+app.get('/api/stats', (req, res) => {
+  const stats = {
+    whatsappConnected: isReady,
+    totalConversations: Object.keys(conversations).length,
+    totalMessages: Object.values(conversations).reduce((sum, conv) => sum + conv.length, 0),
+    contactTypes: {
+      familia: Object.values(contactTypes).filter(t => t === 'familia').length,
+      lead: Object.values(contactTypes).filter(t => t === 'lead').length,
+      cliente: Object.values(contactTypes).filter(t => t === 'cliente').length
+    },
+    recentActivity: Object.keys(lastResponse).length
+  };
+  
+  res.json(stats);
 });
 
 // ============================================
@@ -388,6 +482,13 @@ app.get('/api/conversations', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 MIIA Backend v2.0 en puerto ${PORT}`);
-  console.log(`📱 WhatsApp Auto-Response: ACTIVO`);
+  console.log(`
+╔════════════════════════════════════════╗
+║   🚀 MIIA Backend v2.0 FULL           ║
+║   Puerto: ${PORT}                        ║
+║   WhatsApp Auto-Response: ACTIVO      ║
+║   Family Detection: ACTIVO            ║
+║   Gemini AI: READY                    ║
+╚════════════════════════════════════════╝
+  `);
 });
