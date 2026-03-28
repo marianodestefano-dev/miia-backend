@@ -5,6 +5,26 @@ const cors = require('cors');
 const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 
+// ============================================
+// FORCE FLUSH PARA LOGS EN RAILWAY
+// ============================================
+const originalLog = console.log;
+const originalError = console.error;
+
+console.log = function(...args) {
+  originalLog.apply(console, args);
+  if (process.stdout.write) {
+    process.stdout.write(''); // Force flush
+  }
+};
+
+console.error = function(...args) {
+  originalError.apply(console, args);
+  if (process.stderr.write) {
+    process.stderr.write(''); // Force flush
+  }
+};
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
@@ -334,7 +354,7 @@ async function handleIncomingMessage(message) {
 // WHATSAPP CLIENT INITIALIZATION
 // ============================================
 
-async function initWhatsApp() {
+function initWhatsApp() {
   if (whatsappClient) {
     console.log('[WA] ⚠️  Cliente WhatsApp ya inicializado');
     return;
@@ -419,32 +439,19 @@ async function initWhatsApp() {
   });
 
   console.log('[WA] 🔄 Llamando a client.initialize()...');
-  try {
-    await whatsappClient.initialize();
-    console.log('[WA] 🔄 Initialize() completado exitosamente\n');
-  } catch (error) {
-    console.error('[WA] ❌ ERROR durante initialize():', error.message);
-    console.error('[WA] ❌ Stack:', error.stack);
-    isReady = false;
-    whatsappClient = null;
-    io.emit('whatsapp_error', { message: error.message });
-  }
+  whatsappClient.initialize();
+  console.log('[WA] 🔄 Initialize() llamado, esperando conexión...\n');
 }
 
 // ============================================
 // SOCKET.IO EVENTS
 // ============================================
 
-io.on('connection', async (socket) => {
+io.on('connection', (socket) => {
   console.log('👤 Cliente conectado via Socket.io');
   
   if (!whatsappClient) {
-    try {
-      await initWhatsApp();
-    } catch (error) {
-      console.error('[WA] ❌ Error al inicializar WhatsApp desde Socket.io:', error.message);
-      socket.emit('whatsapp_error', { message: error.message });
-    }
+    initWhatsApp();
   }
 
   // Si WhatsApp ya está conectado, avisar inmediatamente
@@ -733,7 +740,7 @@ server.listen(PORT, () => {
   console.log('process.stdout.isTTY:', process.stdout.isTTY);
   console.log('process.stderr.isTTY:', process.stderr.isTTY);
   console.log('Tipo de entorno:', process.stdout.isTTY ? 'Terminal Interactiva' : 'Servidor/Contenedor (Railway/Docker)');
-  console.log('Logs con force flush:', process.stdout.isTTY === false ? 'SÍ ✅' : 'NO (no necesario)');
+  console.log('Logs con force flush: SÍ ✅ (siempre activo)');
 
   console.log('\n🔐 ═══ VARIABLES DE ENTORNO ═══');
   console.log('PORT:', process.env.PORT || '3000 (default)');
