@@ -5,6 +5,26 @@ const cors = require('cors');
 const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 
+// ============================================
+// FORZAR LOGS INMEDIATOS EN RAILWAY
+// ============================================
+process.stdout.setDefaultEncoding('utf8');
+if (process.stdout.isTTY === false) {
+  // Forzar flush inmediato en Railway
+  const originalLog = console.log;
+  const originalError = console.error;
+  
+  console.log = function(...args) {
+    originalLog.apply(console, args);
+    process.stdout.write(''); // Force flush
+  };
+  
+  console.error = function(...args) {
+    originalError.apply(console, args);
+    process.stderr.write(''); // Force flush
+  };
+}
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
@@ -569,17 +589,21 @@ app.get('/api/conversations', (req, res) => {
 
 // ⭐ NUEVO ENDPOINT - Chat con MIIA desde frontend
 app.post('/api/chat', async (req, res) => {
-  console.log('\n[API CHAT] 💬 Nueva petición de chat');
+  const timestamp = new Date().toISOString();
+  console.log('\n' + '='.repeat(60));
+  console.log(`[${timestamp}] 💬 API CHAT - NUEVA PETICIÓN`);
+  console.log('='.repeat(60));
   
   try {
     const { message, userId, businessInfo } = req.body;
     
-    console.log('[API CHAT] User ID:', userId);
-    console.log('[API CHAT] Message:', message);
-    console.log('[API CHAT] Business info presente:', !!businessInfo);
+    console.log(`[API CHAT] 👤 User ID: ${userId}`);
+    console.log(`[API CHAT] 💬 Message: ${message}`);
+    console.log(`[API CHAT] 📊 Business info presente: ${!!businessInfo}`);
+    console.log(`[API CHAT] 📦 Body completo:`, JSON.stringify(req.body, null, 2));
     
     if (!message) {
-      console.error('[API CHAT] ❌ Mensaje vacío');
+      console.error('[API CHAT] ❌ ERROR: Mensaje vacío');
       return res.status(400).json({ error: 'Mensaje requerido' });
     }
 
@@ -587,7 +611,7 @@ app.post('/api/chat', async (req, res) => {
     const conversationHistory = [];
     
     if (businessInfo) {
-      console.log('[API CHAT] Agregando contexto de negocio...');
+      console.log('[API CHAT] ✅ Agregando contexto de negocio a la conversación');
       conversationHistory.push({
         role: "user",
         parts: [{ text: `[CONTEXTO: El usuario te ha enseñado:\n${businessInfo}\nUsa esto cuando sea relevante.]` }]
@@ -603,25 +627,36 @@ app.post('/api/chat', async (req, res) => {
       parts: [{ text: message }]
     });
 
-    console.log('[API CHAT] Llamando a Gemini API...');
+    console.log('[API CHAT] 🚀 Preparando llamada a Gemini API...');
+    console.log(`[API CHAT] 📨 Cantidad de mensajes en historial: ${conversationHistory.length}`);
+    console.log('[API CHAT] 🔑 GEMINI_API_KEY está configurada:', !!GEMINI_API_KEY);
+    
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
+    console.log('[API CHAT] 🌐 URL Gemini (oculta):', geminiUrl.replace(GEMINI_API_KEY, 'API_KEY_HIDDEN'));
+    
+    const payload = {
+      contents: conversationHistory,
+      systemInstruction: {
+        parts: [{ text: "Eres MIIA, asistente amigable para emprendedores. Responde natural y brevemente." }]
+      }
+    };
+    
+    console.log('[API CHAT] 📦 Payload preparado, enviando fetch...');
     
     const geminiResponse = await fetch(geminiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: conversationHistory,
-        systemInstruction: {
-          parts: [{ text: "Eres MIIA, asistente amigable para emprendedores. Responde natural y brevemente." }]
-        }
-      })
+      body: JSON.stringify(payload)
     });
 
-    console.log('[API CHAT] Gemini response status:', geminiResponse.status);
+    console.log(`[API CHAT] 📡 Gemini response status: ${geminiResponse.status}`);
+    console.log(`[API CHAT] 📡 Gemini response ok: ${geminiResponse.ok}`);
 
     if (!geminiResponse.ok) {
       const errorData = await geminiResponse.json();
-      console.error('[API CHAT] ❌ Gemini error:', errorData);
+      console.error('[API CHAT] ❌ ERROR DE GEMINI:');
+      console.error('[API CHAT] ❌ Status:', geminiResponse.status);
+      console.error('[API CHAT] ❌ Error data:', JSON.stringify(errorData, null, 2));
       return res.status(500).json({ 
         error: 'Error al procesar mensaje',
         details: errorData.error?.message 
@@ -629,22 +664,38 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const data = await geminiResponse.json();
+    console.log('[API CHAT] 📥 Respuesta de Gemini recibida');
+    console.log('[API CHAT] 📊 Data.candidates length:', data.candidates?.length || 0);
     
     if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
-      console.error('[API CHAT] ❌ Respuesta inválida de Gemini');
+      console.error('[API CHAT] ❌ ERROR: Respuesta inválida de Gemini');
+      console.error('[API CHAT] ❌ Data completo:', JSON.stringify(data, null, 2));
       return res.status(500).json({ error: 'Respuesta inválida de IA' });
     }
 
     const responseText = data.candidates[0].content.parts[0].text;
-    console.log('[API CHAT] ✅ Respuesta generada, longitud:', responseText.length);
+    console.log('[API CHAT] ✅ RESPUESTA GENERADA EXITOSAMENTE');
+    console.log(`[API CHAT] 📝 Longitud de respuesta: ${responseText.length} caracteres`);
+    console.log(`[API CHAT] 💭 Primeros 100 chars: ${responseText.substring(0, 100)}...`);
 
-    res.json({ 
+    const finalResponse = { 
       response: responseText,
       timestamp: Date.now()
-    });
+    };
+    
+    console.log('[API CHAT] 📤 Enviando respuesta al cliente...');
+    res.json(finalResponse);
+    console.log('[API CHAT] ✅ RESPUESTA ENVIADA CORRECTAMENTE');
+    console.log('='.repeat(60) + '\n');
     
   } catch (error) {
-    console.error('[API CHAT] ❌ Error:', error);
+    console.error('\n' + '❌'.repeat(30));
+    console.error('[API CHAT] ❌❌❌ ERROR CRÍTICO ❌❌❌');
+    console.error('[API CHAT] ❌ Message:', error.message);
+    console.error('[API CHAT] ❌ Stack:', error.stack);
+    console.error('[API CHAT] ❌ Error completo:', error);
+    console.error('❌'.repeat(30) + '\n');
+    
     res.status(500).json({ 
       error: 'Error interno del servidor',
       message: error.message 
