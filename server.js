@@ -736,6 +736,12 @@ server.listen(PORT, () => {
 ╚════════════════════════════════════════╝
   `);
 
+  console.log('\n🖥️  ═══ INFORMACIÓN DEL ENTORNO ═══');
+  console.log('process.stdout.isTTY:', process.stdout.isTTY);
+  console.log('process.stderr.isTTY:', process.stderr.isTTY);
+  console.log('Tipo de entorno:', process.stdout.isTTY ? 'Terminal Interactiva' : 'Servidor/Contenedor (Railway/Docker)');
+  console.log('Logs con force flush:', process.stdout.isTTY === false ? 'SÍ ✅' : 'NO (no necesario)');
+
   console.log('\n🔐 ═══ VARIABLES DE ENTORNO ═══');
   console.log('PORT:', process.env.PORT || '3000 (default)');
   console.log('NODE_ENV:', process.env.NODE_ENV || 'no definido');
