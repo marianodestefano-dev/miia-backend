@@ -684,4 +684,29 @@ server.listen(PORT, () => {
 ║   Gemini AI: READY                    ║
 ╚════════════════════════════════════════╝
   `);
+
+  console.log('\n🔐 ═══ VARIABLES DE ENTORNO ═══');
+  console.log('PORT:', process.env.PORT || '3000 (default)');
+  console.log('NODE_ENV:', process.env.NODE_ENV || 'no definido');
+  console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? '✅ Configurada (longitud: ' + process.env.GEMINI_API_KEY.length + ')' : '❌ NO CONFIGURADA');
+  console.log('ALLOWED_ORIGINS:', process.env.ALLOWED_ORIGINS || 'no definido');
+  
+  console.log('\n📊 ═══ TODAS LAS VARIABLES DE ENTORNO ═══');
+  Object.keys(process.env).sort().forEach(key => {
+    const value = process.env[key];
+    
+    // Ocultar valores sensibles
+    if (key.toLowerCase().includes('key') || 
+        key.toLowerCase().includes('secret') || 
+        key.toLowerCase().includes('password') ||
+        key.toLowerCase().includes('token')) {
+      console.log(`${key}: [OCULTO - longitud: ${value.length}]`);
+    } else if (value.length > 100) {
+      console.log(`${key}: ${value.substring(0, 50)}... [longitud total: ${value.length}]`);
+    } else {
+      console.log(`${key}: ${value}`);
+    }
+  });
+  
+  console.log('\n═══════════════════════════════════\n');
 });
