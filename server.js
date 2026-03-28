@@ -567,6 +567,91 @@ app.get('/api/conversations', (req, res) => {
   });
 });
 
+// ⭐ NUEVO ENDPOINT - Chat con MIIA desde frontend
+app.post('/api/chat', async (req, res) => {
+  console.log('\n[API CHAT] 💬 Nueva petición de chat');
+  
+  try {
+    const { message, userId, businessInfo } = req.body;
+    
+    console.log('[API CHAT] User ID:', userId);
+    console.log('[API CHAT] Message:', message);
+    console.log('[API CHAT] Business info presente:', !!businessInfo);
+    
+    if (!message) {
+      console.error('[API CHAT] ❌ Mensaje vacío');
+      return res.status(400).json({ error: 'Mensaje requerido' });
+    }
+
+    // Preparar historial de conversación
+    const conversationHistory = [];
+    
+    if (businessInfo) {
+      console.log('[API CHAT] Agregando contexto de negocio...');
+      conversationHistory.push({
+        role: "user",
+        parts: [{ text: `[CONTEXTO: El usuario te ha enseñado:\n${businessInfo}\nUsa esto cuando sea relevante.]` }]
+      });
+      conversationHistory.push({
+        role: "model",
+        parts: [{ text: "Entendido." }]
+      });
+    }
+    
+    conversationHistory.push({
+      role: "user",
+      parts: [{ text: message }]
+    });
+
+    console.log('[API CHAT] Llamando a Gemini API...');
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
+    
+    const geminiResponse = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: conversationHistory,
+        systemInstruction: {
+          parts: [{ text: "Eres MIIA, asistente amigable para emprendedores. Responde natural y brevemente." }]
+        }
+      })
+    });
+
+    console.log('[API CHAT] Gemini response status:', geminiResponse.status);
+
+    if (!geminiResponse.ok) {
+      const errorData = await geminiResponse.json();
+      console.error('[API CHAT] ❌ Gemini error:', errorData);
+      return res.status(500).json({ 
+        error: 'Error al procesar mensaje',
+        details: errorData.error?.message 
+      });
+    }
+
+    const data = await geminiResponse.json();
+    
+    if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+      console.error('[API CHAT] ❌ Respuesta inválida de Gemini');
+      return res.status(500).json({ error: 'Respuesta inválida de IA' });
+    }
+
+    const responseText = data.candidates[0].content.parts[0].text;
+    console.log('[API CHAT] ✅ Respuesta generada, longitud:', responseText.length);
+
+    res.json({ 
+      response: responseText,
+      timestamp: Date.now()
+    });
+    
+  } catch (error) {
+    console.error('[API CHAT] ❌ Error:', error);
+    res.status(500).json({ 
+      error: 'Error interno del servidor',
+      message: error.message 
+    });
+  }
+});
+
 // Endpoint para obtener estadísticas
 app.get('/api/stats', (req, res) => {
   const stats = {
