@@ -334,7 +334,7 @@ async function handleIncomingMessage(message) {
 // WHATSAPP CLIENT INITIALIZATION
 // ============================================
 
-function initWhatsApp() {
+async function initWhatsApp() {
   if (whatsappClient) {
     console.log('[WA] ⚠️  Cliente WhatsApp ya inicializado');
     return;
@@ -419,19 +419,32 @@ function initWhatsApp() {
   });
 
   console.log('[WA] 🔄 Llamando a client.initialize()...');
-  whatsappClient.initialize();
-  console.log('[WA] 🔄 Initialize() llamado, esperando conexión...\n');
+  try {
+    await whatsappClient.initialize();
+    console.log('[WA] 🔄 Initialize() completado exitosamente\n');
+  } catch (error) {
+    console.error('[WA] ❌ ERROR durante initialize():', error.message);
+    console.error('[WA] ❌ Stack:', error.stack);
+    isReady = false;
+    whatsappClient = null;
+    io.emit('whatsapp_error', { message: error.message });
+  }
 }
 
 // ============================================
 // SOCKET.IO EVENTS
 // ============================================
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   console.log('👤 Cliente conectado via Socket.io');
   
   if (!whatsappClient) {
-    initWhatsApp();
+    try {
+      await initWhatsApp();
+    } catch (error) {
+      console.error('[WA] ❌ Error al inicializar WhatsApp desde Socket.io:', error.message);
+      socket.emit('whatsapp_error', { message: error.message });
+    }
   }
 
   // Si WhatsApp ya está conectado, avisar inmediatamente
