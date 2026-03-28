@@ -56,30 +56,61 @@ let lastResponse = {}; // { phone: timestamp } - Anti-spam
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
 
 async function callGeminiAPI(messages, systemPrompt) {
+  console.log('[GEMINI] 🚀 Iniciando llamada a Gemini API...');
+  console.log('[GEMINI] 📨 Cantidad de mensajes:', messages.length);
+  
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`, {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
+    console.log('[GEMINI] 🌐 URL:', url.replace(GEMINI_API_KEY, 'API_KEY_HIDDEN'));
+    
+    const payload = {
+      contents: messages.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+      })),
+      systemInstruction: {
+        parts: [{ text: systemPrompt }]
+      }
+    };
+    
+    console.log('[GEMINI] 📦 Payload preparado');
+    console.log('[GEMINI] 📦 Contents count:', payload.contents.length);
+    console.log('[GEMINI] 📦 System instruction length:', systemPrompt.length);
+    
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: messages.map(m => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }]
-        })),
-        systemInstruction: {
-          parts: [{ text: systemPrompt }]
-        }
-      })
+      body: JSON.stringify(payload)
     });
 
+    console.log('[GEMINI] 📡 Response status:', response.status);
+    console.log('[GEMINI] 📡 Response ok:', response.ok);
+    
     if (!response.ok) {
-      console.error('Gemini API error:', response.status);
+      const errorText = await response.text();
+      console.error('[GEMINI] ❌ API ERROR - Status:', response.status);
+      console.error('[GEMINI] ❌ Error body:', errorText);
       return null;
     }
 
     const data = await response.json();
-    return data.candidates[0].content.parts[0].text;
+    console.log('[GEMINI] ✅ Respuesta recibida');
+    console.log('[GEMINI] 📊 Candidates:', data.candidates?.length || 0);
+    
+    if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+      console.error('[GEMINI] ❌ Estructura de respuesta inválida');
+      console.error('[GEMINI] ❌ Data:', JSON.stringify(data, null, 2));
+      return null;
+    }
+    
+    const responseText = data.candidates[0].content.parts[0].text;
+    console.log('[GEMINI] ✅ Texto extraído, longitud:', responseText.length);
+    
+    return responseText;
   } catch (error) {
-    console.error('Error calling Gemini:', error);
+    console.error('[GEMINI] ❌❌❌ ERROR CRÍTICO ❌❌❌');
+    console.error('[GEMINI] ❌ Message:', error.message);
+    console.error('[GEMINI] ❌ Stack:', error.stack);
     return null;
   }
 }
@@ -156,30 +187,60 @@ Responde de forma natural y profesional.`;
 // ============================================
 
 async function handleIncomingMessage(message) {
+  console.log('\n============================================');
+  console.log('[DEBUG] 🔔 NUEVO MENSAJE RECIBIDO');
+  console.log('============================================');
+  
   try {
     const phone = message.from;
     const messageBody = message.body;
+    
+    console.log('[DEBUG] 📱 De:', phone);
+    console.log('[DEBUG] 💬 Mensaje:', messageBody);
+    console.log('[DEBUG] ⏰ Timestamp:', new Date().toISOString());
+    console.log('[DEBUG] 🤖 fromMe:', message.fromMe);
+    
     const contact = await message.getContact();
     const contactName = contact.name || contact.pushname || 'Usuario';
+    console.log('[DEBUG] 👤 Nombre del contacto:', contactName);
     
     // Ignorar mensajes del propio bot
-    if (message.fromMe) return;
-    
-    // Ignorar grupos
-    if (message.from.includes('@g.us')) return;
-    
-    // Anti-spam: No responder si ya respondimos hace menos de 10 segundos
-    if (lastResponse[phone] && (Date.now() - lastResponse[phone] < 10000)) {
-      console.log(`[ANTI-SPAM] Ignorando mensaje rápido de ${phone}`);
+    if (message.fromMe) {
+      console.log('[DEBUG] ⏭️  IGNORADO - Mensaje propio (fromMe=true)');
       return;
     }
     
+    // Ignorar grupos
+    if (message.from.includes('@g.us')) {
+      console.log('[DEBUG] ⏭️  IGNORADO - Es un grupo');
+      return;
+    }
+    
+    // Anti-spam: No responder si ya respondimos hace menos de 10 segundos
+    if (lastResponse[phone]) {
+      const timeSinceLastResponse = Date.now() - lastResponse[phone];
+      console.log('[DEBUG] ⏱️  Tiempo desde última respuesta:', timeSinceLastResponse, 'ms');
+      
+      if (timeSinceLastResponse < 10000) {
+        console.log(`[DEBUG] 🛡️  ANTI-SPAM ACTIVADO - Ignorando (${timeSinceLastResponse}ms < 10000ms)`);
+        return;
+      }
+    } else {
+      console.log('[DEBUG] ✨ Primera interacción con este contacto');
+    }
+    
     // Detectar tipo de contacto
+    console.log('[DEBUG] 🔍 Detectando tipo de contacto...');
     const contactType = contactTypes[phone] || detectContactType(contactName, phone);
+    console.log('[DEBUG] 🏷️  Tipo detectado:', contactType);
+    console.log('[DEBUG] 📛 Nombre guardado:', leadNames[phone]);
     
     // Inicializar conversación si no existe
     if (!conversations[phone]) {
+      console.log('[DEBUG] 📝 Inicializando nueva conversación');
       conversations[phone] = [];
+    } else {
+      console.log('[DEBUG] 📚 Conversación existente - Mensajes previos:', conversations[phone].length);
     }
     
     // Agregar mensaje del usuario
@@ -188,23 +249,36 @@ async function handleIncomingMessage(message) {
       content: messageBody,
       timestamp: Date.now()
     });
+    console.log('[DEBUG] ➕ Mensaje agregado al historial');
     
     // Limitar historial a últimos 10 mensajes
     if (conversations[phone].length > 10) {
       conversations[phone] = conversations[phone].slice(-10);
+      console.log('[DEBUG] ✂️  Historial recortado a últimos 10 mensajes');
     }
     
     // Generar prompt del sistema
+    console.log('[DEBUG] 📜 Generando system prompt...');
     const systemPrompt = generateSystemPrompt(phone, contactType, leadNames[phone]);
+    console.log('[DEBUG] 📜 System prompt generado (primeros 100 chars):', systemPrompt.substring(0, 100) + '...');
     
     // Llamar a Gemini AI
-    console.log(`[AI] Generando respuesta para ${leadNames[phone]} (${contactType})...`);
+    console.log('[DEBUG] 🤖 Llamando a Gemini AI...');
+    console.log('[DEBUG] 🤖 API Key presente:', GEMINI_API_KEY ? 'SÍ' : 'NO');
+    console.log('[DEBUG] 🤖 Mensajes en historial para enviar:', conversations[phone].length);
+    
     const aiResponse = await callGeminiAPI(conversations[phone], systemPrompt);
     
     if (!aiResponse) {
-      console.error(`[AI] Error generando respuesta para ${phone}`);
+      console.error('[DEBUG] ❌ ERROR - Gemini no devolvió respuesta');
+      console.error('[DEBUG] ❌ Phone:', phone);
+      console.error('[DEBUG] ❌ Contact:', contactName);
       return;
     }
+    
+    console.log('[DEBUG] ✅ Respuesta de Gemini recibida');
+    console.log('[DEBUG] 💭 Respuesta (primeros 100 chars):', aiResponse.substring(0, 100) + '...');
+    console.log('[DEBUG] 💭 Longitud de respuesta:', aiResponse.length, 'caracteres');
     
     // Guardar respuesta de MIIA
     conversations[phone].push({
@@ -212,14 +286,19 @@ async function handleIncomingMessage(message) {
       content: aiResponse,
       timestamp: Date.now()
     });
+    console.log('[DEBUG] 💾 Respuesta guardada en historial');
     
     // Enviar respuesta por WhatsApp
+    console.log('[DEBUG] 📤 Enviando respuesta por WhatsApp...');
     await message.reply(aiResponse);
+    console.log('[DEBUG] ✅ Respuesta enviada exitosamente');
     
     // Actualizar timestamp de última respuesta
     lastResponse[phone] = Date.now();
+    console.log('[DEBUG] ⏰ Timestamp de última respuesta actualizado');
     
     // Emitir eventos a frontend
+    console.log('[DEBUG] 📡 Emitiendo eventos a frontend via Socket.io...');
     io.emit('new_message', {
       from: phone,
       fromName: leadNames[phone] || contactName,
@@ -235,11 +314,19 @@ async function handleIncomingMessage(message) {
       timestamp: Date.now(),
       type: contactType
     });
+    console.log('[DEBUG] 📡 Eventos emitidos');
     
-    console.log(`[MIIA] ✅ Respondió a ${leadNames[phone]} (${contactType})`);
+    console.log('[DEBUG] 🎉 PROCESO COMPLETADO EXITOSAMENTE');
+    console.log('[DEBUG] 👤 Contacto:', leadNames[phone]);
+    console.log('[DEBUG] 🏷️  Tipo:', contactType);
+    console.log('============================================\n');
     
   } catch (error) {
-    console.error('[ERROR] handleIncomingMessage:', error);
+    console.error('\n❌❌❌ ERROR CRÍTICO EN handleIncomingMessage ❌❌❌');
+    console.error('[ERROR] Mensaje:', error.message);
+    console.error('[ERROR] Stack:', error.stack);
+    console.error('[ERROR] Objeto completo:', error);
+    console.error('============================================\n');
   }
 }
 
@@ -249,11 +336,13 @@ async function handleIncomingMessage(message) {
 
 function initWhatsApp() {
   if (whatsappClient) {
-    console.log('⚠️ Cliente WhatsApp ya inicializado');
+    console.log('[WA] ⚠️  Cliente WhatsApp ya inicializado');
     return;
   }
 
-  console.log('🚀 Inicializando cliente WhatsApp...');
+  console.log('\n╔════════════════════════════════════════╗');
+  console.log('║   🚀 INICIALIZANDO WHATSAPP CLIENT    ║');
+  console.log('╚════════════════════════════════════════╝\n');
   
   whatsappClient = new Client({
     authStrategy: new LocalAuth(),
@@ -272,28 +361,41 @@ function initWhatsApp() {
   });
 
   whatsappClient.on('qr', async (qr) => {
-    console.log('📱 QR generado');
+    console.log('[WA] 📱 QR CODE GENERADO');
+    console.log('[WA] 📱 Convirtiendo a DataURL...');
     qrCode = await qrcode.toDataURL(qr);
+    console.log('[WA] 📱 QR DataURL generado, longitud:', qrCode.length);
+    console.log('[WA] 📡 Emitiendo evento "qr" via Socket.io...');
     io.emit('qr', qrCode);
+    console.log('[WA] ✅ QR emitido a clientes conectados');
   });
 
   whatsappClient.on('authenticated', () => {
-    console.log('✅ WhatsApp autenticado');
+    console.log('[WA] ✅ WHATSAPP AUTENTICADO CORRECTAMENTE');
     qrCode = null;
   });
 
   whatsappClient.on('ready', () => {
-    console.log('✅ WhatsApp listo - MIIA ACTIVADA CON RESPUESTA AUTOMÁTICA');
+    console.log('\n╔════════════════════════════════════════╗');
+    console.log('║   ✅ WHATSAPP LISTO                   ║');
+    console.log('║   🤖 MIIA AUTO-RESPONSE ACTIVADA      ║');
+    console.log('╚════════════════════════════════════════╝\n');
     isReady = true;
     io.emit('whatsapp_ready', { status: 'connected' });
   });
 
   // ⭐⭐⭐ EVENTO PRINCIPAL - RESPUESTA AUTOMÁTICA ⭐⭐⭐
-  whatsappClient.on('message', handleIncomingMessage);
+  whatsappClient.on('message', (msg) => {
+    console.log('[WA] 📨 Evento "message" recibido');
+    handleIncomingMessage(msg);
+  });
 
   whatsappClient.on('message_create', async (message) => {
+    console.log('[WA] 📝 Evento "message_create" recibido');
+    
     // Emitir mensajes enviados por Mariano también
     if (message.fromMe) {
+      console.log('[WA] 👤 Mensaje enviado por el usuario (fromMe=true)');
       const contact = await message.getContact();
       io.emit('new_message', {
         from: message.to,
@@ -302,17 +404,23 @@ function initWhatsApp() {
         timestamp: Date.now(),
         fromMe: true
       });
+      console.log('[WA] 📡 Mensaje propio emitido al frontend');
     }
   });
 
   whatsappClient.on('disconnected', (reason) => {
-    console.log('❌ Desconectado:', reason);
+    console.log('\n╔════════════════════════════════════════╗');
+    console.log('║   ❌ WHATSAPP DESCONECTADO            ║');
+    console.log('╚════════════════════════════════════════╝');
+    console.log('[WA] ❌ Razón:', reason);
     isReady = false;
     whatsappClient = null;
     io.emit('whatsapp_disconnected', { reason });
   });
 
+  console.log('[WA] 🔄 Llamando a client.initialize()...');
   whatsappClient.initialize();
+  console.log('[WA] 🔄 Initialize() llamado, esperando conexión...\n');
 }
 
 // ============================================
