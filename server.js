@@ -5,26 +5,6 @@ const cors = require('cors');
 const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 
-// ============================================
-// FORZAR LOGS INMEDIATOS EN RAILWAY
-// ============================================
-process.stdout.setDefaultEncoding('utf8');
-if (process.stdout.isTTY === false) {
-  // Forzar flush inmediato en Railway
-  const originalLog = console.log;
-  const originalError = console.error;
-  
-  console.log = function(...args) {
-    originalLog.apply(console, args);
-    process.stdout.write(''); // Force flush
-  };
-  
-  console.error = function(...args) {
-    originalError.apply(console, args);
-    process.stderr.write(''); // Force flush
-  };
-}
-
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
