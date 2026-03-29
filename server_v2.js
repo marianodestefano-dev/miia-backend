@@ -38,7 +38,12 @@ try {
     credential = admin.credential.cert(serviceAccount);
   } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     // Railway/prod: usa variable de entorno (JSON string)
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    // Reemplaza \n literales en private_key que se corrompen al pegar en Railway
+    const rawJSON = process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n');
+    const serviceAccount = JSON.parse(rawJSON);
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
     credential = admin.credential.cert(serviceAccount);
   } else if (process.env.FIREBASE_PROJECT_ID) {
     // Railway con vars individuales
@@ -2786,16 +2791,20 @@ app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
 // ── Middleware: verify Firebase Admin ─────────────────────────────────────
 
 async function verifyAdminToken(req, res, next) {
+  // Verificar que Firebase Admin está inicializado
+  try { admin.app(); } catch (_) {
+    return res.status(503).json({ error: 'Firebase Admin no está inicializado en el servidor. Verificar variable FIREBASE_SERVICE_ACCOUNT.' });
+  }
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return res.status(401).json({ error: 'Falta header Authorization: Bearer <token>' });
     }
     const idToken = authHeader.substring(7);
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     const userDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
     if (!userDoc.exists || userDoc.data().role !== 'admin') {
-      return res.status(403).json({ error: 'User is not an admin' });
+      return res.status(403).json({ error: 'El usuario no tiene rol admin' });
     }
     req.user = { uid: decodedToken.uid, email: decodedToken.email };
     next();
