@@ -21,6 +21,9 @@ const webScraper = require('./web_scraper');
 // ESTADÍSTICAS — seguimiento de conversiones y pipeline
 const estadisticas = require('./estadisticas');
 
+// TENANT MANAGER — multi-tenant WhatsApp isolation
+const tenantManager = require('./tenant_manager');
+
 // FIREBASE ADMIN — actualizar Firestore desde webhook
 const admin = require('firebase-admin');
 const serviceAccount = require('./firebase-admin-key.json');
@@ -1839,7 +1842,7 @@ function initWhatsApp() {
 io.on('connection', (socket) => {
   console.log('👤 Cliente conectado via Socket.io');
   
-  if (!whatsappClient) {
+  if (!whatsappClient && !process.env.SKIP_WA_INIT) {
     initWhatsApp();
   }
 
@@ -1964,16 +1967,110 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Endpoint para obtener conversaciones (para Firebase sync futuro)
-app.get('/api/conversations', (req, res) => {
-  res.json({ 
-    conversations, 
-    contactTypes, 
-    leadNames,
-    totalConversations: Object.keys(conversations).length,
-    familyContacts: Object.values(contactTypes).filter(t => t === 'familia').length,
-    leadContacts: Object.values(contactTypes).filter(t => t === 'lead').length
+// ─── /api/status — WhatsApp connection status (used by dashboard.html) ────────
+app.get('/api/status', (req, res) => {
+  // Check tenant first if uid param provided
+  const uid = req.query.uid;
+  if (uid) {
+    const status = tenantManager.getTenantStatus(uid);
+    return res.json({ connected: status.isReady, hasQR: status.hasQR, tenant: uid });
+  }
+  // Fall back to single-tenant (original Mariano session)
+  res.json({ connected: isReady, hasQR: !!qrCode });
+});
+
+// ─── /api/conversations — contacts.html-compatible format ─────────────────────
+app.get('/api/conversations', async (req, res) => {
+  const uid = req.query.uid;
+
+  // Multi-tenant: if uid provided, return that tenant's conversations
+  if (uid) {
+    try {
+      const convs = await tenantManager.getTenantConversations(uid);
+      return res.json(convs);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // Single-tenant fallback (original): format for contacts.html
+  const result = Object.entries(conversations).map(([phone, msgs]) => {
+    const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+    return {
+      phoneNumber: phone.split('@')[0],
+      name: leadNames[phone] || phone.split('@')[0],
+      lastMessage: lastMsg?.content || '',
+      timestamp: lastMsg?.timestamp || null,
+      unreadCount: 0
+    };
   });
+  res.json(result);
+});
+
+// ─── MULTI-TENANT ENDPOINTS ────────────────────────────────────────────────────
+
+// POST /api/tenant/init — Start WhatsApp for a SaaS client
+// Body: { uid, geminiApiKey }
+app.post('/api/tenant/init', express.json(), (req, res) => {
+  const { uid, geminiApiKey } = req.body;
+  if (!uid || !geminiApiKey) {
+    return res.status(400).json({ error: 'uid y geminiApiKey requeridos' });
+  }
+  const tenant = tenantManager.initTenant(uid, geminiApiKey, io);
+  res.json({
+    success: true,
+    uid,
+    isReady: tenant.isReady,
+    hasQR: !!tenant.qrCode
+  });
+});
+
+// GET /api/tenant/:uid/status — Get tenant WhatsApp status
+app.get('/api/tenant/:uid/status', (req, res) => {
+  const status = tenantManager.getTenantStatus(req.params.uid);
+  res.json(status);
+});
+
+// GET /api/tenant/:uid/qr — Get tenant QR code (if pending scan)
+app.get('/api/tenant/:uid/qr', (req, res) => {
+  const status = tenantManager.getTenantStatus(req.params.uid);
+  if (!status.exists) return res.status(404).json({ error: 'Tenant no encontrado. Llama a /api/tenant/init primero.' });
+  if (!status.hasQR) return res.json({ qrCode: null, isReady: status.isReady });
+  res.json({ qrCode: status.qrCode, isReady: status.isReady });
+});
+
+// POST /api/tenant/:uid/logout — Disconnect tenant WhatsApp
+app.post('/api/tenant/:uid/logout', async (req, res) => {
+  const result = await tenantManager.destroyTenant(req.params.uid);
+  res.json(result);
+});
+
+// GET /api/tenant/:uid/conversations — Get tenant conversations (contacts.html)
+app.get('/api/tenant/:uid/conversations', async (req, res) => {
+  try {
+    const convs = await tenantManager.getTenantConversations(req.params.uid);
+    res.json(convs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/tenant/:uid/train — Add training data for a tenant
+app.post('/api/tenant/:uid/train', express.json(), (req, res) => {
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ error: 'message requerido' });
+  const ok = tenantManager.appendTenantTraining(req.params.uid, message);
+  if (!ok) return res.status(404).json({ error: 'Tenant no encontrado' });
+  res.json({ success: true });
+});
+
+// GET /api/tenants — List all active tenants (admin only)
+app.get('/api/tenants', (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (adminKey !== process.env.ADMIN_API_KEY) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  res.json(tenantManager.getAllTenants());
 });
 
 // ⭐ NUEVO ENDPOINT - Chat con MIIA desde frontend
@@ -2579,5 +2676,10 @@ server.listen(PORT, () => {
   console.log('\n═══════════════════════════════════\n');
 
   // Auto-inicializar WhatsApp al arrancar (no esperar a Socket.io)
-  initWhatsApp();
+  if (!process.env.SKIP_WA_INIT) {
+    initWhatsApp();
+  }
 });
+
+// Export app for testing
+module.exports = app;
