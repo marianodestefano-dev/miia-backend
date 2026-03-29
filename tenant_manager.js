@@ -19,7 +19,8 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
-const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args)).catch(() => require('node-fetch')(...args));
+const { callGemini } = require('./gemini_client');
+const { buildTenantPrompt } = require('./prompt_builder');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 //
@@ -66,56 +67,18 @@ function saveTenantDB(uid, data) {
 async function callGeminiForTenant(uid, prompt) {
   const t = tenants.get(uid);
   if (!t) throw new Error(`Tenant ${uid} not found`);
-
-  const apiKey = t.geminiApiKey;
-  if (!apiKey) throw new Error(`No Gemini API key for tenant ${uid}`);
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
-      });
-
-      if (response.status === 503 || response.status === 429) {
-        const delays = [8000, 20000, 45000];
-        await new Promise(r => setTimeout(r, delays[attempt]));
-        continue;
-      }
-
-      const data = await response.json();
-      return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    } catch (err) {
-      if (attempt === 2) throw err;
-      await new Promise(r => setTimeout(r, 5000));
-    }
-  }
-  return '';
+  if (!t.geminiApiKey) throw new Error(`No Gemini API key for tenant ${uid}`);
+  return callGemini(t.geminiApiKey, prompt);
 }
 
-// ─── Build a response prompt for a tenant ─────────────────────────────────────
+// ─── Build a response prompt for a tenant (delegates to prompt_builder.js) ──
 
 function buildSystemPrompt(tenant, contactName) {
-  const history = (tenant.conversations[contactName] || [])
-    .slice(-20)
-    .map(m => `${m.role === 'user' ? 'Cliente' : 'MIIA'}: ${m.content}`)
-    .join('\n');
-
-  const training = tenant.trainingData || '';
-
-  return `Eres MIIA, una asistente de ventas inteligente por WhatsApp.
-Respondes con el estilo y conocimiento del negocio de tu cliente.
-Eres cálida, profesional y efectiva cerrando ventas.
-
-${training ? `[LO QUE HE APRENDIDO DE ESTE NEGOCIO]:\n${training}\n` : ''}
-
-[HISTORIAL DE CONVERSACIÓN]:
-${history || 'Sin historial previo.'}
-
-Responde al último mensaje del cliente de forma natural y útil (máximo 3 oraciones). No uses emojis en exceso.`;
+  return buildTenantPrompt(
+    contactName,
+    tenant.trainingData || '',
+    tenant.conversations[contactName] || []
+  );
 }
 
 // ─── Core: process incoming message for a tenant ──────────────────────────────
@@ -405,11 +368,66 @@ function getAllTenants() {
   return result;
 }
 
+/**
+ * Classify a contact as lead, cliente, or otro based on keyword rules.
+ * Evaluates the last 10 messages of the conversation.
+ * @param {string} uid
+ * @param {string} phone
+ * @param {object} contactRules - { lead_keywords: string[], client_keywords: string[] }
+ * @returns {'lead'|'cliente'|'otro'}
+ */
+function classifyContact(uid, phone, contactRules) {
+  const t = tenants.get(uid);
+  if (!t) return 'otro';
+
+  const msgs = (t.conversations[phone] || []).slice(-10);
+  const allText = msgs.map(m => (m.content || '').toLowerCase()).join(' ');
+
+  if (!contactRules) return 'otro';
+
+  // Check client keywords first (more specific)
+  if (contactRules.client_keywords && contactRules.client_keywords.length > 0) {
+    const isClient = contactRules.client_keywords.some(kw =>
+      allText.includes(kw.toLowerCase())
+    );
+    if (isClient) return 'cliente';
+  }
+
+  // Check lead keywords
+  if (contactRules.lead_keywords && contactRules.lead_keywords.length > 0) {
+    const isLead = contactRules.lead_keywords.some(kw =>
+      allText.includes(kw.toLowerCase())
+    );
+    if (isLead) return 'lead';
+  }
+
+  return 'otro';
+}
+
+/**
+ * Set the full training data string for a tenant (used by rebuildTenantBrain).
+ * @param {string} uid
+ * @param {string} trainingData
+ */
+function setTenantTrainingData(uid, trainingData) {
+  const t = tenants.get(uid);
+  if (!t) return false;
+  t.trainingData = trainingData;
+  saveTenantDB(uid, {
+    conversations: t.conversations,
+    leadNames: t.leadNames,
+    trainingData: t.trainingData
+  });
+  return true;
+}
+
 module.exports = {
   initTenant,
   destroyTenant,
   getTenantStatus,
   getTenantConversations,
   appendTenantTraining,
+  setTenantTrainingData,
+  classifyContact,
   getAllTenants
 };

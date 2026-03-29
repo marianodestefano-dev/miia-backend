@@ -24,6 +24,10 @@ const estadisticas = require('./estadisticas');
 // TENANT MANAGER — multi-tenant WhatsApp isolation
 const tenantManager = require('./tenant_manager');
 
+// UNIFIED MODULES — extracted from duplicated code
+const { callGemini, callGeminiChat } = require('./gemini_client');
+const { buildPrompt, buildTenantBrainString } = require('./prompt_builder');
+
 // FIREBASE ADMIN — actualizar Firestore desde webhook
 const admin = require('firebase-admin');
 const serviceAccount = require('./firebase-admin-key.json');
@@ -2477,6 +2481,341 @@ Confirma brevemente que lo entendiste y lo guardaste (máx 2 oraciones), en prim
     res.status(500).json({ error: e.message });
   }
 });
+
+// ============================================
+// TRAINING ENDPOINTS — Products, Contact Rules, Sessions, Test
+// ============================================
+
+// ── Training Products (grilla) ──────────────────────────────────────────────
+
+app.get('/api/tenant/:uid/train/products', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const snapshot = await admin.firestore().collection('training_products').doc(uid).collection('items').orderBy('createdAt', 'desc').get();
+    const products = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    res.json(products);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/tenant/:uid/train/product', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { name, description, price, pricePromo, stock, extras } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name requerido' });
+
+    const productData = {
+      name: name.trim(),
+      description: (description || '').trim(),
+      price: price || '',
+      pricePromo: pricePromo || '',
+      stock: stock || '',
+      extras: extras || {},
+      createdAt: new Date().toISOString()
+    };
+
+    const docRef = await admin.firestore().collection('training_products').doc(uid).collection('items').add(productData);
+
+    // Inject into tenant brain
+    const learningText = `Producto: ${productData.name} — ${productData.description}. Precio: ${productData.price}${productData.pricePromo ? ` (Promo: ${productData.pricePromo})` : ''}${productData.stock ? ` · Stock: ${productData.stock}` : ''}`;
+    tenantManager.appendTenantTraining(uid, learningText);
+
+    res.json({ success: true, id: docRef.id, product: productData });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/tenant/:uid/train/product/:productId', async (req, res) => {
+  try {
+    const { uid, productId } = req.params;
+    await admin.firestore().collection('training_products').doc(uid).collection('items').doc(productId).delete();
+
+    // Rebuild tenant brain without this product
+    await rebuildTenantBrainFromFirestore(uid);
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Contact Rules (keywords) ────────────────────────────────────────────────
+
+app.get('/api/tenant/:uid/train/contact-rules', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const doc = await admin.firestore().collection('contact_rules').doc(uid).get();
+    if (!doc.exists) return res.json({ lead_keywords: [], client_keywords: [] });
+    res.json(doc.data());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/tenant/:uid/train/contact-rules', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { lead_keywords, client_keywords } = req.body;
+
+    const rulesData = {
+      lead_keywords: lead_keywords || [],
+      client_keywords: client_keywords || [],
+      updatedAt: new Date().toISOString()
+    };
+
+    await admin.firestore().collection('contact_rules').doc(uid).set(rulesData, { merge: true });
+
+    // Rebuild brain with new rules
+    await rebuildTenantBrainFromFirestore(uid);
+
+    res.json({ success: true, rules: rulesData });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Training Sessions (chat experto) ────────────────────────────────────────
+
+app.get('/api/tenant/:uid/train/sessions', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const snapshot = await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').orderBy('createdAt', 'desc').get();
+    const sessions = snapshot.docs.map(d => ({ date: d.id, ...d.data() }));
+    res.json(sessions);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/tenant/:uid/train/session', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { messages, trainingBlock } = req.body;
+    if (!messages || !trainingBlock) return res.status(400).json({ error: 'messages and trainingBlock required' });
+
+    const dateKey = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+    // Generate summary via Gemini
+    const geminiKey = process.env.GEMINI_API_KEY;
+    let summary = dateKey;
+    try {
+      const summaryPrompt = `Resume en máximo 6 palabras el tema principal de esta sesión de entrenamiento:\n\n${trainingBlock}`;
+      summary = await callGemini(geminiKey, summaryPrompt);
+      summary = (summary || dateKey).replace(/["\n]/g, '').trim().substring(0, 60);
+    } catch (_) { /* keep default */ }
+
+    const sessionData = {
+      messages,
+      trainingBlock,
+      summary,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(dateKey).set(sessionData);
+
+    // Inject into tenant brain
+    tenantManager.appendTenantTraining(uid, trainingBlock);
+
+    res.json({ success: true, date: dateKey, summary });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch('/api/tenant/:uid/train/session/:date', express.json(), async (req, res) => {
+  try {
+    const { uid, date } = req.params;
+    const { additionalText } = req.body;
+    if (!additionalText) return res.status(400).json({ error: 'additionalText required' });
+
+    const docRef = admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(date);
+    const doc = await docRef.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Session not found' });
+
+    const existing = doc.data();
+    const updatedBlock = existing.trainingBlock + '\n' + additionalText;
+
+    await docRef.update({
+      trainingBlock: updatedBlock,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Rebuild brain with updated session
+    await rebuildTenantBrainFromFirestore(uid);
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/tenant/:uid/train/session/:date', async (req, res) => {
+  try {
+    const { uid, date } = req.params;
+    await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(date).delete();
+
+    // Rebuild brain without this session
+    await rebuildTenantBrainFromFirestore(uid);
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Test MIIA (simulador de cliente) ────────────────────────────────────────
+
+app.post('/api/tenant/:uid/test', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: 'message required' });
+
+    // Build tenant brain from Firestore
+    const trainingData = await getFullTenantBrain(uid);
+
+    const prompt = buildPrompt({ mode: 'test', trainingData });
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const response = await callGemini(geminiKey, prompt + `\nCliente: ${message}\nMIIA:`);
+
+    res.json({ response: response || 'No pude generar una respuesta. Intenta de nuevo.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Admin User Management ───────────────────────────────────────────────────
+
+app.post('/api/admin/user', express.json(), async (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (adminKey !== process.env.ADMIN_API_KEY) return res.status(403).json({ error: 'Forbidden' });
+
+  try {
+    const { email, name, plan } = req.body;
+    if (!email) return res.status(400).json({ error: 'email required' });
+
+    // Generate temp password
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    let tempPassword = '';
+    for (let i = 0; i < 8; i++) tempPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+
+    // Create Firebase Auth user
+    const userRecord = await admin.auth().createUser({
+      email,
+      password: tempPassword,
+      displayName: name || email.split('@')[0]
+    });
+
+    // Create Firestore user doc
+    await admin.firestore().collection('users').doc(userRecord.uid).set({
+      name: name || email.split('@')[0],
+      email,
+      plan: plan || 'trial',
+      role: 'admin',
+      agents_limit: 1,
+      agents_count: 0,
+      created_manually: true,
+      temp_password: true,
+      payment_status: plan === 'trial' ? 'trial' : 'pending',
+      created_at: new Date().toISOString()
+    });
+
+    res.json({
+      success: true,
+      uid: userRecord.uid,
+      email,
+      tempPassword,
+      message: `User created. Temporary password: ${tempPassword}`
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/admin/user/:uid', async (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (adminKey !== process.env.ADMIN_API_KEY) return res.status(403).json({ error: 'Forbidden' });
+
+  try {
+    const { uid } = req.params;
+
+    // Destroy tenant WA session
+    await tenantManager.destroyTenant(uid);
+
+    // Delete Firestore user doc + subcollections
+    const subcollections = ['training_products', 'training_sessions', 'contact_rules'];
+    for (const col of subcollections) {
+      try {
+        const docRef = admin.firestore().collection(col).doc(uid);
+        // Delete subcollection items if they exist
+        const subcol = col === 'contact_rules' ? null : 'items';
+        if (subcol) {
+          const snap = await docRef.collection(subcol === 'items' ? 'items' : 'sessions').get();
+          for (const doc of snap.docs) await doc.ref.delete();
+        }
+        await docRef.delete();
+      } catch (_) { /* ignore missing */ }
+    }
+
+    await admin.firestore().collection('users').doc(uid).delete();
+
+    // Delete Firebase Auth user
+    await admin.auth().deleteUser(uid);
+
+    res.json({ success: true, message: `User ${uid} completely deleted` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Helper: rebuild tenant brain from Firestore ─────────────────────────────
+
+async function getFullTenantBrain(uid) {
+  try {
+    // Get base DNA
+    let baseDNA = '';
+    try {
+      const baseDoc = await admin.firestore().collection('system').doc('miia_base_dna').get();
+      if (baseDoc.exists) baseDNA = baseDoc.data().content || '';
+    } catch (_) { /* no base DNA yet */ }
+
+    // Get products
+    const productsSnap = await admin.firestore().collection('training_products').doc(uid).collection('items').get();
+    const products = productsSnap.docs.map(d => d.data());
+
+    // Get sessions
+    const sessionsSnap = await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').get();
+    const sessions = sessionsSnap.docs.map(d => d.data());
+
+    // Get contact rules
+    let contactRules = { lead_keywords: [], client_keywords: [] };
+    try {
+      const rulesDoc = await admin.firestore().collection('contact_rules').doc(uid).get();
+      if (rulesDoc.exists) contactRules = rulesDoc.data();
+    } catch (_) { /* no rules yet */ }
+
+    return buildTenantBrainString(baseDNA, products, sessions, contactRules);
+  } catch (e) {
+    console.error(`[BRAIN] Error building brain for ${uid}:`, e.message);
+    return '';
+  }
+}
+
+async function rebuildTenantBrainFromFirestore(uid) {
+  const brain = await getFullTenantBrain(uid);
+  // Update live tenant if it exists
+  const allTenants = tenantManager.getAllTenants();
+  if (allTenants.find(t => t.uid === uid)) {
+    // The tenant_manager stores trainingData internally; we update it via appendTenantTraining
+    // by clearing and re-setting. For now, we use a direct approach:
+    // tenant_manager doesn't expose setTrainingData, so we rely on the next message to pick it up.
+    // TODO: expose setTenantTrainingData in tenant_manager
+  }
+  return brain;
+}
 
 // ============================================
 // WHATSAPP DISCONNECT

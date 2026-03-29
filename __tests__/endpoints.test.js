@@ -22,9 +22,26 @@ jest.mock('whatsapp-web.js', () => ({
 
 // Mock firebase-admin
 jest.mock('firebase-admin', () => {
-  const updateMock = jest.fn().mockResolvedValue({});
-  const docMock = jest.fn(() => ({ update: updateMock }));
-  const collectionMock = jest.fn(() => ({ doc: docMock }));
+  const mockSnap = { empty: true, docs: [], forEach: jest.fn() };
+  const mockDocSnap = { exists: false, data: () => ({}) };
+  const makeCollection = () => {
+    const coll = {
+      doc: jest.fn(() => makeDoc()),
+      get: jest.fn().mockResolvedValue(mockSnap),
+      where: jest.fn(() => ({ get: jest.fn().mockResolvedValue(mockSnap) })),
+      add: jest.fn().mockResolvedValue({ id: 'mock-doc-id' }),
+      orderBy: jest.fn(() => ({ get: jest.fn().mockResolvedValue(mockSnap) }))
+    };
+    return coll;
+  };
+  const makeDoc = () => ({
+    get: jest.fn().mockResolvedValue(mockDocSnap),
+    set: jest.fn().mockResolvedValue({}),
+    update: jest.fn().mockResolvedValue({}),
+    delete: jest.fn().mockResolvedValue({}),
+    collection: jest.fn(() => makeCollection())
+  });
+  const collectionMock = jest.fn(() => makeCollection());
   const firestoreMock = jest.fn(() => ({ collection: collectionMock }));
   firestoreMock.FieldValue = { increment: jest.fn(n => `increment(${n})`) };
   return {
@@ -61,7 +78,7 @@ jest.mock('../cerebro_absoluto', () => ({
 
 // Mock other local modules
 jest.mock('../cotizacion_generator', () => ({}));
-jest.mock('../web_scraper', () => ({ init: jest.fn() }));
+jest.mock('../web_scraper', () => ({ init: jest.fn(), processScraperCron: jest.fn() }));
 jest.mock('../estadisticas', () => ({
   getSummary: jest.fn().mockReturnValue({}),
   trackConversion: jest.fn()
@@ -72,6 +89,8 @@ jest.mock('../tenant_manager', () => ({
   getTenantStatus: jest.fn().mockReturnValue({ exists: true, isReady: true, hasQR: false, qrCode: null }),
   getTenantConversations: jest.fn().mockResolvedValue([]),
   appendTenantTraining: jest.fn().mockReturnValue(true),
+  setTenantTrainingData: jest.fn().mockReturnValue(true),
+  classifyContact: jest.fn().mockReturnValue('lead'),
   getAllTenants: jest.fn().mockReturnValue([])
 }));
 
@@ -270,5 +289,104 @@ describe('POST /api/tenant/init', () => {
       .post('/api/tenant/init')
       .send({ uid: 'test-uid' }); // missing geminiApiKey
     expect(res.status).toBe(400);
+  });
+});
+
+// ─── Training endpoints ──────────────────────────────────────────────────────
+
+describe('GET /api/tenant/:uid/train/products', () => {
+  it('returns products array (may be empty)', async () => {
+    const res = await request(app).get('/api/tenant/test-uid/train/products');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+  });
+});
+
+describe('POST /api/tenant/:uid/train/product', () => {
+  it('returns 400 when name is missing', async () => {
+    const res = await request(app)
+      .post('/api/tenant/test-uid/train/product')
+      .send({ description: 'test' });
+    expect(res.status).toBe(400);
+  });
+
+  it('saves a product successfully', async () => {
+    const res = await request(app)
+      .post('/api/tenant/test-uid/train/product')
+      .send({ name: 'Test Product', description: 'A test', price: '$10' });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('success', true);
+  });
+});
+
+describe('GET /api/tenant/:uid/train/contact-rules', () => {
+  it('returns contact rules object', async () => {
+    const res = await request(app).get('/api/tenant/test-uid/train/contact-rules');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('lead_keywords');
+    expect(res.body).toHaveProperty('client_keywords');
+  });
+});
+
+describe('POST /api/tenant/:uid/train/contact-rules', () => {
+  it('saves contact rules', async () => {
+    const res = await request(app)
+      .post('/api/tenant/test-uid/train/contact-rules')
+      .send({ lead_keywords: ['precio', 'cotizar'], client_keywords: ['mi cuenta'] });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('success', true);
+  });
+});
+
+describe('GET /api/tenant/:uid/train/sessions', () => {
+  it('returns sessions array', async () => {
+    const res = await request(app).get('/api/tenant/test-uid/train/sessions');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+  });
+});
+
+describe('POST /api/tenant/:uid/test', () => {
+  it('returns 400 when message is missing', async () => {
+    const res = await request(app)
+      .post('/api/tenant/test-uid/test')
+      .send({});
+    expect(res.status).toBe(400);
+  });
+});
+
+// ─── Admin endpoints ─────────────────────────────────────────────────────────
+
+describe('POST /api/admin/user', () => {
+  it('returns 403 without admin key', async () => {
+    const res = await request(app)
+      .post('/api/admin/user')
+      .send({ email: 'test@test.com', name: 'Test' });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 400 when email is missing', async () => {
+    const res = await request(app)
+      .post('/api/admin/user')
+      .set('x-admin-key', 'test-admin-key')
+      .send({ name: 'Test' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /api/admin/user/:uid', () => {
+  it('returns 403 without admin key', async () => {
+    const res = await request(app).delete('/api/admin/user/some-uid');
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/tenants', () => {
+  it('returns array of tenants', async () => {
+    const res = await request(app)
+      .get('/api/tenants')
+      .set('x-admin-key', 'test-admin-key');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
   });
 });
