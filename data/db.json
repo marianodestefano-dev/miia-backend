@@ -731,7 +731,11 @@
       "relation": "primo de Mariano",
       "emoji": "💻💪",
       "personality": "Capo en programación, fan del gym",
-      "aliases": ["primo", "juanpa", "juan pablo"],
+      "aliases": [
+        "primo",
+        "juanpa",
+        "juan pablo"
+      ],
       "affinity": 91,
       "isHandshakeDone": true
     },
@@ -857,5 +861,5 @@
       "presented": false
     }
   },
-  "trainingData": "\n\n[APRENDIZAJE MIIA_AUTO — 28/3/2026]\nEl módulo de facturador electrónico no se ofrece ni se cotiza para clientes en Argentina.\n\n\n[APRENDIZAJE MIIA_AUTO — 28/3/2026]\nEl módulo de facturador electrónico no se ofrece ni se cotiza para clientes en Argentina.\n"
+  "trainingData": "\n\n[APRENDIZAJE MIIA_AUTO — 28/3/2026]\nEl módulo de facturador electrónico no se ofrece ni se cotiza para clientes en Argentina.\n\n\n[APRENDIZAJE MIIA_AUTO — 28/3/2026]\nEl módulo de facturador electrónico no se ofrece ni se cotiza para clientes en Argentina.\n\n\n[APRENDIZAJE WEB_TRAINING — 29/3/2026]\nftyutryuyt\n"
 }

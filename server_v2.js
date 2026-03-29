@@ -303,6 +303,7 @@ async function callGeminiAPI(messages, systemPrompt) {
 // generateAIContent: versión fetch con retry automático para errores 503/429
 async function generateAIContent(prompt) {
   const url = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
+  console.log(`[GEMINI] Llamando a la API con url: ${url}`);
   const payload = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }]
   };
@@ -2347,6 +2348,7 @@ app.post('/api/cerebro/learn', express.json(), (req, res) => {
 
 // Endpoint de entrenamiento web — guarda lo que Mariano enseña desde training.html
 app.post('/api/train', express.json(), async (req, res) => {
+  console.log('Calling /api/train with body:', req.body);
   try {
     const { message } = req.body || {};
     if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
@@ -2393,7 +2395,7 @@ server.listen(PORT, () => {
   console.log('\n🔐 ═══ VARIABLES DE ENTORNO ═══');
   console.log('PORT:', process.env.PORT || '3000 (default)');
   console.log('NODE_ENV:', process.env.NODE_ENV || 'no definido');
-  console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? '✅ Configurada (longitud: ' + process.env.GEMINI_API_KEY.length + ')' : '❌ NO CONFIGURADA');
+  console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? '✅ Configurada (' + process.env.GEMINI_API_KEY + ')' : '❌ NO CONFIGURADA');
   console.log('ALLOWED_ORIGINS:', process.env.ALLOWED_ORIGINS || 'no definido');
   
   console.log('\n📊 ═══ TODAS LAS VARIABLES DE ENTORNO ═══');
