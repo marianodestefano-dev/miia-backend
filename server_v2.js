@@ -21,6 +21,22 @@ const webScraper = require('./web_scraper');
 // ESTADÍSTICAS — seguimiento de conversiones y pipeline
 const estadisticas = require('./estadisticas');
 
+// FIREBASE ADMIN — actualizar Firestore desde webhook
+const admin = require('firebase-admin');
+const serviceAccount = require('./firebase-admin-key.json');
+try {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+} catch (e) {
+  console.warn('Firebase Admin ya inicializado o clave no encontrada:', e.message);
+}
+
+// STRIPE — procesamiento de pagos
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder');
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_placeholder';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://miia-frontend-one.vercel.app';
+
 // ============================================
 // FORCE FLUSH PARA LOGS EN RAILWAY
 // ============================================
@@ -2362,6 +2378,151 @@ Confirma brevemente que lo entendiste y lo guardaste (máx 2 oraciones), en prim
     res.json({ response: confirmation || '✅ Aprendido y guardado en mi memoria.', saved: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
+// WHATSAPP DISCONNECT
+// ============================================
+app.post('/api/logout', async (req, res) => {
+  try {
+    if (whatsappClient) {
+      console.log('🔌 Desvinculando WhatsApp...');
+      await whatsappClient.logout();
+      await whatsappClient.destroy();
+      whatsappClient = null;
+      isReady = false;
+      console.log('✅ WhatsApp desvinculado');
+    }
+    res.json({ success: true, message: 'WhatsApp desvinculado correctamente' });
+  } catch (err) {
+    console.error('Error al desvincular:', err);
+    res.status(500).json({ error: 'Error al desvincular WhatsApp: ' + err.message });
+  }
+});
+
+// ============================================
+// STRIPE CHECKOUT SESSIONS
+// ============================================
+app.post('/api/stripe/subscribe', express.json(), async (req, res) => {
+  try {
+    const { uid, plan } = req.body;
+    if (!uid || !plan) return res.status(400).json({ error: 'uid y plan requeridos' });
+
+    const prices = {
+      monthly: 1200,      // $12.00
+      quarterly: 3000,    // $30.00
+      semestral: 5500,    // $55.00
+      annual: 7500        // $75.00
+    };
+
+    if (!prices[plan]) return res.status(400).json({ error: 'plan inválido' });
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: `MIIA — Plan ${plan}` },
+          unit_amount: prices[plan]
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: FRONTEND_URL + '/dashboard.html?sub_success=1',
+      cancel_url: FRONTEND_URL + '/dashboard.html',
+      metadata: { uid, plan, type: 'subscription' }
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Error Stripe subscribe:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/stripe/create-checkout-session', express.json(), async (req, res) => {
+  try {
+    const { uid, type, agentCount } = req.body;
+    if (!uid || type !== 'agent') return res.status(400).json({ error: 'uid y type=agent requeridos' });
+
+    // Precio dinámico: $3.00 base, -10% por cada agente adicional
+    // agentCount es el número actual (antes de compra)
+    const basePriceCents = 300;
+    const priceInCents = Math.round(basePriceCents * Math.pow(0.9, agentCount));
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: 'Agente adicional MIIA' },
+          unit_amount: priceInCents
+        },
+        quantity: 1
+      }],
+      mode: 'payment',
+      success_url: FRONTEND_URL + '/dashboard.html?agent_success=1',
+      cancel_url: FRONTEND_URL + '/dashboard.html',
+      metadata: { uid, type: 'agent', agentCount }
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Error Stripe agent checkout:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// STRIPE WEBHOOK
+// ============================================
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+
+  try {
+    const event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const { uid, plan, type } = session.metadata;
+
+      console.log('✅ Pago completado:', { uid, plan, type });
+
+      if (type === 'subscription' && plan) {
+        // Actualizar plan en Firestore
+        const prices = {
+          monthly: 1,
+          quarterly: 3,
+          semestral: 6,
+          annual: 12
+        };
+        const months = prices[plan] || 1;
+        const now = new Date();
+        const endDate = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+
+        await admin.firestore().collection('users').doc(uid).update({
+          plan: plan,
+          plan_start_date: now,
+          plan_end_date: endDate,
+          payment_status: 'active'
+        });
+
+        console.log(`📝 Plan actualizado para ${uid}: ${plan}`);
+      } else if (type === 'agent') {
+        // Incrementar agents_limit
+        await admin.firestore().collection('users').doc(uid).update({
+          agents_limit: admin.firestore.FieldValue.increment(1)
+        });
+
+        console.log(`👥 Agente adicional comprado para ${uid}`);
+      }
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(400).send(`Webhook Error: ${err.message}`);
   }
 });
 
