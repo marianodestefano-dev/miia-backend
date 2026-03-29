@@ -30,13 +30,33 @@ const { buildPrompt, buildTenantBrainString } = require('./prompt_builder');
 
 // FIREBASE ADMIN — actualizar Firestore desde webhook
 const admin = require('firebase-admin');
-const serviceAccount = require('./firebase-admin-key.json');
 try {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+  let credential;
+  if (fs.existsSync(path.join(__dirname, 'firebase-admin-key.json'))) {
+    // Local dev: usa archivo JSON
+    const serviceAccount = require('./firebase-admin-key.json');
+    credential = admin.credential.cert(serviceAccount);
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    // Railway/prod: usa variable de entorno (JSON string)
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    credential = admin.credential.cert(serviceAccount);
+  } else if (process.env.FIREBASE_PROJECT_ID) {
+    // Railway con vars individuales
+    credential = admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n')
+    });
+  } else {
+    console.warn('No se encontro credencial de Firebase Admin — Firestore no disponible');
+    credential = null;
+  }
+  if (credential) {
+    admin.initializeApp({ credential });
+    console.log('Firebase Admin inicializado correctamente');
+  }
 } catch (e) {
-  console.warn('Firebase Admin ya inicializado o clave no encontrada:', e.message);
+  console.warn('Firebase Admin: error al inicializar:', e.message);
 }
 
 // STRIPE — procesamiento de pagos
