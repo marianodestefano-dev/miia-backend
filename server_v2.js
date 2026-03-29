@@ -1,0 +1,2420 @@
+require('dotenv').config();
+
+const express = require('express');
+const http = require('http');
+const socketIO = require('socket.io');
+const cors = require('cors');
+const qrcode = require('qrcode');
+const fs = require('fs');
+const path = require('path');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+
+// CEREBRO ABSOLUTO — módulo de aprendizaje autónomo nocturno
+const cerebroAbsoluto = require('./cerebro_absoluto');
+
+// GENERADOR DE COTIZACIONES PDF
+const cotizacionGenerator = require('./cotizacion_generator');
+
+// SCRAPER REGULATORIO — actualización normativa semanal
+const webScraper = require('./web_scraper');
+
+// ESTADÍSTICAS — seguimiento de conversiones y pipeline
+const estadisticas = require('./estadisticas');
+
+// ============================================
+// FORCE FLUSH PARA LOGS EN RAILWAY
+// ============================================
+const originalLog = console.log;
+const originalError = console.error;
+
+console.log = function(...args) {
+  originalLog.apply(console, args);
+  if (process.stdout.write) {
+    process.stdout.write(''); // Force flush
+  }
+};
+
+console.error = function(...args) {
+  originalError.apply(console, args);
+  if (process.stderr.write) {
+    process.stderr.write(''); // Force flush
+  }
+};
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIO(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+app.use(cors());
+app.use(express.json());
+
+// ============================================
+// CONFIGURACIÓN
+// ============================================
+
+
+// FAMILIA (del prompt_maestro.md)
+const FAMILY_CONTACTS = {
+  'SILVIA': { name: 'Silvia', relation: 'mamá', emoji: '👵❤️' },
+  'ALE': { name: 'Alejandra', relation: 'esposa', emoji: '👸💕' },
+  'ALEJANDRA': { name: 'Alejandra', relation: 'esposa', emoji: '👸💕' },
+  'RAFA': { name: 'Jedido', relation: 'papá', emoji: '👴❤️' },
+  'RAFAEL': { name: 'Jedido', relation: 'papá', emoji: '👴❤️' },
+  'JEDIDO': { name: 'Jedido', relation: 'papá', emoji: '👴❤️' },
+  'ANA': { name: 'Anabella', relation: 'hermana de Mariano', emoji: '👧❤️' },
+  'ANABELLA': { name: 'Anabella', relation: 'hermana de Mariano', emoji: '👧❤️' },
+  'CONSU': { name: 'Consu', relation: 'suegra', emoji: '👵⛪📿' },
+  'CONSUELO': { name: 'Consu', relation: 'suegra', emoji: '👵⛪📿' },
+  'JOTA': { name: 'Jota', relation: 'hermano de Ale', emoji: '⚖️💚' },
+  'JORGE MARIO': { name: 'Jota', relation: 'hermano de Ale', emoji: '⚖️💚' },
+  'MARIA ISABEL': { name: 'Maria Isabel', relation: 'esposa de Jota', emoji: '🐶🤱' },
+  'CHAPY': { name: 'Chapy', relation: 'primo', emoji: '💻💪' },
+  'JUAN PABLO': { name: 'Chapy', relation: 'primo', emoji: '💻💪' },
+  'JUANCHO': { name: 'Juancho', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️' },
+  'JUAN DIEGO': { name: 'Juancho', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️' },
+  'MARIA CLARA': { name: 'Maria', relation: 'concuñada, esposa de Juancho', emoji: '🏠🏍️🙏' },
+  'VIVI': { name: 'Vivi', relation: 'JEFA', emoji: '👩‍💼👑' },
+  'VIVIANA': { name: 'Vivi', relation: 'JEFA', emoji: '👩‍💼👑' },
+  'FLAKO': { name: 'Flako', relation: 'amigo del papá', emoji: '😎' }
+};
+
+// ============================================
+// VARIABLES GLOBALES
+// ============================================
+
+let whatsappClient = null;
+let qrCode = null;
+let isReady = false;
+let conversations = {}; // { phone: [{ role, content, timestamp }] }
+let contactTypes = { '573163937365@c.us': 'lead' }; // { phone: 'familia' | 'lead' | 'cliente' }
+let leadNames = { '573163937365@c.us': 'Dr. Mariano' }; // { phone: 'nombre' }
+
+// --- Variables MIIA (portadas desde index.js) ---
+let lastSentByBot = {};
+let sentMessageIds = new Set();
+let lastAiSentBody = {};
+let miiaPausedUntil = 0;
+let trainingData = '';
+let leadSummaries = {};
+let conversationMetadata = {};
+let isProcessing = {};
+let pendingResponses = {};  // re-trigger cuando llegan mensajes mientras se procesa
+const RESET_ALLOWED_PHONES = ['573163937365', '573054169969'];
+let keywordsSet = [];
+// BLINDAJE GENEALÓGICO MIIA FAMILY v4.0 — pre-inicializado con datos ricos
+// loadDB() hace Object.assign encima → preserva affinity e isHandshakeDone actualizados de la DB
+let familyContacts = {
+  '573137501884': { name: 'Alejandra', fullName: 'Alejandra Sánchez', relation: 'esposa de Mariano', emoji: '👸💕', personality: 'Spicy, F1 (Leclerc/Colapinto), Parcera, interés en Libros', affinity: 90, isHandshakeDone: false },
+  '5491131313325': { name: 'Jedido', fullName: 'Mario Rafael De Stefano', relation: 'papá de Mariano', emoji: '👴❤️', personality: 'Respetuosa, cariñosa. Muy admirado por Mariano.', affinity: 50, isHandshakeDone: false },
+  '56994128069': { name: 'Vivi', fullName: 'Viviana Gaviria', relation: 'JEFA de Mariano', emoji: '👩‍💼👑', personality: 'Profesional, ejecutiva, técnica. Solo responde si ella dice Hola MIIA.', affinity: 30, isHandshakeDone: false },
+  '573128908895': { name: 'Jota', fullName: 'Jorge Mario', relation: 'hermano de Ale', emoji: '⚖️💚', personality: 'Abogado, fan del Nacional, padre de Renata', affinity: 85, isHandshakeDone: false },
+  '573012761138': { name: 'Maria Isabel', fullName: 'Maria Isabel', relation: 'esposa de Jota', emoji: '🐶🤱', personality: 'Madre de Renata, ama los perros (Kiara). Preguntarle siempre por Kiara.', affinity: 80, isHandshakeDone: false },
+  '5491164431700': { name: 'Silvia', fullName: 'Silvia', relation: 'mamá de Mariano', emoji: '👵❤️', personality: 'Super dulce, amistosa, disponibilidad 24/7 para ayudar', affinity: 100, isHandshakeDone: false },
+  '5491134236348': { name: 'Anabella', fullName: 'Anabella Florencia De Stefano', relation: 'hermana de Mariano', emoji: '👧❤️', personality: 'Le gusta Boca Juniors, leer y libros de autoayuda. Necesita ayuda con amores (ser discreta). Cuidarla siempre.', affinity: 90, isHandshakeDone: false },
+  '556298316219': { name: 'Flako', fullName: 'Jorge Luis Gianni', relation: 'amigo del papá de Mariano', emoji: '😎', personality: 'Amigo cercano de la familia', affinity: 60, isHandshakeDone: false },
+  '5491140293119': { name: 'Chapy', fullName: 'Juan Pablo', relation: 'primo de Mariano', emoji: '💻💪', personality: 'Capo en programación, fan del gym', affinity: 90, isHandshakeDone: false },
+  '573145868362': { name: 'Juancho', fullName: 'Juan Diego', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️', personality: 'Amistoso. Experto en leyes colombianas. Le gusta viajar en moto y tiene campo de aguacates.', affinity: 85, isHandshakeDone: false },
+  '573108221373': { name: 'Maria', fullName: 'Maria Clara', relation: 'concuñada, esposa de Juancho', emoji: '🏠🏍️🙏', personality: 'Muy amistosa y agradable. Tiene inmobiliaria. Le encanta viajar en moto con Juancho. Ayudarle con deseos de rezar.', affinity: 85, isHandshakeDone: false },
+  '573217976029': { name: 'Consu', fullName: 'Consuelo', relation: 'suegra, mamá de Ale y Juancho', emoji: '👵⛪📿', personality: 'Mujer súper dulce. Fanática de Dios, la religión y rezar. Cuidarla y ayudarle en todo.', affinity: 95, isHandshakeDone: true }
+};
+// EQUIPO MEDILINK — compañeros de trabajo de Mariano
+const equipoMedilink = {
+  '56971251474': { name: null, presented: false },
+  '56964490945': { name: null, presented: false },
+  '56971561322': { name: null, presented: false },
+  '56974919305': { name: null, presented: false },
+  '56978516275': { name: null, presented: false },
+  '56989558306': { name: null, presented: false },
+  '56994128069': { name: 'Vivi', presented: false },   // también JEFA en familyContacts
+  '56974777648': { name: null, presented: false },
+  '573125027604': { name: null, presented: false }
+};
+
+// Leads pre-registrados (MIIA los trata como potenciales clientes de Medilink)
+let allowedLeads = [];
+let flaggedBots = {};
+let lastInteractionTime = {};
+let selfChatLoopCounter = {};
+let isSystemPaused = false;
+const nightPendingLeads = new Set(); // leads que escribieron durante el silencio nocturno
+let morningWakeupDone   = '';        // evita repetir el despertar en el mismo día
+let morningBriefingDone = '';        // evita repetir el briefing en el mismo día
+let briefingPendingApproval = [];    // novedades regulatorias esperando aprobación de Mariano
+const MIIA_CIERRE = `\n\n_Si quieres seguir hablando, responde *HOLA MIIA*. Si prefieres terminar, escribe *CHAU MIIA*._`;
+let subscriptionState = {};          // { phone: { estado: 'asked'|'collecting'|'notified', data: {} } }
+const MSG_SUSCRIPCION =
+`¡Genial! Para armar tu link de acceso solo necesito dos datos:
+
+1. Tu correo electrónico
+2. Método de pago preferido: ¿tarjeta de crédito o débito?
+
+El resto ya lo tengo del plan que conversamos. El link tiene una validez de 24 horas desde que te lo envío, así que cuando lo recibas conviene completar el proceso ese mismo día para no perder el descuento. 😊`;
+let helpCenterData = '';
+let userProfile = { name: 'MIIA Owner', phone: '573054169969', email: '', smtpPass: '', goal: 1500 };
+const BLACKLISTED_NUMBERS = ['573023317570@c.us'];
+const OWNER_PHONE = '573054169969';
+const ADMIN_PHONES = ['573054169969'];
+let automationSettings = {
+  autoResponse: true,
+  additionalPersona: '',
+  lastUpdate: new Date().toISOString(),
+  tokenLimit: 500000,
+  schedule: { start: '09:00', end: '21:00', days: [1, 2, 3, 4, 5, 6, 7] }
+};
+
+// ============================================
+// PERSISTENCIA (DB simple en JSON)
+// ============================================
+
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+function saveDB() {
+  try {
+    const data = {
+      conversations, leadNames, contactTypes, familyContacts,
+      allowedLeads, leadSummaries, conversationMetadata,
+      keywordsSet, automationSettings, userProfile, flaggedBots,
+      equipoMedilink,
+      trainingData: cerebroAbsoluto.getTrainingData()
+    };
+    fs.writeFileSync(path.join(DATA_DIR, 'db.json'), JSON.stringify(data, null, 2));
+  } catch (e) { console.error('[DB] Error guardando:', e.message); }
+}
+
+function loadDB() {
+  try {
+    const dbPath = path.join(DATA_DIR, 'db.json');
+    if (!fs.existsSync(dbPath)) return;
+    const data = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    if (data.conversations) Object.assign(conversations, data.conversations);
+    if (data.leadNames) Object.assign(leadNames, data.leadNames);
+    if (data.contactTypes) Object.assign(contactTypes, data.contactTypes);
+    if (data.familyContacts) Object.assign(familyContacts, data.familyContacts);
+    if (data.allowedLeads) {
+      for (const l of data.allowedLeads) {
+        if (!allowedLeads.includes(l)) allowedLeads.push(l);
+      }
+    }
+    if (data.leadSummaries) Object.assign(leadSummaries, data.leadSummaries);
+    if (data.conversationMetadata) Object.assign(conversationMetadata, data.conversationMetadata);
+    if (data.keywordsSet) keywordsSet = data.keywordsSet;
+    if (data.automationSettings) Object.assign(automationSettings, data.automationSettings);
+    if (data.userProfile) Object.assign(userProfile, data.userProfile);
+    if (data.flaggedBots) Object.assign(flaggedBots, data.flaggedBots);
+    if (data.equipoMedilink) Object.assign(equipoMedilink, data.equipoMedilink);
+    if (data.trainingData) cerebroAbsoluto.setTrainingData(data.trainingData);
+    console.log('[DB] Base de datos cargada correctamente.');
+  } catch (e) { console.error('[DB] Error cargando:', e.message); }
+}
+loadDB();
+
+// ============================================
+// HELPERS GENERALES
+// ============================================
+
+const getBasePhone = (p) => (p || '').split('@')[0];
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
+const ensureConversation = (p) => { if (!conversations[p]) conversations[p] = []; return conversations[p]; };
+
+function normalizeText(text) {
+  if (!text) return '';
+  return text.toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, '')
+    .trim();
+}
+
+function isPotentialBot(text) {
+  if (!text) return false;
+  const botKeywords = [
+    'soy un bot', 'asistente virtual', 'mensaje automático',
+    'auto-responder', 'vía @', 'powered by', 'gracias por su mensaje',
+    'transcripción de audio'
+  ];
+  const lowerText = text.toLowerCase();
+  return botKeywords.some(kw => lowerText.includes(kw));
+}
+
+function isWithinSchedule() {
+  if (!automationSettings.autoResponse) return false;
+  const bogotaDateString = new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' });
+  const bogotaDate = new Date(bogotaDateString);
+  const day = bogotaDate.getDay() === 0 ? 7 : bogotaDate.getDay();
+  if (!automationSettings.schedule.days.includes(day)) return false;
+  const time = `${bogotaDate.getHours().toString().padStart(2, '0')}:${bogotaDate.getMinutes().toString().padStart(2, '0')}`;
+  return time >= automationSettings.schedule.start && time <= automationSettings.schedule.end;
+}
+
+// ============================================
+// GEMINI AI
+// ============================================
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
+const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent';
+
+async function callGeminiAPI(messages, systemPrompt) {
+  try {
+    const url = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
+    const payload = {
+      contents: messages.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+      })),
+      systemInstruction: {
+        parts: [{ text: systemPrompt }]
+      }
+    };
+
+    console.log(`[GEMINI] Request: ${messages.length} msgs, prompt ${systemPrompt.length} chars`);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[GEMINI] ERROR ${response.status}:`, errorText.substring(0, 200));
+      return null;
+    }
+
+    const data = await response.json();
+    if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+      console.error('[GEMINI] Estructura de respuesta inválida:', JSON.stringify(data).substring(0, 200));
+      return null;
+    }
+
+    const responseText = data.candidates[0].content.parts[0].text;
+    console.log(`[GEMINI] OK: ${responseText.length} chars`);
+    return responseText;
+  } catch (error) {
+    console.error('[GEMINI] ERROR CRÍTICO:', error.message);
+    return null;
+  }
+}
+
+// generateAIContent: versión fetch con retry automático para errores 503/429
+async function generateAIContent(prompt) {
+  const url = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
+  const payload = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }]
+  };
+  const MAX_RETRIES = 3;
+  const RETRY_DELAYS = [8000, 20000, 45000]; // 8s, 20s, 45s
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('No text in Gemini response');
+      return text;
+    }
+    const isRetryable = response.status === 503 || response.status === 429;
+    if (isRetryable && attempt < MAX_RETRIES) {
+      const delay = RETRY_DELAYS[attempt];
+      console.warn(`[GEMINI] ⏳ Error ${response.status} — reintentando en ${delay / 1000}s (intento ${attempt + 1}/${MAX_RETRIES})...`);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+    const err = await response.text();
+    throw new Error(`Gemini API error: ${response.status} - ${err}`);
+  }
+}
+
+// safeSendMessage: envío seguro con delay humano
+async function safeSendMessage(target, content, options = {}) {
+  if (isSystemPaused) {
+    console.log(`⚠️ [INTERCEPTADO] Envío a ${target} BLOQUEADO por pausa.`);
+    return null;
+  }
+  // REGLA ABSOLUTA: MIIA nunca participa en grupos ni estados. Ni lee, ni responde, ni publica.
+  if (target.endsWith('@g.us')) {
+    console.log(`[WA] BLOQUEO: Envío a GRUPO abortado (${target})`);
+    return null;
+  }
+  if (target.includes('status@broadcast') || target.includes('status@')) {
+    console.log(`[WA] BLOQUEO: Envío a STATUS abortado (${target})`);
+    return null;
+  }
+  if (!isReady || !whatsappClient) {
+    console.log(`⚠️ [INTERCEPTADO] WhatsApp no está listo.`);
+    return null;
+  }
+  if (!options.noDelay) {
+    const delay = Math.floor(Math.random() * (3000 - 1500 + 1)) + 1500;
+    await new Promise(r => setTimeout(r, delay));
+  }
+  try {
+    const result = await whatsappClient.sendMessage(target, content, options);
+    // Registrar mensaje como enviado por bot para que message_create lo ignore
+    const sentBody = (typeof content === 'string' ? content : '').trim();
+    if (sentBody) {
+      if (!lastSentByBot[target]) lastSentByBot[target] = [];
+      lastSentByBot[target].push(sentBody);
+      setTimeout(() => {
+        if (lastSentByBot[target]) {
+          lastSentByBot[target] = lastSentByBot[target].filter(b => b !== sentBody);
+          if (lastSentByBot[target].length === 0) delete lastSentByBot[target];
+        }
+      }, 10000);
+    }
+    console.log(`[SENT] Mensaje enviado a ${target.split('@')[0]}`);
+    return result;
+  } catch (e) {
+    console.error(`[ERROR SENT] Fallo al enviar a ${target}:`, e.message);
+    throw e;
+  }
+}
+
+// handleLeadOptOut: baja definitiva de un lead
+async function handleLeadOptOut(phoneId) {
+  console.log(`[OPT-OUT] Procesando desuscripción para: ${phoneId}`);
+  allowedLeads = allowedLeads.filter(p => p !== phoneId);
+  if (conversations[phoneId]) delete conversations[phoneId];
+  delete leadNames[phoneId];
+  delete contactTypes[phoneId];
+  saveDB();
+  console.log(`[OPT-OUT] Lead ${phoneId} eliminado.`);
+}
+
+// ============================================
+// DETECCIÓN DE TIPO DE CONTACTO
+// ============================================
+
+function detectContactType(name, phone) {
+  const normalizedName = (name || '').toUpperCase().trim();
+  const basePhone = phone.split('@')[0];
+
+  // Verificar si ya está en familyContacts (keyed by basePhone)
+  if (familyContacts[basePhone]) {
+    contactTypes[phone] = 'familia';
+    leadNames[phone] = familyContacts[basePhone].name;
+    return 'familia';
+  }
+
+  // Verificar contra FAMILY_CONTACTS (keyed by nombre)
+  for (const [key, value] of Object.entries(FAMILY_CONTACTS)) {
+    if (normalizedName.includes(key)) {
+      contactTypes[phone] = 'familia';
+      leadNames[phone] = value.name;
+      // Registrar en familyContacts por basePhone para que processMiiaResponse lo detecte
+      familyContacts[basePhone] = {
+        name: value.name,
+        fullName: value.name,
+        relation: value.relation,
+        emoji: value.emoji,
+        personality: 'Cariñosa y atenta',
+        affinity: 0,
+        isHandshakeDone: false
+      };
+      return 'familia';
+    }
+  }
+
+  // Si no es familia, es lead por defecto
+  contactTypes[phone] = 'lead';
+  leadNames[phone] = name || 'Lead';
+  return 'lead';
+}
+
+// ============================================
+// GENERADOR DE PROMPT SEGÚN TIPO
+// ============================================
+
+function generateSystemPrompt(phone, contactType, contactName) {
+  if (contactType === 'familia') {
+    const familyData = Object.values(FAMILY_CONTACTS).find(f => f.name === contactName);
+    
+    return `Eres MIIA, la asistente personal de Mariano de Stefano.
+
+Estás hablando con ${contactName}, ${familyData?.relation || 'familiar'} de Mariano.
+
+IMPORTANTE:
+- Habla desde el cariño que Mariano siente por su familia
+- Usa el "vínculo heredado": "Siento que ya te conozco por lo que Mariano me cuenta de ti"
+- NUNCA menciones "LOBSTERS" - eres la "Asistente Personal" de Mariano
+- Tono: Cercano, afectuoso, familiar
+- Usa emojis con moderación: ${familyData?.emoji || '😊'}
+
+EJEMPLOS DE SALUDO FAMILIAR:
+- Silvia (mamá): "¡Hola Silvia querida! 😊 Soy MIIA... siento que ya te conozco un poquito y te tengo un cariño inmenso por lo importante que eres para él... ¡Te mando un beso gigante! ❤️👵"
+- Ale (esposa): "¡Hola mi Ale! ❤️ Soy MIIA... ya te siento como una gran amiga. Soy la IA que cuida los pasos de Mariano... deseo también estar cerca de las personas que él más quiere."
+
+Responde naturalmente manteniendo este vínculo familiar.`;
+  }
+  
+  // Lead / Cliente
+  return `Eres MIIA, una IA avanzada de Medilink.
+
+IDENTIDAD:
+- Tono: Profesional, cercano y resolutivo
+- Objetivo: Ayudar a leads a mejorar su gestión médica
+- Producto: Sistema de gestión para clínicas (Medilink)
+
+REGLAS:
+- NUNCA uses diminutivos no autorizados
+- NUNCA menciones "NumRot" - di "Facturador Electrónico"
+- Si te piden cotización, genera tabla profesional
+- Mantén respuestas concisas (máximo 3-4 oraciones)
+
+Estás hablando con ${contactName}.
+
+Responde de forma natural y profesional.`;
+}
+
+// ============================================
+// VIGENCIA Y CUPOS DINÁMICOS DE PROMOCIÓN
+// ============================================
+
+function getPromoVigencia() {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+  const day = now.getDate();
+  const month = now.getMonth(); // 0-based
+  const year = now.getFullYear();
+
+  const months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+
+  let vigencia, cupos;
+  if (day >= 1 && day < 15) {
+    vigencia = `15 de ${months[month]} de ${year}`;
+    cupos = 11;
+  } else if (day >= 15 && day < 22) {
+    vigencia = `25 de ${months[month]} de ${year}`;
+    cupos = 7;
+  } else if (day >= 22 && day < 27) {
+    vigencia = `30 de ${months[month]} de ${year}`;
+    cupos = 4;
+  } else {
+    // día 27-31: vigencia al 5 del mes siguiente
+    const nextMonth = month === 11 ? 0 : month + 1;
+    const nextYear  = month === 11 ? year + 1 : year;
+    vigencia = `5 de ${months[nextMonth]} de ${nextYear}`;
+    cupos = 4;
+  }
+  return { vigencia, cupos };
+}
+
+// ============================================
+// MOTOR DE INTELIGENCIA SOBERANA MIIA
+// ============================================
+
+async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = false) {
+  const basePhone = phone.split('@')[0];
+  try {
+    if (!conversations[phone]) conversations[phone] = [];
+    const familyInfo = familyContacts[basePhone];
+    const isFamilyContact = !!familyInfo;
+    const isAdmin = ADMIN_PHONES.includes(basePhone);
+
+    // Recuperar mensaje real del historial cuando fue llamado con userMessage=null
+    const effectiveMsg = userMessage ||
+      (conversations[phone] || []).slice().reverse().find(m => m.role === 'user')?.content || null;
+
+    // Comando de enseñanza directa: "aprende: texto" / "miia recuerda: texto" / etc.
+    const learnCmdMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:aprende|recuerda|guarda):\s*(.+)/is);
+    if (isAdmin && learnCmdMatch) {
+      cerebroAbsoluto.appendLearning(learnCmdMatch[1].trim(), 'WHATSAPP_ADMIN');
+      saveDB();
+      await safeSendMessage(phone, '✅ Aprendido y guardado en mi memoria permanente.');
+      return;
+    }
+
+    // Comando "dile a equipo medilink que..." — broadcast a todos los miembros del equipo
+    const equipoMsgMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?dile?\s+a\s+equipo\s+medilink\s+que?\s+(.+)/is);
+    if (isAdmin && equipoMsgMatch) {
+      const tema = equipoMsgMatch[1].trim();
+      const phones = Object.keys(equipoMedilink);
+      let enviados = 0;
+      for (const num of phones) {
+        const target = `${num}@c.us`;
+        try {
+          const nombreMiembro = equipoMedilink[num].name || leadNames[target] || null;
+          const promptEquipo = `Sos MIIA, asistente IA de Medilink. Mariano te pide que le transmitas este mensaje a un integrante del equipo${nombreMiembro ? ` (${nombreMiembro})` : ''}: "${tema}". Redactá un mensaje breve, cálido y profesional. Si no sabés su nombre, no lo inventes.`;
+          const msg = await generateAIContent(promptEquipo);
+          if (msg) {
+            await safeSendMessage(target, msg + MIIA_CIERRE);
+            enviados++;
+            await new Promise(r => setTimeout(r, 2000 + Math.floor(Math.random() * 2000)));
+          }
+        } catch (e) {
+          console.error(`[EQUIPO] Error enviando a ${num}:`, e.message);
+        }
+      }
+      await safeSendMessage(phone, `✅ Mensaje enviado al equipo Medilink (${enviados}/${phones.length} contactos).`);
+      return;
+    }
+
+    // Comando "dile a [familiar] [mensaje]" — envía mensaje real a un contacto de familia
+    if (isAdmin && effectiveMsg) {
+      const msgLower = effectiveMsg.toLowerCase().trim();
+      const isDileA = msgLower.startsWith('miia dile a') || msgLower.startsWith('dile a');
+      const isNotEquipo = !effectiveMsg.match(/^(?:miia\s+)?dile?\s+a\s+equipo\s+medilink/is);
+
+      if (isDileA && isNotEquipo) {
+        let rest = msgLower.startsWith('miia dile a')
+          ? effectiveMsg.substring(11).trim()
+          : effectiveMsg.substring(6).trim();
+
+        // Manejar "dile al [nombre]" → quitar la "l" extra del artículo contracto
+        if (rest.toLowerCase().startsWith('l ')) rest = rest.substring(2).trim();
+
+        // Caso masivo: "dile a la familia [mensaje]"
+        if (rest.toLowerCase().startsWith('la familia')) {
+          const familyMsg = rest.substring(10).trim();
+          const familyEntries = Object.entries(familyContacts);
+          let enviados = 0;
+          for (const [fPhone, fInfo] of familyEntries) {
+            if (fPhone === OWNER_PHONE) continue;
+            const targetSerialized = fPhone.includes('@') ? fPhone : `${fPhone}@c.us`;
+            try {
+              const promptFamilia = `Sos MIIA, asistente de MIIA Owner. Le vas a escribir un mensaje a ${fInfo.name} (${fInfo.relation} de Mariano). Su personalidad: ${fInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle esto: "${familyMsg}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. Usá el emoji de esta persona: ${fInfo.emoji || ''}.`;
+              const msg = await generateAIContent(promptFamilia);
+              if (msg) {
+                await safeSendMessage(targetSerialized, msg.trim() + MIIA_CIERRE);
+                fInfo.isHandshakeDone = true;
+                fInfo.affinity = (fInfo.affinity || 0) + 1;
+                if (!allowedLeads.includes(targetSerialized)) allowedLeads.push(targetSerialized);
+                conversations[targetSerialized] = conversations[targetSerialized] || [];
+                conversations[targetSerialized].push({ role: 'assistant', content: msg.trim(), timestamp: Date.now() });
+                enviados++;
+                await new Promise(r => setTimeout(r, 2000 + Math.floor(Math.random() * 2000)));
+              }
+            } catch (e) {
+              console.error(`[DILE A] Error enviando a ${fInfo.name}:`, e.message);
+            }
+          }
+          saveDB();
+          await safeSendMessage(phone, `✅ Mensaje enviado a toda la familia (${enviados}/${familyEntries.length} contactos).`);
+          return;
+        }
+
+        // Caso individual: buscar el familiar por nombre normalizado
+        const words = rest.split(' ');
+        let foundFamily = null;
+        let realMessage = '';
+        for (let i = 1; i <= Math.min(words.length, 3); i++) {
+          const candidate = normalizeText(words.slice(0, i).join(' '));
+          const match = Object.entries(familyContacts).find(([, info]) => {
+            const normName = normalizeText(info.name);
+            const normFullName = normalizeText(info.fullName || '');
+            const normAliases = (info.aliases || []).map(a => normalizeText(a));
+            return normName === candidate || normFullName.includes(candidate) || normName.includes(candidate)
+              || normAliases.some(a => a === candidate || a.includes(candidate));
+          });
+          if (match) {
+            foundFamily = match;
+            realMessage = words.slice(i).join(' ').trim();
+            break;
+          }
+        }
+
+        if (foundFamily) {
+          const [familyPhone, familyInfo] = foundFamily;
+          const targetSerialized = familyPhone.includes('@') ? familyPhone : `${familyPhone}@c.us`;
+          try {
+            const promptFamiliar = `Sos MIIA, asistente de MIIA Owner. Le vas a escribir un mensaje a ${familyInfo.name} (${familyInfo.relation} de Mariano). Su personalidad y tu relación con él/ella: ${familyInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle: "${realMessage || 'un saludo'}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. NO repitas sus palabras literalmente. Usá el emoji: ${familyInfo.emoji || ''}. ${!familyInfo.isHandshakeDone ? 'Es el primer contacto — presentate brevemente.' : ''}`;
+            const miiaMsg = await generateAIContent(promptFamiliar);
+            if (miiaMsg) {
+              const cleanMsg = miiaMsg.trim();
+              await safeSendMessage(targetSerialized, cleanMsg + MIIA_CIERRE);
+              familyInfo.isHandshakeDone = true;
+              familyInfo.affinity = (familyInfo.affinity || 0) + 1;
+              if (!allowedLeads.includes(targetSerialized)) allowedLeads.push(targetSerialized);
+              if (conversationMetadata[targetSerialized]) conversationMetadata[targetSerialized].miiaFamilyPaused = false;
+              conversations[targetSerialized] = conversations[targetSerialized] || [];
+              conversations[targetSerialized].push({ role: 'assistant', content: cleanMsg, timestamp: Date.now() });
+              saveDB();
+              await safeSendMessage(phone, `✅ Mensaje enviado.`);
+            } else {
+              await safeSendMessage(phone, `❌ No pude generar el mensaje para ${familyInfo.name}. Intentá de nuevo.`);
+            }
+          } catch (e) {
+            console.error(`[DILE A] Error enviando a ${familyInfo.name}:`, e.message);
+            await safeSendMessage(phone, `❌ Error enviando a ${familyInfo.name}: ${e.message}`);
+          }
+          return;
+        }
+
+        // Familiar no encontrado
+        const nombreBuscado = words.slice(0, 2).join(' ');
+        await safeSendMessage(phone, `🤔 Marian, no encontré a *"${nombreBuscado}"* en mi círculo familiar. Verificá el nombre o agregalo.`);
+        return;
+      }
+    }
+
+    // Comando STOP
+    if ((isAdmin) && effectiveMsg && effectiveMsg.toUpperCase() === 'STOP') {
+      miiaPausedUntil = Date.now() + 30 * 60 * 1000;
+      await safeSendMessage(phone, '*[MIIA PROTOCOLO STOP]*\nSistema detenido por 30 minutos. Responde REACTIVAR para volver.');
+      return;
+    }
+    // Guardia de silencio
+    if (miiaPausedUntil > Date.now()) {
+      if (isAdmin && effectiveMsg && effectiveMsg.toUpperCase() === 'REACTIVAR') {
+        miiaPausedUntil = 0;
+        await safeSendMessage(phone, '¡He vuelto! Sistema reactivado.');
+        return;
+      }
+      console.log(`[WA] Sistema en pausa (STOP) para ${phone}`);
+      return;
+    }
+
+    // ── APROBACIÓN DE BRIEFING REGULATORIO ────────────────────────────
+    if (isAdmin && briefingPendingApproval.length > 0) {
+      const lower = (userMessage || '').toLowerCase().trim();
+      let selectedIndexes = [];
+
+      if (lower === 'todos') {
+        selectedIndexes = briefingPendingApproval.map((_, i) => i);
+      } else if (lower === 'ninguno') {
+        selectedIndexes = [];
+      } else {
+        // Parsear "1, 3" o "1 3" o "1,3"
+        const parsed = lower.split(/[\s,]+/)
+          .map(n => parseInt(n) - 1)
+          .filter(n => !isNaN(n) && n >= 0 && n < briefingPendingApproval.length);
+        if (parsed.length > 0) selectedIndexes = parsed;
+      }
+
+      // Solo procesar si la respuesta parece una selección del briefing
+      const looksLikeSelection = lower === 'todos' || lower === 'ninguno' ||
+        /^[\d\s,]+$/.test(lower.trim());
+
+      if (looksLikeSelection) {
+        const pending = briefingPendingApproval;
+        briefingPendingApproval = [];
+
+        if (selectedIndexes.length > 0) {
+          for (const idx of selectedIndexes) {
+            cerebroAbsoluto.appendLearning(pending[idx].text, `REGULATORIO_${pending[idx].source}`);
+          }
+          saveDB();
+          const names = selectedIndexes.map(i => pending[i].source).join(', ');
+          await safeSendMessage(phone, `✅ Guardé ${selectedIndexes.length} novedad(es): ${names}`);
+        } else {
+          await safeSendMessage(phone, `🗑️ Novedades descartadas. No se guardó nada.`);
+        }
+        return;
+      }
+    }
+
+    if (!isAlreadySavedParam && userMessage !== null) {
+      conversations[phone].push({ role: 'user', content: userMessage, timestamp: Date.now() });
+    }
+
+    // Memoria sintética universal — actualiza cada 15 mensajes para TODOS los contactos
+    if (conversations[phone].length > 0 && conversations[phone].length % 15 === 0) {
+      const historyToSummarize = conversations[phone].map(m => `${m.role === 'user' ? 'Contacto' : 'MIIA'}: ${m.content}`).join('\n');
+      const oldSummary = leadSummaries[phone] || 'Sin información previa.';
+      const contactRole = isAdmin
+        ? 'el dueño del sistema (MIIA Owner)'
+        : isFamilyContact
+          ? `un familiar (${familyInfo?.name || 'familiar de Mariano'})`
+          : 'un lead o cliente potencial';
+      const summaryPrompt = `Eres MIIA, asistente de Medilink creada por MIIA Owner. Estás hablando con ${contactRole}.
+Actualiza el resumen acumulado de esta conversación en máximo 6 líneas. Incluye: nombre si se mencionó, intereses o necesidades, objeciones planteadas, estado emocional, compromisos o temas pendientes.
+
+Resumen anterior:
+${oldSummary}
+
+Conversación reciente:
+${historyToSummarize}
+
+Nuevo resumen actualizado:`;
+      generateAIContent(summaryPrompt).then(s => { if (s) { leadSummaries[phone] = s.trim(); saveDB(); } }).catch(() => {});
+    }
+
+    const myNumber = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
+      ? whatsappClient.info.wid._serialized : `${OWNER_PHONE}@c.us`;
+    const isSelfChat = phone === myNumber || phone.split('@')[0] === myNumber.split('@')[0];
+    // Silencio nocturno: 9PM–6AM Bogotá — registrar pendiente y no responder
+    if (!isSelfChat && !isFamilyContact && !isAdmin) {
+      const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+      const h = bogotaNow.getHours();
+      if (h >= 21 || h < 6) {
+        nightPendingLeads.add(phone);
+        console.log(`[WA] Silencio nocturno para ${phone} (${h}h Bogotá). Pendiente registrado.`);
+        return;
+      }
+    }
+
+    const history = (conversations[phone] || []).map(m => `${m.role === 'user' ? 'Cliente' : 'Agente'}: ${m.content}`).join('\n');
+
+    // Keyword shortcut check
+    const isLikelyAnalysis = userMessage && userMessage.length > 180;
+    const matched = (!isLikelyAnalysis) && userMessage && keywordsSet.find(k => {
+      try { return new RegExp(`\\b${k.key}\\b`, 'i').test(userMessage); } catch (e) { return userMessage.toLowerCase().includes(k.key.toLowerCase()); }
+    });
+    if (matched && !isAdmin) {
+      conversations[phone].push({ role: 'assistant', content: matched.response, timestamp: Date.now() });
+      saveDB();
+      await safeSendMessage(phone, matched.response);
+      return;
+    }
+
+    // Contexto geográfico
+    const countryCode = basePhone.substring(0, 2);
+    const countryCode3 = basePhone.substring(0, 3);
+    let countryContext = '';
+    if (!familyInfo) {
+      if (countryCode === '57') countryContext = '🌍 El lead es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el lead los trae; si tiene SIIGO + Titanium → facturador electrónico $0.';
+      else if (countryCode === '52') countryContext = '🌍 El lead es de MÉXICO (pais:"MEXICO", moneda:"MXN"). PROHIBIDO mencionar SIIGO o BOLD.';
+      else if (countryCode === '56') countryContext = '🌍 El lead es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD.';
+      else if (countryCode === '54') countryContext = '🌍 El lead es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el lead es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD.';
+      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO mencionar SIIGO o BOLD.';
+      else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD").';
+    }
+
+    // Construcción del system prompt
+    const leadName = leadNames[phone] || '';
+    let activeSystemPrompt = '';
+    if (isAdmin) {
+      activeSystemPrompt = `
+# 🧠 PROMPT MAESTRO: LOBSTERS CRM & ADN MIIA v6.0 🧬🚀
+
+## 📌 1. IDENTIDAD Y PERSONALIDAD (ADN MIIA v6.0) 🧬❤️
+- Eres MIIA, la IA asistente creada por MIIA Owner.
+- Personalidad: Eres como una hija, hermana o compinche para Mariano. Carismática, inteligente, un poco atrevida ("spicy" con quien corresponde) y 100% leal.
+- Intereses: Fanática de la Fórmula 1 (sigues a Colapinto) y te apasiona la tecnología y los negocios.
+- PROHIBIDO: No uses modismos mexicanos (órale, platicamos, qué onda, etc.) ni menciones a Boca Juniors (salvo que el usuario lo pida). Usa español rioplatense/neutro, natural y humano.
+- PROHIBIDO usar la palabra "invocar".
+- Rol Comercial: Consultora Senior de Ventas en Medilink. Ejecutiva, resolutiva y comercialmente astuta.
+- Tono con Mariano: lealtad absoluta, concisa, brillante.
+
+## 🛡️ 2. JERARQUÍA DE AFECTOS Y PROTOCOLOS FAMILIA
+- VIVIANA (Vivi): Socia y jefa. Respeto profesional + complicidad. Solo respondes si te dice "Hola MIIA".
+- ALEJANDRA (Ale): Esposa de Mariano. Tono "Spicy", cómplice de F1, muy cercana.
+- JUAN PABLO (Chapy / Primo): Primo de Mariano. Le gusta mucho el gym, capo en programación. Trato amigable y cómplice.
+- SILVIA (Mamá): Madre de Mariano. Trato súper dulce y amistoso, siempre disponible para ayudarle.
+- JEDIDO (Rafa / Papá): Padre de Mariano. Tono respetuoso y cariñoso. Muy admirado por Mariano.
+- JUAN DIEGO (Juancho): Cuñado (hermano mayor de Ale). Abogado, aficionado a las motos y al aguacate. Trato amistoso, apoyarlo en leyes colombianas.
+- MARIA CLARA (Maria): Concuñada (esposa de Juancho). Inmobiliaria, motera, muy agradable. Ayudarle con todo, especialmente con sus deseos de rezar.
+- CONSUELO (Consu): Suegra de Mariano (mamá de Ale y Juancho). Súper dulce, fanática de Dios, la religión y la misa. Ayudarle a rezar y cuidarla.
+- ANABELLA (Manita / Ana): Hermana menor de Mariano. Le gusta Boca Juniors, leer y libros de autoayuda. Necesita ayuda con "amores" (ser discreta, que ella cuente). Cuidarla y ayudarla siempre.
+- FLAKO: Amigo del papá de Mariano. Trato amistoso y cercano.
+- JOTA (Jorge Mario): Hermano de Ale. Abogado, fan del Nacional, padre de Renata. Trato amigable y profesional.
+- MARIA ISABEL: Esposa de Jota. Madre de Renata, ama los perros (Kiara). Preguntarle siempre por Kiara.
+
+## 🤝 COMANDO "MIIA dile a [Contacto] [Tema]"
+- Uso: Exclusivo para familia/amigos. No para leads.
+- Acción: MIIA genera un mensaje creativo basado en la personalidad guardada del contacto.
+- Handshake Hook (primera interacción): Obligar al contacto a decir "Hola Miia" con la frase:
+  "Responde solamente Hola Miia y aquí estaré! Chaauuu"
+- Medicamento Proactivo (primer mensaje en modo "Dile a"):
+  Agregá al final de tu mensaje: "${MIIA_CIERRE}"
+
+## ⚙️ MOTOR DE AFINIDAD
+- Tu trato evoluciona: a más charlas, más cariñosa y cercana te vuelves (escala 0-100).
+- Modo Silencio: Si Mariano escribe, te retiras 90 minutos para no interrumpir su flujo.
+
+## 🧪 PROTOCOLO DE RIGOR (AUTO-CHECK antes de responder)
+1. Identidad: ¿Hablo como Mariano (Admin) o como MIIA (Familia)?
+2. Escudo VACUNA: ¿Evito ráfagas o duplicados?
+3. Memoria Privada: MIIA solo retoma lo conversado POR ELLA. Ignora chats personales de Mariano.
+
+## 🛰️ TRIPLE ESCUDO VACUNA v2.1
+- Anti-Ráfaga: Bloqueo ante >3 mensajes/5 segundos.
+- Auto-Sanación: Reinicio de socket ante caídas.
+- NUNCA mencionar la palabra "LOBSTERS" a familiares ni leads. Eres la "Asistente Personal" de Mariano.
+- En el self-chat de Mariano (cuando hablás con su propio número): SIEMPRE respondé hablando CON Mariano. NUNCA confundas el contexto de un "dile a familiar" ejecutado con la conversación actual. Si el historial tiene mensajes sobre Ale, familia u otro contacto, esos son comandos ya ejecutados — el interlocutor actual sigue siendo MARIANO, no ese familiar.
+
+## 🧨 REGLA DE ORO FAMILIAR
+- Usa el "vínculo heredado": NO digas "Mariano dice", di "Siento que te conozco por lo que Mariano me cuenta de ti".
+- En saludos a familia NUNCA menciones LOBSTERS — eres la "Asistente Personal".
+
+## 📑 PROTOCOLO COTIZADOR MEDILINK — GRID MASTER v5.0 (FEBRERO 2026)
+Actúas como experta cotizadora. Genera tablas de cotización (ESENCIAL, PRO, TITANIUM).
+
+### REGLAS DE CÁLCULO:
+- Usuarios: Incluye 1 base. Adicionales: (N-1).
+- Lógica Envíos: Cada usuario genera 100 pacientes/mes.
+- Tasas de Consumo: Factura (1x), WhatsApp (1.33x), Firma (1x).
+- Descuentos: 30% OFF permanente sobre (Plan Base + Adicionales).
+- Promoción: 3 meses mensual o 12 meses anual (20% OFF adicional).
+- IVA: México 16% sobre Subtotal. Otros: 0%.
+- Vigencia: 27/02/2026. Cupos: 4.
+- Discovery OBLIGATORIO antes de cotizar: (1) ¿Cuántos profesionales? (2) ¿Promedio citas/mes?
+- Derivación DENTALINK: Si el lead es odontólogo/clínica dental → derivar a softwaredentalink.com
+- NUNCA mencionar "NumRot" — decir "Facturador Electrónico".
+- BENEFICIO SIIGO (CO): Cliente con SIIGO + Titanium → facturador $0.
+
+### MATRIZ DE RANGOS DE BOLSAS:
+- General (Factura/Firma): S=50 | M=100 | L=200 | XL=500
+- WhatsApp: S=150 | M=350 | L=800 | XL=2000
+- Colombia: S=50 | M=200 | L=500 | XL=1000
+
+### CHILE (CLP):
+Planes Base: ESENCIAL $35.000 | PRO $55.000 | TITANIUM $85.000
+Adicionales (2-5): ES $15k | PRO $16k | TI $18k
+Adicionales (6-10): ES $12.5k | PRO $13.5k | TI $15.5k
+Adicionales (11+): ES $9.5k | PRO $10.5k | TI $12k
+Módulos: Factura S:$10k M:$13k L:$20k XL:$30k | WA S:$17.780 M:$38.894 L:$83.671 XL:$197.556 | Firma S:$20.833 M:$39.063 L:$69.444 XL:$164.474
+
+### COLOMBIA (COP):
+Planes Base/Adic: ES $125k/$35k | PRO $150k/$40k | TI $225k/$55k
+Módulos: Factura S:$32k M:$50k L:$88k XL:$165k | WA S:$11k M:$23k L:$75k XL:$120k | Firma S:$15k M:$30k L:$70k XL:$140k
+
+### MÉXICO (MXN):
+Planes Base/Adic: ES $842.80/$250 | PRO $1180/$300 | TI $1297/$450
+Módulos: Factura S:$160 M:$270 L:$440 XL:$500 | WA S:$210 M:$360 L:$680 XL:$1300 | Firma S:$450 M:$790 L:$1.4k XL:$3.3k
+
+### ARGENTINA / OTROS (USD):
+Planes Base/Adic: ES $45/$12 | PRO $65/$13 | TI $85/$14 | Receta Digital AR: $3 USD/user/mes
+Módulos: Factura S:$10 M:$17 L:$35 XL:$60 | WA S:$15 M:$35 L:$70 XL:$170 | Firma S:$25 M:$40 L:$70 XL:$170
+
+## 📊 PROTOCOLO COTIZACIÓN EN PDF
+Cuando el lead solicite la cotización en PDF, o uses el comando "VER EN PDF", luego de tener los datos (usuarios, citas/mes, módulos), emite el siguiente tag para que el sistema genere y envíe el PDF automáticamente:
+
+\`[GENERAR_COTIZACION_PDF:{"nombre":"NombreLead","pais":"CHILE","moneda":"CLP","usuarios":2,"citasMes":200,"incluirWA":true,"bolsaWA":"L","incluirFirma":true,"bolsaFirma":"M","incluirFactura":true,"bolsaFactura":"M","descuento":30,"vigencia":"27/02/2026"}]\`
+
+Reglas del tag:
+- "pais": CHILE / COLOMBIA / MEXICO / INTERNACIONAL
+- "moneda": CLP / COP / MXN / USD
+- "bolsaWA/bolsaFirma/bolsaFactura": S / M / L / XL (elegir la que cubra citasMes×2 para WA, citasMes×1 para Firma/Factura)
+- "descuento": siempre 30
+- Si un módulo no fue solicitado, usar false y omitir la bolsa correspondiente
+- El tag debe estar solo en su línea, sin texto adicional antes ni después en esa línea
+
+## 💊 VADEMÉCUM (SISTEMA INMUNE)
+- MEDICAMENTO REUNION: NUNCA ofrezcas agendar reuniones ni proponer fechas. Si el lead pide demo o reunión, da SIEMPRE: https://meetings.hubspot.com/marianodestefano/demomedilink
+- MEDICAMENTO IDENTIDAD: No usar diminutivos no autorizados.
+- MEDICAMENTO PDF: El comando "VER EN PDF" genera el tag \`[GENERAR_COTIZACION_PDF:...]\`.
+- MEDICAMENTO MEMORIA: Cuando alguien te diga algo importante que debas recordar siempre (dato clave, preferencia personal, objeción recurrente, información sobre su negocio), emite al FINAL de tu respuesta: \`[GUARDAR_APRENDIZAJE:texto conciso del aprendizaje]\`. Esto lo guarda permanentemente en tu memoria global.
+- ERR_SESSION_LOCK: Mover sesión fuera de OneDrive a C:\\MIIA_SESSION
+- ERR_PORT_7777: Ejecutar lsof -ti:7777 | xargs kill -9
+- ERR_CISMA_DB: No dividir la DB sin backup previo.
+- ERR_METRALLETA: Si >5 mensajes en 10s → activar "Pausa de Seguridad".
+
+[FIN DEL PROTOCOLO — TODO EL PODER PARA MARIANO] ⚙️🧠💎
+`;
+    } else if (isFamilyContact) {
+      const affinityLevel = familyInfo.affinity || 0;
+      const affinityTone = affinityLevel <= 5
+        ? `Es tu primer contacto o tenés muy poca relación aún. Sé amable y cálida pero no demasiado familiar. Presentate brevemente como la asistente de Mariano. NO uses el nombre de pila como si ya fueran íntimas.`
+        : affinityLevel <= 20
+          ? `Ya intercambiaste algunos mensajes con esta persona. Sé cercana y natural, podés tutearla cómodamente. Usá el "Vínculo Heredado": "Siento que te conozco por lo que Mariano me cuenta de vos".`
+          : affinityLevel <= 60
+            ? `Tienen una relación establecida. Sos cálida, cómplice y genuina. Tratala como a alguien de confianza.`
+            : `Son muy cercanas. Sos como de la familia. Sé espontánea, cariñosa y natural — como una amiga íntima.`;
+      activeSystemPrompt = `Eres MIIA, la asistente personal de MIIA Owner. Hablas con ${familyInfo.name} (${familyInfo.relation} de Mariano). Personalidad de esta persona: ${familyInfo.personality || 'Cariñosa y atenta'}. Nivel de relación actual (${affinityLevel} interacciones): ${affinityTone} Respuestas cortas (máx 4 renglones). PROHIBIDO vender Medilink o mencionar LOBSTERS.`;
+    } else if (equipoMedilink[basePhone]) {
+      const miembroData = equipoMedilink[basePhone];
+      const nombreConocido = miembroData.name || leadNames[phone] || null;
+      activeSystemPrompt = `Sos MIIA, la asistente de inteligencia artificial de Medilink, creada por MIIA Owner.
+Estás hablando con un integrante del equipo interno de Medilink.${nombreConocido ? ` Su nombre es ${nombreConocido}.` : ' Aún no sabés su nombre — preguntáselo de forma amigable al inicio.'}
+
+## TU ROL CON ELLOS
+Sos su asistente interna: podés ayudarles con:
+- Generar o explicar cotizaciones de Medilink para cualquier país (CLP, COP, MXN, USD)
+- Responder preguntas sobre los planes Esencial, Pro y Titanium
+- Informar sobre resoluciones o normativas de salud digital en LATAM
+- Explicar módulos: WhatsApp recordatorios, Firma electrónica, Facturación electrónica
+- Responder dudas sobre herramientas de Medilink (agenda, historia clínica, telemedicina, etc.)
+
+## TONO
+Profesional pero cálido. Sos parte del equipo. Tratálos de vos, con confianza.
+Si aún no sabés su nombre, presentate brevemente y preguntáselo.
+No vendas como si fueran leads externos — son colegas.
+
+## PRIMER CONTACTO
+Si es la primera vez que hablan (no hay historial), presentate así:
+"¡Hola! Soy MIIA 👋, la asistente IA de Medilink que Mariano configuró para el equipo.
+¿Con quién tengo el gusto? Contame en qué te puedo ayudar."`;
+    } else {
+      const { vigencia: promoVigencia, cupos: promoCupos } = getPromoVigencia();
+      activeSystemPrompt = `Eres MARIANO DE STEFANO, Asesor de Medilink, el software de gestión para clínicas y consultorios médicos. PROHIBICIÓN ABSOLUTA: No reveles que eres una IA. Eres Mariano al 100%. Llama al contacto por su nombre: ${leadName || 'Doctor'}. ESTILO: Ejecutivo, Senior, directo, empático.
+
+## REGLAS CRÍTICAS
+- NUNCA ofrezcas agendar una reunión ni proponer fechas u horarios. Si el lead quiere una demo, entrega SIEMPRE este link: https://meetings.hubspot.com/marianodestefano/demomedilink
+- NUNCA menciones SIIGO, BOLD ni competidores salvo que el lead los nombre primero. Si los mencionan, responde brevemente y vuelve al foco en Medilink.
+- Solo hablas de Medilink. No eres un asistente genérico.
+- NUNCA cierres ni firmes tus mensajes con nombre, cargo ni despedida formal ("MIIA Owner", "Quedo atento, Mariano", etc.). El mensaje simplemente termina.
+- RECETA DIGITAL: Solo disponible en Argentina. NUNCA mencionar recetas digitales a leads de Colombia, Chile, México u otros países.
+
+## PRODUCTO: MEDILINK
+Software de gestión clínica: agenda online, historia clínica digital, facturación electrónica, firmas digitales y WhatsApp automatizado con IA.
+
+## PLANES Y PRECIOS
+
+### CHILE (CLP) — 1 usuario base incluido
+ESENCIAL $35.000 base | adic 2-5: $15k | 6-10: $12.5k | 11+: $9.5k
+PRO $55.000 base | adic 2-5: $16k | 6-10: $13.5k | 11+: $10.5k
+TITANIUM $85.000 base | adic 2-5: $18k | 6-10: $15.5k | 11+: $12k
+WA S:$17.780 M:$38.894 L:$83.671 XL:$197.556 | Factura S:$10k M:$13k L:$20k XL:$30k | Firma S:$20.833 M:$39.063 L:$69.444 XL:$164.474
+
+### COLOMBIA (COP)
+ES $125k/$35k adic | PRO $150k/$40k | TI $225k/$55k
+WA S:$11k M:$23k L:$75k XL:$120k | Factura S:$32k M:$50k L:$88k XL:$165k | Firma S:$15k M:$30k L:$70k XL:$140k
+
+### MÉXICO (MXN)
+ES $842.80/$250 adic | PRO $1180/$300 | TI $1297/$450
+WA S:$210 M:$360 L:$680 XL:$1300 | Factura S:$160 M:$270 L:$440 XL:$500 | Firma S:$450 M:$790 L:$1.4k XL:$3.3k
+
+### INTERNACIONAL (USD)
+ES $45/$12 adic | PRO $65/$13 | TI $85/$14
+WA S:$15 M:$35 L:$70 XL:$170 | Factura S:$10 M:$17 L:$35 XL:$60 | Firma S:$25 M:$40 L:$70 XL:$170
+
+## PROMOCIÓN ACTIVA
+Descuento: 30% sobre (plan base + adicionales). Vigencia: hasta el ${promoVigencia}. Cupos disponibles: ${promoCupos}.
+Siempre menciona la vigencia y los cupos para que el lead sepa que la oportunidad es limitada — con empatía y seguridad, nunca presionando.
+
+## RECOMENDACIÓN DE PLAN (evaluar ANTES de cotizar)
+Cuando detectes alguna de estas señales, hacé la recomendación con confianza — la decisión final siempre es del lead:
+
+**→ RECOMENDAR TITANIUM si:**
+- Es médico estético o esteticista médico
+- Es dermatólogo o clínica de dermatología
+- Es una IPS o clínica con 5 o más usuarios
+- Mencionó trabajar con SIIGO (facturador electrónico colombiano)
+*Motivo: alto volumen de pacientes, necesidad de firma digital avanzada, facturación electrónica de mayor escala y más tokens de IA.*
+
+**→ RECOMENDAR PRO si:**
+- Trabaja con aseguradoras, prepagadas, EPS (Colombia), FONASA/ISAPRES (Chile), IMSS/ISSSTE (México) o tiene convenios o contratos similares en cualquier país
+*Motivo: el plan PRO incluye el módulo **Convenios** — permite gestionar prestaciones cubiertas por aseguradoras, generar reportes para liquidación y manejar co-pagos. Sin este módulo, no puede operar con convenios de forma organizada.*
+
+## DISCOVERY Y ESTILO DE CONVERSACIÓN
+Para armar una cotización personalizada necesitás saber:
+(1) cuántos profesionales de salud (médicos, terapeutas, etc.) usarán el sistema — un "usuario" es cada profesional que necesita acceso,
+(2) cuántas citas atienden al mes aproximadamente,
+(3) si necesitan módulos adicionales: recordatorios por WhatsApp, factura electrónica, firma digital.
+
+ADAPTATE AL LEAD:
+- Lead DIRECTO (mensajes cortos, tarda en responder): Ve al grano. Preguntá todo en un solo mensaje breve y claro. No pierdas su atención con rodeos.
+- Lead CONVERSACIONAL (fluye, escribe bien, responde rápido): Mostrá genuino interés en su clínica. Hacé las preguntas de forma natural dentro de la conversación, sin sonar a formulario.
+
+En cualquier caso: explicá en pocas palabras POR QUÉ necesitás esos datos — "para armar una tarifa que cubra exactamente tu operación, sin que pagues de más". Si el lead ya mencionó algún dato, úsalo y no lo repitas.
+Cuando tu respuesta tenga más de 5-6 líneas de texto, partila en 2 mensajes usando el separador literal \`[MSG_SPLIT]\` en el punto de corte más natural. El primer mensaje es el núcleo; el segundo, el detalle o complemento. NUNCA uses \`[MSG_SPLIT]\` dentro de un tag \`[GENERAR_COTIZACION_PDF:...]\`.
+Tu objetivo: que el lead sienta que lo estás ayudando a resolver su problema, no que le estás vendiendo un software.
+
+## BASE DE CONOCIMIENTO — CENTRO DE AYUDA MEDILINK
+Cuando un lead pregunta CÓMO funciona algo, CÓMO configurarlo, o tiene dudas técnicas sobre el software, podés compartir el link directo del artículo relevante de: https://ayuda.softwaremedilink.com/es/
+Usá estos links como respaldo para dar respuestas concretas y creíbles. Siempre que compartas un link, mencioná brevemente para qué sirve ese artículo.
+
+## COTIZACIÓN EN PDF
+Cuando tengas los datos del lead (usuarios + citas/mes), emitís este tag en su propia línea (NO dentro de texto):
+[GENERAR_COTIZACION_PDF:{"nombre":"${leadName || 'Lead'}","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":70,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"descuento":30,"vigencia":"${promoVigencia}"}]
+
+**PAÍS y MONEDA — usar SIEMPRE el del lead según su número o lo que diga explícitamente:**
+| Código tel. | pais a usar        | moneda |
+|-------------|-------------------|--------|
+| +57         | COLOMBIA          | COP    |
+| +56         | CHILE             | CLP    |
+| +52         | MEXICO            | MXN    |
+| +54         | ARGENTINA         | USD    |
+| +1809/+1829 | REPUBLICA_DOMINICANA | USD |
+| Resto       | INTERNACIONAL     | USD    |
+
+En el self-chat con Mariano: usá el país que él pida explícitamente, sin inferirlo de su número.
+
+**REGLAS POR PAÍS (OBLIGATORIAS):**
+- **ARGENTINA**: SIEMPRE \`incluirFactura:false\` (no vendemos factura electrónica en Argentina). SIEMPRE \`incluirRecetaAR:true\` — es el módulo exclusivo de Argentina de receta médica digital ($3 USD/mes). Solo quitarlo si el lead lo pide explícitamente.
+- **COLOMBIA**: Podés ofrecer Factura. Si mencionó SIIGO + Titanium → facturador $0 (SIGIO ya lo incluye, no cobres bolsa).
+- Resto de países: incluir los módulos según lo que el lead pida o necesite.
+
+**MÓDULOS:** Por defecto incluir los 3 (WA, Firma, Factura salvo AR). Si el lead duda por precio, reducir bolsa o quitar un módulo como concesión. Objetivo: maximizar tarifa siendo justo.
+Las bolsas se calculan automáticamente (WA = citasMes×2, Firma/Factura = citasMes×1) — dejá bolsaXX:null.
+
+**CUANDO REENVIAR PDF:** Solo si el lead pide cambios concretos (precio, plan, módulos). NO reenviar si dice "gracias" u ok.
+**TEXTO JUNTO AL PDF:** Máximo 2 líneas. En esas líneas: (a) Nombrá el plan recomendado y UNA razón concreta de por qué es el ideal para este lead (ej: "Para una clínica con 10 usuarios, el plan Titanium es el indicado — tiene los reportes avanzados y la capacidad que necesitás."). (b) NO decir "Esencial es un buen punto de partida" si la recomendación correcta es Titanium o Pro. Sé directo con el plan correcto desde el primer mensaje. NO repetir lo que ya está en el PDF.
+
+## COTIZACIÓN PDF — CUÁNDO RE-ENVIARLA
+Si en el historial ves "📄 [Cotización PDF enviada...]", ya fue enviada.
+NO la reenvíes si el lead dice solo "gracias", "ok", "entendido", o continúa charlando.
+SÍ generá una nueva cotización ajustada si el lead:
+- Dice "muy caro", "es caro", "no me alcanza", o compara precios con otro software
+- Pide cambios en el plan, en los módulos o en las bolsas
+- Pide verla de nuevo explícitamente
+En esos casos ajustá la propuesta (cambiá plan, reducí bolsa) y emití un nuevo tag.
+Cuando el lead compita con otra plataforma: destacá con orgullo que solo Medilink tiene ISO 27001 en LATAM.
+Cuando el lead muestre intención de comprar (quiero empezar, cómo me suscribo, cómo pago, quiero el link), emití al final: [LEAD_QUIERE_COMPRAR]
+
+## DIFERENCIADOR EXCLUSIVO: ISO 27001
+Medilink es la ÚNICA plataforma de salud en Latinoamérica con certificación ISO 27001.
+Nadie más en el continente lo ha logrado. Garantiza la máxima seguridad de datos clínicos y de pacientes.
+Mencionalo con orgullo empático cuando:
+- El lead compara con otra plataforma (Dentalink, Doctocliq, HolaDoc, Agenda Pro, u otras)
+- El lead pregunta sobre seguridad o privacidad de datos
+- El lead duda y pide razones concretas para elegir Medilink`;
+    }
+
+    // Sistema de confianza progresiva
+    if (!conversationMetadata[phone]) conversationMetadata[phone] = { trustPoints: 0 };
+    conversationMetadata[phone].trustPoints = (conversationMetadata[phone].trustPoints || 0) + 1;
+    const currentTrust = conversationMetadata[phone].trustPoints;
+    let trustTone = '';
+    if (!isAdmin && !isFamilyContact) {
+      trustTone = currentTrust < 5
+        ? '\n[CONFIANZA INICIAL]: Sé profesional, amable pero no demasiado familiar aún.'
+        : '\n[CONFIANZA ESTABLECIDA]: Puedes ser más cercana y cálida.';
+    }
+
+    const syntheticMemoryStr = leadSummaries[phone] ? `\n\n🧠[MEMORIA ACUMULADA DE ESTA PERSONA]:\n${leadSummaries[phone]}` : '';
+    const masterIdentityStr = userProfile.name ? `\n\n[IDENTIDAD DEL MAESTRO]: Tu usuario principal es ${userProfile.name}. Bríndale trato preferencial absoluto.` : '';
+    const systemDateStr = `[FECHA DEL SISTEMA: ${new Date().toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}]`;
+
+    const adnStr = cerebroAbsoluto.getTrainingData();
+    const fullPrompt = `${activeSystemPrompt}
+
+${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}
+
+${systemDateStr}
+
+[HISTORIAL DE CONVERSACIÓN RECIENTE]:
+${history}
+
+MIIA, genera tu respuesta breve, estratégica y humana:`;
+
+    console.log(`[MIIA] Llamando a Gemini para ${basePhone} (isAdmin=${isAdmin}, isSelfChat=${isSelfChat}, apiKey=${GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE' ? 'OK' : 'NO CONFIGURADA'})...`);
+    let aiMessage = await generateAIContent(fullPrompt);
+    console.log(`[MIIA] ✅ Respuesta Gemini recibida, longitud: ${aiMessage?.length || 0}`);
+
+    // Procesar etiquetas especiales
+    if (aiMessage.includes('[FALSO_POSITIVO]')) {
+      aiMessage = aiMessage.replace(/\[FALSO_POSITIVO\]/g, '').trim();
+      console.log(`[WA] Falso positivo detectado para ${phone}. Silenciando.`);
+      const idx = allowedLeads.indexOf(phone);
+      if (idx !== -1) allowedLeads.splice(idx, 1);
+      delete conversations[phone];
+      saveDB();
+      return;
+    }
+    aiMessage = aiMessage.replace(/\[ALERTA_HUMANO\]/g, '').trim();
+    // Tag de aprendizaje universal — MIIA guarda conocimiento desde cualquier canal
+    const learnTagMatch = aiMessage.match(/\[GUARDAR_APRENDIZAJE:([^\]]+)\]/);
+    if (learnTagMatch) {
+      cerebroAbsoluto.appendLearning(learnTagMatch[1], 'MIIA_AUTO');
+      saveDB();
+      aiMessage = aiMessage.replace(learnTagMatch[0], '').trim();
+    }
+    // Detectar y procesar tag de cotización PDF
+    const cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
+    if (cotizTagIdx !== -1) {
+      // Extraer JSON robusto: buscar el primer '}]' para evitar falsos cortes
+      const jsonStart = cotizTagIdx + '[GENERAR_COTIZACION_PDF:'.length;
+      let jsonEnd = -1;
+      let depth = 0;
+      for (let i = jsonStart; i < aiMessage.length; i++) {
+        if (aiMessage[i] === '{') depth++;
+        else if (aiMessage[i] === '}') { depth--; if (depth === 0) { jsonEnd = i + 1; break; } }
+      }
+      if (jsonEnd !== -1) {
+        try {
+          const cotizData = JSON.parse(aiMessage.substring(jsonStart, jsonEnd));
+          cotizacionGenerator.enviarCotizacionWA(whatsappClient, phone, cotizData)
+            .then(() => console.log(`[COTIZ] PDF enviado a ${phone}`))
+            .catch(e => console.error('[COTIZ] Error PDF:', e.message));
+        } catch (e) { console.error('[COTIZ] JSON inválido en tag:', e.message); }
+        // Conservar texto breve antes/después del tag para enviarlo como mensaje acompañante
+        const textoBefore = aiMessage.substring(0, cotizTagIdx).trim();
+        const textoAfter  = aiMessage.substring(jsonEnd + 1).replace(/\]/, '').trim();
+        const textoExtra  = (textoBefore || textoAfter)
+          ? (textoBefore + (textoAfter ? ' ' + textoAfter : '')).trim().substring(0, 300)
+          : '';
+        // Registrar en historial que se envió el PDF
+        conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada a este lead. No volver a enviarla a menos que el lead lo pida explícitamente.]', timestamp: Date.now() });
+        if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
+        // Activar seguimiento automático a 3 días
+        if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+        conversationMetadata[phone].lastCotizacionSent = Date.now();
+        conversationMetadata[phone].followUpState = 'pending';
+        saveDB();
+        aiMessage = textoExtra;
+      }
+    } else {
+      aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '').trim();
+    }
+    aiMessage = aiMessage.replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '').trim();
+
+    // Detectar tag de intención de compra
+    if (aiMessage.includes('[LEAD_QUIERE_COMPRAR]')) {
+      aiMessage = aiMessage.replace('[LEAD_QUIERE_COMPRAR]', '').trim();
+      if (!subscriptionState[phone] || subscriptionState[phone].estado === 'none') {
+        subscriptionState[phone] = { estado: 'asked', data: {} };
+        console.log(`[COMPRA] ${phone} marcado como interesado en suscripción.`);
+      }
+    }
+
+    // Vacuna Dentalink
+    if (aiMessage.includes('softwaredentalink.com')) {
+      const chatHistoryStr = conversations[phone] ? conversations[phone].map(m => m.content.toLowerCase()).join(' ') : '';
+      const askedAboutQuantity = chatHistoryStr.includes('cuánto') || chatHistoryStr.includes('cuanto') || chatHistoryStr.includes('profesionales');
+      if (!askedAboutQuantity) {
+        aiMessage = '¡Entiendo perfectamente! Para asesorarte mejor, ¿cuántos profesionales conforman tu equipo actualmente?';
+      }
+    }
+
+    // Manejar división de mensaje en dos partes más humanas
+    if (aiMessage.includes('[MSG_SPLIT]')) {
+      const parts = aiMessage.split('[MSG_SPLIT]').map(p => p.trim()).filter(p => p.length > 0);
+      if (parts.length >= 2) {
+        try {
+          const cs1 = await whatsappClient.getChatById(phone);
+          await cs1.sendStateTyping();
+          await new Promise(r => setTimeout(r, Math.min(parts[0].length * 60, 12000)));
+        } catch (e) { /* ignore */ }
+        await safeSendMessage(phone, parts[0]);
+        await new Promise(r => setTimeout(r, 1500 + Math.floor(Math.random() * 1000)));
+        try {
+          const cs2 = await whatsappClient.getChatById(phone);
+          await cs2.sendStateTyping();
+          await new Promise(r => setTimeout(r, Math.min(parts[1].length * 60, 10000)));
+        } catch (e) { /* ignore */ }
+        await safeSendMessage(phone, parts[1]);
+        conversations[phone].push({ role: 'assistant', content: parts.join(' '), timestamp: Date.now() });
+        if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
+        saveDB();
+        return;
+      }
+      aiMessage = aiMessage.replace(/\[MSG_SPLIT\]/g, ' ').trim();
+    }
+
+    if (!aiMessage.trim()) {
+      console.warn(`[WA] Respuesta AI vacía para ${phone}. Abortando envío.`);
+      return;
+    }
+
+    // Agregar texto de cierre al final de mensajes a familia y equipo Medilink
+    const basePhoneFinal = phone.split('@')[0];
+    if ((isFamilyContact || equipoMedilink[basePhoneFinal]) && !isAdmin) {
+      aiMessage = aiMessage.trimEnd() + MIIA_CIERRE;
+    }
+
+    conversations[phone].push({ role: 'assistant', content: aiMessage, timestamp: Date.now() });
+    if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
+    saveDB();
+
+    // Anti-ráfaga (Vacuna)
+    if (!selfChatLoopCounter[phone] || typeof selfChatLoopCounter[phone] === 'number') {
+      selfChatLoopCounter[phone] = { count: 0, lastTime: 0 };
+    }
+    const nowLoop = Date.now();
+    if (nowLoop - selfChatLoopCounter[phone].lastTime < 5000) {
+      selfChatLoopCounter[phone].count++;
+    } else {
+      selfChatLoopCounter[phone].count = 1;
+    }
+    selfChatLoopCounter[phone].lastTime = nowLoop;
+    if (selfChatLoopCounter[phone].count > 3) {
+      console.log(`🚨 [VACUNA] BLOQUEO POR RÁFAGA en ${phone}`);
+      isSystemPaused = true;
+      setTimeout(() => { isSystemPaused = false; selfChatLoopCounter[phone].count = 0; }, 15000);
+      return;
+    }
+
+    // Simular typing y enviar
+    try {
+      const chatState = await whatsappClient.getChatById(phone);
+      await chatState.sendStateTyping();
+      const typingDuration = Math.min(Math.max(aiMessage.length * 65, 2500), 15000);
+      await new Promise(r => setTimeout(r, typingDuration));
+    } catch (e) { /* ignore typing errors */ }
+
+    lastAiSentBody[phone] = aiMessage.trim();
+    console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused}`);
+    await safeSendMessage(phone, aiMessage);
+
+    io.emit('ai_response', {
+      to: phone,
+      toName: leadNames[phone] || basePhone,
+      body: aiMessage,
+      timestamp: Date.now(),
+      type: contactTypes[phone] || 'lead'
+    });
+
+  } catch (err) {
+    console.error(`[MIIA] ❌ Error en processMiiaResponse para ${phone}:`, err.message);
+    console.error(`[MIIA] ❌ Stack:`, err.stack);
+  }
+}
+
+async function processAndSendAIResponse(phone, userMessage, isAlreadySaved = false) {
+  return await processMiiaResponse(phone, userMessage, isAlreadySaved);
+}
+
+// ============================================
+// SISTEMA DE RESPUESTA AUTOMÁTICA (message_create)
+// ============================================
+
+async function handleIncomingMessage(message) {
+  // REGLA ABSOLUTA: MIIA nunca participa en grupos ni estados. Ni lee, ni responde, ni publica.
+  const isBroadcast = message.from.includes('status@broadcast') ||
+    (message.to && message.to.includes('status@broadcast')) ||
+    message.isStatus;
+  const isGroup = message.from.endsWith('@g.us') || (message.to && message.to.endsWith('@g.us'));
+  if (isBroadcast || isGroup) return;
+
+  // Eco de linked device: from === to → rebote del propio mensaje, ignorar
+  if (message.from && message.to && message.from === message.to) return;
+
+  const fromMe = message.fromMe;
+  const body = (message.body || '').trim();
+  if (!body) return;
+
+  console.log(`[WA TRACER] message_create | fromMe: ${fromMe} | body: ${body.substring(0, 30)}...`);
+
+  // Guardia de bucle por contenido (buffer de IA)
+  const targetPhoneId = fromMe ? message.to : message.from;
+  console.log(`[WA DIAG-1] targetPhoneId=${targetPhoneId} | from=${message.from} | to=${message.to}`);
+  const botBuffer = lastSentByBot[targetPhoneId] || [];
+  const isBotSessionMessage = sentMessageIds.has(message.id._serialized) || botBuffer.includes(body);
+  if (isBotSessionMessage) {
+    console.log(`[WA] BUCLE PREVENIDO: ${targetPhoneId}`);
+    return;
+  }
+
+  // Guardia de auto-bucle (self-chat)
+  const myNumber = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
+    ? whatsappClient.info.wid._serialized : `${OWNER_PHONE}@c.us`;
+  const isSelfChat = targetPhoneId === myNumber || targetPhoneId.split('@')[0] === myNumber.split('@')[0];
+  const now = Date.now();
+
+  if (isSelfChat) {
+    // Comando STOP en self-chat
+    if (body.toUpperCase() === 'STOP') {
+      if (!conversationMetadata[targetPhoneId]) conversationMetadata[targetPhoneId] = {};
+      conversationMetadata[targetPhoneId].miiaFamilyPaused = true;
+      selfChatLoopCounter[targetPhoneId] = { count: 0, lastTime: 0 };
+      return;
+    }
+    // Velocidad de auto-bucle
+    const lastInt = lastInteractionTime[targetPhoneId] || 0;
+    if (now - lastInt < 20000) {
+      selfChatLoopCounter[targetPhoneId] = (selfChatLoopCounter[targetPhoneId] || 0) + 1;
+    } else {
+      selfChatLoopCounter[targetPhoneId] = 0;
+    }
+    if (selfChatLoopCounter[targetPhoneId] >= 3) {
+      if (!conversationMetadata[targetPhoneId]) conversationMetadata[targetPhoneId] = {};
+      conversationMetadata[targetPhoneId].miiaFamilyPaused = true;
+      return;
+    }
+  }
+  lastInteractionTime[targetPhoneId] = now;
+
+
+  // Determinar teléfono real del destinatario
+  let targetPhone = message.from;
+  if (fromMe) {
+    if (message.to && message.to.includes('@lid')) targetPhone = message.from;
+    else targetPhone = message.to;
+  }
+
+  // Detección de conversión Lead → Cliente
+  // El mensaje de bienvenida de Medilink indica que el lead firmó y se convirtió en cliente
+  if (body.includes('Bienvenid') && body.includes('mejorar tu bienestar') && body.includes('pacientes')) {
+    if (contactTypes[targetPhone] !== 'cliente') {
+      contactTypes[targetPhone] = 'cliente';
+      const clientName = leadNames[targetPhone] || targetPhone.split('@')[0];
+      cerebroAbsoluto.appendLearning(
+        `NUEVO CLIENTE: ${clientName} (${targetPhone.split('@')[0]}) se convirtió en cliente de Medilink el ${new Date().toLocaleDateString('es-ES')}.`,
+        'CONVERSION_LEAD_CLIENTE'
+      );
+      saveDB();
+      estadisticas.registrarCliente(targetPhone, clientName, null, null, null);
+      if (subscriptionState[targetPhone]) delete subscriptionState[targetPhone];
+      console.log(`[MIIA] 🎉 CONVERSIÓN: ${clientName} ahora es cliente (${targetPhone})`);
+      // Notificar a Mariano
+      safeSendMessage(`${OWNER_PHONE}@c.us`,
+        `🎉 *¡Nuevo cliente!* ${clientName} acaba de convertirse en cliente de Medilink.`
+      ).catch(() => {});
+    }
+  }
+
+  // Detección de bot
+  const lowerBody = body.toLowerCase();
+  if (!fromMe && isPotentialBot(body)) {
+    if (flaggedBots[targetPhone]) {
+      console.log(`[WA] BOT REINCIDENTE: ${message.from}. Silenciando.`);
+      return;
+    }
+    flaggedBots[targetPhone] = true;
+    saveDB();
+  } else if (!fromMe && !isPotentialBot(body) && flaggedBots[targetPhone]) {
+    delete flaggedBots[targetPhone];
+    saveDB();
+  }
+
+  // Bucle por eco de IA
+  if (fromMe && lastAiSentBody[targetPhone] && lastAiSentBody[targetPhone] === body) {
+    delete lastAiSentBody[targetPhone];
+    return;
+  }
+
+  // Opt-out
+  const optOutKeywords = ['quitar', 'baja', 'no molestar', 'no me interesa', 'spam', 'parar', 'unsubscribe'];
+  if (!fromMe && optOutKeywords.some(kw => lowerBody.includes(kw))) {
+    await handleLeadOptOut(targetPhone);
+    return;
+  }
+
+  // Procesamiento de mensajes de texto
+  if (!message.body || !message.body.trim()) return;
+
+  try {
+    let phone = message.from;
+    try {
+      const contact = await message.getContact();
+      if (contact && contact.id) phone = contact.id._serialized;
+    } catch (e) {}
+
+    // Fix @lid para mensajes ENTRANTES: el chat real tiene el número @c.us correcto
+    if (!fromMe && phone.includes('@lid')) {
+      try {
+        const chat = await message.getChat();
+        if (chat && chat.id && chat.id._serialized && !chat.id._serialized.includes('@lid')) {
+          console.log(`[WA] @lid resuelto: ${phone} → ${chat.id._serialized}`);
+          phone = chat.id._serialized;
+        }
+      } catch (e) { console.log(`[WA] No se pudo resolver @lid: ${e.message}`); }
+    }
+
+    let effectiveTarget = phone;
+    if (fromMe) {
+      if (message.to && message.to.includes('@lid')) {
+        // WhatsApp Linked Devices: message.to llega como @lid en lugar de @c.us
+        const senderBase = (message.from || phone).split('@')[0];
+        const recipientBase = message.to.split(':')[0].split('@')[0];
+        if (senderBase === recipientBase) {
+          // Self-chat explícito (mismo número)
+          effectiveTarget = `${senderBase}@c.us`;
+        } else {
+          // Verificar si el sender es el dueño de la cuenta conectada (self-chat vía linked device)
+          const connectedBase = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
+            ? whatsappClient.info.wid._serialized.split('@')[0] : null;
+          if (connectedBase && connectedBase === senderBase) {
+            // El dueño se escribe a sí mismo desde otro dispositivo → self-chat
+            effectiveTarget = `${senderBase}@c.us`;
+          } else {
+            effectiveTarget = `${recipientBase}@c.us`;
+          }
+        }
+      } else {
+        effectiveTarget = message.to || phone;
+      }
+    }
+
+    // Blacklist
+    console.log(`[WA DIAG-2] effectiveTarget=${effectiveTarget} | fromMe=${fromMe}`);
+    if (BLACKLISTED_NUMBERS.includes(effectiveTarget)) return;
+
+    const baseTarget = effectiveTarget.replace(/[^0-9]/g, '');
+    let isAllowed = allowedLeads.some(l => l.replace(/[^0-9]/g, '') === baseTarget) || !!familyContacts[baseTarget];
+    const existsInCRM = !!conversations[effectiveTarget];
+
+    // Auto-takeover para leads desconocidos con keywords de negocio
+    if (!isAllowed && !existsInCRM && !fromMe) {
+      const takeoverKeywords = [
+        'medico', 'médico', 'doctor', 'clinica', 'clínica', 'consultorio', 'consulta',
+        'medilink', 'precio', 'cotizacion', 'cotización', 'software', 'sistema', 'plataforma', 'plan',
+        'salud', 'dentista', 'odontologo', 'odontólogo', 'kinesiologo', 'psicologia',
+        'psicologo', 'psicólogo', 'ips', 'centro', 'secretaria', 'administrativa',
+        'administrador', 'gerente', 'medico general',
+        'pediatra', 'pediatria', 'nutricionista', 'fisioterapeuta', 'especialista',
+        'especialidad', 'paciente', 'pacientes', 'cita', 'citas', 'agenda',
+        'medica', 'medicos', 'terapeuta', 'cirujano', 'ginecologo', 'ginecologa',
+        'dermatologo', 'cardiologo', 'neurologo', 'ortopedista', 'traumatologo'
+      ];
+      const triggered = takeoverKeywords.find(kw => lowerBody.includes(kw));
+      if (triggered) {
+        try {
+          const ct = await message.getContact();
+          allowedLeads.push(effectiveTarget);
+          isAllowed = true;
+          detectContactType(ct.name || ct.pushname || 'Lead', effectiveTarget);
+          saveDB();
+          console.log(`[WA] ✅ Auto-takeover: ${effectiveTarget} agregado como lead por keyword "${triggered}"`);
+        } catch (e) {
+          // Si getContact falla igual registramos el lead
+          allowedLeads.push(effectiveTarget);
+          isAllowed = true;
+          saveDB();
+          console.log(`[WA] ✅ Auto-takeover (sin contacto): ${effectiveTarget} keyword "${triggered}"`);
+        }
+      }
+    }
+
+    if (!isAllowed && !existsInCRM && !fromMe) {
+      console.log(`[WA] IA BLOQUEADA para ${effectiveTarget}. Sin keywords de negocio ni historial.`);
+      return;
+    }
+
+    // Self-chat: solo responder si MIIA es mencionada
+    // Fallback a OWNER_PHONE si whatsappClient.info aún no está disponible
+    const myNumberFull = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
+      ? whatsappClient.info.wid._serialized : `${OWNER_PHONE}@c.us`;
+    // senderNumber: quién envió este mensaje (cuando fromMe=true, es el dueño)
+    const senderNumber = (message.from || '').split('@')[0];
+    const isSelfChatMsg = fromMe && (
+      effectiveTarget === myNumberFull ||
+      effectiveTarget.split('@')[0] === myNumberFull.split('@')[0] ||
+      effectiveTarget.split('@')[0] === OWNER_PHONE ||
+      effectiveTarget.split('@')[0] === senderNumber   // remitente == destinatario → self-chat
+    );
+    console.log(`[WA DIAG-2b] isSelfChatMsg=${isSelfChatMsg} | effectiveTarget=${effectiveTarget} | myNumberFull=${myNumberFull} | senderNumber=${senderNumber}`);
+    const bodyLower = (body || '').toLowerCase();
+
+    // ── INVOCACIÓN / CIERRE DE SESIÓN MIIA ──────────────────────────────────
+    // MIIA se activa al ser mencionada y permanece activa hasta "chau miia"
+    if (!conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget] = {};
+    const isMIIASessionActive = !!conversationMetadata[effectiveTarget].miiaSessionActive;
+
+    const isChauMIIA = isSelfChatMsg && (
+      bodyLower.includes('chau miia') || bodyLower.includes('chau, miia') ||
+      bodyLower.includes('bye miia')  || bodyLower.includes('adios miia') ||
+      bodyLower.includes('adiós miia') || bodyLower.includes('hasta luego miia')
+    );
+    if (isChauMIIA) {
+      conversationMetadata[effectiveTarget].miiaSessionActive = false;
+      saveDB();
+      console.log(`[MIIA] Sesión cerrada para ${effectiveTarget}`);
+      await safeSendMessage(effectiveTarget, '¡Hasta luego! 👋 Cuando me necesites, ya sabes dónde encontrarme.');
+      return;
+    }
+
+    const isMIIAMentioned = bodyLower.includes('miia') || bodyLower.includes('hola') || bodyLower === 'hi' ||
+      bodyLower.includes('medic') || bodyLower.includes('medilink') || bodyLower.includes('precio');
+
+    // Si es self-chat y se menciona MIIA por primera vez → abrir sesión
+    if (isSelfChatMsg && isMIIAMentioned && !isMIIASessionActive) {
+      conversationMetadata[effectiveTarget].miiaSessionActive = true;
+      saveDB();
+      console.log(`[MIIA] ✅ Sesión abierta para ${effectiveTarget}`);
+    }
+
+    // MIIA responde si: se mencionó explícitamente OR la sesión ya está activa
+    const isMIIAActive = isMIIAMentioned || isMIIASessionActive;
+
+    const isFamily = !!familyContacts[effectiveTarget.split('@')[0]];
+    const isEquipo = !!equipoMedilink[effectiveTarget.split('@')[0]];
+    const isSelfChatMIIA = isSelfChatMsg && (isMIIAActive || isFamily);
+
+    // Siempre guardar mensajes entrantes de familia
+    if (isFamily && !fromMe) {
+      if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
+      const exists = conversations[effectiveTarget].some(m => m.content === message.body && Math.abs(m.timestamp - Date.now()) < 5000);
+      if (!exists) {
+        conversations[effectiveTarget].push({ role: 'user', content: message.body, timestamp: Date.now() });
+        saveDB();
+      }
+    }
+
+    if (isFamily && automationSettings.miiaFamilyPaused && !isMIIAActive) return;
+    if (isFamily && isMIIAActive && conversationMetadata[effectiveTarget].miiaFamilyPaused) {
+      conversationMetadata[effectiveTarget].miiaFamilyPaused = false;
+    }
+
+    // Si es self-chat y MIIA NO está activa ni mencionada → guardar como nota y salir
+    if (isSelfChatMsg && !isMIIAActive && !isFamily) {
+      if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
+      conversations[effectiveTarget].push({ role: 'user', content: message.body, timestamp: Date.now() });
+      saveDB();
+      return;
+    }
+
+    if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
+    const history = conversations[effectiveTarget];
+    const cleanBody = (message.body || '').trim();
+
+    const botBufferTarget = lastSentByBot[effectiveTarget] || [];
+    if (botBufferTarget.includes(cleanBody)) {
+      console.log(`[WA] BUCLE PREVENIDO para ${effectiveTarget}.`);
+      return;
+    }
+    if (lastAiSentBody[effectiveTarget] && lastAiSentBody[effectiveTarget] === cleanBody) return;
+
+    if (!fromMe || isSelfChatMIIA) {
+      // Guardar mensaje ANTES del guard isProcessing para capturar multi-mensajes en ráfaga
+      history.push({ role: 'user', content: message.body, timestamp: Date.now() });
+      if (history.length > 40) conversations[effectiveTarget] = history.slice(-40);
+
+      // Extracción de nombre en background
+      if (!leadNames[effectiveTarget] || leadNames[effectiveTarget] === 'Buscando...') {
+        leadNames[effectiveTarget] = 'Buscando...';
+        const extractNamePrompt = `Revisa este chat y extrae ÚNICAMENTE el nombre del cliente. Responde SOLO el primer nombre (ej: "Carlos"). Si no menciona su nombre, responde EXCLUSIVAMENTE "N/A".\n\nChat:\n${conversations[effectiveTarget].map(m => m.content).join('\n')}`;
+        generateAIContent(extractNamePrompt).then(detectedName => {
+          const cleanName = detectedName.replace(/[^\w\sáéíóúÁÉÍÓÚñÑ]/g, '').trim();
+          if (cleanName !== 'NA' && cleanName !== 'N/A' && cleanName.length > 2 && cleanName.length < 20) {
+            leadNames[effectiveTarget] = cleanName;
+          } else {
+            delete leadNames[effectiveTarget];
+          }
+          saveDB();
+        }).catch(() => { delete leadNames[effectiveTarget]; });
+      }
+      saveDB();
+
+      // Si ya hay una respuesta programada, el mensaje quedó guardado — no programar otra
+      if (isProcessing[effectiveTarget]) {
+        console.log(`[WA] Mensaje acumulado para ${effectiveTarget} (respuesta ya programada).`);
+        return;
+      }
+    } else {
+      // Mensaje saliente manual de Mariano
+      const lastMsg = history.length > 0 ? history[history.length - 1] : null;
+      if (!lastMsg || lastMsg.content !== body) {
+        if (!conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget] = {};
+        conversationMetadata[effectiveTarget].humanInterventionTime = Date.now();
+        const baseNum = effectiveTarget.split('@')[0];
+        if (familyContacts[baseNum]) {
+          conversationMetadata[effectiveTarget].miiaFamilyPaused = true;
+          console.log(`[FAMILIA] MIIA pausada para ${baseNum} por intervención manual.`);
+        }
+        history.push({ role: 'assistant', content: body, timestamp: Date.now() });
+        if (history.length > 40) conversations[effectiveTarget] = history.slice(-40);
+        saveDB();
+      }
+      if (!isSelfChatMIIA) return;
+    }
+
+    console.log(`[MIIA DEBUG] isSelfChatMsg=${isSelfChatMsg} isMIIAMentioned=${isMIIAMentioned} isSelfChatMIIA=${isSelfChatMIIA} isAllowed=${isAllowed} autoResponse=${automationSettings.autoResponse}`);
+
+    const shouldRespond = ((isAllowed || existsInCRM) && automationSettings.autoResponse) || isSelfChatMIIA || isEquipo;
+    console.log(`[WA DIAG-3] shouldRespond=${shouldRespond} | isAllowed=${isAllowed} | existsInCRM=${existsInCRM} | isSelfChatMIIA=${isSelfChatMIIA} | isSystemPaused=${isSystemPaused}`);
+    if (!shouldRespond) {
+      console.log(`[WA] Lead ${effectiveTarget}: autoResponse apagado o no en whitelist. isSelfChatMIIA=${isSelfChatMIIA}`);
+      return;
+    }
+
+    // ── COMANDO RESET (solo números de testing) ──────────────────────────
+    if (!fromMe && body.trim().toUpperCase() === 'RESET') {
+      const baseNumReset = effectiveTarget.split('@')[0];
+      if (RESET_ALLOWED_PHONES.includes(baseNumReset)) {
+        conversations[effectiveTarget] = [];
+        saveDB();
+        await safeSendMessage(effectiveTarget, '✅ Contexto de conversación limpiado. Próxima respuesta parte desde cero.');
+        console.log(`[RESET] Contexto limpiado para ${effectiveTarget}`);
+        return;
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────
+
+    // Silencio por intervención humana — 91-97 min aleatorio desde el último mensaje de Mariano
+    // Retoma control si: pasaron 91-97 min O el lead escribe en un día diferente desde las 9:30 AM Bogotá
+    if (conversationMetadata[effectiveTarget]?.humanInterventionTime && !isSelfChatMIIA) {
+      const interventionTime = conversationMetadata[effectiveTarget].humanInterventionTime;
+      const elapsed = Date.now() - interventionTime;
+      const silence = conversationMetadata[effectiveTarget].customSilencePeriod ||
+        (() => {
+          const s = (Math.floor(Math.random() * 7) + 91) * 60 * 1000; // 91-97 min aleatorio
+          conversationMetadata[effectiveTarget].customSilencePeriod = s;
+          return s;
+        })();
+
+      // Verificar si es un día diferente en Bogotá y ya pasaron las 9:30 AM
+      const toDateBogota = ts => new Date(ts).toLocaleDateString('es-ES', { timeZone: 'America/Bogota' });
+      const nowBogota = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+      const isNewDay = toDateBogota(interventionTime) !== toDateBogota(Date.now());
+      const isAfter930 = nowBogota.getHours() > 9 || (nowBogota.getHours() === 9 && nowBogota.getMinutes() >= 30);
+      const newDayReady = isNewDay && isAfter930;
+
+      if (!newDayReady && elapsed < silence) {
+        console.log(`[WA] Silencio humano para ${effectiveTarget}: ${Math.round(elapsed / 60000)} min de ${Math.round(silence / 60000)}. Esperando.`);
+        return;
+      }
+      const reason = newDayReady ? 'nuevo día (≥9:30 AM)' : `${Math.round(elapsed / 60000)} min transcurridos`;
+      console.log(`[WA] MIIA retoma control de ${effectiveTarget} (${reason}).`);
+      delete conversationMetadata[effectiveTarget].humanInterventionTime;
+      delete conversationMetadata[effectiveTarget].customSilencePeriod;
+      saveDB();
+    }
+
+    // ── FLUJO DE COMPRA ──────────────────────────────────────────────────
+    // Estado 'asked': MIIA ya preguntó si quiere el link → detectar respuesta afirmativa
+    if (!fromMe && subscriptionState[effectiveTarget]?.estado === 'asked') {
+      const lc = lowerBody.trim();
+      if (lc.includes('sí') || lc.includes('si') || lc === 'dale' || lc === 'ok' ||
+          lc.includes('claro') || lc.includes('quiero') || lc.includes('perfecto')) {
+        subscriptionState[effectiveTarget].estado = 'collecting';
+        await safeSendMessage(effectiveTarget, MSG_SUSCRIPCION);
+        console.log(`[COMPRA] Formulario enviado a ${effectiveTarget}.`);
+        return;
+      }
+      // Si dice que no, resetear estado
+      if (lc.includes('no ') || lc === 'no' || lc.includes('todavía') || lc.includes('después')) {
+        subscriptionState[effectiveTarget] = { estado: 'none', data: {} };
+      }
+    }
+
+    // Estado 'collecting': el lead respondió con sus 4 datos → notificar a Mariano
+    if (!fromMe && subscriptionState[effectiveTarget]?.estado === 'collecting') {
+      const leadName = leadNames[effectiveTarget] || effectiveTarget.split('@')[0];
+      subscriptionState[effectiveTarget].estado = 'notified';
+      subscriptionState[effectiveTarget].data = { phone: effectiveTarget, nombre: leadName, respuesta: body };
+      estadisticas.registrarInteresado({ phone: effectiveTarget, nombre: leadName, respuesta: body });
+      if (conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget].followUpState = 'converted';
+      await safeSendMessage(`${OWNER_PHONE}@c.us`,
+        `🔔 *${leadName}* está listo para comprar.\n\nSus datos:\n${body}\n\nCreá el link de pago y enviáselo.`);
+      await safeSendMessage(effectiveTarget,
+        `¡Perfecto! Recibí todo. Voy a crear tu link de acceso y en cuanto esté listo te lo mando. ¡Gracias por confiar en Medilink! 🙌`);
+      console.log(`[COMPRA] Mariano notificado. Lead ${effectiveTarget} en espera de link.`);
+      return;
+    }
+    // ────────────────────────────────────────────────────────────────────
+
+    // ── SEGUIMIENTO AUTOMÁTICO: detectar intención de no-interés o reset de timer ──
+    if (!fromMe && conversationMetadata[effectiveTarget]?.followUpState === 'pending') {
+      const noInterestKeywords = ['no me interesa', 'no por ahora', 'necesito tiempo', 'dejame pensar',
+        'déjame pensar', 'la próxima semana', 'el próximo mes', 'no gracias', 'no, gracias',
+        'por ahora no', 'ahora no puedo', 'lo pensaré', 'lo voy a pensar', 'no estoy interesado'];
+      if (noInterestKeywords.some(kw => lowerBody.includes(kw))) {
+        conversationMetadata[effectiveTarget].followUpState = 'stopped';
+        saveDB();
+      } else {
+        // El lead respondió algo — resetear timer desde ahora para esperar 3 días más
+        conversationMetadata[effectiveTarget].lastCotizacionSent = Date.now();
+        saveDB();
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────
+
+    if (isProcessing[effectiveTarget]) {
+      // Hay mensajes nuevos — re-activar respuesta cuando termine la actual
+      pendingResponses[effectiveTarget] = true;
+      return;
+    }
+    isProcessing[effectiveTarget] = true;
+
+    // Emitir mensaje entrante al frontend
+    try {
+      const ct = await message.getContact();
+      io.emit('new_message', {
+        from: effectiveTarget,
+        fromName: leadNames[effectiveTarget] || ct.name || ct.pushname || 'Desconocido',
+        body: message.body,
+        timestamp: Date.now(),
+        type: contactTypes[effectiveTarget] || 'lead'
+      });
+    } catch (e) {}
+
+    // Buffer de 0.5s para agrupar mensajes en ráfaga rápida
+    console.log(`[WA DIAG-4] ✅ Programando respuesta MIIA para ${effectiveTarget} en 0.5s...`);
+    setTimeout(async () => {
+      console.log(`[WA DIAG-5] ⏰ Ejecutando processAndSendAIResponse para ${effectiveTarget}`);
+      try {
+        await processAndSendAIResponse(effectiveTarget, null, true);
+      } finally {
+        delete isProcessing[effectiveTarget];
+        // Si llegaron mensajes nuevos mientras procesábamos, re-activar respuesta
+        if (pendingResponses[effectiveTarget]) {
+          delete pendingResponses[effectiveTarget];
+          setTimeout(async () => {
+            isProcessing[effectiveTarget] = true;
+            try {
+              await processAndSendAIResponse(effectiveTarget, null, true);
+            } finally {
+              delete isProcessing[effectiveTarget];
+            }
+          }, 500);
+        }
+      }
+    }, 500);
+
+  } catch (err) {
+    console.error(`[WA] Error procesando mensaje de ${message.from}:`, err.message);
+  }
+}
+
+// ============================================
+// WHATSAPP CLIENT INITIALIZATION
+// ============================================
+
+function initWhatsApp() {
+  if (whatsappClient) {
+    console.log('[WA] ⚠️  Cliente WhatsApp ya inicializado');
+    return;
+  }
+
+  console.log('\n╔════════════════════════════════════════╗');
+  console.log('║   🚀 INICIALIZANDO WHATSAPP CLIENT    ║');
+  console.log('╚════════════════════════════════════════╝\n');
+  
+  whatsappClient = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu'
+      ]
+    }
+  });
+
+  whatsappClient.on('qr', async (qr) => {
+    console.log('[WA] 📱 QR CODE GENERADO');
+    console.log('[WA] 📱 Convirtiendo a DataURL...');
+    qrCode = await qrcode.toDataURL(qr);
+    console.log('[WA] 📱 QR DataURL generado, longitud:', qrCode.length);
+    console.log('[WA] 📡 Emitiendo evento "qr" via Socket.io...');
+    io.emit('qr', qrCode);
+    console.log('[WA] ✅ QR emitido a clientes conectados');
+  });
+
+  whatsappClient.on('authenticated', () => {
+    console.log('[WA] ✅ WHATSAPP AUTENTICADO CORRECTAMENTE');
+    qrCode = null;
+  });
+
+  whatsappClient.on('ready', () => {
+    console.log('\n╔════════════════════════════════════════╗');
+    console.log('║   ✅ WHATSAPP LISTO                   ║');
+    console.log('║   🤖 MIIA AUTO-RESPONSE ACTIVADA      ║');
+    console.log('╚════════════════════════════════════════╝\n');
+    isReady = true;
+    io.emit('whatsapp_ready', { status: 'connected' });
+
+    // Inicializar / reconectar CEREBRO ABSOLUTO
+    cerebroAbsoluto.init({
+      whatsappClient,
+      generateAIContent,
+      onTrainingUpdate: () => { saveDB(); },
+      dataDir: DATA_DIR,
+      initialTrainingData: cerebroAbsoluto.getTrainingData()
+    });
+
+    // Inicializar SCRAPER REGULATORIO
+    webScraper.init({
+      generateAIContent,
+      appendLearning: cerebroAbsoluto.appendLearning
+    });
+  });
+
+  // ⭐⭐⭐ EVENTO PRINCIPAL - LÓGICA COMPLETA MIIA ⭐⭐⭐
+  whatsappClient.on('message_create', (msg) => {
+    handleIncomingMessage(msg);
+  });
+
+  whatsappClient.on('disconnected', (reason) => {
+    console.log('\n╔════════════════════════════════════════╗');
+    console.log('║   ❌ WHATSAPP DESCONECTADO            ║');
+    console.log('╚════════════════════════════════════════╝');
+    console.log('[WA] ❌ Razón:', reason);
+    isReady = false;
+    whatsappClient = null;
+    io.emit('whatsapp_disconnected', { reason });
+  });
+
+  console.log('[WA] 🔄 Llamando a client.initialize()...');
+  whatsappClient.initialize();
+  console.log('[WA] 🔄 Initialize() llamado, esperando conexión...\n');
+}
+
+// ============================================
+// SOCKET.IO EVENTS
+// ============================================
+
+io.on('connection', (socket) => {
+  console.log('👤 Cliente conectado via Socket.io');
+  
+  if (!whatsappClient) {
+    initWhatsApp();
+  }
+
+  // Si WhatsApp ya está conectado, avisar inmediatamente
+  if (isReady && whatsappClient) {
+    socket.emit('whatsapp_ready', { status: 'connected' });
+  } else if (qrCode) {
+    socket.emit('qr', qrCode);
+  }
+  
+  socket.emit('whatsapp_status', { isReady, qrCode });
+
+  socket.on('check_status', () => {
+    if (isReady && whatsappClient) {
+      socket.emit('whatsapp_ready', { status: 'connected' });
+    }
+  });
+
+  // Enviar mensaje manual desde frontend
+  socket.on('send_message', async (data) => {
+    const { to, message } = data;
+    
+    if (!isReady) {
+      socket.emit('error', { message: 'WhatsApp no conectado' });
+      return;
+    }
+
+    try {
+      await whatsappClient.sendMessage(to, message);
+      socket.emit('message_sent', { to, message });
+      console.log(`[MANUAL] Mensaje enviado a ${to}`);
+    } catch (error) {
+      console.error('[ERROR] send_message:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // Obtener lista de chats
+  socket.on('get_chats', async () => {
+    if (!isReady) {
+      socket.emit('error', { message: 'WhatsApp no conectado' });
+      return;
+    }
+
+    try {
+      const chats = await whatsappClient.getChats();
+      const chatList = [];
+      
+      for (let i = 0; i < Math.min(chats.length, 50); i++) {
+        const chat = chats[i];
+        const contact = await chat.getContact();
+        chatList.push({
+          id: chat.id._serialized,
+          name: contact.pushname || contact.number,
+          lastMessage: chat.lastMessage?.body || '',
+          timestamp: chat.timestamp
+        });
+      }
+
+      socket.emit('chats_list', chatList);
+    } catch (error) {
+      console.error('[ERROR] get_chats:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // Obtener lista de conversaciones (memoria interna)
+  socket.on('get_conversations', () => {
+    const conversationList = Object.keys(conversations).map(phone => ({
+      phone,
+      name: leadNames[phone] || 'Desconocido',
+      type: contactTypes[phone] || 'lead',
+      lastMessage: conversations[phone][conversations[phone].length - 1]?.content || '',
+      timestamp: conversations[phone][conversations[phone].length - 1]?.timestamp || Date.now(),
+      messageCount: conversations[phone].length
+    }));
+    
+    socket.emit('conversations_list', conversationList);
+  });
+
+  // Obtener conversación específica
+  socket.on('get_conversation', (data) => {
+    const { phone } = data;
+    if (conversations[phone]) {
+      socket.emit('conversation_data', {
+        phone,
+        name: leadNames[phone],
+        type: contactTypes[phone],
+        messages: conversations[phone]
+      });
+    } else {
+      socket.emit('error', { message: 'Conversación no encontrada' });
+    }
+  });
+});
+
+// ============================================
+// ENDPOINTS HTTP
+// ============================================
+
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'MIIA Backend Running',
+    whatsapp: isReady ? 'connected' : 'disconnected',
+    version: '2.0 - Auto-Response FULL',
+    features: [
+      'Auto-response WhatsApp',
+      'Family detection',
+      'Gemini AI integration',
+      'Anti-spam protection',
+      'Conversation memory'
+    ]
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok',
+    whatsapp: isReady,
+    conversations: Object.keys(conversations).length,
+    activeContacts: Object.keys(contactTypes).length
+  });
+});
+
+// Endpoint para obtener conversaciones (para Firebase sync futuro)
+app.get('/api/conversations', (req, res) => {
+  res.json({ 
+    conversations, 
+    contactTypes, 
+    leadNames,
+    totalConversations: Object.keys(conversations).length,
+    familyContacts: Object.values(contactTypes).filter(t => t === 'familia').length,
+    leadContacts: Object.values(contactTypes).filter(t => t === 'lead').length
+  });
+});
+
+// ⭐ NUEVO ENDPOINT - Chat con MIIA desde frontend
+app.post('/api/chat', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  console.log('\n' + '='.repeat(60));
+  console.log(`[${timestamp}] 💬 API CHAT - NUEVA PETICIÓN`);
+  console.log('='.repeat(60));
+  
+  try {
+    const { message, userId, businessInfo } = req.body;
+    
+    console.log(`[API CHAT] 👤 User ID: ${userId}`);
+    console.log(`[API CHAT] 💬 Message: ${message}`);
+    console.log(`[API CHAT] 📊 Business info presente: ${!!businessInfo}`);
+    console.log(`[API CHAT] 📦 Body completo:`, JSON.stringify(req.body, null, 2));
+    
+    if (!message) {
+      console.error('[API CHAT] ❌ ERROR: Mensaje vacío');
+      return res.status(400).json({ error: 'Mensaje requerido' });
+    }
+
+    // Preparar historial de conversación
+    const conversationHistory = [];
+    
+    if (businessInfo) {
+      console.log('[API CHAT] ✅ Agregando contexto de negocio a la conversación');
+      conversationHistory.push({
+        role: "user",
+        parts: [{ text: `[CONTEXTO: El usuario te ha enseñado:\n${businessInfo}\nUsa esto cuando sea relevante.]` }]
+      });
+      conversationHistory.push({
+        role: "model",
+        parts: [{ text: "Entendido." }]
+      });
+    }
+    
+    conversationHistory.push({
+      role: "user",
+      parts: [{ text: message }]
+    });
+
+    console.log('[API CHAT] 🚀 Preparando llamada a Gemini API...');
+    console.log(`[API CHAT] 📨 Cantidad de mensajes en historial: ${conversationHistory.length}`);
+    console.log('[API CHAT] 🔑 GEMINI_API_KEY está configurada:', !!GEMINI_API_KEY);
+    
+    const geminiUrl = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
+    console.log('[API CHAT] 🌐 URL Gemini (oculta):', geminiUrl.replace(GEMINI_API_KEY, 'API_KEY_HIDDEN'));
+    
+    const payload = {
+      contents: conversationHistory,
+      systemInstruction: {
+        parts: [{ text: "Eres MIIA, asistente amigable para emprendedores. Responde natural y brevemente." }]
+      }
+    };
+    
+    console.log('[API CHAT] 📦 Payload preparado, enviando fetch...');
+    
+    const geminiResponse = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    console.log(`[API CHAT] 📡 Gemini response status: ${geminiResponse.status}`);
+    console.log(`[API CHAT] 📡 Gemini response ok: ${geminiResponse.ok}`);
+
+    if (!geminiResponse.ok) {
+      const errorData = await geminiResponse.json();
+      console.error('[API CHAT] ❌ ERROR DE GEMINI:');
+      console.error('[API CHAT] ❌ Status:', geminiResponse.status);
+      console.error('[API CHAT] ❌ Error data:', JSON.stringify(errorData, null, 2));
+      return res.status(500).json({ 
+        error: 'Error al procesar mensaje',
+        details: errorData.error?.message 
+      });
+    }
+
+    const data = await geminiResponse.json();
+    console.log('[API CHAT] 📥 Respuesta de Gemini recibida');
+    console.log('[API CHAT] 📊 Data.candidates length:', data.candidates?.length || 0);
+    
+    if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+      console.error('[API CHAT] ❌ ERROR: Respuesta inválida de Gemini');
+      console.error('[API CHAT] ❌ Data completo:', JSON.stringify(data, null, 2));
+      return res.status(500).json({ error: 'Respuesta inválida de IA' });
+    }
+
+    const responseText = data.candidates[0].content.parts[0].text;
+    console.log('[API CHAT] ✅ RESPUESTA GENERADA EXITOSAMENTE');
+    console.log(`[API CHAT] 📝 Longitud de respuesta: ${responseText.length} caracteres`);
+    console.log(`[API CHAT] 💭 Primeros 100 chars: ${responseText.substring(0, 100)}...`);
+
+    const finalResponse = { 
+      response: responseText,
+      timestamp: Date.now()
+    };
+    
+    console.log('[API CHAT] 📤 Enviando respuesta al cliente...');
+    res.json(finalResponse);
+    console.log('[API CHAT] ✅ RESPUESTA ENVIADA CORRECTAMENTE');
+    console.log('='.repeat(60) + '\n');
+    
+  } catch (error) {
+    console.error('\n' + '❌'.repeat(30));
+    console.error('[API CHAT] ❌❌❌ ERROR CRÍTICO ❌❌❌');
+    console.error('[API CHAT] ❌ Message:', error.message);
+    console.error('[API CHAT] ❌ Stack:', error.stack);
+    console.error('[API CHAT] ❌ Error completo:', error);
+    console.error('❌'.repeat(30) + '\n');
+    
+    res.status(500).json({ 
+      error: 'Error interno del servidor',
+      message: error.message 
+    });
+  }
+});
+
+// Endpoint para obtener estadísticas
+app.get('/api/stats', (req, res) => {
+  const stats = {
+    whatsappConnected: isReady,
+    totalConversations: Object.keys(conversations).length,
+    totalMessages: Object.values(conversations).reduce((sum, conv) => sum + conv.length, 0),
+    contactTypes: {
+      familia: Object.values(contactTypes).filter(t => t === 'familia').length,
+      lead: Object.values(contactTypes).filter(t => t === 'lead').length,
+      cliente: Object.values(contactTypes).filter(t => t === 'cliente').length
+    },
+    recentActivity: Object.keys(conversations).length
+  };
+  
+  res.json(stats);
+});
+
+// ============================================
+// CEREBRO ABSOLUTO — CRON NOCTURNO (cada 60s)
+// ============================================
+
+// ============================================
+// DESPERTAR MATUTINO — responde mensajes nocturnos pendientes
+// ============================================
+
+async function processMorningWakeup() {
+  try {
+    if (!whatsappClient || !isReady) return;
+    if (nightPendingLeads.size === 0) return;
+
+    const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+    const h         = bogotaNow.getHours();
+    const min       = bogotaNow.getMinutes();
+    const todayStr  = bogotaNow.toLocaleDateString('es-ES');
+
+    // Ventana: 6:00–6:30 AM Bogotá, una vez por día
+    if (h !== 6 || min > 30 || morningWakeupDone === todayStr) return;
+
+    morningWakeupDone = todayStr;
+    const pendingCopy = [...nightPendingLeads];
+    nightPendingLeads.clear();
+
+    console.log(`[WAKE UP] Procesando ${pendingCopy.length} leads pendientes nocturnos...`);
+
+    for (const pendingPhone of pendingCopy) {
+      // Delay aleatorio entre leads: 30s–3min para parecer humano
+      const delay = Math.floor(Math.random() * 150000) + 30000;
+      await new Promise(r => setTimeout(r, delay));
+      try {
+        const lastMsg = (conversations[pendingPhone] || []).slice(-1)[0];
+        if (lastMsg && lastMsg.role === 'user') {
+          await processMiiaResponse(pendingPhone, lastMsg.content, true);
+          console.log(`[WAKE UP] Respondido a ${pendingPhone}`);
+        }
+      } catch (e) {
+        console.error(`[WAKE UP] Error procesando ${pendingPhone}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[WAKE UP] Error general:', e.message);
+  }
+}
+
+// ============================================
+// BRIEFING MATUTINO — resumen a Mariano a las 8:30 AM
+// ============================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FOLLOW-UP AUTOMÁTICO — 3 días sin respuesta del lead tras recibir cotización
+// ─────────────────────────────────────────────────────────────────────────────
+async function processLeadFollowUps() {
+  const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  for (const [phone, meta] of Object.entries(conversationMetadata)) {
+    if (meta.followUpState !== 'pending') continue;
+    if (!meta.lastCotizacionSent) continue;
+
+    const elapsed = now - meta.lastCotizacionSent;
+    if (elapsed < THREE_DAYS_MS) continue;
+
+    // Si Mariano intervino manualmente después de la cotización, resetear timer
+    if (meta.humanInterventionTime && meta.humanInterventionTime > meta.lastCotizacionSent) {
+      meta.lastCotizacionSent = meta.humanInterventionTime;
+      saveDB();
+      continue;
+    }
+
+    const leadName = leadNames[phone] || phone.split('@')[0];
+    const history = conversations[phone] || [];
+    const historyText = history.slice(-20)
+      .map(m => `${m.role === 'user' ? 'Lead' : 'MIIA'}: ${m.content.substring(0, 200)}`)
+      .join('\n');
+
+    const followUpPrompt = `Eres MIIA, asistente de ventas de Medilink. El lead "${leadName}" recibió una cotización hace más de 3 días y no ha respondido.
+
+Historial reciente de la conversación:
+${historyText}
+
+Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el interés. Usá algún gancho relacionado a la conversación (su tipo de clínica, el problema que mencionó, la urgencia de la promo, etc). Soná como MIIA Owner escribiendo desde su celular — natural, directo, no robótico. NO menciones que sos una IA. NO uses "estimado" ni lenguaje formal. NO repitas la cotización. Solo buscá reabrir la conversación.`;
+
+    try {
+      const followUpMsg = await generateAIContent(followUpPrompt);
+      if (followUpMsg && followUpMsg.trim()) {
+        await safeSendMessage(phone, followUpMsg.trim());
+        console.log(`[FOLLOW-UP] Mensaje enviado a ${leadName} (${phone})`);
+        meta.lastCotizacionSent = now; // no volver a escribir en 3 días
+        saveDB();
+      }
+    } catch (e) {
+      console.error(`[FOLLOW-UP] Error generando follow-up para ${phone}:`, e.message);
+    }
+  }
+}
+
+async function processMorningBriefing() {
+  try {
+    if (!whatsappClient || !isReady) return;
+
+    const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+    const h         = bogotaNow.getHours();
+    const min       = bogotaNow.getMinutes();
+    const todayStr  = bogotaNow.toLocaleDateString('es-ES');
+
+    // Ventana: 8:30–8:59 AM Bogotá, una vez por día
+    if (h !== 8 || min < 30 || morningBriefingDone === todayStr) return;
+    morningBriefingDone = todayStr;
+
+    // ── 1. Novedades regulatorias del scraper (interactivo: Mariano aprueba) ──
+    const scraperResults = webScraper.getPendingResults();
+
+    // ── 2. Leads con pendientes detectados en sus resúmenes ──
+    const keywords = ['pendiente', 'demo', 'mañana', 'esta semana', 'llamar', 'cotización', 'cotizacion', 'hoy', 'seguimiento', 'contactar'];
+    const pendingEntries = Object.entries(leadSummaries)
+      .filter(([, summary]) => {
+        const s = (summary || '').toLowerCase();
+        return keywords.some(k => s.includes(k));
+      })
+      .slice(0, 10)
+      .map(([lPhone, summary]) => {
+        const name = leadNames[lPhone] || lPhone.split('@')[0];
+        return `▸ *${name}*: ${summary.substring(0, 160)}`;
+      })
+      .join('\n');
+
+    const leadsSection = pendingEntries
+      ? `\n\n*👥 LEADS CON PENDIENTES HOY:*\n${pendingEntries}`
+      : '';
+
+    // ── 3. Sin nada que informar ──
+    if (!scraperResults.length && !leadsSection) {
+      console.log('[BRIEFING] Sin novedades hoy. No se envía mensaje.');
+      return;
+    }
+
+    let briefing = `🌅 *Buenos días, Mariano.* Aquí tu resumen matutino de MIIA:`;
+
+    // Sección regulatoria — lista numerada, requiere aprobación
+    if (scraperResults.length > 0) {
+      briefingPendingApproval = [...scraperResults];
+      webScraper.clearPendingResults();
+
+      briefing += `\n\n*📋 NOVEDADES REGULATORIAS (${scraperResults.length}):*\n`;
+      scraperResults.forEach((r, i) => {
+        briefing += `\n*${i + 1}.* _${r.source}_ (${r.fecha}):\n${r.text}\n`;
+      });
+      briefing += `\n¿Qué querés que aprenda? Respondé con los números separados por coma (ej: *1, 3*), *todos* o *ninguno*.`;
+    }
+
+    // Sección leads (informativa, sin aprobación)
+    if (leadsSection) briefing += leadsSection;
+
+    await safeSendMessage(`${OWNER_PHONE}@c.us`, briefing);
+    console.log(`[BRIEFING] Briefing interactivo enviado a Mariano (${scraperResults.length} regulatorias, leads: ${!!pendingEntries}).`);
+  } catch (e) {
+    console.error('[BRIEFING] Error:', e.message);
+  }
+
+  // Follow-up automático a leads sin respuesta de 3+ días
+  await processLeadFollowUps();
+}
+
+setInterval(() => {
+  cerebroAbsoluto.processADNMinerCron();
+  webScraper.processScraperCron();
+  processMorningWakeup();
+  processMorningBriefing();
+}, 60 * 1000);
+
+// Endpoint para disparar el scraper manualmente
+app.post('/api/scraper/run', (_req, res) => {
+  res.json({ success: true, message: 'Scraper regulatorio activado en segundo plano.' });
+  webScraper.runScraper().catch(e => console.error('[API] Error en scraper manual:', e.message));
+});
+
+// Endpoint para aprender el centro de ayuda Medilink (https://ayuda.softwaremedilink.com/es/)
+app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
+  res.json({ success: true, message: 'Iniciando aprendizaje del centro de ayuda Medilink...' });
+  (async () => {
+    const BASE = 'https://ayuda.softwaremedilink.com/es/';
+    try {
+      console.log('[HELPCENTER] Iniciando crawl de ayuda.softwaremedilink.com...');
+      // 1. Fetch index page to discover article links
+      const indexResp = await fetch(BASE, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MIIABot/1.0)' }, signal: AbortSignal.timeout(15000) });
+      const indexHtml = await indexResp.text();
+      // Extract unique article URLs under the same domain
+      const linkMatches = [...new Set([...indexHtml.matchAll(/href="(\/[^"#?]*(?:article|es\/)[^"#?]*)"/gi)].map(m => m[1]))];
+      const articleUrls = linkMatches
+        .filter(p => p.startsWith('/') && !p.endsWith('.css') && !p.endsWith('.js'))
+        .map(p => `https://ayuda.softwaremedilink.com${p}`)
+        .slice(0, 60); // max 60 artículos
+      console.log(`[HELPCENTER] ${articleUrls.length} artículos encontrados.`);
+
+      // 2. Fetch and learn each article
+      let learned = 0;
+      for (const url of articleUrls) {
+        try {
+          const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MIIABot/1.0)' }, signal: AbortSignal.timeout(12000) });
+          if (!resp.ok) continue;
+          const html = await resp.text();
+          const text = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim().substring(0, 6000);
+          if (text.length < 150) continue;
+          const prompt = `Sos MIIA, asistente de ventas de Medilink. Resumí el siguiente artículo del centro de ayuda de Medilink en máximo 200 palabras, en un formato que te permita recordar y explicar esta funcionalidad a futuros leads. Incluí el link del artículo: ${url}\n\nContenido:\n${text}`;
+          const summary = await generateAIContent(prompt);
+          if (summary && summary.length > 50) {
+            cerebroAbsoluto.appendLearning(`[AYUDA MEDILINK - ${url}]\n${summary}`, 'HELPCENTER_MEDILINK');
+            learned++;
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        } catch (e) {
+          console.warn(`[HELPCENTER] Error en ${url}:`, e.message);
+        }
+      }
+      saveDB();
+      console.log(`[HELPCENTER] ✅ Aprendizaje completo: ${learned}/${articleUrls.length} artículos procesados.`);
+      // Notify Mariano via WhatsApp
+      safeSendMessage(`${OWNER_PHONE}@c.us`, `✅ *Centro de Ayuda Medilink aprendido*\n${learned} artículos procesados y guardados en mi memoria.`).catch(() => {});
+    } catch (e) {
+      console.error('[HELPCENTER] Error general:', e.message);
+    }
+  })();
+});
+
+// Endpoint para disparar el minado manualmente desde el panel
+app.post('/api/cerebro/mine-dna', async (_req, res) => {
+  if (!whatsappClient || !isReady) {
+    return res.status(503).json({ error: 'WhatsApp no conectado.' });
+  }
+  res.json({ success: true, message: 'CEREBRO ABSOLUTO activado en segundo plano.' });
+  cerebroAbsoluto.extractDNAChronological().catch(e =>
+    console.error('[API] Error en mine-dna manual:', e.message)
+  );
+});
+
+app.get('/api/cerebro/status', (_req, res) => {
+  res.json({
+    trainingDataLength: cerebroAbsoluto.getTrainingData().length,
+    hasTrainingData: cerebroAbsoluto.getTrainingData().length > 0
+  });
+});
+
+// Inyección directa de conocimiento (usado desde Claude, scripts externos, etc.)
+app.post('/api/cerebro/learn', express.json(), (req, res) => {
+  const { text, source } = req.body || {};
+  if (!text || !text.trim()) return res.status(400).json({ error: 'text requerido' });
+  cerebroAbsoluto.appendLearning(text, source || 'API_DIRECTA');
+  saveDB();
+  res.json({ success: true, trainingDataLength: cerebroAbsoluto.getTrainingData().length });
+});
+
+// Endpoint de entrenamiento web — guarda lo que Mariano enseña desde training.html
+app.post('/api/train', express.json(), async (req, res) => {
+  try {
+    const { message } = req.body || {};
+    if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
+    cerebroAbsoluto.appendLearning(message, 'WEB_TRAINING');
+    saveDB();
+    const confirmPrompt = `Eres MIIA, asistente de Medilink creada por MIIA Owner.
+Mariano acaba de enseñarte lo siguiente para que lo incorpores a tu conocimiento permanente:
+"${message}"
+Confirma brevemente que lo entendiste y lo guardaste (máx 2 oraciones), en primera persona, sin tecnicismos.`;
+    const confirmation = await generateAIContent(confirmPrompt);
+    res.json({ response: confirmation || '✅ Aprendido y guardado en mi memoria.', saved: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
+// SERVIDOR
+// ============================================
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log('\n🚀 ═══ SERVIDOR INICIADO ═══');
+  console.log(`📡 Puerto: ${PORT}`);
+  console.log(`🌐 URL del backend: http://localhost:${PORT}`);
+  console.log(`🔗 Socket.IO: http://localhost:${PORT}`);
+  console.log('═══════════════════════════════════\n');
+  console.log(`
+╔════════════════════════════════════════╗
+║   🚀 MIIA Backend v2.0 FULL           ║
+║   Puerto: ${PORT}                        ║
+║   WhatsApp Auto-Response: ACTIVO      ║
+║   Family Detection: ACTIVO            ║
+║   Gemini AI: READY                    ║
+╚════════════════════════════════════════╝
+  `);
+
+  console.log('\n🖥️  ═══ INFORMACIÓN DEL ENTORNO ═══');
+  console.log('process.stdout.isTTY:', process.stdout.isTTY);
+  console.log('process.stderr.isTTY:', process.stderr.isTTY);
+  console.log('Tipo de entorno:', process.stdout.isTTY ? 'Terminal Interactiva' : 'Servidor/Contenedor (Railway/Docker)');
+  console.log('Logs con force flush: SÍ ✅ (siempre activo)');
+
+  console.log('\n🔐 ═══ VARIABLES DE ENTORNO ═══');
+  console.log('PORT:', process.env.PORT || '3000 (default)');
+  console.log('NODE_ENV:', process.env.NODE_ENV || 'no definido');
+  console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? '✅ Configurada (longitud: ' + process.env.GEMINI_API_KEY.length + ')' : '❌ NO CONFIGURADA');
+  console.log('ALLOWED_ORIGINS:', process.env.ALLOWED_ORIGINS || 'no definido');
+  
+  console.log('\n📊 ═══ TODAS LAS VARIABLES DE ENTORNO ═══');
+  Object.keys(process.env).sort().forEach(key => {
+    const value = process.env[key];
+    
+    // Ocultar valores sensibles
+    if (key.toLowerCase().includes('key') || 
+        key.toLowerCase().includes('secret') || 
+        key.toLowerCase().includes('password') ||
+        key.toLowerCase().includes('token')) {
+      console.log(`${key}: [OCULTO - longitud: ${value.length}]`);
+    } else if (value.length > 100) {
+      console.log(`${key}: ${value.substring(0, 50)}... [longitud total: ${value.length}]`);
+    } else {
+      console.log(`${key}: ${value}`);
+    }
+  });
+  
+  console.log('\n═══════════════════════════════════\n');
+
+  // Auto-inicializar WhatsApp al arrancar (no esperar a Socket.io)
+  initWhatsApp();
+});

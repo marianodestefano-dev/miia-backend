@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
@@ -74,13 +76,14 @@ let lastResponse = {}; // { phone: timestamp } - Anti-spam
 // ============================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
+const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent';
 
 async function callGeminiAPI(messages, systemPrompt) {
   console.log('[GEMINI] 🚀 Iniciando llamada a Gemini API...');
   console.log('[GEMINI] 📨 Cantidad de mensajes:', messages.length);
   
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
+    const url = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
     console.log('[GEMINI] 🌐 URL:', url.replace(GEMINI_API_KEY, 'API_KEY_HIDDEN'));
     
     const payload = {
@@ -631,7 +634,7 @@ app.post('/api/chat', async (req, res) => {
     console.log(`[API CHAT] 📨 Cantidad de mensajes en historial: ${conversationHistory.length}`);
     console.log('[API CHAT] 🔑 GEMINI_API_KEY está configurada:', !!GEMINI_API_KEY);
     
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
+    const geminiUrl = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
     console.log('[API CHAT] 🌐 URL Gemini (oculta):', geminiUrl.replace(GEMINI_API_KEY, 'API_KEY_HIDDEN'));
     
     const payload = {
@@ -726,6 +729,11 @@ app.get('/api/stats', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
+  console.log('\n🚀 ═══ SERVIDOR INICIADO ═══');
+  console.log(`📡 Puerto: ${PORT}`);
+  console.log(`🌐 URL del backend: http://localhost:${PORT}`);
+  console.log(`🔗 Socket.IO: http://localhost:${PORT}`);
+  console.log('═══════════════════════════════════\n');
   console.log(`
 ╔════════════════════════════════════════╗
 ║   🚀 MIIA Backend v2.0 FULL           ║
