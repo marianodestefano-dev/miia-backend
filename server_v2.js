@@ -2089,11 +2089,7 @@ app.post('/api/tenant/:uid/train', express.json(), (req, res) => {
 });
 
 // GET /api/tenants — List all active tenants (admin only)
-app.get('/api/tenants', (req, res) => {
-  const adminKey = req.headers['x-admin-key'];
-  if (adminKey !== process.env.ADMIN_API_KEY) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+app.get('/api/tenants', verifyAdminToken, (req, res) => {
   res.json(tenantManager.getAllTenants());
 });
 
@@ -2709,9 +2705,7 @@ app.post('/api/tenant/:uid/test', express.json(), async (req, res) => {
 
 // ── Admin User Management ───────────────────────────────────────────────────
 
-app.post('/api/admin/user', express.json(), async (req, res) => {
-  const adminKey = req.headers['x-admin-key'];
-  if (adminKey !== process.env.ADMIN_API_KEY) return res.status(403).json({ error: 'Forbidden' });
+app.post('/api/admin/user', express.json(), verifyAdminToken, async (req, res) => {
 
   try {
     const { email, name, plan } = req.body;
@@ -2755,9 +2749,7 @@ app.post('/api/admin/user', express.json(), async (req, res) => {
   }
 });
 
-app.delete('/api/admin/user/:uid', async (req, res) => {
-  const adminKey = req.headers['x-admin-key'];
-  if (adminKey !== process.env.ADMIN_API_KEY) return res.status(403).json({ error: 'Forbidden' });
+app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
 
   try {
     const { uid } = req.params;
@@ -2790,6 +2782,27 @@ app.delete('/api/admin/user/:uid', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ── Middleware: verify Firebase Admin ─────────────────────────────────────
+
+async function verifyAdminToken(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    }
+    const idToken = authHeader.substring(7);
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const userDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
+    if (!userDoc.exists || userDoc.data().role !== 'admin') {
+      return res.status(403).json({ error: 'User is not an admin' });
+    }
+    req.user = { uid: decodedToken.uid, email: decodedToken.email };
+    next();
+  } catch (e) {
+    res.status(401).json({ error: 'Unauthorized: ' + e.message });
+  }
+}
 
 // ── Helper: rebuild tenant brain from Firestore ─────────────────────────────
 
