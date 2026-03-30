@@ -4193,8 +4193,16 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // Owner WhatsApp deshabilitado — el número usa el sistema multi-tenant
-  // initWhatsApp();
+  // Auto-start owner tenant on server boot (behaves like the old initWhatsApp).
+  // If a session is saved in Firestore, reconnects without QR scan.
+  // If no session, the user scans QR once via training.html and it persists.
+  const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
+  console.log(`[AUTO-INIT] 🚀 Auto-starting owner tenant: ${OWNER_UID}`);
+  try {
+    tenantManager.initTenant(OWNER_UID, process.env.GEMINI_API_KEY || '', io);
+  } catch (err) {
+    console.error('[AUTO-INIT] ❌ Error auto-starting owner tenant:', err.message);
+  }
 });
 
 // Export app for testing

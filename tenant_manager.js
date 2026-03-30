@@ -273,31 +273,41 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
     }
 
     // Polling fallback: whatsapp-web.js `message` events can be unreliable.
-    // Every 5 seconds, fetch unread chats and process any new messages not yet seen.
+    // WhatsApp Web marks messages as read automatically, so unreadCount is always 0.
+    // Instead, track the last message timestamp per chat and process newer ones.
     tenant._lastSeenMsgIds = new Set();
+    tenant._lastSeenTimestamps = {}; // chatId → last processed msg timestamp (seconds)
+    const POLL_WINDOW_SEC = 120; // process messages from the last 2 minutes on first poll
+
     tenant._pollInterval = setInterval(async () => {
       if (!tenant.isReady || !tenant.client) return;
       try {
         const chats = await client.getChats();
         for (const chat of chats) {
           if (chat.isGroup) continue;
-          if (chat.unreadCount <= 0) continue;
-          const messages = await chat.fetchMessages({ limit: chat.unreadCount + 1 });
+          const chatId = chat.id._serialized;
+          // Skip if last message in this chat is not newer than what we've seen
+          const lastMsgTs = chat.lastMessage ? chat.lastMessage.timestamp : 0;
+          const lastSeenTs = tenant._lastSeenTimestamps[chatId] || (Math.floor(Date.now() / 1000) - POLL_WINDOW_SEC);
+          if (lastMsgTs <= lastSeenTs) continue;
+
+          // There's a newer message — fetch recent messages
+          const messages = await chat.fetchMessages({ limit: 10 });
           for (const msg of messages) {
             if (msg.fromMe) continue;
             if (!msg.body || msg.body.trim() === '') continue;
             if (tenant._lastSeenMsgIds.has(msg.id._serialized)) continue;
+            if (msg.timestamp <= lastSeenTs) continue;
             tenant._lastSeenMsgIds.add(msg.id._serialized);
-            // Only process messages received in the last 2 minutes (avoid replaying history)
-            const ageMs = Date.now() - (msg.timestamp * 1000);
-            if (ageMs > 2 * 60 * 1000) continue;
             console.log(`[TM:${uid}] 📨 POLL message from ${msg.from}: "${(msg.body||'').substring(0,40)}"`);
             processTenantMessage(uid, msg.from, msg.body);
           }
-          // Keep Set size manageable
-          if (tenant._lastSeenMsgIds.size > 1000) {
-            tenant._lastSeenMsgIds = new Set([...tenant._lastSeenMsgIds].slice(-500));
-          }
+          // Update last seen timestamp for this chat
+          tenant._lastSeenTimestamps[chatId] = lastMsgTs;
+        }
+        // Keep Set size manageable
+        if (tenant._lastSeenMsgIds.size > 2000) {
+          tenant._lastSeenMsgIds = new Set([...tenant._lastSeenMsgIds].slice(-1000));
         }
       } catch (err) {
         // Ignore poll errors silently
