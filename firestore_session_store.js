@@ -26,7 +26,13 @@ class FirestoreSessionStore {
     try {
       const sessionId = this._normalizeSessionId(session);
       const doc = await this.db.collection(this.collection).doc(sessionId).get();
-      const exists = doc.exists && doc.data()?.totalChunks > 0;
+      if (!doc.exists || !(doc.data()?.totalChunks > 0)) {
+        console.log(`[SESSION-STORE] sessionExists(${sessionId}): false (no metadata)`);
+        return false;
+      }
+      // Also verify chunks actually exist to avoid ENOENT crash on extract
+      const firstChunk = await this.db.collection(this.collection).doc(sessionId).collection('chunks').limit(1).get();
+      const exists = !firstChunk.empty;
       console.log(`[SESSION-STORE] sessionExists(${sessionId}): ${exists}`);
       return exists;
     } catch (err) {
@@ -126,7 +132,9 @@ class FirestoreSessionStore {
         .get();
 
       if (chunksSnap.empty) {
-        console.warn(`[SESSION-STORE] No chunks found for session ${sessionId}`);
+        console.warn(`[SESSION-STORE] No chunks found for session ${sessionId} — deleting stale metadata`);
+        // Delete stale metadata so sessionExists returns false next time (prevents ENOENT crash)
+        await this.db.collection(this.collection).doc(sessionId).delete().catch(() => {});
         return;
       }
 
