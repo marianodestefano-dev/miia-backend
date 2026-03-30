@@ -219,12 +219,18 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
   tenant.client = client;
 
   client.on('qr', async (qr) => {
-    console.log(`[TM:${uid}] 📱 QR generated`);
-    tenant.qrCode = await qrcode.toDataURL(qr);
-    if (ioInstance) {
-      ioInstance.to(`tenant:${uid}`).emit('qr', tenant.qrCode);
-      // Also broadcast to any connected socket watching this tenant
-      ioInstance.emit(`tenant_qr_${uid}`, tenant.qrCode);
+    try {
+      console.log(`[TM:${uid}] 📱 QR received from WhatsApp client`);
+      const qrDataUrl = await qrcode.toDataURL(qr);
+      console.log(`[TM:${uid}] 📝 QR DataURL length: ${qrDataUrl.length}, starts with: ${qrDataUrl.substring(0, 50)}`);
+      tenant.qrCode = qrDataUrl;
+      console.log(`[TM:${uid}] ✅ QR stored in tenant object`);
+      if (ioInstance) {
+        ioInstance.to(`tenant:${uid}`).emit('qr', tenant.qrCode);
+        ioInstance.emit(`tenant_qr_${uid}`, tenant.qrCode);
+      }
+    } catch (err) {
+      console.error(`[TM:${uid}] ❌ Error generating QR DataURL:`, err.message);
     }
   });
 

@@ -2613,7 +2613,7 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
     return res.json({ qrCode: null, isReady: status.isReady });
   }
 
-  console.log(`[QR] ✅ QR found! Returning it.`);
+  console.log(`[QR] ✅ QR found! Type: ${typeof status.qrCode}, Length: ${status.qrCode ? status.qrCode.length : 'N/A'}, Starts: ${status.qrCode ? status.qrCode.substring(0, 50) : 'null'}`);
   res.json({ qrCode: status.qrCode, isReady: status.isReady });
 });
 
