@@ -401,6 +401,18 @@ async function safeSendMessage(target, content, options = {}) {
     console.log(`⚠️ [INTERCEPTADO] WhatsApp no está listo.`);
     return null;
   }
+  // Rate limit global: máx. mensajes por hora para proteger el número
+  const currentHour = new Date().getHours();
+  if (hourlySendLog.hour !== currentHour) {
+    hourlySendLog.hour = currentHour;
+    hourlySendLog.count = 0;
+  }
+  if (hourlySendLog.count >= MAX_SENDS_PER_HOUR) {
+    console.log(`⚠️ [RATE LIMIT] Límite de ${MAX_SENDS_PER_HOUR} msgs/hora alcanzado. Mensaje a ${target} omitido.`);
+    return null;
+  }
+  hourlySendLog.count++;
+
   if (!options.noDelay) {
     const delay = Math.floor(Math.random() * (3000 - 1500 + 1)) + 1500;
     await new Promise(r => setTimeout(r, delay));
@@ -2396,8 +2408,40 @@ async function processMorningBriefing() {
   await processLeadFollowUps();
 }
 
-setInterval(() => {
-  cerebroAbsoluto.processADNMinerCron();
+// Contador de rate limit de mensajes enviados por hora
+const hourlySendLog = { hour: -1, count: 0 };
+const MAX_SENDS_PER_HOUR = 50;
+
+setInterval(async () => {
+  // Verificar consentimiento ADN antes de ejecutar el minado
+  let adnConsentOk = false;
+  try {
+    if (admin.apps.length > 0) {
+      const ownerUid = process.env.OWNER_UID;
+      if (ownerUid) {
+        const ownerDoc = await admin.firestore().collection('users').doc(ownerUid).get();
+        adnConsentOk = ownerDoc.exists && ownerDoc.data().consent_adn === true;
+      } else {
+        // Fallback: buscar primer usuario con role admin y consent_adn
+        const snap = await admin.firestore().collection('users')
+          .where('role', 'in', ['admin', 'client'])
+          .where('consent_adn', '==', true)
+          .limit(1).get();
+        adnConsentOk = !snap.empty;
+      }
+    }
+  } catch (e) {
+    console.log('[CRON ADN] No se pudo verificar consentimiento:', e.message);
+  }
+
+  if (adnConsentOk) {
+    cerebroAbsoluto.processADNMinerCron();
+  } else {
+    // Solo logear si estamos en la hora del cron (3AM) para no llenar logs
+    const h = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' })).getHours();
+    if (h === 3) console.log('[CRON ADN] Sin consentimiento registrado. Minado cancelado.');
+  }
+
   webScraper.processScraperCron();
   processMorningWakeup();
   processMorningBriefing();
