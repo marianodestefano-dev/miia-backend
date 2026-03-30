@@ -195,6 +195,19 @@ let morningBriefingDone = '';        // evita repetir el briefing en el mismo d�
 let briefingPendingApproval = [];    // novedades regulatorias esperando aprobación de Mariano
 const MIIA_CIERRE = `\n\n_Si quieres seguir hablando, responde *HOLA MIIA*. Si prefieres terminar, escribe *CHAU MIIA*._`;
 
+// Humanizer cache — se refresca desde Firestore cada 60s
+let _humanizerCache = { value: true, ts: 0 };
+async function isHumanizerEnabled() {
+  if (Date.now() - _humanizerCache.ts < 60000) return _humanizerCache.value;
+  try {
+    if (OWNER_UID) {
+      const doc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+      if (doc.exists) _humanizerCache = { value: doc.data().humanizer_enabled !== false, ts: Date.now() };
+    }
+  } catch (_) {}
+  return _humanizerCache.value;
+}
+
 // Micro-humanizer: 2% de mensajes llevan un typo (swap 2 chars adyacentes) para parecer humano
 function maybeAddTypo(text) {
   if (Math.random() > 0.02 || text.length < 10) return text;
@@ -597,6 +610,23 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
       saveDB();
       await safeSendMessage(phone, '✅ Aprendido y guardado en mi memoria permanente.');
       return;
+    }
+
+    // Comando humanizer toggle: "desactivar humanizador" / "activar humanizador"
+    if (isAdmin && effectiveMsg) {
+      const lower = effectiveMsg.toLowerCase();
+      if (lower.includes('desactivar humanizador') || lower.includes('desactivar versión humanizada')) {
+        if (OWNER_UID) await admin.firestore().collection('users').doc(OWNER_UID).update({ humanizer_enabled: false });
+        _humanizerCache = { value: false, ts: Date.now() };
+        await safeSendMessage(phone, '✅ Humanizador desactivado. Responderé de forma más directa y sin pausas largas.');
+        return;
+      }
+      if (lower.includes('activar humanizador') || lower.includes('activar versión humanizada')) {
+        if (OWNER_UID) await admin.firestore().collection('users').doc(OWNER_UID).update({ humanizer_enabled: true });
+        _humanizerCache = { value: true, ts: Date.now() };
+        await safeSendMessage(phone, '✅ Humanizador activado. Incluiré pausas variables y pequeños errores tipográficos ocasionales.');
+        return;
+      }
     }
 
     // Comando "dile a equipo medilink que..." — broadcast a todos los miembros del equipo
@@ -1370,11 +1400,12 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       await new Promise(r => setTimeout(r, typingDuration));
     } catch (e) { /* ignore typing errors */ }
 
-    // Micro-humanizer: typo 2% + delay variable (1 en 8 mensajes: 20-45s)
-    aiMessage = maybeAddTypo(aiMessage);
-    const humanDelay = Math.random() < 0.125
-      ? (20000 + Math.random() * 25000)
-      : (1500 + Math.random() * 1500);
+    // Micro-humanizer: typo 2% + delay variable (1 en 8 mensajes: 20-45s) — respeta preferencia del usuario
+    const humanizerOn = await isHumanizerEnabled();
+    if (humanizerOn) aiMessage = maybeAddTypo(aiMessage);
+    const humanDelay = humanizerOn
+      ? (Math.random() < 0.125 ? (20000 + Math.random() * 25000) : (1500 + Math.random() * 1500))
+      : (800 + Math.random() * 400);
     await new Promise(r => setTimeout(r, humanDelay));
 
     lastAiSentBody[phone] = aiMessage.trim();
