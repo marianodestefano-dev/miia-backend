@@ -265,7 +265,10 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
     }
   });
 
-  client.initialize();
+  // Initialize WhatsApp client with error handling
+  client.initialize().catch(err => {
+    console.error(`[TM:${uid}] ❌ Error initializing WhatsApp client:`, err.message);
+  });
   return tenant;
 }
 
