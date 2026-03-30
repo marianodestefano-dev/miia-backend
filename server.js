@@ -4,6 +4,7 @@ const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
+const compression = require('compression');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -109,6 +110,7 @@ const io = socketIO(server, {
   }
 });
 
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 
