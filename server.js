@@ -161,6 +161,7 @@ const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
 let whatsappClient = null;
 let qrCode = null;
 let isReady = false;
+let initRetryCount = 0; // Counter para evitar loop infinito de reintentos
 let conversations = {}; // { phone: [{ role, content, timestamp }] }
 let contactTypes = { '573163937365@c.us': 'lead' }; // { phone: 'familia' | 'lead' | 'cliente' }
 let leadNames = { '573163937365@c.us': 'Dr. Mariano' }; // { phone: 'nombre' }
@@ -2209,18 +2210,25 @@ function initWhatsApp() {
     // Si la sesión es corrupta, limpiarla para que el próximo boot pida QR
     if (errMsg === 'undefined' || errMsg === 'unknown error' || errMsg.includes('ENOENT') || errMsg.includes('corrupt') || errMsg.includes('auth timeout') || errMsg.includes('timeout') || errMsg.includes('session') || errMsg.includes('401') || errMsg.includes('403')) {
       try {
-        console.log('[WA] 🗑️ Limpiando sesión potencialmente corrupta...');
+        console.log('[WA] 🗑️ Limpiando sesión potencialmente corrupta (intento #' + (initRetryCount + 1) + '/3)...');
         const store = new FirestoreSessionStore();
         await store.delete({ session: `RemoteAuth-tenant-${OWNER_UID}` });
-        console.log('[WA] ✅ Sesión limpiada — reintentar en 3s para generar QR fresco');
         whatsappClient = null;
         isReady = false;
         qrCode = null;
-        // Reintentar en 3 segundos para generar un nuevo QR
-        setTimeout(() => {
-          console.log('[WA] 🔄 Reintentar inicialización con nuevo QR...');
-          initWhatsApp();
-        }, 3000);
+
+        // Limitar reintentos a máximo 3 veces para evitar loop infinito
+        initRetryCount++;
+        if (initRetryCount < 3) {
+          const delayMs = 5000 * initRetryCount; // 5s, 10s, luego stop
+          console.log(`[WA] ✅ Sesión limpiada — reintentar en ${delayMs}ms (intento #${initRetryCount}/3)`);
+          setTimeout(() => {
+            console.log('[WA] 🔄 Reintentar inicialización con nuevo QR...');
+            initWhatsApp();
+          }, delayMs);
+        } else {
+          console.log('[WA] ⛔ Máximo número de reintentos alcanzado. Esperando acción del usuario.');
+        }
       } catch (e) {
         console.error('[WA] ❌ Error limpiando sesión:', e.message);
         whatsappClient = null;
@@ -2610,7 +2618,10 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
 
   // Owner always uses initWhatsApp() — never create a tenant Chromium for owner (OOM)
   if (uid === OWNER_UID) {
-    if (!whatsappClient) initWhatsApp();
+    if (!whatsappClient) {
+      initRetryCount = 0; // Reset retry counter on user manual init
+      initWhatsApp();
+    }
     return res.json({ success: true, uid, isReady: !!isReady, hasQR: !!qrCode, reusing: true });
   }
 
