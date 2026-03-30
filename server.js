@@ -111,24 +111,16 @@ const io = socketIO(server, {
 });
 
 app.use(compression());
-app.use(cors({
-  origin: function (origin, callback) {
-    const allowedOrigins = [
-      'https://www.lobsterscrm.com',
-      'http://localhost:3000',
-      'http://localhost:8080'
-    ];
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(null, true); // For now, allow all to avoid blocking
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// CORS: Allow all origins for now (can be restricted later)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 app.use(express.json());
 
 // ============================================
