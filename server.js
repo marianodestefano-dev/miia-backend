@@ -2150,10 +2150,12 @@ function initWhatsApp() {
   });
 
   whatsappClient.on('ready', () => {
+    const connectedNumber = whatsappClient.info?.wid?.user || 'desconocido';
     console.log('\n╔════════════════════════════════════════╗');
     console.log('║   ✅ WHATSAPP LISTO                   ║');
     console.log('║   🤖 MIIA AUTO-RESPONSE ACTIVADA      ║');
     console.log('╚════════════════════════════════════════╝\n');
+    console.log(`[WA] 📱 Número conectado: +${connectedNumber}`);
     isReady = true;
     io.emit('whatsapp_ready', { status: 'connected' });
 
