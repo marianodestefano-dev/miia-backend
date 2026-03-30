@@ -2231,18 +2231,9 @@ function initWhatsApp() {
         isReady = false;
         qrCode = null;
 
-        // Limitar reintentos a máximo 3 veces para evitar loop infinito
-        initRetryCount++;
-        if (initRetryCount < 3) {
-          const delayMs = 5000 * initRetryCount; // 5s, 10s, luego stop
-          console.log(`[WA] ✅ Sesión limpiada — reintentar en ${delayMs}ms (intento #${initRetryCount}/3)`);
-          setTimeout(() => {
-            console.log('[WA] 🔄 Reintentar inicialización con nuevo QR...');
-            initWhatsApp();
-          }, delayMs);
-        } else {
-          console.log('[WA] ⛔ Máximo número de reintentos alcanzado. Esperando acción del usuario.');
-        }
+        // NO reintentar automáticamente — el rate limiting de WhatsApp es agresivo
+        // El usuario debe hacer POST /api/tenant/init manualmente cuando quiera intentar de nuevo
+        console.log('[WA] ⛔ Conexión rechazada por WhatsApp (posiblemente rate-limited). Esperando acción del usuario.');
       } catch (e) {
         console.error('[WA] ❌ Error limpiando sesión:', e.message);
         whatsappClient = null;
