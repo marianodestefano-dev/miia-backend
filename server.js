@@ -351,7 +351,8 @@ function isWithinSchedule() {
 // ============================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
-const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+// Force gemini-2.5-flash — 2.5-pro gives 503 overloaded, 2.0-flash gives 404
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 async function callGeminiAPI(messages, systemPrompt) {
   try {
