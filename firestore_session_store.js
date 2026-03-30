@@ -24,9 +24,10 @@ class FirestoreSessionStore {
 
   async sessionExists({ session }) {
     try {
-      const doc = await this.db.collection(this.collection).doc(session).get();
+      const sessionId = this._normalizeSessionId(session);
+      const doc = await this.db.collection(this.collection).doc(sessionId).get();
       const exists = doc.exists && doc.data()?.totalChunks > 0;
-      console.log(`[SESSION-STORE] sessionExists(${session}): ${exists}`);
+      console.log(`[SESSION-STORE] sessionExists(${sessionId}): ${exists}`);
       return exists;
     } catch (err) {
       console.error(`[SESSION-STORE] Error checking session ${session}:`, err.message);
@@ -34,12 +35,32 @@ class FirestoreSessionStore {
     }
   }
 
+  /**
+   * Normalize the session parameter from RemoteAuth.
+   * Older versions pass just the session name (e.g. "RemoteAuth-tenant-XXX").
+   * Newer versions may pass the full path (e.g. "/app/.wwebjs_auth/RemoteAuth-tenant-XXX").
+   * We always want the short name as the Firestore doc ID.
+   */
+  _normalizeSessionId(session) {
+    // If it's a path, extract the basename (no extension)
+    const base = path.basename(session, '.zip');
+    return base;
+  }
+
   async save({ session }) {
     try {
-      // RemoteAuth creates the zip at .wwebjs_auth/RemoteAuth-{session}.zip
-      const zipPath = path.join('.wwebjs_auth', `RemoteAuth-${session}.zip`);
-      if (!fs.existsSync(zipPath)) {
-        console.warn(`[SESSION-STORE] Zip not found: ${zipPath}`);
+      const sessionId = this._normalizeSessionId(session);
+
+      // The zip file: RemoteAuth creates it at .wwebjs_auth/RemoteAuth-{clientId}.zip
+      // Try absolute path first (Railway runs in /app), then relative
+      const candidates = [
+        path.join('/app', '.wwebjs_auth', `${sessionId}.zip`),
+        path.join(process.cwd(), '.wwebjs_auth', `${sessionId}.zip`),
+        path.join('.wwebjs_auth', `${sessionId}.zip`),
+      ];
+      const zipPath = candidates.find(p => fs.existsSync(p));
+      if (!zipPath) {
+        console.warn(`[SESSION-STORE] Zip not found for session ${sessionId}. Tried: ${candidates.join(', ')}`);
         return;
       }
 
@@ -47,19 +68,19 @@ class FirestoreSessionStore {
       const base64 = data.toString('base64');
       const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
 
-      console.log(`[SESSION-STORE] Saving session ${session}: ${(data.length / 1024 / 1024).toFixed(2)}MB, ${totalChunks} chunks`);
+      console.log(`[SESSION-STORE] Saving session ${sessionId}: ${(data.length / 1024 / 1024).toFixed(2)}MB, ${totalChunks} chunks`);
 
       // Delete old chunks first
-      await this._deleteChunks(session);
+      await this._deleteChunks(sessionId);
 
       // Save metadata
-      await this.db.collection(this.collection).doc(session).set({
+      await this.db.collection(this.collection).doc(sessionId).set({
         totalChunks,
         totalSize: data.length,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // Save chunks in batches of 500 (Firestore batch limit)
+      // Save chunks in batches of 400 (Firestore batch limit)
       const batchSize = 400;
       for (let batchStart = 0; batchStart < totalChunks; batchStart += batchSize) {
         const batch = this.db.batch();
@@ -69,7 +90,7 @@ class FirestoreSessionStore {
           const chunk = base64.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
           const chunkRef = this.db
             .collection(this.collection)
-            .doc(session)
+            .doc(sessionId)
             .collection('chunks')
             .doc(String(i));
           batch.set(chunkRef, { data: chunk, index: i });
@@ -78,7 +99,7 @@ class FirestoreSessionStore {
         await batch.commit();
       }
 
-      console.log(`[SESSION-STORE] Session ${session} saved successfully`);
+      console.log(`[SESSION-STORE] Session ${sessionId} saved successfully`);
     } catch (err) {
       console.error(`[SESSION-STORE] Error saving session ${session}:`, err.message);
     }
@@ -86,25 +107,26 @@ class FirestoreSessionStore {
 
   async extract({ session, path: extractPath }) {
     try {
-      const metaDoc = await this.db.collection(this.collection).doc(session).get();
+      const sessionId = this._normalizeSessionId(session);
+      const metaDoc = await this.db.collection(this.collection).doc(sessionId).get();
       if (!metaDoc.exists) {
-        console.log(`[SESSION-STORE] No stored session for ${session}`);
+        console.log(`[SESSION-STORE] No stored session for ${sessionId}`);
         return;
       }
 
       const { totalChunks } = metaDoc.data();
-      console.log(`[SESSION-STORE] Extracting session ${session}: ${totalChunks} chunks`);
+      console.log(`[SESSION-STORE] Extracting session ${sessionId}: ${totalChunks} chunks`);
 
       // Read all chunks
       const chunksSnap = await this.db
         .collection(this.collection)
-        .doc(session)
+        .doc(sessionId)
         .collection('chunks')
         .orderBy('index')
         .get();
 
       if (chunksSnap.empty) {
-        console.warn(`[SESSION-STORE] No chunks found for session ${session}`);
+        console.warn(`[SESSION-STORE] No chunks found for session ${sessionId}`);
         return;
       }
 
@@ -114,14 +136,14 @@ class FirestoreSessionStore {
       });
 
       const buffer = Buffer.from(base64, 'base64');
-      const zipPath = path.join(extractPath, `RemoteAuth-${session}.zip`);
+      const zipPath = path.join(extractPath, `${sessionId}.zip`);
 
       // Ensure directory exists
       const dir = path.dirname(zipPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
       fs.writeFileSync(zipPath, buffer);
-      console.log(`[SESSION-STORE] Session ${session} extracted to ${zipPath} (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`);
+      console.log(`[SESSION-STORE] Session ${sessionId} extracted to ${zipPath} (${(buffer.length / 1024 / 1024).toFixed(2)}MB)`);
     } catch (err) {
       console.error(`[SESSION-STORE] Error extracting session ${session}:`, err.message);
     }
@@ -129,9 +151,10 @@ class FirestoreSessionStore {
 
   async delete({ session }) {
     try {
-      await this._deleteChunks(session);
-      await this.db.collection(this.collection).doc(session).delete();
-      console.log(`[SESSION-STORE] Session ${session} deleted`);
+      const sessionId = this._normalizeSessionId(session);
+      await this._deleteChunks(sessionId);
+      await this.db.collection(this.collection).doc(sessionId).delete();
+      console.log(`[SESSION-STORE] Session ${sessionId} deleted`);
     } catch (err) {
       console.error(`[SESSION-STORE] Error deleting session ${session}:`, err.message);
     }

@@ -271,6 +271,38 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
       ioInstance.to(`tenant:${uid}`).emit('whatsapp_ready', { uid, status: 'connected' });
       ioInstance.emit(`tenant_ready_${uid}`, { status: 'connected' });
     }
+
+    // Polling fallback: whatsapp-web.js `message` events can be unreliable.
+    // Every 5 seconds, fetch unread chats and process any new messages not yet seen.
+    tenant._lastSeenMsgIds = new Set();
+    tenant._pollInterval = setInterval(async () => {
+      if (!tenant.isReady || !tenant.client) return;
+      try {
+        const chats = await client.getChats();
+        for (const chat of chats) {
+          if (chat.isGroup) continue;
+          if (chat.unreadCount <= 0) continue;
+          const messages = await chat.fetchMessages({ limit: chat.unreadCount + 1 });
+          for (const msg of messages) {
+            if (msg.fromMe) continue;
+            if (!msg.body || msg.body.trim() === '') continue;
+            if (tenant._lastSeenMsgIds.has(msg.id._serialized)) continue;
+            tenant._lastSeenMsgIds.add(msg.id._serialized);
+            // Only process messages received in the last 2 minutes (avoid replaying history)
+            const ageMs = Date.now() - (msg.timestamp * 1000);
+            if (ageMs > 2 * 60 * 1000) continue;
+            console.log(`[TM:${uid}] 📨 POLL message from ${msg.from}: "${(msg.body||'').substring(0,40)}"`);
+            processTenantMessage(uid, msg.from, msg.body);
+          }
+          // Keep Set size manageable
+          if (tenant._lastSeenMsgIds.size > 1000) {
+            tenant._lastSeenMsgIds = new Set([...tenant._lastSeenMsgIds].slice(-500));
+          }
+        }
+      } catch (err) {
+        // Ignore poll errors silently
+      }
+    }, 5000);
   });
 
   client.on('message', (msg) => {
@@ -289,6 +321,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
 
   client.on('disconnected', (reason) => {
     console.log(`[TM:${uid}] ❌ Disconnected: ${reason}`);
+    if (tenant._pollInterval) { clearInterval(tenant._pollInterval); tenant._pollInterval = null; }
     tenant.isReady = false;
     tenant.isAuthenticated = false;
     tenant.client = null;
@@ -314,6 +347,7 @@ async function destroyTenant(uid) {
   if (!t) return { success: true, message: 'Tenant not found (already destroyed)' };
 
   try {
+    if (t._pollInterval) { clearInterval(t._pollInterval); t._pollInterval = null; }
     if (t.client) {
       await t.client.logout();
       await t.client.destroy();
