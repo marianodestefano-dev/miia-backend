@@ -111,7 +111,17 @@ const io = socketIO(server, {
 });
 
 app.use(compression());
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://www.lobsterscrm.com',
+    'http://localhost:3000',
+    'http://localhost:8080',
+    '*'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // ============================================
