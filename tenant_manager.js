@@ -202,8 +202,13 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
       clientId: `tenant-${uid}`,
       backupSyncIntervalMs: 300000
     }),
+    webVersionCache: {
+      type: 'remote',
+      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+    },
     puppeteer: {
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -211,7 +216,17 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--disable-gpu'
+        '--single-process',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--disable-translate',
+        '--metrics-recording-only',
+        '--mute-audio',
+        '--no-default-browser-check',
+        '--safebrowsing-disable-auto-update'
       ]
     }
   });
@@ -238,6 +253,16 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
     console.log(`[TM:${uid}] ✅ Authenticated — waiting for ready event...`);
     tenant.qrCode = null;
     tenant.isAuthenticated = true;
+
+    // If ready doesn't fire in 3 minutes, destroy and let user retry
+    tenant._readyTimeout = setTimeout(async () => {
+      if (!tenant.isReady) {
+        console.error(`[TM:${uid}] ⏱️ Timeout: authenticated but ready never fired. Destroying client.`);
+        try { await client.destroy(); } catch (e) { /* ignore */ }
+        tenant.isAuthenticated = false;
+        tenants.delete(uid);
+      }
+    }, 3 * 60 * 1000);
   });
 
   client.on('auth_failure', (msg) => {
@@ -253,6 +278,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
 
   client.on('ready', () => {
     console.log(`[TM:${uid}] ✅ WhatsApp READY — messages will be processed`);
+    if (tenant._readyTimeout) { clearTimeout(tenant._readyTimeout); tenant._readyTimeout = null; }
     tenant.isReady = true;
     tenant.isAuthenticated = true;
     if (ioInstance) {
