@@ -1563,8 +1563,9 @@ async function handleIncomingMessage(message) {
   const isGroup = message.from.endsWith('@g.us') || (message.to && message.to.endsWith('@g.us'));
   if (isBroadcast || isGroup) return;
 
-  // Eco de linked device: from === to → rebote del propio mensaje, ignorar
-  if (message.from && message.to && message.from === message.to) return;
+  // Eco de linked device: from === to y NO es fromMe → rebote del propio mensaje, ignorar
+  // fromMe+from===to es el self-chat legítimo del owner → dejar pasar
+  if (message.from && message.to && message.from === message.to && !message.fromMe) return;
 
   const fromMe = message.fromMe;
   let body = (message.body || '').trim();
