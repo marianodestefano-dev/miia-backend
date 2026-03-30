@@ -1452,6 +1452,91 @@ async function processAndSendAIResponse(phone, userMessage, isAlreadySaved = fal
 }
 
 // ============================================
+// PROCESAMIENTO MULTIMODAL — Audio, Imagen, Video, Documento
+// ============================================
+const GEMINI_FLASH_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const MEDIA_MAX_SIZE = 20_000_000; // 20MB en base64
+const MEDIA_TIMEOUT_MS = 30000;
+
+function getMediaPrompt(mimetype) {
+  if (mimetype.startsWith('audio/'))
+    return 'Transcribí textualmente este audio al español. Solo devolvé la transcripción exacta, sin agregar nada más.';
+  if (mimetype.startsWith('image/'))
+    return 'Describí en detalle qué ves en esta imagen. Contexto: sos asistente de ventas de software médico para clínicas. Sé conciso (máx 3 líneas).';
+  if (mimetype.startsWith('video/'))
+    return 'Describí brevemente qué muestra este video. Contexto: clínicas y consultorios médicos. Máximo 3 líneas.';
+  if (mimetype.includes('pdf') || mimetype.includes('word') || mimetype.includes('document') ||
+      mimetype.includes('spreadsheet') || mimetype.includes('presentation'))
+    return 'Leé y resumí el contenido de este documento en máximo 5 líneas.';
+  return null; // tipo no soportado
+}
+
+function getMediaType(mimetype) {
+  if (mimetype.startsWith('audio/')) return 'audio';
+  if (mimetype.startsWith('image/')) return 'image';
+  if (mimetype.startsWith('video/')) return 'video';
+  return 'document';
+}
+
+async function processMediaMessage(message) {
+  const media = await Promise.race([
+    message.downloadMedia(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Media download timeout')), MEDIA_TIMEOUT_MS))
+  ]);
+
+  if (!media || !media.data || !media.mimetype) {
+    return { text: null, mediaType: 'unknown' };
+  }
+
+  const mediaType = getMediaType(media.mimetype);
+
+  // Límite de tamaño
+  if (media.data.length > MEDIA_MAX_SIZE) {
+    console.log(`[MEDIA] Archivo demasiado grande: ${(media.data.length / 1_000_000).toFixed(1)}MB (${media.mimetype})`);
+    return { text: null, mediaType };
+  }
+
+  const prompt = getMediaPrompt(media.mimetype);
+  if (!prompt) {
+    console.log(`[MEDIA] Tipo no soportado: ${media.mimetype}`);
+    return { text: null, mediaType };
+  }
+
+  const url = `${GEMINI_FLASH_URL}?key=${GEMINI_API_KEY}`;
+  const payload = {
+    contents: [{
+      role: 'user',
+      parts: [
+        { text: prompt },
+        { inlineData: { mimeType: media.mimetype, data: media.data } }
+      ]
+    }]
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    timeout: MEDIA_TIMEOUT_MS
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    console.error(`[MEDIA] Gemini Flash error ${response.status}: ${err.substring(0, 200)}`);
+    return { text: null, mediaType };
+  }
+
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text || !text.trim()) {
+    return { text: null, mediaType };
+  }
+
+  console.log(`[MEDIA] ${mediaType} procesado OK (${text.length} chars)`);
+  return { text: text.trim(), mediaType };
+}
+
+// ============================================
 // SISTEMA DE RESPUESTA AUTOMÁTICA (message_create)
 // ============================================
 
@@ -1467,7 +1552,43 @@ async function handleIncomingMessage(message) {
   if (message.from && message.to && message.from === message.to) return;
 
   const fromMe = message.fromMe;
-  const body = (message.body || '').trim();
+  let body = (message.body || '').trim();
+  let mediaContext = null; // { text, mediaType } si se procesó media
+
+  // Si no hay texto pero sí media → intentar procesar (multimodal)
+  if (!body && message.hasMedia) {
+    const msgType = message.type; // 'ptt', 'audio', 'image', 'video', 'document', 'sticker'
+    if (msgType === 'sticker') return; // stickers no procesables
+
+    try {
+      mediaContext = await processMediaMessage(message);
+    } catch (e) {
+      console.error(`[MEDIA] Error procesando ${msgType} de ${message.from}:`, e.message);
+    }
+
+    if (mediaContext && mediaContext.text) {
+      body = mediaContext.text;
+      console.log(`[MEDIA] ${mediaContext.mediaType} de ${message.from} → "${body.substring(0, 80)}..."`);
+    } else {
+      // FALLBACK: no se pudo interpretar → avisar al lead + alertar a Mariano
+      const tipoLabel = { ptt: 'audio', audio: 'audio', image: 'imagen', video: 'video', document: 'documento' }[msgType] || 'archivo';
+      const leadPhone = message.from;
+      const leadName = leadNames[leadPhone] || leadPhone.split('@')[0];
+
+      // Responder al lead con mensaje de espera
+      await safeSendMessage(leadPhone, `Recibí tu ${tipoLabel}, un momento por favor`);
+
+      // ALERTA a Mariano con datos del lead
+      await safeSendMessage(`${OWNER_PHONE}@c.us`,
+        `⚠️ *MEDIA NO PROCESADA*\n` +
+        `Lead: *${leadName}* (${leadPhone.split('@')[0]})\n` +
+        `Tipo: ${tipoLabel}\n` +
+        `No pude interpretar el ${tipoLabel}. Tomá el control del chat.`
+      );
+      console.log(`[MEDIA] Fallback: alerta enviada a Mariano por ${tipoLabel} de ${leadPhone}`);
+      return;
+    }
+  }
   if (!body) return;
 
 
@@ -1565,8 +1686,8 @@ async function handleIncomingMessage(message) {
     return;
   }
 
-  // Procesamiento de mensajes de texto
-  if (!message.body || !message.body.trim()) return;
+  // Procesamiento de mensajes de texto (o media ya transcrito en body)
+  if (!body) return;
 
   try {
     let phone = message.from;
@@ -1707,9 +1828,9 @@ async function handleIncomingMessage(message) {
     // Siempre guardar mensajes entrantes de familia
     if (isFamily && !fromMe) {
       if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
-      const exists = conversations[effectiveTarget].some(m => m.content === message.body && Math.abs(m.timestamp - Date.now()) < 5000);
+      const exists = conversations[effectiveTarget].some(m => m.content === body && Math.abs(m.timestamp - Date.now()) < 5000);
       if (!exists) {
-        conversations[effectiveTarget].push({ role: 'user', content: message.body, timestamp: Date.now() });
+        conversations[effectiveTarget].push({ role: 'user', content: body, timestamp: Date.now() });
         saveDB();
       }
     }
@@ -1722,14 +1843,14 @@ async function handleIncomingMessage(message) {
     // Si es self-chat y MIIA NO está activa ni mencionada → guardar como nota y salir
     if (isSelfChatMsg && !isMIIAActive && !isFamily) {
       if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
-      conversations[effectiveTarget].push({ role: 'user', content: message.body, timestamp: Date.now() });
+      conversations[effectiveTarget].push({ role: 'user', content: body, timestamp: Date.now() });
       saveDB();
       return;
     }
 
     if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
     const history = conversations[effectiveTarget];
-    const cleanBody = (message.body || '').trim();
+    const cleanBody = body; // body ya contiene transcripción si fue media
 
     const botBufferTarget = lastSentByBot[effectiveTarget] || [];
     if (botBufferTarget.includes(cleanBody)) {
@@ -1740,7 +1861,12 @@ async function handleIncomingMessage(message) {
 
     if (!fromMe || isSelfChatMIIA) {
       // Guardar mensaje ANTES del guard isProcessing para capturar multi-mensajes en ráfaga
-      history.push({ role: 'user', content: message.body, timestamp: Date.now() });
+      // Si fue media, guardar con contexto para que la IA entienda qué recibió
+      const mediaLabel = { audio: '🎤 Audio', image: '📷 Imagen', video: '🎬 Video', document: '📄 Documento' };
+      const userContent = mediaContext
+        ? `[El lead envió un ${mediaLabel[mediaContext.mediaType] || 'archivo'}. Transcripción/descripción: "${body}"]`
+        : body;
+      history.push({ role: 'user', content: userContent, timestamp: Date.now() });
       if (history.length > 40) conversations[effectiveTarget] = history.slice(-40);
 
       // Extracción de nombre en background
@@ -1920,7 +2046,8 @@ async function handleIncomingMessage(message) {
       io.emit('new_message', {
         from: effectiveTarget,
         fromName: leadNames[effectiveTarget] || ct.name || ct.pushname || 'Desconocido',
-        body: message.body,
+        body: body,
+        mediaType: mediaContext ? mediaContext.mediaType : null,
         timestamp: Date.now(),
         type: contactTypes[effectiveTarget] || 'lead'
       });
