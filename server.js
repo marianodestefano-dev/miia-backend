@@ -52,12 +52,13 @@ try {
   } else if (process.env.FIREBASE_PROJECT_ID) {
     // Railway con vars individuales
     let pk = process.env.FIREBASE_PRIVATE_KEY || '';
-    // Normalizar saltos de línea: algunos clientes de Railway guardan \n literales
-    if (pk.includes('\\n')) pk = pk.replace(/\\n/g, '\n');
-    if (!pk.includes('\n') && pk.includes('BEGIN PRIVATE KEY')) {
-      console.error('[FIREBASE] FIREBASE_PRIVATE_KEY no tiene saltos de línea — verificar formato en Railway');
+    // Quitar comillas externas si Railway las agregó
+    if ((pk.startsWith('"') && pk.endsWith('"')) || (pk.startsWith("'") && pk.endsWith("'"))) {
+      pk = pk.slice(1, -1);
     }
-    console.log('[FIREBASE] Usando vars individuales. ProjectId:', process.env.FIREBASE_PROJECT_ID, '| PrivateKey starts:', pk.substring(0, 27));
+    // Normalizar saltos de línea: Railway puede guardar \n literales o \\n dobles
+    pk = pk.replace(/\\n/g, '\n');
+    console.log('[FIREBASE] Usando vars individuales. ProjectId:', process.env.FIREBASE_PROJECT_ID, '| PrivateKey starts:', pk.substring(0, 27), '| has newlines:', pk.includes('\n'));
     credential = admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
