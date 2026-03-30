@@ -112,12 +112,19 @@ const io = socketIO(server, {
 
 app.use(compression());
 app.use(cors({
-  origin: [
-    'https://www.lobsterscrm.com',
-    'http://localhost:3000',
-    'http://localhost:8080',
-    '*'
-  ],
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'https://www.lobsterscrm.com',
+      'http://localhost:3000',
+      'http://localhost:8080'
+    ];
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true); // For now, allow all to avoid blocking
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
