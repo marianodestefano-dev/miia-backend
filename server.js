@@ -2115,11 +2115,6 @@ function initWhatsApp() {
       backupSyncIntervalMs: 300000 // backup session every 5 minutes
     }),
     userAgent: 'Mozilla/5.0 (compatible; MIIA-APP/1.0; +https://lobsterscrm.com)',
-    webVersion: '2.2412.54',
-    webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
-    },
     puppeteer: {
       headless: true,
       args: [
@@ -2217,7 +2212,7 @@ function initWhatsApp() {
 io.on('connection', (socket) => {
   console.log('👤 Cliente conectado via Socket.io');
   
-  if (!whatsappClient) initWhatsApp();
+  // if (!whatsappClient) initWhatsApp();
 
   // Si WhatsApp ya está conectado, avisar inmediatamente
   if (isReady && whatsappClient) {
@@ -4198,7 +4193,8 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  initWhatsApp();
+  // Owner WhatsApp deshabilitado — el número usa el sistema multi-tenant
+  // initWhatsApp();
 });
 
 // Export app for testing
