@@ -32,3 +32,10 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Firebase service account keys (never commit)
+*firebase-adminsdk*.json
+*service-account*.json
+
+# Scraped pages / normativa files
+Páginas*
