@@ -351,7 +351,7 @@ function isWithinSchedule() {
 // ============================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
-const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 async function callGeminiAPI(messages, systemPrompt) {
   try {
@@ -1469,7 +1469,7 @@ async function processAndSendAIResponse(phone, userMessage, isAlreadySaved = fal
 // ============================================
 // PROCESAMIENTO MULTIMODAL — Audio, Imagen, Video, Documento
 // ============================================
-const GEMINI_FLASH_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_FLASH_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const MEDIA_MAX_SIZE = 20_000_000; // 20MB en base64
 const MEDIA_TIMEOUT_MS = 30000;
 
