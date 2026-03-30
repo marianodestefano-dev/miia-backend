@@ -2557,13 +2557,22 @@ app.get('/api/conversations', async (req, res) => {
 // ─── MULTI-TENANT ENDPOINTS ────────────────────────────────────────────────────
 
 // POST /api/tenant/init — Start WhatsApp for a SaaS client
-// Body: { uid, geminiApiKey }
+// Body: { uid, geminiApiKey? }
 app.post('/api/tenant/init', express.json(), async (req, res) => {
   const { uid, geminiApiKey } = req.body;
-  if (!uid || !geminiApiKey) {
-    return res.status(400).json({ error: 'uid y geminiApiKey requeridos' });
+  console.log(`[INIT] 🚀 POST /api/tenant/init - UID: ${uid}, GeminiKey: ${geminiApiKey ? 'YES' : 'NO (empty)'}`);
+
+  if (!uid) {
+    console.log('[INIT] ❌ ERROR: UID required');
+    return res.status(400).json({ error: 'uid requerido' });
   }
-  const tenant = tenantManager.initTenant(uid, geminiApiKey, io);
+
+  // geminiApiKey is optional now - users can test WhatsApp without it
+  const apiKeyToUse = geminiApiKey || '';
+
+  const tenant = tenantManager.initTenant(uid, apiKeyToUse, io);
+  console.log(`[INIT] ✅ Tenant initialized. Stored in map. Checking Medilink status...`);
+
   // Verificar si el usuario es equipo Medilink (@healthatom.com) → activar cerebro Medilink
   try {
     const userDoc = await admin.firestore().collection('users').doc(uid).get();
@@ -2572,6 +2581,8 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
       console.log(`[TM:${uid}] 🧠 Cerebro Medilink activado (owner_member)`);
     }
   } catch (e) { console.log(`[TM:${uid}] No se pudo verificar rol:`, e.message); }
+
+  console.log(`[INIT] 📊 Responding - isReady: ${tenant.isReady}, hasQR: ${!!tenant.qrCode}`);
   res.json({
     success: true,
     uid,
@@ -2588,9 +2599,21 @@ app.get('/api/tenant/:uid/status', (req, res) => {
 
 // GET /api/tenant/:uid/qr — Get tenant QR code (if pending scan)
 app.get('/api/tenant/:uid/qr', (req, res) => {
-  const status = tenantManager.getTenantStatus(req.params.uid);
-  if (!status.exists) return res.status(404).json({ error: 'Tenant no encontrado. Llama a /api/tenant/init primero.' });
-  if (!status.hasQR) return res.json({ qrCode: null, isReady: status.isReady });
+  const uid = req.params.uid;
+  const status = tenantManager.getTenantStatus(uid);
+  console.log(`[QR] GET /api/tenant/${uid}/qr - exists: ${status.exists}, hasQR: ${status.hasQR}, isReady: ${status.isReady}`);
+
+  if (!status.exists) {
+    console.log(`[QR] ❌ Tenant NOT found in map for UID: ${uid}`);
+    return res.status(404).json({ error: 'Tenant no encontrado. Llama a /api/tenant/init primero.' });
+  }
+
+  if (!status.hasQR) {
+    console.log(`[QR] ⏳ Tenant found but no QR yet (WhatsApp still initializing...)`);
+    return res.json({ qrCode: null, isReady: status.isReady });
+  }
+
+  console.log(`[QR] ✅ QR found! Returning it.`);
   res.json({ qrCode: status.qrCode, isReady: status.isReady });
 });
 
