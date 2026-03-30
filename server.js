@@ -444,6 +444,16 @@ async function safeSendMessage(target, content, options = {}) {
   }
   hourlySendLog.count++;
 
+  // BLINDAJE: Limitar largo de respuesta para parecer humano (máx 500 chars)
+  if (typeof content === 'string' && content.length > 500) {
+    // Cortar en el último punto o salto de línea antes del límite
+    let cutPoint = content.lastIndexOf('.', 500);
+    if (cutPoint < 200) cutPoint = content.lastIndexOf('\n', 500);
+    if (cutPoint < 200) cutPoint = 500;
+    content = content.substring(0, cutPoint + 1).trim();
+    console.log(`[BLINDAJE] Respuesta recortada a ${content.length} chars para ${target}`);
+  }
+
   if (!options.noDelay) {
     const delay = Math.floor(Math.random() * (3000 - 1500 + 1)) + 1500;
     await new Promise(r => setTimeout(r, delay));
@@ -1779,6 +1789,12 @@ async function handleIncomingMessage(message) {
       return;
     }
 
+    // BLINDAJE: No responder fuera del horario configurado (leads solamente, familia/self-chat siempre pasan)
+    if (!isSelfChatMIIA && !isFamily && !isEquipo && !isWithinSchedule()) {
+      console.log(`[WA] Fuera de horario para ${effectiveTarget}. Mensaje guardado, respuesta diferida.`);
+      return;
+    }
+
     // ── COMANDO RESET (solo números de testing) ──────────────────────────
     if (!fromMe && body.trim().toUpperCase() === 'RESET') {
       const baseNumReset = effectiveTarget.split('@')[0];
@@ -1855,17 +1871,37 @@ async function handleIncomingMessage(message) {
     }
     // ────────────────────────────────────────────────────────────────────
 
-    // ── SEGUIMIENTO AUTOMÁTICO: detectar intención de no-interés o reset de timer ──
+    // ── SEGUIMIENTO AUTOMÁTICO: detectar intención de no-interés o reagendar ──
     if (!fromMe && conversationMetadata[effectiveTarget]?.followUpState === 'pending') {
-      const noInterestKeywords = ['no me interesa', 'no por ahora', 'necesito tiempo', 'dejame pensar',
-        'déjame pensar', 'la próxima semana', 'el próximo mes', 'no gracias', 'no, gracias',
-        'por ahora no', 'ahora no puedo', 'lo pensaré', 'lo voy a pensar', 'no estoy interesado'];
+      const noInterestKeywords = ['no me interesa', 'no por ahora', 'no gracias', 'no, gracias',
+        'no estoy interesado', 'no estoy interesada', 'no necesito', 'no quiero'];
+      const needTimeKeywords = ['necesito tiempo', 'dejame pensar', 'déjame pensar',
+        'la próxima semana', 'el próximo mes', 'por ahora no', 'ahora no puedo',
+        'lo pensaré', 'lo voy a pensar', 'dame unos días', 'dame tiempo',
+        'más adelante', 'después te aviso', 'despues te aviso', 'todavía no',
+        'estoy evaluando', 'lo estoy pensando', 'aún no', 'aun no'];
+
       if (noInterestKeywords.some(kw => lowerBody.includes(kw))) {
+        // Rechazo claro → detener follow-ups definitivamente
         conversationMetadata[effectiveTarget].followUpState = 'stopped';
+        conversationMetadata[effectiveTarget].followUpAttempts = 0;
+        saveDB();
+      } else if (needTimeKeywords.some(kw => lowerBody.includes(kw))) {
+        // Pide tiempo → reagendar follow-up a 6 días hábiles
+        const businessDaysMs = calcBusinessDaysMs(6, effectiveTarget);
+        conversationMetadata[effectiveTarget].lastCotizacionSent = Date.now() + businessDaysMs - (3 * 24 * 60 * 60 * 1000);
+        // ^ Se resta los 3 días del timer normal para que el total sea ~6 días hábiles
+        conversationMetadata[effectiveTarget].followUpState = 'pending';
+        // No resetear followUpAttempts — cuenta como parte del ciclo
+        console.log(`[FOLLOW-UP] Lead ${effectiveTarget} pidió tiempo. Reagendado a ~6 días hábiles.`);
         saveDB();
       } else {
-        // El lead respondió algo — resetear timer desde ahora para esperar 3 días más
-        conversationMetadata[effectiveTarget].lastCotizacionSent = Date.now();
+        // Respondió algo positivo/neutral → reagendar a 6 días hábiles, resetear contador
+        const businessDaysMs = calcBusinessDaysMs(6, effectiveTarget);
+        conversationMetadata[effectiveTarget].lastCotizacionSent = Date.now() + businessDaysMs - (3 * 24 * 60 * 60 * 1000);
+        conversationMetadata[effectiveTarget].followUpState = 'pending';
+        conversationMetadata[effectiveTarget].followUpAttempts = 0; // respondió → reiniciar ciclo
+        console.log(`[FOLLOW-UP] Lead ${effectiveTarget} respondió. Reagendado a ~6 días hábiles (ciclo reiniciado).`);
         saveDB();
       }
     }
@@ -2534,6 +2570,114 @@ async function processMorningWakeup() {
 // ─────────────────────────────────────────────────────────────────────────────
 // FOLLOW-UP AUTOMÁTICO — 3 días sin respuesta del lead tras recibir cotización
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Festivos fijos por país (MM-DD). Se detecta país por prefijo telefónico.
+const HOLIDAYS_BY_COUNTRY = {
+  CO: [ // Colombia
+    '01-01','01-06','03-24','03-28','03-29','05-01','06-02','06-23','06-30',
+    '07-01','07-20','08-07','08-18','10-13','11-03','11-17','12-08','12-25'
+  ],
+  AR: [ // Argentina
+    '01-01','02-12','02-13','03-24','03-28','03-29','04-02','05-01','05-25',
+    '06-17','06-20','07-09','08-17','10-12','11-20','12-08','12-25'
+  ],
+  MX: [ // México
+    '01-01','02-03','03-17','03-28','03-29','05-01','05-05','09-16',
+    '10-12','11-02','11-17','12-25'
+  ],
+  CL: [ // Chile
+    '01-01','03-28','03-29','05-01','05-21','06-20','06-29','07-16',
+    '08-15','09-18','09-19','10-12','10-31','11-01','12-08','12-25'
+  ],
+  PE: [ // Perú
+    '01-01','03-28','03-29','05-01','06-07','06-29','07-23','07-28',
+    '07-29','08-06','08-30','10-08','11-01','12-08','12-09','12-25'
+  ],
+  EC: [ // Ecuador
+    '01-01','02-12','02-13','03-28','03-29','05-01','05-24',
+    '08-10','10-09','11-02','11-03','12-25'
+  ],
+  US: [ // EEUU (fijos, no floating)
+    '01-01','07-04','11-11','12-25'
+  ],
+  ES: [ // España
+    '01-01','01-06','03-28','03-29','05-01','08-15','10-12','11-01','12-06','12-08','12-25'
+  ]
+};
+
+// Detectar país por prefijo telefónico
+function getCountryFromPhone(phone) {
+  const num = phone.replace(/[^0-9]/g, '');
+  if (num.startsWith('57')) return 'CO';
+  if (num.startsWith('54')) return 'AR';
+  if (num.startsWith('52')) return 'MX';
+  if (num.startsWith('56')) return 'CL';
+  if (num.startsWith('51')) return 'PE';
+  if (num.startsWith('593')) return 'EC';
+  if (num.startsWith('1')) return 'US';
+  if (num.startsWith('34')) return 'ES';
+  return 'CO'; // default Colombia
+}
+
+// Obtener timezone por país
+function getTimezoneForCountry(country) {
+  const tzMap = {
+    CO: 'America/Bogota', AR: 'America/Argentina/Buenos_Aires', MX: 'America/Mexico_City',
+    CL: 'America/Santiago', PE: 'America/Lima', EC: 'America/Guayaquil',
+    US: 'America/New_York', ES: 'Europe/Madrid'
+  };
+  return tzMap[country] || 'America/Bogota';
+}
+
+// Verificar si es fin de semana (sábado ≥15:00 hasta lunes <8:30) o festivo en el país del lead
+function isFollowUpBlocked(phone) {
+  const country = getCountryFromPhone(phone);
+  const tz = getTimezoneForCountry(country);
+  const nowStr = new Date().toLocaleString('en-US', { timeZone: tz });
+  const localNow = new Date(nowStr);
+  const day = localNow.getDay(); // 0=dom, 6=sáb
+  const hour = localNow.getHours();
+  const min = localNow.getMinutes();
+  const timeDecimal = hour + min / 60;
+
+  // Sábado ≥ 15:00
+  if (day === 6 && timeDecimal >= 15) return `fin de semana (sáb ${hour}:${min.toString().padStart(2,'0')} ${country})`;
+  // Domingo todo el día
+  if (day === 0) return `fin de semana (dom ${country})`;
+  // Lunes < 8:30
+  if (day === 1 && timeDecimal < 8.5) return `fin de semana (lun pre-8:30 ${country})`;
+
+  // Festivos
+  const mm = (localNow.getMonth() + 1).toString().padStart(2, '0');
+  const dd = localNow.getDate().toString().padStart(2, '0');
+  const todayStr = `${mm}-${dd}`;
+  const holidays = HOLIDAYS_BY_COUNTRY[country] || [];
+  if (holidays.includes(todayStr)) return `festivo ${todayStr} (${country})`;
+
+  return null; // no bloqueado
+}
+
+// Calcular milisegundos equivalentes a N días hábiles (saltando fines de semana y festivos del país del lead)
+function calcBusinessDaysMs(days, phone) {
+  const country = getCountryFromPhone(phone);
+  const tz = getTimezoneForCountry(country);
+  const holidays = HOLIDAYS_BY_COUNTRY[country] || [];
+  let counted = 0;
+  let cursor = new Date();
+  while (counted < days) {
+    cursor.setDate(cursor.getDate() + 1);
+    const localStr = cursor.toLocaleString('en-US', { timeZone: tz });
+    const local = new Date(localStr);
+    const dow = local.getDay(); // 0=dom, 6=sáb
+    if (dow === 0 || dow === 6) continue; // fin de semana
+    const mm = (local.getMonth() + 1).toString().padStart(2, '0');
+    const dd = local.getDate().toString().padStart(2, '0');
+    if (holidays.includes(`${mm}-${dd}`)) continue; // festivo
+    counted++;
+  }
+  return cursor.getTime() - Date.now();
+}
+
 async function processLeadFollowUps() {
   const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
   const now = Date.now();
@@ -2544,6 +2688,13 @@ async function processLeadFollowUps() {
 
     const elapsed = now - meta.lastCotizacionSent;
     if (elapsed < THREE_DAYS_MS) continue;
+
+    // BLINDAJE: No enviar follow-ups en fin de semana ni festivos del país del lead
+    const blocked = isFollowUpBlocked(phone);
+    if (blocked) {
+      console.log(`[FOLLOW-UP] Bloqueado para ${phone}: ${blocked}. Se reintentará luego.`);
+      continue;
+    }
 
     // Si Mariano intervino manualmente después de la cotización, resetear timer
     if (meta.humanInterventionTime && meta.humanInterventionTime > meta.lastCotizacionSent) {
@@ -2565,11 +2716,21 @@ ${historyText}
 
 Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el interés. Usá algún gancho relacionado a la conversación (su tipo de clínica, el problema que mencionó, la urgencia de la promo, etc). Soná como MIIA Owner escribiendo desde su celular — natural, directo, no robótico. NO menciones que sos una IA. NO uses "estimado" ni lenguaje formal. NO repitas la cotización. Solo buscá reabrir la conversación.`;
 
+    // CAP de follow-ups: máximo 7 intentos por lead
+    if (!meta.followUpAttempts) meta.followUpAttempts = 0;
+    if (meta.followUpAttempts >= 7) {
+      meta.followUpState = 'stopped';
+      console.log(`[FOLLOW-UP] Lead ${leadName} alcanzó el máximo de 7 follow-ups. Detenido.`);
+      saveDB();
+      continue;
+    }
+
     try {
       const followUpMsg = await generateAIContent(followUpPrompt);
       if (followUpMsg && followUpMsg.trim()) {
         await safeSendMessage(phone, followUpMsg.trim());
-        console.log(`[FOLLOW-UP] Mensaje enviado a ${leadName} (${phone})`);
+        meta.followUpAttempts = (meta.followUpAttempts || 0) + 1;
+        console.log(`[FOLLOW-UP] Mensaje ${meta.followUpAttempts}/7 enviado a ${leadName} (${phone})`);
         meta.lastCotizacionSent = now; // no volver a escribir en 3 días
         saveDB();
       }
