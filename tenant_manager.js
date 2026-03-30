@@ -274,16 +274,16 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
   });
 
   client.on('message', (msg) => {
+    console.log(`[TM:${uid}] 📨 RAW message: fromMe=${msg.fromMe}, from=${msg.from}, body="${(msg.body||'').substring(0,40)}"`);
     if (msg.fromMe) return;
     if (!msg.body || msg.body.trim() === '') return;
-    console.log(`[TM:${uid}] 📨 message event from ${msg.from}`);
     processTenantMessage(uid, msg.from, msg.body);
   });
 
   client.on('message_create', (msg) => {
+    console.log(`[TM:${uid}] 📨 RAW message_create: fromMe=${msg.fromMe}, from=${msg.from}, body="${(msg.body||'').substring(0,40)}"`);
     if (msg.fromMe) return;
     if (!msg.body || msg.body.trim() === '') return;
-    console.log(`[TM:${uid}] 📨 message_create event from ${msg.from}`);
     processTenantMessage(uid, msg.from, msg.body);
   });
 
