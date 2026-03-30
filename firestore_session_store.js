@@ -140,8 +140,17 @@ class FirestoreSessionStore {
 
       let base64 = '';
       chunksSnap.forEach(doc => {
-        base64 += doc.data().data;
+        base64 += (doc.data().data || '');
       });
+
+      console.log(`[SESSION-STORE] base64 length: ${base64.length} chars`);
+
+      if (base64.length < 1000) {
+        console.warn(`[SESSION-STORE] Session ${sessionId} parece corrupta (base64 muy corto: ${base64.length}). Eliminando para forzar nuevo QR.`);
+        await this._deleteChunks(sessionId);
+        await this.db.collection(this.collection).doc(sessionId).delete().catch(() => {});
+        return;
+      }
 
       const buffer = Buffer.from(base64, 'base64');
       // RemoteAuth passes the full destination path (including filename.zip), not a directory

@@ -3,6 +3,15 @@ require('dotenv').config();
 // Fix: gRPC DNS resolver for Firebase Admin SDK on Railway/Docker (Node 18)
 process.env.GRPC_DNS_RESOLVER = 'native';
 
+// Fix: catch ENOENT unlink crash from whatsapp-web.js RemoteAuth internals
+process.on('unhandledRejection', (err) => {
+  if (err && err.code === 'ENOENT' && err.syscall === 'unlink' && err.path && err.path.includes('.wwebjs_auth')) {
+    console.warn('[WA] ENOENT unlink ignorado (zip ya eliminado por Railway):', err.path);
+    return;
+  }
+  console.error('[UNHANDLED REJECTION]', err);
+});
+
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
