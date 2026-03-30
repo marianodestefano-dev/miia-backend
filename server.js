@@ -2213,6 +2213,20 @@ function initWhatsApp() {
         console.log('[WA] 🗑️ Limpiando sesión potencialmente corrupta (intento #' + (initRetryCount + 1) + '/3)...');
         const store = new FirestoreSessionStore();
         await store.delete({ session: `RemoteAuth-tenant-${OWNER_UID}` });
+
+        // También limpiar el archivo zip del disco local si existe
+        const sessionZipPaths = [
+          path.join('/app', '.wwebjs_auth', `RemoteAuth-tenant-${OWNER_UID}.zip`),
+          path.join(process.cwd(), '.wwebjs_auth', `RemoteAuth-tenant-${OWNER_UID}.zip`),
+          path.join('.wwebjs_auth', `RemoteAuth-tenant-${OWNER_UID}.zip`),
+        ];
+        for (const zipPath of sessionZipPaths) {
+          if (fs.existsSync(zipPath)) {
+            fs.unlinkSync(zipPath);
+            console.log(`[WA] 🗑️ Borrado archivo zip local: ${zipPath}`);
+          }
+        }
+
         whatsappClient = null;
         isReady = false;
         qrCode = null;
