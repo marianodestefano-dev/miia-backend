@@ -3094,8 +3094,8 @@ app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
 
     await admin.firestore().collection('users').doc(uid).delete();
 
-    // Delete Firebase Auth user
-    await admin.auth().deleteUser(uid);
+    // Delete Firebase Auth user (ignorar si no existe en Auth)
+    try { await admin.auth().deleteUser(uid); } catch (_) {}
 
     res.json({ success: true, message: `User ${uid} completely deleted` });
   } catch (e) {
