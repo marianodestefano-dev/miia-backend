@@ -2207,7 +2207,7 @@ function initWhatsApp() {
     console.error('[WA] ❌ Error en initialize():', errMsg);
     console.error('[WA] ❌ Error detail:', errStr);
     // Si la sesión es corrupta, limpiarla para que el próximo boot pida QR
-    if (errMsg === 'undefined' || errMsg === 'unknown error' || errMsg.includes('ENOENT') || errMsg.includes('corrupt')) {
+    if (errMsg === 'undefined' || errMsg === 'unknown error' || errMsg.includes('ENOENT') || errMsg.includes('corrupt') || errMsg.includes('auth timeout') || errMsg.includes('timeout') || errMsg.includes('session') || errMsg.includes('401') || errMsg.includes('403')) {
       try {
         console.log('[WA] 🗑️ Limpiando sesión potencialmente corrupta...');
         const store = new FirestoreSessionStore();
