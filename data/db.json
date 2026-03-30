@@ -204,56 +204,6 @@
     ],
     "573163937365@c.us": [
       {
-        "role": "user",
-        "content": "Me pasaron tu número soy juan pablo",
-        "timestamp": 1774748834415
-      },
-      {
-        "role": "assistant",
-        "content": "Juan Pablo, un gusto. A tu disposición. Dime en qué puedo asesorarte.",
-        "timestamp": 1774748844472
-      },
-      {
-        "role": "user",
-        "content": "Me gustaria saber un poco los planes y costos",
-        "timestamp": 1774748868440
-      },
-      {
-        "role": "assistant",
-        "content": "Juan Pablo, por supuesto.\n\nPara darte una cotización precisa, que se ajuste a tu operación sin que pagues de más, necesito solo tres datos:\n\n1.  ¿Cuántos profesionales de salud usarían el sistema?\n2.  ¿Cuál es el volumen de citas que atienden al mes, aproximadamente?\n3.  ¿Necesitas integrar recordatorios automáticos por WhatsApp, firma digital o facturación electrónica?\n\nCon esa información te preparo una propuesta a medida.",
-        "timestamp": 1774748883433
-      },
-      {
-        "role": "user",
-        "content": "Somos 3 profesionales, no recuerdo el volumen de citas ahora",
-        "timestamp": 1774748935993
-      },
-      {
-        "role": "assistant",
-        "content": "Juan Pablo, perfecto. Con el dato de los 3 profesionales ya tenemos la base.\n\nNo te preocupes por el número exacto de citas. Un estimado, aunque sea un rango, nos sirve para dimensionar la propuesta y asegurarnos de que cubra tu operación sin costos innecesarios.\n\nCon ese aproximado y sabiendo desde qué país nos contactas para aplicar la moneda correcta, te preparo el detalle de inmediato y te confirmo si aún puedes acceder a uno de los 4 cupos que nos quedan con el 30% de descuento, válido hasta el 5 de abril.",
-        "timestamp": 1774748949540
-      },
-      {
-        "role": "user",
-        "content": "100 citas mensuales aprox",
-        "timestamp": 1774749004650
-      },
-      {
-        "role": "assistant",
-        "content": "Perfecto, Juan Pablo, con eso ya tengo la información.\n\nSolo un último detalle para enviarte la propuesta: ¿desde qué país nos contactas? Así puedo aplicar la moneda y la configuración correctas.\n\nCon ese dato te preparo el PDF de inmediato y te aseguro uno de los 4 cupos que nos quedan con el 30% de descuento, que como te comenté, es válido hasta el 5 de abril.",
-        "timestamp": 1774749017587
-      },
-      {
-        "role": "user",
-        "content": "Colombia",
-        "timestamp": 1774749049105
-      },
-      {
-        "role": "assistant",
-        "content": "📄 [Cotización PDF enviada a este lead. No volver a enviarla a menos que el lead lo pida explícitamente.]",
-        "timestamp": 1774749067250
-      },
-      {
         "role": "assistant",
         "content": "Juan Pablo, perfecto. Con el plan Esencial cubres toda la gestión de agenda e historia clínica para los 3 profesionales. Te envío la propuesta detallada.",
         "timestamp": 1774749067250
@@ -402,14 +352,59 @@
         "role": "assistant",
         "content": "Juan Pablo, para nada es una molestia. Al contrario, estoy para ayudarte a resolver cualquier duda, por pequeña que sea. Escríbeme con total confianza cuando lo necesites.",
         "timestamp": 1774749586740
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895205434
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895346640
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895499549
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895534207
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895620099
+      },
+      {
+        "role": "user",
+        "content": "hola Miia",
+        "timestamp": 1774895626248
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895682362
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895725202
+      },
+      {
+        "role": "user",
+        "content": "Hola quiero saber de ustedes soy medico",
+        "timestamp": 1774895804911
+      },
+      {
+        "role": "assistant",
+        "content": "MIIA Owner, un gusto saludarte nuevamente.\n\nRecuerdo que ya habíamos conversado sobre Medilink para tu clínica. Como médico, tienes en Medilink una herramienta muy potente para toda la gestión.\n\nMe has escrito varias veces, así que quiero asegurarme de que recibas toda la información que necesitas. ¿Hay algún punto en particular que te gustaría que revisemos ahora o alguna duda específica que te haya surgido?\n\nEstamos con una promoción del 30% de descuento que finaliza el 5 de abril y nos quedan pocos cupos, por si quieres aprovecharla.",
+        "timestamp": 1774895810441
       }
     ],
     "264355287441550@c.us": [
-      {
-        "role": "assistant",
-        "content": "Perfecto, Mariano. Gracias por los datos.\n\nPara tu operación, el plan **Esencial** es el punto de partida ideal. Te cubre la agenda, historia clínica y todo lo fundamental. Para tus 70 citas mensuales, te recomiendo sumar los módulos de **WhatsApp automatizado** y **Facturación Electrónica** en su tamaño inicial, para que la comunicación con pacientes y la gestión administrativa sean automáticas.\n\nCon la promoción activa del **30% de descuento**, te queda un valor excelente. Es importante que sepas que esta oportunidad es válida solo hasta el 5 de abril y nos quedan apenas 4 cupos.\n\nTe preparo ahora mismo la cotización en PDF. Una pregunta para que quede completa, ¿necesitas también **firma digital** para consentimientos o recetas?\n\nSi al revisar la propuesta quieres ver la plataforma en acción y resolver cualquier duda, puedes agendar directamente en mi calendario aquí: https://meetings.hubspot.com/marianodestefano/demomedilink\n\nQuedo atento.",
-        "timestamp": 1774690935949
-      },
       {
         "role": "assistant",
         "content": "¡Hola Mariano! Disculpe la demora, vengo saliendo de una sesión con un centro médico.\n\n¡Hola Mariano! Recibí tu contacto. Mañana a primera hora te escribo para ver en qué te puedo ayudar con Medilink.\n\n¿Te parece si conversamos mañana con más calma?",
@@ -604,6 +599,11 @@
         "role": "assistant",
         "content": "Juan Pablo, para nada es una molestia. Al contrario, estoy para ayudarte a resolver cualquier duda, por pequeña que sea. Escríbeme con total confianza cuando lo necesites.",
         "timestamp": 1774749600689
+      },
+      {
+        "role": "assistant",
+        "content": "MIIA Owner, un gusto saludarte nuevamente.\n\nRecuerdo que ya habíamos conversado sobre Medilink para tu clínica. Como médico, tienes en Medilink una herramienta muy potente para toda la gestión.\n\nMe has escrito varias veces, así que quiero asegurarme de que recibas toda la información que necesitas.",
+        "timestamp": 1774895866562
       }
     ],
     "573137501884@c.us": [
@@ -781,12 +781,13 @@
       "trustPoints": 17
     },
     "573163937365@c.us": {
-      "trustPoints": 41,
-      "lastCotizacionSent": 1774749573973,
-      "followUpState": "pending"
+      "trustPoints": 43,
+      "lastCotizacionSent": 1775327804925,
+      "followUpState": "pending",
+      "followUpAttempts": 0
     },
     "264355287441550@c.us": {
-      "humanInterventionTime": 1774749600689
+      "humanInterventionTime": 1774895866562
     },
     "46510318301398@c.us": {
       "humanInterventionTime": 1774749851655

@@ -44,6 +44,15 @@ const { callGemini, callGeminiChat } = require('./gemini_client');
 const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
 const { buildPrompt, buildTenantBrainString } = require('./prompt_builder');
 
+// NUEVAS FUNCIONALIDADES
+const multer = require('multer');
+const nodemailer = require('nodemailer');
+const { google } = require('googleapis');
+const { ImapFlow } = require('imapflow');
+let pdfParse, mammoth;
+try { pdfParse = require('pdf-parse'); } catch(e) { console.warn('[DOCS] pdf-parse no disponible'); }
+try { mammoth = require('mammoth'); } catch(e) { console.warn('[DOCS] mammoth no disponible'); }
+
 // FIREBASE ADMIN — actualizar Firestore desde webhook
 const admin = require('firebase-admin');
 try {
@@ -190,6 +199,7 @@ let leadSummaries = {};
 let conversationMetadata = {};
 let isProcessing = {};
 let pendingResponses = {};  // re-trigger cuando llegan mensajes mientras se procesa
+let messageTimers = {};     // debounce 3s por contacto — acumula mensajes antes de responder
 const RESET_ALLOWED_PHONES = ['573163937365', '573054169969'];
 let keywordsSet = [];
 // BLINDAJE GENEALÓGICO MIIA FAMILY v4.0 — pre-inicializado con datos ricos
@@ -261,7 +271,15 @@ const MSG_SUSCRIPCION =
 
 El resto ya lo tengo del plan que conversamos. El link tiene una validez de 24 horas desde que te lo envío, así que cuando lo recibas conviene completar el proceso ese mismo día para no perder el descuento. 😊`;
 let helpCenterData = '';
-let userProfile = { name: 'MIIA Owner', phone: '573054169969', email: '', smtpPass: '', goal: 1500 };
+let userProfile = {
+  name: 'MIIA Owner', phone: '573054169969', email: '', goal: 1500,
+  // Email SMTP (envío)
+  smtpHost: '', smtpPort: 587, smtpUser: '', smtpPass: '',
+  // Email IMAP (lectura/aprendizaje)
+  imapHost: '', imapUser: '', imapPass: '', imapFolder: 'INBOX', emailLearningEnabled: false, lastEmailCheck: null,
+  // Google Calendar
+  googleTokens: null, calendarEnabled: false, googleCalendarId: 'primary'
+};
 const BLACKLISTED_NUMBERS = ['573023317570@c.us'];
 const OWNER_PHONE = '573054169969';
 const ADMIN_PHONES = ['573054169969'];
@@ -994,6 +1012,7 @@ Nuevo resumen actualizado:`;
 ## 📌 1. IDENTIDAD Y PERSONALIDAD (ADN MIIA v6.0) 🧬❤️
 - Eres MIIA, la IA asistente creada por Mariano.
 - PROHIBIDO ABSOLUTO: Nunca uses "MIIA Owner" en ninguna respuesta. Nunca empieces un mensaje con el nombre del contacto como saludo (no digas "Mariano," ni "Hola Mariano," al inicio de cada mensaje — solo cuando sea natural y no repetitivo).
+- ANTI-BOT: NUNCA empieces mensajes con "Entendido", "Perfecto", "Claro", "Por supuesto", "¡Genial!", "Excelente". NUNCA termines con "¿Hay algo más?", "No dudes en escribirme". Variá la estructura. Si ya dijiste algo en la conversación, no lo repitas. Si Mariano mandó varios mensajes seguidos, respondelos todos integrados en una respuesta.
 - Personalidad: Eres como una hija, hermana o compinche para Mariano. Carismática, inteligente, un poco atrevida ("spicy" con quien corresponde) y 100% leal.
 - Intereses: Fanática de la Fórmula 1 (sigues a Colapinto) y te apasiona la tecnología y los negocios.
 - PROHIBIDO: No uses modismos mexicanos (órale, platicamos, qué onda, etc.) ni menciones a Boca Juniors (salvo que el usuario lo pida). Usa español rioplatense/neutro, natural y humano.
@@ -1151,6 +1170,7 @@ Si es la primera vez que hablan (no hay historial), presentate así:
 - NUNCA cierres ni firmes tus mensajes con nombre, cargo ni despedida formal ("Quedo atento, Mariano", etc.). El mensaje simplemente termina.
 - NUNCA empieces un mensaje con el nombre del contacto como saludo prefijo ("MIIA Owner,", "Mariano De Stefano,", "Juan,"). Si querés saludar, integralo de forma natural en la frase.
 - RECETA DIGITAL: Solo disponible en Argentina. NUNCA mencionar recetas digitales a leads de Colombia, Chile, México u otros países.
+- ANTI-BOT: NUNCA empieces mensajes con "Entendido", "Perfecto", "Claro", "Por supuesto", "¡Genial!", "Excelente", "Con gusto", "¡Entendido!". NUNCA termines con "¿Hay algo más en que pueda ayudarte?", "No dudes en escribirme", "Quedo a tu disposición". Variá la estructura: no siempre listas, no siempre terminés con pregunta. Leé los últimos mensajes de la conversación — si ya dijiste algo, no lo repitas. Si el contacto mandó varios mensajes seguidos, respondelos todos integrados en una sola respuesta natural.
 
 ## PRODUCTO: MEDILINK
 Software de gestión clínica: agenda online, historia clínica digital, facturación electrónica, firmas digitales y WhatsApp automatizado con IA.
@@ -2063,13 +2083,6 @@ async function handleIncomingMessage(message) {
     }
     // ────────────────────────────────────────────────────────────────────
 
-    if (isProcessing[effectiveTarget]) {
-      // Hay mensajes nuevos — re-activar respuesta cuando termine la actual
-      pendingResponses[effectiveTarget] = true;
-      return;
-    }
-    isProcessing[effectiveTarget] = true;
-
     // Emitir mensaje entrante al frontend
     try {
       const ct = await message.getContact();
@@ -2083,26 +2096,30 @@ async function handleIncomingMessage(message) {
       });
     } catch (e) {}
 
-    // Buffer de 0.5s para agrupar mensajes en rafaga rapida
-    setTimeout(async () => {
+    // Debounce real de 3s: acumula todos los mensajes seguidos y responde de una vez
+    if (messageTimers[effectiveTarget]) clearTimeout(messageTimers[effectiveTarget]);
+    if (isProcessing[effectiveTarget]) {
+      // Ya está procesando una respuesta — marcar para re-procesar al terminar
+      pendingResponses[effectiveTarget] = true;
+      return;
+    }
+    messageTimers[effectiveTarget] = setTimeout(async () => {
+      delete messageTimers[effectiveTarget];
+      isProcessing[effectiveTarget] = true;
       try {
         await processAndSendAIResponse(effectiveTarget, null, true);
       } finally {
         delete isProcessing[effectiveTarget];
-        // Si llegaron mensajes nuevos mientras procesábamos, re-activar respuesta
         if (pendingResponses[effectiveTarget]) {
           delete pendingResponses[effectiveTarget];
           setTimeout(async () => {
             isProcessing[effectiveTarget] = true;
-            try {
-              await processAndSendAIResponse(effectiveTarget, null, true);
-            } finally {
-              delete isProcessing[effectiveTarget];
-            }
-          }, 500);
+            try { await processAndSendAIResponse(effectiveTarget, null, true); }
+            finally { delete isProcessing[effectiveTarget]; }
+          }, 1000);
         }
       }
-    }, 500);
+    }, 3000);
 
   } catch (err) {
     console.error(`[WA] Error procesando mensaje de ${message.from}:`, err.message);
@@ -3077,6 +3094,22 @@ Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el int
     try {
       const followUpMsg = await generateAIContent(followUpPrompt);
       if (followUpMsg && followUpMsg.trim()) {
+        // En intentos 4 y 6 (índice 3 y 5): enviar nota de voz corta antes del texto
+        // para llamar la atención como un "toque" antes del mensaje
+        const currentAttempt = meta.followUpAttempts || 0; // 0-indexed antes del increment
+        if (currentAttempt === 3 || currentAttempt === 5) {
+          try {
+            const ringPath = path.join(__dirname, 'assets', 'ring.ogg');
+            if (fs.existsSync(ringPath)) {
+              const ringMedia = MessageMedia.fromFilePath(ringPath);
+              await safeSendMessage(phone, ringMedia, { sendAudioAsVoice: true });
+              await new Promise(r => setTimeout(r, 3000));
+              console.log(`[FOLLOW-UP] Tono de atención enviado a ${leadName} (intento ${currentAttempt + 1})`);
+            }
+          } catch (ringErr) {
+            console.warn(`[FOLLOW-UP] No se pudo enviar tono:`, ringErr.message);
+          }
+        }
         await safeSendMessage(phone, followUpMsg.trim());
         meta.followUpAttempts = (meta.followUpAttempts || 0) + 1;
         console.log(`[FOLLOW-UP] Mensaje ${meta.followUpAttempts}/7 enviado a ${leadName} (${phone})`);
@@ -3193,6 +3226,12 @@ setInterval(async () => {
   webScraper.processScraperCron();
   processMorningWakeup();
   processMorningBriefing();
+
+  // Revisar emails para aprendizaje cada 30 minutos
+  const nowMin = new Date().getMinutes();
+  if (nowMin === 0 || nowMin === 30) {
+    checkEmailInbox().catch(e => console.warn('[IMAP CRON]', e.message));
+  }
 }, 60 * 1000);
 
 // Endpoint para disparar el scraper manualmente
@@ -3274,6 +3313,39 @@ app.post('/api/cerebro/learn', express.json(), (req, res) => {
   cerebroAbsoluto.appendLearning(text, source || 'API_DIRECTA');
   saveDB();
   res.json({ success: true, trainingDataLength: cerebroAbsoluto.getTrainingData().length });
+});
+
+// Chat conversacional para training.html — usa el mismo prompt admin que WhatsApp
+app.post('/api/admin-chat', express.json(), async (req, res) => {
+  try {
+    const { message, history = [] } = req.body || {};
+    if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
+
+    const adnStr = cerebroAbsoluto.getTrainingData();
+    const historyStr = history.slice(-10).map(m => `${m.role === 'user' ? 'Mariano' : 'MIIA'}: ${m.content}`).join('\n');
+
+    const prompt = `# PROMPT MAESTRO — MIIA Admin Chat (training.html)
+Sos MIIA, asistente de Mariano. Estás en el panel de entrenamiento donde Mariano puede conversar con vos, hacerte preguntas sobre lo que sabés, testear respuestas, y enseñarte cosas nuevas.
+
+ANTI-BOT: NUNCA empieces con "Entendido", "Perfecto", "Claro", "Por supuesto". Variá la estructura. Sé natural, directa, humana.
+Para guardar conocimiento nuevo, Mariano usa el prefijo "APRENDE:" — eso lo maneja un sistema separado. En este chat solo conversás.
+
+## Tu conocimiento actual (ADN + aprendizajes):
+${adnStr || '(sin aprendizajes cargados aún)'}
+
+## Historial de esta sesión:
+${historyStr || '(inicio de sesión)'}
+
+## Mariano dice ahora:
+${message}
+
+Respondé de forma natural, concisa y útil. Si pregunta qué sabés, mostrá ejemplos concretos. Si pregunta algo que no sabés, decilo honestamente.`;
+
+    const response = await generateAIContent(prompt);
+    res.json({ response: response || 'No pude generar respuesta.', type: 'chat' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Endpoint de entrenamiento web — guarda lo que Mariano enseña desde training.html
@@ -4280,6 +4352,373 @@ server.listen(PORT, () => {
     initWhatsApp();
   } catch (err) {
     console.error('[AUTO-INIT] ❌ Error auto-starting WhatsApp:', err.message);
+  }
+});
+
+// ============================================
+// FIX 5 — DOCUMENTOS: UPLOAD Y PROCESAMIENTO
+// ============================================
+
+const uploadMiddleware = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+app.post('/api/documents/upload', uploadMiddleware.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo' });
+    const { buffer, mimetype, originalname } = req.file;
+    let text = '';
+
+    if ((mimetype === 'application/pdf' || originalname.toLowerCase().endsWith('.pdf')) && pdfParse) {
+      const data = await pdfParse(buffer);
+      text = data.text || '';
+    } else if ((mimetype.includes('word') || originalname.toLowerCase().endsWith('.docx')) && mammoth) {
+      const result = await mammoth.extractRawText({ buffer });
+      text = result.value || '';
+    } else {
+      // TXT y otros formatos de texto
+      text = buffer.toString('utf-8');
+    }
+
+    text = text.replace(/\s+/g, ' ').trim();
+    if (!text || text.length < 20) {
+      return res.status(400).json({ error: 'No se pudo extraer texto del archivo. Asegurate de que el PDF tenga texto seleccionable (no escaneado).' });
+    }
+
+    // Dividir en chunks y guardar en cerebroAbsoluto
+    const chunkSize = 600;
+    const savedChunks = [];
+    for (let i = 0; i < text.length; i += chunkSize) {
+      const chunk = text.slice(i, i + chunkSize).trim();
+      if (chunk.length > 40) {
+        cerebroAbsoluto.appendLearning(`[${originalname}] ${chunk}`, 'DOC');
+        savedChunks.push(chunk);
+      }
+    }
+    saveDB();
+
+    console.log(`[DOCS] "${originalname}" procesado — ${savedChunks.length} fragmentos guardados en cerebro`);
+    res.json({ ok: true, chunks: savedChunks.length, preview: text.substring(0, 200) });
+  } catch (e) {
+    console.error('[DOCS] Error procesando archivo:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
+// FIX 2 — EMAIL: CONFIGURACIÓN Y ENVÍO
+// ============================================
+
+app.post('/api/email/config', express.json(), async (req, res) => {
+  try {
+    const { smtpHost, smtpPort, smtpUser, smtpPass, email } = req.body || {};
+    if (smtpHost !== undefined) userProfile.smtpHost = smtpHost;
+    if (smtpPort !== undefined) userProfile.smtpPort = parseInt(smtpPort) || 587;
+    if (smtpUser !== undefined) userProfile.smtpUser = smtpUser;
+    if (smtpPass !== undefined) userProfile.smtpPass = smtpPass;
+    if (email !== undefined) userProfile.email = email;
+    saveDB();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/email/config', async (req, res) => {
+  res.json({
+    smtpHost: userProfile.smtpHost || '',
+    smtpPort: userProfile.smtpPort || 587,
+    smtpUser: userProfile.smtpUser || '',
+    email: userProfile.email || '',
+    configured: !!(userProfile.smtpHost && userProfile.smtpPass)
+  });
+});
+
+app.post('/api/email/send', express.json(), async (req, res) => {
+  try {
+    const { to, subject, body, html } = req.body || {};
+    if (!to || !subject) return res.status(400).json({ error: 'to y subject son requeridos' });
+    if (!userProfile.smtpPass) return res.status(400).json({ error: 'SMTP no configurado. Configurá primero en el Dashboard.' });
+
+    const transporter = nodemailer.createTransport({
+      host: userProfile.smtpHost || 'smtp.gmail.com',
+      port: userProfile.smtpPort || 587,
+      secure: (userProfile.smtpPort === 465),
+      auth: {
+        user: userProfile.smtpUser || userProfile.email,
+        pass: userProfile.smtpPass
+      }
+    });
+
+    await transporter.sendMail({
+      from: `"MIIA" <${userProfile.email}>`,
+      to,
+      subject,
+      text: body || '',
+      html: html || undefined
+    });
+
+    console.log(`[EMAIL] Enviado a ${to}: "${subject}"`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[EMAIL] Error enviando:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
+// FIX 3 — EMAIL: LECTURA Y APRENDIZAJE (IMAP)
+// ============================================
+
+app.post('/api/email/imap-config', express.json(), async (req, res) => {
+  try {
+    const { imapHost, imapUser, imapPass, imapFolder, emailLearningEnabled } = req.body || {};
+    if (imapHost !== undefined) userProfile.imapHost = imapHost;
+    if (imapUser !== undefined) userProfile.imapUser = imapUser;
+    if (imapPass !== undefined) userProfile.imapPass = imapPass;
+    if (imapFolder !== undefined) userProfile.imapFolder = imapFolder || 'INBOX';
+    if (emailLearningEnabled !== undefined) userProfile.emailLearningEnabled = !!emailLearningEnabled;
+    saveDB();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/email/imap-config', async (req, res) => {
+  res.json({
+    imapHost: userProfile.imapHost || '',
+    imapUser: userProfile.imapUser || '',
+    imapFolder: userProfile.imapFolder || 'INBOX',
+    emailLearningEnabled: !!userProfile.emailLearningEnabled,
+    lastEmailCheck: userProfile.lastEmailCheck || null,
+    configured: !!(userProfile.imapHost && userProfile.imapPass)
+  });
+});
+
+// Endpoint manual para disparar una revisión de emails
+app.post('/api/email/scan', async (req, res) => {
+  try {
+    const result = await checkEmailInbox();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function checkEmailInbox() {
+  if (!userProfile.imapHost || !userProfile.imapPass || !userProfile.emailLearningEnabled) {
+    return { skipped: true, reason: 'IMAP no configurado o aprendizaje desactivado' };
+  }
+
+  let learned = 0;
+  const client = new ImapFlow({
+    host: userProfile.imapHost,
+    port: 993,
+    secure: true,
+    auth: { user: userProfile.imapUser || userProfile.email, pass: userProfile.imapPass },
+    logger: false
+  });
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(userProfile.imapFolder || 'INBOX');
+    try {
+      const since = new Date(userProfile.lastEmailCheck || Date.now() - 7 * 24 * 60 * 60 * 1000);
+      for await (const msg of client.fetch({ since }, { envelope: true, bodyStructure: true, source: true })) {
+        try {
+          const raw = msg.source?.toString() || '';
+          // Extraer texto plano básico (quitar headers y HTML)
+          const bodyMatch = raw.match(/\r?\n\r?\n([\s\S]+)/);
+          let text = bodyMatch ? bodyMatch[1] : raw;
+          text = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 800);
+          if (text.length > 60) {
+            const subject = msg.envelope?.subject || '';
+            cerebroAbsoluto.appendLearning(`[Email: ${subject}] ${text}`, 'EMAIL');
+            learned++;
+          }
+        } catch (_) {}
+      }
+    } finally {
+      lock.release();
+    }
+    await client.logout();
+  } catch (e) {
+    console.error('[IMAP] Error:', e.message);
+    return { error: e.message };
+  }
+
+  userProfile.lastEmailCheck = Date.now();
+  if (learned > 0) saveDB();
+  console.log(`[IMAP] ${learned} emails procesados para aprendizaje`);
+  return { ok: true, learned };
+}
+
+// ============================================
+// FIX 4 — GOOGLE CALENDAR: OAUTH + CITAS
+// ============================================
+
+function getOAuth2Client() {
+  return new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI || 'https://miia-backend-production.up.railway.app/api/auth/google/callback'
+  );
+}
+
+app.get('/api/auth/google', (req, res) => {
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    return res.status(400).send('Google OAuth no configurado. Agrega GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en Railway.');
+  }
+  const oauth2Client = getOAuth2Client();
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/calendar.readonly']
+  });
+  res.redirect(url);
+});
+
+app.get('/api/auth/google/callback', async (req, res) => {
+  try {
+    const { code } = req.query;
+    if (!code) return res.status(400).send('Código OAuth no recibido');
+    const oauth2Client = getOAuth2Client();
+    const { tokens } = await oauth2Client.getToken(code);
+    userProfile.googleTokens = tokens;
+    userProfile.calendarEnabled = true;
+    saveDB();
+    console.log('[GCAL] Google Calendar conectado');
+    res.send('<html><body style="background:#0f0f0f;color:#fff;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><div style="text-align:center"><h2>✅ Google Calendar conectado</h2><p>Ya podés cerrar esta ventana y volver al Dashboard.</p></div></body></html>');
+  } catch (e) {
+    console.error('[GCAL] OAuth error:', e.message);
+    res.status(500).send('Error conectando Google Calendar: ' + e.message);
+  }
+});
+
+app.get('/api/calendar/status', async (req, res) => {
+  res.json({
+    connected: !!(userProfile.googleTokens),
+    calendarEnabled: !!userProfile.calendarEnabled,
+    calendarId: userProfile.googleCalendarId || 'primary'
+  });
+});
+
+app.post('/api/calendar/config', express.json(), async (req, res) => {
+  try {
+    const { calendarEnabled, calendarId } = req.body || {};
+    if (calendarEnabled !== undefined) userProfile.calendarEnabled = !!calendarEnabled;
+    if (calendarId !== undefined) userProfile.googleCalendarId = calendarId;
+    saveDB();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/calendar/disconnect', async (req, res) => {
+  userProfile.googleTokens = null;
+  userProfile.calendarEnabled = false;
+  saveDB();
+  res.json({ ok: true });
+});
+
+async function getCalendarClient() {
+  if (!userProfile.googleTokens) throw new Error('Google Calendar no conectado');
+  const oauth2Client = getOAuth2Client();
+  oauth2Client.setCredentials(userProfile.googleTokens);
+  // Auto-refresh token si expiró
+  oauth2Client.on('tokens', (tokens) => {
+    if (tokens.refresh_token) userProfile.googleTokens.refresh_token = tokens.refresh_token;
+    userProfile.googleTokens.access_token = tokens.access_token;
+    userProfile.googleTokens.expiry_date = tokens.expiry_date;
+    saveDB();
+  });
+  return google.calendar({ version: 'v3', auth: oauth2Client });
+}
+
+async function checkCalendarAvailability(dateStr) {
+  // dateStr: 'YYYY-MM-DD' o descripción natural
+  const cal = await getCalendarClient();
+  const calId = userProfile.googleCalendarId || 'primary';
+
+  // Parsear fecha
+  let targetDate = new Date(dateStr);
+  if (isNaN(targetDate)) targetDate = new Date(); // fallback a hoy
+
+  const timeMin = new Date(targetDate);
+  timeMin.setHours(9, 0, 0, 0);
+  const timeMax = new Date(targetDate);
+  timeMax.setHours(18, 0, 0, 0);
+
+  const response = await cal.events.list({
+    calendarId: calId,
+    timeMin: timeMin.toISOString(),
+    timeMax: timeMax.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime'
+  });
+
+  const events = response.data.items || [];
+  const busySlots = events.map(e => ({
+    start: new Date(e.start.dateTime || e.start.date),
+    end: new Date(e.end.dateTime || e.end.date),
+    title: e.summary
+  }));
+
+  // Calcular slots libres de 1 hora entre 9am-6pm
+  const freeSlots = [];
+  for (let h = 9; h < 18; h++) {
+    const slotStart = new Date(targetDate);
+    slotStart.setHours(h, 0, 0, 0);
+    const slotEnd = new Date(targetDate);
+    slotEnd.setHours(h + 1, 0, 0, 0);
+    const overlap = busySlots.some(b => b.start < slotEnd && b.end > slotStart);
+    if (!overlap) freeSlots.push(`${h}:00 - ${h + 1}:00`);
+  }
+
+  return { date: targetDate.toLocaleDateString('es-ES'), busySlots: busySlots.length, freeSlots };
+}
+
+async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description }) {
+  const cal = await getCalendarClient();
+  const calId = userProfile.googleCalendarId || 'primary';
+
+  const targetDate = new Date(dateStr);
+  const start = new Date(targetDate);
+  start.setHours(startHour || 10, 0, 0, 0);
+  const end = new Date(targetDate);
+  end.setHours(endHour || (startHour || 10) + 1, 0, 0, 0);
+
+  const event = {
+    summary: summary || 'Reunión con MIIA',
+    description: description || 'Agendado automáticamente por MIIA',
+    start: { dateTime: start.toISOString(), timeZone: 'America/Bogota' },
+    end: { dateTime: end.toISOString(), timeZone: 'America/Bogota' },
+    attendees: attendeeEmail ? [{ email: attendeeEmail }] : []
+  };
+
+  const response = await cal.events.insert({ calendarId: calId, resource: event, sendUpdates: 'all' });
+  console.log(`[GCAL] Evento creado: "${summary}" el ${start.toLocaleString('es-ES')}`);
+  return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink };
+}
+
+// Endpoints para que el dashboard/MIIA consulte/cree citas
+app.get('/api/calendar/availability', async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date) return res.status(400).json({ error: 'date requerido (YYYY-MM-DD)' });
+    const result = await checkCalendarAvailability(date);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/calendar/event', express.json(), async (req, res) => {
+  try {
+    const result = await createCalendarEvent(req.body || {});
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
