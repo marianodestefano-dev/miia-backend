@@ -2105,14 +2105,15 @@ function initWhatsApp() {
   console.log('╚════════════════════════════════════════╝\n');
   
   // RemoteAuth: persists WhatsApp session in Firestore so it survives Railway deploys
+  // clientId matches the tenant key so it reuses the already-saved session
   const sessionStore = new FirestoreSessionStore();
   console.log('[WA] Using RemoteAuth with Firestore session store');
 
   whatsappClient = new Client({
     authStrategy: new RemoteAuth({
       store: sessionStore,
-      clientId: 'owner',
-      backupSyncIntervalMs: 300000 // backup session every 5 minutes
+      clientId: `tenant-${OWNER_UID}`,
+      backupSyncIntervalMs: 300000
     }),
     userAgent: 'Mozilla/5.0 (compatible; MIIA-APP/1.0; +https://lobsterscrm.com)',
     puppeteer: {
@@ -4193,15 +4194,13 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // Auto-start owner tenant on server boot (behaves like the old initWhatsApp).
-  // If a session is saved in Firestore, reconnects without QR scan.
-  // If no session, the user scans QR once via training.html and it persists.
-  const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
-  console.log(`[AUTO-INIT] 🚀 Auto-starting owner tenant: ${OWNER_UID}`);
+  // Auto-start owner WhatsApp on boot using the FULL handleIncomingMessage logic.
+  // This handles "hola miia", family contacts, Medilink leads, admin commands, etc.
+  console.log(`[AUTO-INIT] 🚀 Auto-starting owner WhatsApp (full MIIA logic)...`);
   try {
-    tenantManager.initTenant(OWNER_UID, process.env.GEMINI_API_KEY || '', io);
+    initWhatsApp();
   } catch (err) {
-    console.error('[AUTO-INIT] ❌ Error auto-starting owner tenant:', err.message);
+    console.error('[AUTO-INIT] ❌ Error auto-starting WhatsApp:', err.message);
   }
 });
 
