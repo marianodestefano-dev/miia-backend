@@ -144,9 +144,10 @@ class FirestoreSessionStore {
       });
 
       const buffer = Buffer.from(base64, 'base64');
-      const zipPath = path.join(extractPath, `${sessionId}.zip`);
+      // RemoteAuth passes the full destination path (including filename.zip), not a directory
+      const zipPath = extractPath;
 
-      // Ensure directory exists
+      // Ensure parent directory exists
       const dir = path.dirname(zipPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
