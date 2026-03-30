@@ -33,9 +33,6 @@ RUN npm install
 
 COPY . .
 
-# WhatsApp sessions + tenant data persist here — mount a Railway Volume at /app/data
-VOLUME ["/app/data"]
-
 EXPOSE 3000
 
 CMD ["npm", "start"]
