@@ -69,7 +69,7 @@ async function callAIForTenant(uid, prompt) {
   const t = tenants.get(uid);
   if (!t) throw new Error(`Tenant ${uid} not found`);
   const provider = t.aiProvider || 'gemini';
-  const apiKey = t.aiApiKey || t.geminiApiKey;
+  const apiKey = t.aiApiKey || t.geminiApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error(`No API key configured for tenant ${uid}`);
   return callAI(provider, apiKey, prompt);
 }
