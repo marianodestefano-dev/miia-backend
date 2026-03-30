@@ -1937,6 +1937,7 @@ function initWhatsApp() {
   
   whatsappClient = new Client({
     authStrategy: new LocalAuth(),
+    userAgent: 'Mozilla/5.0 (compatible; MIIA-APP/1.0; +https://lobsterscrm.com)',
     puppeteer: {
       headless: true,
       args: [
