@@ -2199,7 +2199,9 @@ function initWhatsApp() {
   });
 
   console.log('[WA] 🔄 Llamando a client.initialize()...');
-  whatsappClient.initialize();
+  whatsappClient.initialize().catch(err => {
+    console.error('[WA] ❌ Error en initialize():', err.message);
+  });
   console.log('[WA] 🔄 Initialize() llamado, esperando conexión...\n');
 }
 
