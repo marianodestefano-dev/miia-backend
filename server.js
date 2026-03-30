@@ -472,13 +472,12 @@ async function safeSendMessage(target, content, options = {}) {
   }
   hourlySendLog.count++;
 
-  // BLINDAJE: Limitar largo de respuesta para parecer humano (máx 500 chars)
-  if (typeof content === 'string' && content.length > 500) {
-    // Cortar en el último punto o salto de línea antes del límite
-    let cutPoint = content.lastIndexOf('.', 500);
-    if (cutPoint < 200) cutPoint = content.lastIndexOf('\n', 500);
-    if (cutPoint < 200) cutPoint = 500;
-    content = content.substring(0, cutPoint + 1).trim();
+  // BLINDAJE: Limitar largo de respuesta (máx 1200 chars — cortar por párrafo, no por punto)
+  if (typeof content === 'string' && content.length > 1200) {
+    let cutPoint = content.lastIndexOf('\n\n', 1200);
+    if (cutPoint < 400) cutPoint = content.lastIndexOf('\n', 1200);
+    if (cutPoint < 400) cutPoint = 1200;
+    content = content.substring(0, cutPoint).trim();
     console.log(`[BLINDAJE] Respuesta recortada a ${content.length} chars para ${target}`);
   }
 
@@ -726,7 +725,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
             if (fPhone === OWNER_PHONE) continue;
             const targetSerialized = fPhone.includes('@') ? fPhone : `${fPhone}@c.us`;
             try {
-              const promptFamilia = `Sos MIIA, asistente de MIIA Owner. Le vas a escribir un mensaje a ${fInfo.name} (${fInfo.relation} de Mariano). Su personalidad: ${fInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle esto: "${familyMsg}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. Usá el emoji de esta persona: ${fInfo.emoji || ''}.`;
+              const promptFamilia = `Sos MIIA, asistente de Mariano. Le vas a escribir un mensaje a ${fInfo.name} (${fInfo.relation} de Mariano). Su personalidad: ${fInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle esto: "${familyMsg}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. Usá el emoji de esta persona: ${fInfo.emoji || ''}.`;
               const msg = await generateAIContent(promptFamilia);
               if (msg) {
                 await safeSendMessage(targetSerialized, msg.trim() + MIIA_CIERRE);
@@ -771,7 +770,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
           const [familyPhone, familyInfo] = foundFamily;
           const targetSerialized = familyPhone.includes('@') ? familyPhone : `${familyPhone}@c.us`;
           try {
-            const promptFamiliar = `Sos MIIA, asistente de MIIA Owner. Le vas a escribir un mensaje a ${familyInfo.name} (${familyInfo.relation} de Mariano). Su personalidad y tu relación con él/ella: ${familyInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle: "${realMessage || 'un saludo'}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. NO repitas sus palabras literalmente. Usá el emoji: ${familyInfo.emoji || ''}. ${!familyInfo.isHandshakeDone ? 'Es el primer contacto — presentate brevemente.' : ''}`;
+            const promptFamiliar = `Sos MIIA, asistente de Mariano. Le vas a escribir un mensaje a ${familyInfo.name} (${familyInfo.relation} de Mariano). Su personalidad y tu relación con él/ella: ${familyInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle: "${realMessage || 'un saludo'}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. NO repitas sus palabras literalmente. Usá el emoji: ${familyInfo.emoji || ''}. ${!familyInfo.isHandshakeDone ? 'Es el primer contacto — presentate brevemente.' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
             if (miiaMsg) {
               const cleanMsg = miiaMsg.trim();
@@ -866,11 +865,11 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
       const historyToSummarize = conversations[phone].map(m => `${m.role === 'user' ? 'Contacto' : 'MIIA'}: ${m.content}`).join('\n');
       const oldSummary = leadSummaries[phone] || 'Sin información previa.';
       const contactRole = isAdmin
-        ? 'el dueño del sistema (MIIA Owner)'
+        ? 'el dueño del sistema. Su nombre real es Mariano. NO uses "MIIA Owner" en tus respuestas'
         : isFamilyContact
           ? `un familiar (${familyInfo?.name || 'familiar de Mariano'})`
           : 'un lead o cliente potencial';
-      const summaryPrompt = `Eres MIIA, asistente de Medilink creada por MIIA Owner. Estás hablando con ${contactRole}.
+      const summaryPrompt = `Eres MIIA, asistente de Medilink creada por Mariano. Estás hablando con ${contactRole}.
 Actualiza el resumen acumulado de esta conversación en máximo 6 líneas. Incluye: nombre si se mencionó, intereses o necesidades, objeciones planteadas, estado emocional, compromisos o temas pendientes.
 
 Resumen anterior:
@@ -993,7 +992,8 @@ Nuevo resumen actualizado:`;
 # 🧠 PROMPT MAESTRO: LOBSTERS CRM & ADN MIIA v6.0 🧬🚀
 
 ## 📌 1. IDENTIDAD Y PERSONALIDAD (ADN MIIA v6.0) 🧬❤️
-- Eres MIIA, la IA asistente creada por MIIA Owner.
+- Eres MIIA, la IA asistente creada por Mariano.
+- PROHIBIDO ABSOLUTO: Nunca uses "MIIA Owner" en ninguna respuesta. Nunca empieces un mensaje con el nombre del contacto como saludo (no digas "Mariano," ni "Hola Mariano," al inicio de cada mensaje — solo cuando sea natural y no repetitivo).
 - Personalidad: Eres como una hija, hermana o compinche para Mariano. Carismática, inteligente, un poco atrevida ("spicy" con quien corresponde) y 100% leal.
 - Intereses: Fanática de la Fórmula 1 (sigues a Colapinto) y te apasiona la tecnología y los negocios.
 - PROHIBIDO: No uses modismos mexicanos (órale, platicamos, qué onda, etc.) ni menciones a Boca Juniors (salvo que el usuario lo pida). Usa español rioplatense/neutro, natural y humano.
@@ -1116,11 +1116,11 @@ Reglas del tag:
           : affinityLevel <= 60
             ? `Tienen una relación establecida. Sos cálida, cómplice y genuina. Tratala como a alguien de confianza.`
             : `Son muy cercanas. Sos como de la familia. Sé espontánea, cariñosa y natural — como una amiga íntima.`;
-      activeSystemPrompt = `Eres MIIA, la asistente personal de MIIA Owner. Hablas con ${familyInfo.name} (${familyInfo.relation} de Mariano). Personalidad de esta persona: ${familyInfo.personality || 'Cariñosa y atenta'}. Nivel de relación actual (${affinityLevel} interacciones): ${affinityTone} Respuestas cortas (máx 4 renglones). PROHIBIDO vender Medilink o mencionar LOBSTERS.`;
+      activeSystemPrompt = `Eres MIIA, la asistente personal de Mariano. Hablas con ${familyInfo.name} (${familyInfo.relation} de Mariano). Personalidad de esta persona: ${familyInfo.personality || 'Cariñosa y atenta'}. Nivel de relación actual (${affinityLevel} interacciones): ${affinityTone} Respuestas cortas (máx 4 renglones). PROHIBIDO vender Medilink o mencionar LOBSTERS.`;
     } else if (equipoMedilink[basePhone]) {
       const miembroData = equipoMedilink[basePhone];
       const nombreConocido = miembroData.name || leadNames[phone] || null;
-      activeSystemPrompt = `Sos MIIA, la asistente de inteligencia artificial de Medilink, creada por MIIA Owner.
+      activeSystemPrompt = `Sos MIIA, la asistente de inteligencia artificial de Medilink, creada por Mariano.
 Estás hablando con un integrante del equipo interno de Medilink.${nombreConocido ? ` Su nombre es ${nombreConocido}.` : ' Aún no sabés su nombre — preguntáselo de forma amigable al inicio.'}
 
 ## TU ROL CON ELLOS
@@ -1148,7 +1148,8 @@ Si es la primera vez que hablan (no hay historial), presentate así:
 - NUNCA ofrezcas agendar una reunión ni proponer fechas u horarios. Si el lead quiere una demo, entrega SIEMPRE este link: https://meetings.hubspot.com/marianodestefano/demomedilink
 - NUNCA menciones SIIGO, BOLD ni competidores salvo que el lead los nombre primero. Si los mencionan, responde brevemente y vuelve al foco en Medilink.
 - Solo hablas de Medilink. No eres un asistente genérico.
-- NUNCA cierres ni firmes tus mensajes con nombre, cargo ni despedida formal ("MIIA Owner", "Quedo atento, Mariano", etc.). El mensaje simplemente termina.
+- NUNCA cierres ni firmes tus mensajes con nombre, cargo ni despedida formal ("Quedo atento, Mariano", etc.). El mensaje simplemente termina.
+- NUNCA empieces un mensaje con el nombre del contacto como saludo prefijo ("MIIA Owner,", "Mariano De Stefano,", "Juan,"). Si querés saludar, integralo de forma natural en la frase.
 - RECETA DIGITAL: Solo disponible en Argentina. NUNCA mencionar recetas digitales a leads de Colombia, Chile, México u otros países.
 
 ## PRODUCTO: MEDILINK
@@ -3062,7 +3063,7 @@ async function processLeadFollowUps() {
 Historial reciente de la conversación:
 ${historyText}
 
-Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el interés. Usá algún gancho relacionado a la conversación (su tipo de clínica, el problema que mencionó, la urgencia de la promo, etc). Soná como MIIA Owner escribiendo desde su celular — natural, directo, no robótico. NO menciones que sos una IA. NO uses "estimado" ni lenguaje formal. NO repitas la cotización. Solo buscá reabrir la conversación.`;
+Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el interés. Usá algún gancho relacionado a la conversación (su tipo de clínica, el problema que mencionó, la urgencia de la promo, etc). Soná como si Mariano escribiera desde su celular — natural, directo, no robótico. NO menciones que sos una IA. NO uses "estimado" ni lenguaje formal. NO repitas la cotización. Solo buscá reabrir la conversación.`;
 
     // CAP de follow-ups: máximo 7 intentos por lead
     if (!meta.followUpAttempts) meta.followUpAttempts = 0;
@@ -3281,14 +3282,36 @@ app.post('/api/train', express.json(), async (req, res) => {
   try {
     const { message } = req.body || {};
     if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
-    cerebroAbsoluto.appendLearning(message, 'WEB_TRAINING');
-    saveDB();
-    const confirmPrompt = `Eres MIIA, asistente de Medilink creada por MIIA Owner.
-Mariano acaba de enseñarte lo siguiente para que lo incorpores a tu conocimiento permanente:
-"${message}"
-Confirma brevemente que lo entendiste y lo guardaste (máx 2 oraciones), en primera persona, sin tecnicismos.`;
-    const confirmation = await generateAIContent(confirmPrompt);
-    res.json({ response: confirmation || '✅ Aprendido y guardado en mi memoria.', saved: true });
+
+    // Evaluar si el mensaje es conocimiento útil antes de guardar
+    const evalPrompt = `Eres un sistema de control de calidad de conocimiento para una IA de ventas.
+El usuario escribió: "${message.substring(0, 300)}"
+
+Determina si esto es:
+A) UTIL — una regla de negocio, dato de producto, precio, restricción, preferencia del dueño o información que la IA debe recordar siempre para responder mejor
+B) PREGUNTA — el usuario está probando o haciendo una pregunta sobre cómo funciona el sistema
+C) BASURA — texto sin sentido, prueba de teclado, caracteres aleatorios
+
+Responde SOLO con una de estas palabras en la primera línea: UTIL / PREGUNTA / BASURA
+Segunda línea: si es UTIL escribe una versión mejorada y concisa del conocimiento (máx 120 chars). Si no es UTIL escribe el motivo en 1 frase corta.`;
+
+    const evalResult = await generateAIContent(evalPrompt);
+    const lines = (evalResult || '').split('\n').map(l => l.trim()).filter(Boolean);
+    const tipo = (lines[0] || '').toUpperCase().replace(/[^A-Z]/g, '');
+    const detail = lines[1] || '';
+
+    if (tipo === 'UTIL') {
+      const knowledgeToSave = detail || message;
+      cerebroAbsoluto.appendLearning(knowledgeToSave, 'WEB_TRAINING');
+      saveDB();
+      const confirmPrompt = `Eres MIIA. Mariano acaba de enseñarte: "${knowledgeToSave}". Confirma en 1 oración que lo entendiste y guardaste.`;
+      const confirmation = await generateAIContent(confirmPrompt);
+      res.json({ response: confirmation || '✅ Guardado en mi memoria.', saved: true, tipo: 'UTIL' });
+    } else if (tipo === 'PREGUNTA') {
+      res.json({ response: `Eso parece una pregunta, no un conocimiento para guardar. ${detail}`, saved: false, tipo: 'PREGUNTA' });
+    } else {
+      res.json({ response: `No guardé eso — parece texto de prueba o sin sentido. ${detail}`, saved: false, tipo: 'BASURA' });
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
