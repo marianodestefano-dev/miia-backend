@@ -2342,6 +2342,117 @@ app.get('/api/is-admin', async (req, res) => {
   } catch (_) { res.json({ isAdmin: false }); }
 });
 
+// ============================================
+// MIDDLEWARE: requireRole — verifica rol del usuario en Firestore
+// ============================================
+function requireRole(...allowedRoles) {
+  return async (req, res, next) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'No autorizado' });
+      }
+      const idToken = authHeader.substring(7);
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      req.user = decoded;
+
+      // Admins always pass
+      const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+      if (adminEmails.includes((decoded.email || '').toLowerCase())) {
+        req.userRole = 'owner';
+        return next();
+      }
+
+      // Check role in Firestore
+      const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
+      const role = doc.exists ? (doc.data().role || 'owner') : 'owner'; // default owner for legacy users
+      req.userRole = role;
+
+      if (allowedRoles.includes(role)) return next();
+      return res.status(403).json({ error: 'Acceso denegado', requiredRole: allowedRoles, yourRole: role });
+    } catch (e) {
+      return res.status(401).json({ error: 'Token inválido', details: e.message });
+    }
+  };
+}
+
+// GET /api/user/role — devuelve rol del usuario autenticado
+app.get('/api/user/role', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
+    const idToken = authHeader.substring(7);
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
+    const data = doc.exists ? doc.data() : {};
+    res.json({
+      uid: decoded.uid,
+      email: decoded.email,
+      role: data.role || 'owner',
+      assignedLeads: data.assignedLeads || [],
+      createdBy: data.createdBy || null
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/tenant/:uid/agent-conversations — conversaciones asignadas al agente
+app.get('/api/tenant/:uid/agent-conversations', requireRole('owner', 'agent'), async (req, res) => {
+  try {
+    const agentUid = req.user.uid;
+    const ownerUid = req.params.uid;
+
+    // Owner sees all
+    if (req.userRole === 'owner') {
+      const convs = conversations || {};
+      return res.json({ conversations: convs, leadNames, contactTypes });
+    }
+
+    // Agent: verify they belong to this owner
+    const agentDoc = await admin.firestore().collection('users').doc(agentUid).get();
+    if (!agentDoc.exists || agentDoc.data().createdBy !== ownerUid) {
+      return res.status(403).json({ error: 'No pertenecés a este tenant' });
+    }
+
+    const assignedLeads = agentDoc.data().assignedLeads || [];
+    const filtered = {};
+    for (const phone of assignedLeads) {
+      if (conversations[phone]) filtered[phone] = conversations[phone];
+      // Also try with @c.us suffix
+      const phoneWithSuffix = phone.includes('@') ? phone : `${phone}@c.us`;
+      if (conversations[phoneWithSuffix]) filtered[phoneWithSuffix] = conversations[phoneWithSuffix];
+    }
+
+    const filteredNames = {};
+    const filteredTypes = {};
+    for (const phone of Object.keys(filtered)) {
+      if (leadNames[phone]) filteredNames[phone] = leadNames[phone];
+      if (contactTypes[phone]) filteredTypes[phone] = contactTypes[phone];
+    }
+
+    res.json({ conversations: filtered, leadNames: filteredNames, contactTypes: filteredTypes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/tenant/:uid/assign-leads — asignar leads a un agente
+app.put('/api/tenant/:uid/assign-leads', requireRole('owner'), async (req, res) => {
+  try {
+    const { agentUid, leads } = req.body;
+    if (!agentUid || !Array.isArray(leads)) {
+      return res.status(400).json({ error: 'agentUid y leads[] son requeridos' });
+    }
+    await admin.firestore().collection('users').doc(agentUid).update({
+      assignedLeads: leads
+    });
+    res.json({ ok: true, assigned: leads.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/firebase-status', (_req, res) => {
   try {
     admin.app();
