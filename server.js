@@ -1457,11 +1457,9 @@ async function handleIncomingMessage(message) {
   const body = (message.body || '').trim();
   if (!body) return;
 
-  console.log(`[WA TRACER] message_create | fromMe: ${fromMe} | body: ${body.substring(0, 30)}...`);
 
   // Guardia de bucle por contenido (buffer de IA)
   const targetPhoneId = fromMe ? message.to : message.from;
-  console.log(`[WA DIAG-1] targetPhoneId=${targetPhoneId} | from=${message.from} | to=${message.to}`);
   const botBuffer = lastSentByBot[targetPhoneId] || [];
   const isBotSessionMessage = sentMessageIds.has(message.id._serialized) || botBuffer.includes(body);
   if (isBotSessionMessage) {
@@ -1601,7 +1599,6 @@ async function handleIncomingMessage(message) {
     }
 
     // Blacklist
-    console.log(`[WA DIAG-2] effectiveTarget=${effectiveTarget} | fromMe=${fromMe}`);
     if (BLACKLISTED_NUMBERS.includes(effectiveTarget)) return;
 
     const baseTarget = effectiveTarget.replace(/[^0-9]/g, '');
@@ -1657,7 +1654,6 @@ async function handleIncomingMessage(message) {
       effectiveTarget.split('@')[0] === OWNER_PHONE ||
       effectiveTarget.split('@')[0] === senderNumber   // remitente == destinatario → self-chat
     );
-    console.log(`[WA DIAG-2b] isSelfChatMsg=${isSelfChatMsg} | effectiveTarget=${effectiveTarget} | myNumberFull=${myNumberFull} | senderNumber=${senderNumber}`);
     const bodyLower = (body || '').toLowerCase();
 
     // ── INVOCACIÓN / CIERRE DE SESIÓN MIIA ──────────────────────────────────
@@ -1773,10 +1769,8 @@ async function handleIncomingMessage(message) {
       if (!isSelfChatMIIA) return;
     }
 
-    console.log(`[MIIA DEBUG] isSelfChatMsg=${isSelfChatMsg} isMIIAMentioned=${isMIIAMentioned} isSelfChatMIIA=${isSelfChatMIIA} isAllowed=${isAllowed} autoResponse=${automationSettings.autoResponse}`);
 
     const shouldRespond = ((isAllowed || existsInCRM) && automationSettings.autoResponse) || isSelfChatMIIA || isEquipo;
-    console.log(`[WA DIAG-3] shouldRespond=${shouldRespond} | isAllowed=${isAllowed} | existsInCRM=${existsInCRM} | isSelfChatMIIA=${isSelfChatMIIA} | isSystemPaused=${isSystemPaused}`);
     if (!shouldRespond) {
       console.log(`[WA] Lead ${effectiveTarget}: autoResponse apagado o no en whitelist. isSelfChatMIIA=${isSelfChatMIIA}`);
       return;
@@ -1893,10 +1887,8 @@ async function handleIncomingMessage(message) {
       });
     } catch (e) {}
 
-    // Buffer de 0.5s para agrupar mensajes en ráfaga rápida
-    console.log(`[WA DIAG-4] ✅ Programando respuesta MIIA para ${effectiveTarget} en 0.5s...`);
+    // Buffer de 0.5s para agrupar mensajes en rafaga rapida
     setTimeout(async () => {
-      console.log(`[WA DIAG-5] ⏰ Ejecutando processAndSendAIResponse para ${effectiveTarget}`);
       try {
         await processAndSendAIResponse(effectiveTarget, null, true);
       } finally {
