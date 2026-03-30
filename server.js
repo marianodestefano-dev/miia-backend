@@ -7,6 +7,7 @@ const cors = require('cors');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
 // CEREBRO ABSOLUTO — módulo de aprendizaje autónomo nocturno
@@ -3006,6 +3007,229 @@ app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, r
     }
 
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Export/Import Backup MIIA ────────────────────────────────────────────────
+
+const BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'miia-backup-default-key-2026';
+
+function encryptBackup(data, uid) {
+  const key = crypto.scryptSync(BACKUP_MASTER_KEY + uid, 'miia-salt', 32);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  let encrypted = cipher.update(JSON.stringify(data), 'utf8', 'base64');
+  encrypted += cipher.final('base64');
+  return { iv: iv.toString('base64'), data: encrypted };
+}
+
+function decryptBackup(payload, masterKeyOnly) {
+  const key = crypto.scryptSync(masterKeyOnly, 'miia-salt', 32);
+  const iv = Buffer.from(payload.iv, 'base64');
+  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  let decrypted = decipher.update(payload.data, 'base64', 'utf8');
+  decrypted += decipher.final('utf8');
+  return JSON.parse(decrypted);
+}
+
+// POST /api/tenant/:uid/export — Generate encrypted .miia backup
+app.post('/api/tenant/:uid/export', async (req, res) => {
+  try {
+    const { uid } = req.params;
+
+    // Rate limit: max 1 export per week
+    const userDoc = await admin.firestore().collection('users').doc(uid).get();
+    if (!userDoc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const userData = userDoc.data();
+    const lastExport = userData.last_export ? userData.last_export.toDate() : null;
+    if (lastExport && (Date.now() - lastExport.getTime()) < 7 * 24 * 60 * 60 * 1000) {
+      return res.status(429).json({ error: 'Solo puedes exportar 1 vez por semana. Próximo export disponible: ' + new Date(lastExport.getTime() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString() });
+    }
+
+    // Gather all user data
+    const productsSnap = await admin.firestore().collection('training_products').doc(uid).collection('items').get();
+    const products = productsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    const sessionsSnap = await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').get();
+    const sessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    let contactRules = {};
+    try {
+      const rulesDoc = await admin.firestore().collection('contact_rules').doc(uid).get();
+      if (rulesDoc.exists) contactRules = rulesDoc.data();
+    } catch (_) {}
+
+    let paymentMethods = [];
+    try {
+      const pmDoc = await admin.firestore().collection('payment_methods').doc(uid).get();
+      if (pmDoc.exists) paymentMethods = pmDoc.data().methods || [];
+    } catch (_) {}
+
+    const exportId = crypto.randomBytes(16).toString('hex');
+    const now = new Date();
+
+    const backupData = {
+      _miia_backup: true,
+      _version: '1.0',
+      _export_id: exportId,
+      _source_uid: uid,
+      _source_email: userData.email || '',
+      _exported_at: now.toISOString(),
+      products,
+      sessions,
+      contactRules,
+      paymentMethods
+    };
+
+    // Encrypt with master key ONLY (not uid-bound, so any account can import)
+    const encrypted = encryptBackup(backupData, 'global');
+
+    // Record export in user doc
+    await admin.firestore().collection('users').doc(uid).update({
+      last_export: now,
+      last_export_id: exportId
+    });
+
+    res.json({
+      success: true,
+      filename: `miia-backup-${now.toISOString().slice(0, 10)}.miia`,
+      backup: encrypted
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/tenant/:uid/import — Import encrypted .miia backup
+app.post('/api/tenant/:uid/import', express.json({ limit: '10mb' }), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { backup } = req.body;
+    if (!backup || !backup.iv || !backup.data) {
+      return res.status(400).json({ error: 'Archivo de backup inválido' });
+    }
+
+    // Decrypt
+    let data;
+    try {
+      data = decryptBackup(backup, BACKUP_MASTER_KEY + 'global');
+    } catch (_) {
+      return res.status(400).json({ error: 'No se pudo descifrar el backup. Archivo corrupto o inválido.' });
+    }
+
+    if (!data._miia_backup) {
+      return res.status(400).json({ error: 'Archivo no es un backup válido de MIIA' });
+    }
+
+    const userDoc = await admin.firestore().collection('users').doc(uid).get();
+    if (!userDoc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const userData = userDoc.data();
+
+    // Anti-abuse: detect trial farming
+    const sourceEmail = data._source_email || '';
+    const importerEmail = userData.email || '';
+    const exportId = data._export_id || '';
+
+    // Check if same export_id was imported by 2+ accounts already
+    const existingImports = await admin.firestore().collection('imports')
+      .where('export_id', '==', exportId).get();
+    if (existingImports.size >= 2) {
+      return res.status(403).json({ error: 'Este backup ya fue importado en el máximo de cuentas permitidas.' });
+    }
+
+    // Check email similarity (gmail alias trick: user+1@gmail.com)
+    const normalizeEmail = (e) => e.split('@')[0].replace(/\+.*$/, '').replace(/\./g, '').toLowerCase() + '@' + (e.split('@')[1] || '').toLowerCase();
+    const isSameEmailVariant = normalizeEmail(sourceEmail) === normalizeEmail(importerEmail) && sourceEmail !== importerEmail;
+
+    // Determine alert level
+    let alertLevel = 'none';
+    if (userData.plan === 'trial' && isSameEmailVariant) alertLevel = 'high';
+    else if (userData.plan === 'trial') alertLevel = 'medium';
+    else if (isSameEmailVariant) alertLevel = 'low';
+
+    // Import products
+    if (data.products && data.products.length) {
+      const batch = admin.firestore().batch();
+      for (const p of data.products) {
+        const { id, ...pData } = p;
+        const ref = admin.firestore().collection('training_products').doc(uid).collection('items').doc();
+        batch.set(ref, { ...pData, imported: true, import_date: new Date() });
+      }
+      await batch.commit();
+    }
+
+    // Import sessions
+    if (data.sessions && data.sessions.length) {
+      const batch = admin.firestore().batch();
+      for (const s of data.sessions) {
+        const { id, ...sData } = s;
+        const ref = admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(id || crypto.randomBytes(4).toString('hex'));
+        batch.set(ref, { ...sData, imported: true, import_date: new Date() });
+      }
+      await batch.commit();
+    }
+
+    // Import contact rules (merge)
+    if (data.contactRules && Object.keys(data.contactRules).length) {
+      await admin.firestore().collection('contact_rules').doc(uid).set(data.contactRules, { merge: true });
+    }
+
+    // Import payment methods (merge)
+    if (data.paymentMethods && data.paymentMethods.length) {
+      await admin.firestore().collection('payment_methods').doc(uid).set({
+        methods: data.paymentMethods,
+        updatedAt: new Date(),
+        imported: true
+      });
+    }
+
+    // Record import for abuse tracking
+    await admin.firestore().collection('imports').doc(uid + '_' + exportId).set({
+      uid,
+      email: importerEmail,
+      source_uid: data._source_uid,
+      source_email: sourceEmail,
+      export_id: exportId,
+      exported_at: data._exported_at,
+      imported_at: new Date(),
+      alert_level: alertLevel,
+      is_email_variant: isSameEmailVariant
+    });
+
+    // Flag user doc
+    await admin.firestore().collection('users').doc(uid).update({
+      imported_backup: true,
+      import_source_email: sourceEmail,
+      import_alert_level: alertLevel,
+      import_date: new Date()
+    });
+
+    // Rebuild brain
+    await rebuildTenantBrainFromFirestore(uid);
+
+    res.json({
+      success: true,
+      imported: {
+        products: (data.products || []).length,
+        sessions: (data.sessions || []).length,
+        contactRules: Object.keys(data.contactRules || {}).length > 0,
+        paymentMethods: (data.paymentMethods || []).length
+      },
+      alert_level: alertLevel
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/admin/imports — List all imports for admin dashboard
+app.get('/api/admin/imports', async (req, res) => {
+  try {
+    const snap = await admin.firestore().collection('imports').orderBy('imported_at', 'desc').limit(50).get();
+    const imports = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    res.json(imports);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
