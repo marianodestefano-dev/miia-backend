@@ -2115,6 +2115,11 @@ function initWhatsApp() {
       backupSyncIntervalMs: 300000 // backup session every 5 minutes
     }),
     userAgent: 'Mozilla/5.0 (compatible; MIIA-APP/1.0; +https://lobsterscrm.com)',
+    webVersion: '2.2412.54',
+    webVersionCache: {
+      type: 'remote',
+      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+    },
     puppeteer: {
       headless: true,
       args: [
