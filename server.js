@@ -2620,12 +2620,13 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
   }
 
   if (!status.hasQR) {
-    console.log(`[QR] ⏳ Tenant found but no QR yet (WhatsApp still initializing...)`);
-    return res.json({ qrCode: null, isReady: status.isReady });
+    const phase = status.isAuthenticated ? 'authenticated_loading' : 'initializing';
+    console.log(`[QR] ⏳ Tenant found but no QR (phase: ${phase})`);
+    return res.json({ qrCode: null, isReady: status.isReady, isAuthenticated: status.isAuthenticated, phase });
   }
 
   console.log(`[QR] ✅ QR found! Type: ${typeof status.qrCode}, Length: ${status.qrCode ? status.qrCode.length : 'N/A'}, Starts: ${status.qrCode ? status.qrCode.substring(0, 50) : 'null'}`);
-  res.json({ qrCode: status.qrCode, isReady: status.isReady });
+  res.json({ qrCode: status.qrCode, isReady: status.isReady, isAuthenticated: status.isAuthenticated, phase: 'qr_ready' });
 });
 
 // POST /api/tenant/:uid/logout — Disconnect tenant WhatsApp

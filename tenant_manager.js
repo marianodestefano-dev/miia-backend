@@ -235,29 +235,50 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
   });
 
   client.on('authenticated', () => {
-    console.log(`[TM:${uid}] ✅ Authenticated`);
+    console.log(`[TM:${uid}] ✅ Authenticated — waiting for ready event...`);
     tenant.qrCode = null;
+    tenant.isAuthenticated = true;
+  });
+
+  client.on('auth_failure', (msg) => {
+    console.error(`[TM:${uid}] ❌ Auth failure: ${msg}`);
+    tenant.isReady = false;
+    tenant.isAuthenticated = false;
+    tenants.delete(uid);
+  });
+
+  client.on('change_state', (state) => {
+    console.log(`[TM:${uid}] 🔄 State changed: ${state}`);
   });
 
   client.on('ready', () => {
-    console.log(`[TM:${uid}] ✅ WhatsApp ready`);
+    console.log(`[TM:${uid}] ✅ WhatsApp READY — messages will be processed`);
     tenant.isReady = true;
+    tenant.isAuthenticated = true;
     if (ioInstance) {
       ioInstance.to(`tenant:${uid}`).emit('whatsapp_ready', { uid, status: 'connected' });
       ioInstance.emit(`tenant_ready_${uid}`, { status: 'connected' });
     }
   });
 
-  client.on('message_create', (msg) => {
-    // Only process incoming messages (not own messages)
+  client.on('message', (msg) => {
     if (msg.fromMe) return;
     if (!msg.body || msg.body.trim() === '') return;
+    console.log(`[TM:${uid}] 📨 message event from ${msg.from}`);
+    processTenantMessage(uid, msg.from, msg.body);
+  });
+
+  client.on('message_create', (msg) => {
+    if (msg.fromMe) return;
+    if (!msg.body || msg.body.trim() === '') return;
+    console.log(`[TM:${uid}] 📨 message_create event from ${msg.from}`);
     processTenantMessage(uid, msg.from, msg.body);
   });
 
   client.on('disconnected', (reason) => {
     console.log(`[TM:${uid}] ❌ Disconnected: ${reason}`);
     tenant.isReady = false;
+    tenant.isAuthenticated = false;
     tenant.client = null;
     tenants.delete(uid);
     if (ioInstance) {
@@ -306,6 +327,7 @@ function getTenantStatus(uid) {
   return {
     exists: true,
     isReady: t.isReady,
+    isAuthenticated: !!t.isAuthenticated,
     hasQR: !!t.qrCode,
     qrCode: t.qrCode,
     conversationCount: Object.keys(t.conversations).length
