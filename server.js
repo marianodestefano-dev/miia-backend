@@ -2154,6 +2154,22 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.get('/api/is-admin', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.json({ isAdmin: false });
+    const idToken = authHeader.substring(7);
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+    if (adminEmails.includes((decoded.email || '').toLowerCase())) return res.json({ isAdmin: true });
+    const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
+    if (doc.exists && doc.data().role === 'admin') return res.json({ isAdmin: true });
+    const snap = await admin.firestore().collection('users').where('email','==',decoded.email).limit(1).get();
+    if (!snap.empty && snap.docs[0].data().role === 'admin') return res.json({ isAdmin: true });
+    res.json({ isAdmin: false });
+  } catch (_) { res.json({ isAdmin: false }); }
+});
+
 app.get('/api/firebase-status', (_req, res) => {
   try {
     admin.app();
