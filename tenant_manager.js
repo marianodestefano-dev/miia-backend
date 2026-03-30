@@ -97,8 +97,8 @@ async function processTenantMessage(uid, phone, messageBody) {
   const t = tenants.get(uid);
   if (!t) return;
 
-  // Avoid processing own messages
-  if (!phone.includes('@c.us') && !phone.includes('@g.us')) return;
+  // Avoid processing own messages — accept @c.us, @g.us and @lid (newer WA format)
+  if (!phone.includes('@c.us') && !phone.includes('@g.us') && !phone.includes('@lid')) return;
 
   // Save incoming message
   if (!t.conversations[phone]) t.conversations[phone] = [];
