@@ -2212,8 +2212,7 @@ function initWhatsApp() {
 io.on('connection', (socket) => {
   console.log('👤 Cliente conectado via Socket.io');
   
-  // Owner WhatsApp init via Socket.IO desactivado — solo sistema multi-tenant
-  // if (!whatsappClient) initWhatsApp(); // DISABLED
+  if (!whatsappClient) initWhatsApp();
 
   // Si WhatsApp ya está conectado, avisar inmediatamente
   if (isReady && whatsappClient) {
@@ -2580,6 +2579,13 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   // geminiApiKey is optional now - users can test WhatsApp without it
   const apiKeyToUse = geminiApiKey || '';
 
+  // If this is the owner UID and owner WhatsApp is already running, reuse it
+  const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
+  if (uid === OWNER_UID && whatsappClient && isReady) {
+    console.log(`[INIT] ♻️ Owner UID detected — reusing owner WhatsApp client`);
+    return res.json({ success: true, uid, isReady: true, hasQR: false, reusing: true });
+  }
+
   const tenant = tenantManager.initTenant(uid, apiKeyToUse, io);
   console.log(`[INIT] ✅ Tenant initialized. Stored in map. Checking Medilink status...`);
 
@@ -2614,6 +2620,12 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
   console.log(`[QR] GET /api/tenant/${uid}/qr - exists: ${status.exists}, hasQR: ${status.hasQR}, isReady: ${status.isReady}`);
 
   if (!status.exists) {
+    // Check if this is the owner UID and owner WhatsApp is running
+    const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
+    if (uid === OWNER_UID && whatsappClient) {
+      console.log(`[QR] ♻️ Owner UID — returning owner client status`);
+      return res.json({ qrCode: qrCode || null, isReady: isReady, isAuthenticated: isReady, phase: isReady ? 'ready' : (qrCode ? 'qr_ready' : 'initializing') });
+    }
     console.log(`[QR] ❌ Tenant NOT found in map for UID: ${uid}`);
     return res.status(404).json({ error: 'Tenant no encontrado. Llama a /api/tenant/init primero.' });
   }
@@ -4181,8 +4193,7 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // Owner WhatsApp auto-init desactivado — solo usa el sistema multi-tenant
-  // initWhatsApp(); // DISABLED: solo un numero activo (+573054169969 via tenant)
+  initWhatsApp();
 });
 
 // Export app for testing
