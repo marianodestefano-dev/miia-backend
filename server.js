@@ -4564,29 +4564,37 @@ function getOAuth2Client() {
   );
 }
 
+// uid se pasa como query param ?uid=... desde el dashboard (el usuario ya está autenticado en el browser)
 app.get('/api/auth/google', (req, res) => {
   if (!process.env.GOOGLE_CLIENT_ID) {
     return res.status(400).send('Google OAuth no configurado. Agrega GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en Railway.');
   }
+  const uid = req.query.uid;
+  if (!uid) return res.status(400).send('uid requerido');
   const oauth2Client = getOAuth2Client();
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/calendar.readonly']
+    scope: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/calendar.readonly'],
+    state: uid  // pasamos uid para recuperarlo en el callback
   });
   res.redirect(url);
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
   try {
-    const { code } = req.query;
+    const { code, state: uid } = req.query;
     if (!code) return res.status(400).send('Código OAuth no recibido');
+    if (!uid) return res.status(400).send('uid no recibido en state');
     const oauth2Client = getOAuth2Client();
     const { tokens } = await oauth2Client.getToken(code);
-    userProfile.googleTokens = tokens;
-    userProfile.calendarEnabled = true;
-    saveDB();
-    console.log('[GCAL] Google Calendar conectado');
+    // Guardar tokens en Firestore por usuario (multi-tenant)
+    await admin.firestore().collection('users').doc(uid).set({
+      googleTokens: tokens,
+      calendarEnabled: true,
+      googleCalendarId: 'primary'
+    }, { merge: true });
+    console.log(`[GCAL] Google Calendar conectado para uid=${uid}`);
     res.send('<html><body style="background:#0f0f0f;color:#fff;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><div style="text-align:center"><h2>✅ Google Calendar conectado</h2><p>Ya podés cerrar esta ventana y volver al Dashboard.</p></div></body></html>');
   } catch (e) {
     console.error('[GCAL] OAuth error:', e.message);
@@ -4594,51 +4602,65 @@ app.get('/api/auth/google/callback', async (req, res) => {
   }
 });
 
-app.get('/api/calendar/status', async (req, res) => {
-  res.json({
-    connected: !!(userProfile.googleTokens),
-    calendarEnabled: !!userProfile.calendarEnabled,
-    calendarId: userProfile.googleCalendarId || 'primary'
-  });
+app.get('/api/calendar/status', requireRole('owner', 'agent'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const doc = await admin.firestore().collection('users').doc(uid).get();
+    const data = doc.exists ? doc.data() : {};
+    res.json({
+      connected: !!(data.googleTokens),
+      calendarEnabled: !!data.calendarEnabled,
+      calendarId: data.googleCalendarId || 'primary'
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.post('/api/calendar/config', express.json(), async (req, res) => {
+app.post('/api/calendar/config', requireRole('owner', 'agent'), express.json(), async (req, res) => {
   try {
+    const uid = req.user.uid;
     const { calendarEnabled, calendarId } = req.body || {};
-    if (calendarEnabled !== undefined) userProfile.calendarEnabled = !!calendarEnabled;
-    if (calendarId !== undefined) userProfile.googleCalendarId = calendarId;
-    saveDB();
+    const update = {};
+    if (calendarEnabled !== undefined) update.calendarEnabled = !!calendarEnabled;
+    if (calendarId !== undefined) update.googleCalendarId = calendarId;
+    await admin.firestore().collection('users').doc(uid).set(update, { merge: true });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.post('/api/calendar/disconnect', async (req, res) => {
-  userProfile.googleTokens = null;
-  userProfile.calendarEnabled = false;
-  saveDB();
-  res.json({ ok: true });
+app.post('/api/calendar/disconnect', requireRole('owner', 'agent'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    await admin.firestore().collection('users').doc(uid).set({
+      googleTokens: null,
+      calendarEnabled: false
+    }, { merge: true });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-async function getCalendarClient() {
-  if (!userProfile.googleTokens) throw new Error('Google Calendar no conectado');
+async function getCalendarClient(uid) {
+  const doc = await admin.firestore().collection('users').doc(uid).get();
+  const data = doc.exists ? doc.data() : {};
+  if (!data.googleTokens) throw new Error('Google Calendar no conectado para este usuario');
   const oauth2Client = getOAuth2Client();
-  oauth2Client.setCredentials(userProfile.googleTokens);
+  oauth2Client.setCredentials(data.googleTokens);
   // Auto-refresh token si expiró
-  oauth2Client.on('tokens', (tokens) => {
-    if (tokens.refresh_token) userProfile.googleTokens.refresh_token = tokens.refresh_token;
-    userProfile.googleTokens.access_token = tokens.access_token;
-    userProfile.googleTokens.expiry_date = tokens.expiry_date;
-    saveDB();
+  oauth2Client.on('tokens', async (tokens) => {
+    const updated = { ...data.googleTokens, ...tokens };
+    await admin.firestore().collection('users').doc(uid).set({ googleTokens: updated }, { merge: true });
   });
-  return google.calendar({ version: 'v3', auth: oauth2Client });
+  return { cal: google.calendar({ version: 'v3', auth: oauth2Client }), calId: data.googleCalendarId || 'primary' };
 }
 
-async function checkCalendarAvailability(dateStr) {
-  // dateStr: 'YYYY-MM-DD' o descripción natural
-  const cal = await getCalendarClient();
-  const calId = userProfile.googleCalendarId || 'primary';
+async function checkCalendarAvailability(dateStr, uid) {
+  // dateStr: 'YYYY-MM-DD'
+  const { cal, calId } = await getCalendarClient(uid);
 
   // Parsear fecha
   let targetDate = new Date(dateStr);
@@ -4678,9 +4700,8 @@ async function checkCalendarAvailability(dateStr) {
   return { date: targetDate.toLocaleDateString('es-ES'), busySlots: busySlots.length, freeSlots };
 }
 
-async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description }) {
-  const cal = await getCalendarClient();
-  const calId = userProfile.googleCalendarId || 'primary';
+async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description, uid }) {
+  const { cal, calId } = await getCalendarClient(uid);
 
   const targetDate = new Date(dateStr);
   const start = new Date(targetDate);
@@ -4697,25 +4718,25 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
   };
 
   const response = await cal.events.insert({ calendarId: calId, resource: event, sendUpdates: 'all' });
-  console.log(`[GCAL] Evento creado: "${summary}" el ${start.toLocaleString('es-ES')}`);
+  console.log(`[GCAL] Evento creado: "${summary}" el ${start.toLocaleString('es-ES')} para uid=${uid}`);
   return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink };
 }
 
 // Endpoints para que el dashboard/MIIA consulte/cree citas
-app.get('/api/calendar/availability', async (req, res) => {
+app.get('/api/calendar/availability', requireRole('owner', 'agent'), async (req, res) => {
   try {
     const { date } = req.query;
     if (!date) return res.status(400).json({ error: 'date requerido (YYYY-MM-DD)' });
-    const result = await checkCalendarAvailability(date);
+    const result = await checkCalendarAvailability(date, req.user.uid);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.post('/api/calendar/event', express.json(), async (req, res) => {
+app.post('/api/calendar/event', requireRole('owner', 'agent'), express.json(), async (req, res) => {
   try {
-    const result = await createCalendarEvent(req.body || {});
+    const result = await createCalendarEvent({ ...(req.body || {}), uid: req.user.uid });
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
