@@ -3117,9 +3117,20 @@ async function verifyAdminToken(req, res, next) {
     }
     const idToken = authHeader.substring(7);
     const decodedToken = await admin.auth().verifyIdToken(idToken);
-    const userDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
-    if (!userDoc.exists || userDoc.data().role !== 'admin') {
-      return res.status(403).json({ error: 'El usuario no tiene rol admin' });
+    // Owner bypass: si el email está en ADMIN_EMAILS, acceso total sin chequeo Firestore
+    const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+    const isOwnerBypass = adminEmails.includes((decodedToken.email || '').toLowerCase());
+    if (!isOwnerBypass) {
+      // Buscar por UID primero, luego por email como fallback
+      let hasRole = false;
+      const docByUid = await admin.firestore().collection('users').doc(decodedToken.uid).get();
+      if (docByUid.exists && docByUid.data().role === 'admin') {
+        hasRole = true;
+      } else {
+        const snap = await admin.firestore().collection('users').where('email', '==', decodedToken.email).limit(1).get();
+        if (!snap.empty && snap.docs[0].data().role === 'admin') hasRole = true;
+      }
+      if (!hasRole) return res.status(403).json({ error: 'El usuario no tiene rol admin' });
     }
     req.user = { uid: decodedToken.uid, email: decodedToken.email };
     next();
