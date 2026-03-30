@@ -2619,10 +2619,15 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
     return res.status(404).json({ error: 'Tenant no encontrado. Llama a /api/tenant/init primero.' });
   }
 
-  if (!status.hasQR) {
+  if (!status.hasQR && !status.isReady) {
     const phase = status.isAuthenticated ? 'authenticated_loading' : 'initializing';
     console.log(`[QR] ⏳ Tenant found but no QR (phase: ${phase})`);
-    return res.json({ qrCode: null, isReady: status.isReady, isAuthenticated: status.isAuthenticated, phase });
+    return res.json({ qrCode: null, isReady: false, isAuthenticated: status.isAuthenticated, phase });
+  }
+
+  if (status.isReady) {
+    console.log(`[QR] ✅ Tenant is READY`);
+    return res.json({ qrCode: null, isReady: true, isAuthenticated: true, phase: 'ready' });
   }
 
   console.log(`[QR] ✅ QR found! Type: ${typeof status.qrCode}, Length: ${status.qrCode ? status.qrCode.length : 'N/A'}, Starts: ${status.qrCode ? status.qrCode.substring(0, 50) : 'null'}`);
