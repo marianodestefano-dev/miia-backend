@@ -47,10 +47,17 @@ try {
     credential = admin.credential.cert(serviceAccount);
   } else if (process.env.FIREBASE_PROJECT_ID) {
     // Railway con vars individuales
+    let pk = process.env.FIREBASE_PRIVATE_KEY || '';
+    // Normalizar saltos de línea: algunos clientes de Railway guardan \n literales
+    if (pk.includes('\\n')) pk = pk.replace(/\\n/g, '\n');
+    if (!pk.includes('\n') && pk.includes('BEGIN PRIVATE KEY')) {
+      console.error('[FIREBASE] FIREBASE_PRIVATE_KEY no tiene saltos de línea — verificar formato en Railway');
+    }
+    console.log('[FIREBASE] Usando vars individuales. ProjectId:', process.env.FIREBASE_PROJECT_ID, '| PrivateKey starts:', pk.substring(0, 27));
     credential = admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n')
+      privateKey: pk
     });
   } else {
     console.warn('No se encontro credencial de Firebase Admin — Firestore no disponible');
@@ -58,10 +65,11 @@ try {
   }
   if (credential) {
     admin.initializeApp({ credential });
-    console.log('Firebase Admin inicializado correctamente');
+    console.log('[FIREBASE] ✅ Firebase Admin inicializado correctamente');
   }
 } catch (e) {
-  console.warn('Firebase Admin: error al inicializar:', e.message);
+  console.error('[FIREBASE] ERROR al inicializar:', e.message);
+  console.error('[FIREBASE] Stack:', e.stack);
 }
 
 // STRIPE — procesamiento de pagos
@@ -2137,12 +2145,29 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ 
+  res.json({
     status: 'ok',
     whatsapp: isReady,
     conversations: Object.keys(conversations).length,
     activeContacts: Object.keys(contactTypes).length
   });
+});
+
+app.get('/api/firebase-status', (_req, res) => {
+  try {
+    admin.app();
+    res.json({ firebase: 'ok', initialized: true });
+  } catch (_) {
+    res.json({
+      firebase: 'error',
+      initialized: false,
+      hint: 'Verificar FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY en Railway',
+      hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
+      hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
+      hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
+      privateKeyStart: (process.env.FIREBASE_PRIVATE_KEY || '').substring(0, 30)
+    });
+  }
 });
 
 // ─── /api/status — WhatsApp connection status (used by dashboard.html) ────────
