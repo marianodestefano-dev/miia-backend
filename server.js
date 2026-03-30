@@ -2106,16 +2106,12 @@ function initWhatsApp() {
   console.log('║   🚀 INICIALIZANDO WHATSAPP CLIENT    ║');
   console.log('╚════════════════════════════════════════╝\n');
   
-  // RemoteAuth: persists WhatsApp session in Firestore so it survives Railway deploys
-  // clientId matches the tenant key so it reuses the already-saved session
-  const sessionStore = new FirestoreSessionStore();
-  console.log('[WA] Using RemoteAuth with Firestore session store');
+  // LocalAuth: stores WhatsApp session locally on disk (works on developer machine)
+  console.log('[WA] Using LocalAuth with local session storage');
 
   whatsappClient = new Client({
-    authStrategy: new RemoteAuth({
-      store: sessionStore,
-      clientId: `tenant-${OWNER_UID}`,
-      backupSyncIntervalMs: 300000
+    authStrategy: new LocalAuth({
+      clientId: `MIIA-${OWNER_UID}`
     }),
     userAgent: 'Mozilla/5.0 (compatible; MIIA-APP/1.0; +https://lobsterscrm.com)',
     puppeteer: {
