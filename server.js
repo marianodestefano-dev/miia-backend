@@ -1,5 +1,8 @@
 require('dotenv').config();
 
+// Fix: gRPC DNS resolver for Firebase Admin SDK on Railway/Docker (Node 18)
+process.env.GRPC_DNS_RESOLVER = 'native';
+
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
