@@ -2212,13 +2212,24 @@ function initWhatsApp() {
         console.log('[WA] 🗑️ Limpiando sesión potencialmente corrupta...');
         const store = new FirestoreSessionStore();
         await store.delete({ session: `RemoteAuth-tenant-${OWNER_UID}` });
-        console.log('[WA] ✅ Sesión limpiada — el próximo reinicio pedirá QR');
+        console.log('[WA] ✅ Sesión limpiada — reintentar en 3s para generar QR fresco');
+        whatsappClient = null;
+        isReady = false;
+        qrCode = null;
+        // Reintentar en 3 segundos para generar un nuevo QR
+        setTimeout(() => {
+          console.log('[WA] 🔄 Reintentar inicialización con nuevo QR...');
+          initWhatsApp();
+        }, 3000);
       } catch (e) {
         console.error('[WA] ❌ Error limpiando sesión:', e.message);
+        whatsappClient = null;
+        isReady = false;
       }
+    } else {
+      whatsappClient = null;
+      isReady = false;
     }
-    whatsappClient = null;
-    isReady = false;
   });
   console.log('[WA] 🔄 Initialize() llamado, esperando conexión...\n');
 }
