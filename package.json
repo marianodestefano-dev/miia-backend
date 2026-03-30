@@ -2,9 +2,9 @@
   "name": "miia-backend",
   "version": "1.0.0",
   "description": "Backend de MIIA con WhatsApp",
-  "main": "server_v2.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node server_v2.js",
+    "start": "node server.js",
     "test": "jest --forceExit"
   },
   "dependencies": {

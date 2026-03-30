@@ -813,6 +813,66 @@ Nuevo resumen actualizado:`;
 
     const history = (conversations[phone] || []).map(m => `${m.role === 'user' ? 'Cliente' : 'Agente'}: ${m.content}`).join('\n');
 
+    // ── PROTOCOLO QUEJAS E INSULTOS ──────────────────────────────────────────
+    if (!isAdmin && !isFamilyContact && effectiveMsg) {
+      const msgLc = effectiveMsg.toLowerCase();
+      const INSULT_KEYWORDS = [
+        'idiota', 'estúpido', 'imbécil', 'inútil', 'maldito', 'hdp', 'hijo de puta',
+        'puta', 'gilipollas', 'pendejo', 'asco', 'basura', 'mierda', 'te odio',
+        'eres una porquería', 'mal servicio de mierda', 'son unos ladrones',
+        'te voy a demandar', 'os voy a denunciar', 'voy a poner una queja',
+        'nunca más', 'nunca mas', 'son lo peor', 'lo peor del mundo'
+      ];
+      const COMPLAINT_KEYWORDS = [
+        'no funciona', 'muy mal', 'terrible', 'horrible', 'pésimo', 'pesimo',
+        'desastre', 'decepcionado', 'decepcionada', 'muy decepcionado',
+        'no me ayudaste', 'no me ayudaron', 'me fallaste', 'me fallaron',
+        'perdí tiempo', 'perdí plata', 'perdí dinero', 'no sirve', 'no sirvió',
+        'quiero hablar con un humano', 'quiero hablar con una persona',
+        'no quiero hablar con un bot', 'esto es inaceptable', 'estoy harto',
+        'estoy harta', 'me tienen cansado', 'me tienen cansada'
+      ];
+
+      const isInsult = INSULT_KEYWORDS.some(kw => msgLc.includes(kw));
+      const isComplaint = !isInsult && COMPLAINT_KEYWORDS.some(kw => msgLc.includes(kw));
+
+      if (isInsult || isComplaint) {
+        if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+        conversationMetadata[phone].negativeSentiment = Date.now();
+        conversationMetadata[phone].negativeSentimentType = isInsult ? 'insulto' : 'queja';
+        saveDB();
+
+        const EMPATHETIC_RESPONSES = isInsult ? [
+          'Entiendo que estás frustrado/a, y lo respeto. Si hay algo que salió mal, me gustaría saberlo para ayudarte mejor. 🙏',
+          'Percibo que algo no está bien y lo tomo en serio. Cuéntame qué pasó para que podamos resolverlo juntos.',
+          'Lamento que te sientas así. Estoy aquí para ayudarte a resolver lo que sea necesario. ¿Qué ocurrió?'
+        ] : [
+          'Lamento escuchar eso. Tu experiencia es muy importante para nosotros. ¿Puedes contarme más sobre lo que pasó para que pueda ayudarte? 🙏',
+          'Entiendo tu frustración y la tomo muy en serio. Voy a alertar al equipo para que te contacten personalmente. ¿Cuál es el mejor momento para llamarte?',
+          'Siento mucho lo que describes. Esto no es lo que esperamos para ti. Déjame escalarlo ahora mismo para darte una solución real.'
+        ];
+        const response = EMPATHETIC_RESPONSES[Math.floor(Math.random() * EMPATHETIC_RESPONSES.length)];
+
+        conversations[phone].push({ role: 'user', content: effectiveMsg, timestamp: Date.now() });
+        conversations[phone].push({ role: 'assistant', content: response, timestamp: Date.now() });
+        if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
+        saveDB();
+
+        await safeSendMessage(phone, response);
+
+        // Alertar al dueño
+        const contactName = leadNames[phone] || phone.split('@')[0];
+        const alertType = isInsult ? '⚠️ INSULTO' : '🔔 QUEJA';
+        safeSendMessage(`${OWNER_PHONE}@c.us`,
+          `${alertType} recibido de *${contactName}* (+${phone.split('@')[0]})\n\n📩 "${effectiveMsg.substring(0, 300)}"\n\nMIIA respondió con empatía. Considera contactarlo manualmente.`
+        ).catch(() => {});
+
+        console.log(`[QUEJA/INSULTO] Protocolo activado para ${phone} — tipo: ${isInsult ? 'insulto' : 'queja'}`);
+        return;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Keyword shortcut check
     const isLikelyAnalysis = userMessage && userMessage.length > 180;
     const matched = (!isLikelyAnalysis) && userMessage && keywordsSet.find(k => {
@@ -1152,6 +1212,23 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       return;
     }
     aiMessage = aiMessage.replace(/\[ALERTA_HUMANO\]/g, '').trim();
+
+    // Tag QR de cobro: MIIA pide enviar la imagen QR almacenada en Firestore
+    if (aiMessage.includes('[ENVIAR_QR_COBRO]')) {
+      aiMessage = aiMessage.replace('[ENVIAR_QR_COBRO]', '').trim();
+      try {
+        const pmDoc = await admin.firestore().collection('payment_methods').doc(OWNER_UID).get();
+        const qrMethod = (pmDoc.exists ? pmDoc.data().methods || [] : [])
+          .find(m => m.id === 'qr' && m.enabled && m.qr_image_base64);
+        if (qrMethod) {
+          const base64Data = qrMethod.qr_image_base64.replace(/^data:image\/\w+;base64,/, '');
+          const mimeType = qrMethod.qr_image_base64.match(/^data:(image\/\w+);/)?.[1] || 'image/png';
+          const media = new MessageMedia(mimeType, base64Data, 'pago_qr.png');
+          await safeSendMessage(phone, media, { caption: qrMethod.qr_description || 'Aquí tienes el QR para pagar 👆' });
+          console.log(`[COBROS] QR enviado a ${phone}`);
+        }
+      } catch (e) { console.error('[COBROS] Error enviando QR:', e.message); }
+    }
     // Tag de aprendizaje universal — MIIA guarda conocimiento desde cualquier canal
     const learnTagMatch = aiMessage.match(/\[GUARDAR_APRENDIZAJE:([^\]]+)\]/);
     if (learnTagMatch) {
@@ -1840,6 +1917,17 @@ function initWhatsApp() {
     isReady = true;
     io.emit('whatsapp_ready', { status: 'connected' });
 
+    // Guardar número de WhatsApp conectado en Firestore (para consent records)
+    try {
+      const waNumber = whatsappClient.info?.wid?.user;
+      if (waNumber && OWNER_UID && admin.apps.length > 0) {
+        admin.firestore().collection('users').doc(OWNER_UID).update({
+          whatsapp_number: waNumber,
+          whatsapp_connected_at: new Date()
+        }).catch(e => console.log('[WA] No se pudo guardar número en Firestore:', e.message));
+      }
+    } catch (e) { console.log('[WA] Error guardando número WA:', e.message); }
+
     // Inicializar / reconectar CEREBRO ABSOLUTO
     cerebroAbsoluto.init({
       whatsappClient,
@@ -2009,6 +2097,50 @@ app.get('/health', (req, res) => {
 });
 
 // ─── /api/status — WhatsApp connection status (used by dashboard.html) ────────
+// ── Consentimiento ADN — firma electrónica con IP del servidor ───────────────
+app.post('/api/consent/adn', express.json(), async (req, res) => {
+  try {
+    const { uid, email, accepted, browser_ip, user_agent, screen, language, consent_text } = req.body;
+    if (!uid || !accepted) return res.status(400).json({ error: 'uid y accepted requeridos' });
+
+    // Leer número de WhatsApp del tenant desde Firestore
+    let waNumber = 'no conectado';
+    try {
+      const userDoc = await admin.firestore().collection('users').doc(uid).get();
+      if (userDoc.exists && userDoc.data().whatsapp_number) waNumber = userDoc.data().whatsapp_number;
+    } catch (_) {}
+
+    // IP verificada por el servidor (Railway usa X-Forwarded-For)
+    const serverIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'desconocida';
+
+    const record = {
+      uid, email: email || '',
+      consent_type: 'adn_mining',
+      accepted: true,
+      timestamp: new Date().toISOString(),
+      whatsapp_number: waNumber,
+      ip_browser: browser_ip || 'desconocida',
+      ip_server: serverIp,
+      user_agent: user_agent || '',
+      screen: screen || '',
+      language: language || '',
+      consent_text: consent_text || 'Autorizo la Extracción de ADN Comercial'
+    };
+
+    await admin.firestore().collection('consent_records').doc(uid + '_adn').set(record);
+    await admin.firestore().collection('users').doc(uid).update({
+      consent_adn: true,
+      consent_adn_date: new Date()
+    });
+
+    console.log(`[CONSENT] Firma ADN registrada — uid: ${uid}, WA: ${waNumber}, IP: ${serverIp}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[CONSENT] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/status', (req, res) => {
   // Check tenant first if uid param provided
   const uid = req.query.uid;
@@ -2724,6 +2856,63 @@ app.delete('/api/tenant/:uid/train/session/:date', async (req, res) => {
 
     // Rebuild brain without this session
     await rebuildTenantBrainFromFirestore(uid);
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Métodos de cobro ─────────────────────────────────────────────────────────
+
+app.get('/api/tenant/:uid/train/payment-methods', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const doc = await admin.firestore().collection('payment_methods').doc(uid).get();
+    res.json(doc.exists ? (doc.data().methods || []) : []);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { methods } = req.body;
+    if (!Array.isArray(methods)) return res.status(400).json({ error: 'methods array required' });
+
+    await admin.firestore().collection('payment_methods').doc(uid).set({ methods, updatedAt: new Date() });
+
+    // Rebuild brain: inyectar métodos activos según su tipo estructurado
+    const activeLines = methods.filter(m => m.enabled).map(m => {
+      switch (m.type) {
+        case 'link':
+          return m.payment_link ? `${m.name}: Envía este link exacto al lead cuando quiera pagar: ${m.payment_link}` : null;
+        case 'banco': {
+          const acct = m.cbu_alias || m.clabe || m.cci_rut;
+          if (!acct) return null;
+          const label = m.country === 'MX' ? 'CLABE' : m.country === 'CL' ? 'CCI/RUT' : 'CBU/CVU/Alias';
+          return `${m.name}: ${label}: ${acct}${m.bank_name ? ', Banco: ' + m.bank_name : ''}${m.account_holder ? ', Titular: ' + m.account_holder : ''}`;
+        }
+        case 'instrucciones': {
+          const parts = [];
+          if (m.reference_code) parts.push(`Código de pago: ${m.reference_code}`);
+          if (m.instructions && m.instructions.trim()) parts.push(m.instructions.trim());
+          return parts.length ? `${m.name}: ${parts.join('. ')}` : null;
+        }
+        case 'qr':
+          return m.qr_image_base64
+            ? `Pago por QR disponible${m.qr_description ? ' (' + m.qr_description + ')' : ''}. Cuando el lead quiera pagar por QR, usa el tag [ENVIAR_QR_COBRO] en tu respuesta.`
+            : null;
+        case 'cripto':
+          return m.wallet_address ? `${m.name} — ${m.coin || 'Cripto'} (${m.network || 'red'}): ${m.wallet_address}` : null;
+        default: return null;
+      }
+    }).filter(Boolean);
+
+    if (activeLines.length > 0) {
+      tenantManager.appendTenantTraining(uid, '===MÉTODOS DE COBRO===\n' + activeLines.join('\n'));
+    }
 
     res.json({ success: true });
   } catch (e) {

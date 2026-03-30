@@ -20,7 +20,7 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const { callGemini } = require('./gemini_client');
-const { buildTenantPrompt } = require('./prompt_builder');
+const { buildTenantPrompt, buildOwnerLeadPrompt } = require('./prompt_builder');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 //
@@ -74,6 +74,10 @@ async function callGeminiForTenant(uid, prompt) {
 // ─── Build a response prompt for a tenant (delegates to prompt_builder.js) ──
 
 function buildSystemPrompt(tenant, contactName) {
+  // Equipo Medilink (@healthatom.com) → cerebro Medilink completo
+  if (tenant.isOwnerMember) {
+    return buildOwnerLeadPrompt(contactName, tenant.trainingData || '');
+  }
   return buildTenantPrompt(
     contactName,
     tenant.trainingData || '',
