@@ -202,10 +202,6 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
       clientId: `tenant-${uid}`,
       backupSyncIntervalMs: 300000
     }),
-    webVersion: '2.2412.54',
-    webVersionCache: {
-      type: 'local'
-    },
     puppeteer: {
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
