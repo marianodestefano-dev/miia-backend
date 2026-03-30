@@ -15,11 +15,12 @@
 
 'use strict';
 
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
-const { callGemini } = require('./gemini_client');
+const { callAI } = require('./ai_client');
+const FirestoreSessionStore = require('./firestore_session_store');
 const { buildTenantPrompt, buildOwnerLeadPrompt } = require('./prompt_builder');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
@@ -64,12 +65,17 @@ function saveTenantDB(uid, data) {
   }
 }
 
-async function callGeminiForTenant(uid, prompt) {
+async function callAIForTenant(uid, prompt) {
   const t = tenants.get(uid);
   if (!t) throw new Error(`Tenant ${uid} not found`);
-  if (!t.geminiApiKey) throw new Error(`No Gemini API key for tenant ${uid}`);
-  return callGemini(t.geminiApiKey, prompt);
+  const provider = t.aiProvider || 'gemini';
+  const apiKey = t.aiApiKey || t.geminiApiKey;
+  if (!apiKey) throw new Error(`No API key configured for tenant ${uid}`);
+  return callAI(provider, apiKey, prompt);
 }
+
+// Backward-compatible alias
+const callGeminiForTenant = callAIForTenant;
 
 // ─── Build a response prompt for a tenant (delegates to prompt_builder.js) ──
 
@@ -109,7 +115,7 @@ async function processTenantMessage(uid, phone, messageBody) {
 
   try {
     const prompt = buildSystemPrompt(t, phone);
-    const aiReply = await callGeminiForTenant(uid, prompt + `\nCliente: ${messageBody}\nMIIA:`);
+    const aiReply = await callAIForTenant(uid, prompt + `\nCliente: ${messageBody}\nMIIA:`);
 
     if (!aiReply || !aiReply.trim()) return;
 
@@ -154,7 +160,7 @@ async function processTenantMessage(uid, phone, messageBody) {
  * @param {object} ioInstance - Socket.IO server instance (to emit QR/status events)
  * @returns {object} tenant state
  */
-function initTenant(uid, geminiApiKey, ioInstance) {
+function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
   if (tenants.has(uid)) {
     const existing = tenants.get(uid);
     if (existing.isReady) {
@@ -173,6 +179,8 @@ function initTenant(uid, geminiApiKey, ioInstance) {
   const tenant = {
     uid,
     geminiApiKey,
+    aiProvider: aiConfig.provider || 'gemini',
+    aiApiKey: aiConfig.apiKey || geminiApiKey,
     client: null,
     isReady: false,
     qrCode: null,
@@ -186,11 +194,14 @@ function initTenant(uid, geminiApiKey, ioInstance) {
 
   tenants.set(uid, tenant);
 
-  const authDir = path.join(dataDir, 'auth');
-  if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
+  const tenantStore = new FirestoreSessionStore();
 
   const client = new Client({
-    authStrategy: new LocalAuth({ clientId: uid, dataPath: dataDir }),
+    authStrategy: new RemoteAuth({
+      store: tenantStore,
+      clientId: `tenant-${uid}`,
+      backupSyncIntervalMs: 300000
+    }),
     puppeteer: {
       headless: true,
       args: [
@@ -425,6 +436,20 @@ function setTenantTrainingData(uid, trainingData) {
   return true;
 }
 
+/**
+ * Update AI provider config for a running tenant.
+ * @param {string} uid
+ * @param {string} provider - 'gemini' | 'openai' | 'claude'
+ * @param {string} apiKey
+ */
+function setTenantAIConfig(uid, provider, apiKey) {
+  const t = tenants.get(uid);
+  if (!t) return false;
+  t.aiProvider = provider;
+  t.aiApiKey = apiKey;
+  return true;
+}
+
 module.exports = {
   initTenant,
   destroyTenant,
@@ -432,6 +457,7 @@ module.exports = {
   getTenantConversations,
   appendTenantTraining,
   setTenantTrainingData,
+  setTenantAIConfig,
   classifyContact,
   getAllTenants
 };

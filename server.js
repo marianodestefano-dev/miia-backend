@@ -8,7 +8,8 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, LocalAuth, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
+const FirestoreSessionStore = require('./firestore_session_store');
 
 // CEREBRO ABSOLUTO — módulo de aprendizaje autónomo nocturno
 const cerebroAbsoluto = require('./cerebro_absoluto');
@@ -27,6 +28,7 @@ const tenantManager = require('./tenant_manager');
 
 // UNIFIED MODULES — extracted from duplicated code
 const { callGemini, callGeminiChat } = require('./gemini_client');
+const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
 const { buildPrompt, buildTenantBrainString } = require('./prompt_builder');
 
 // FIREBASE ADMIN — actualizar Firestore desde webhook
@@ -1928,8 +1930,16 @@ function initWhatsApp() {
   console.log('║   🚀 INICIALIZANDO WHATSAPP CLIENT    ║');
   console.log('╚════════════════════════════════════════╝\n');
   
+  // RemoteAuth: persists WhatsApp session in Firestore so it survives Railway deploys
+  const sessionStore = new FirestoreSessionStore();
+  console.log('[WA] Using RemoteAuth with Firestore session store');
+
   whatsappClient = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new RemoteAuth({
+      store: sessionStore,
+      clientId: 'owner',
+      backupSyncIntervalMs: 300000 // backup session every 5 minutes
+    }),
     userAgent: 'Mozilla/5.0 (compatible; MIIA-APP/1.0; +https://lobsterscrm.com)',
     puppeteer: {
       headless: true,
@@ -1958,6 +1968,10 @@ function initWhatsApp() {
   whatsappClient.on('authenticated', () => {
     console.log('[WA] ✅ WHATSAPP AUTENTICADO CORRECTAMENTE');
     qrCode = null;
+  });
+
+  whatsappClient.on('remote_session_saved', () => {
+    console.log('[WA] ✅ Sesión guardada en Firestore (RemoteAuth backup)');
   });
 
   whatsappClient.on('ready', () => {
@@ -3033,6 +3047,118 @@ function decryptBackup(payload, masterKeyOnly) {
   decrypted += decipher.final('utf8');
   return JSON.parse(decrypted);
 }
+
+// ============================================
+// AI PROVIDER CONFIGURATION
+// ============================================
+
+// GET /api/tenant/:uid/ai-config — Get current AI provider config
+app.get('/api/tenant/:uid/ai-config', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const doc = await db.collection('users').doc(uid).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const data = doc.data();
+    res.json({
+      provider: data.ai_provider || 'gemini',
+      hasCustomKey: !!(data.ai_api_key),
+      providerLabel: PROVIDER_LABELS[data.ai_provider || 'gemini'] || 'Google Gemini'
+    });
+  } catch (err) {
+    console.error('[AI-CONFIG] Error:', err.message);
+    res.status(500).json({ error: 'Error al obtener configuración de IA' });
+  }
+});
+
+// PUT /api/tenant/:uid/ai-config — Save AI provider + API key
+app.put('/api/tenant/:uid/ai-config', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { provider, apiKey } = req.body;
+    const validProviders = ['gemini', 'openai', 'claude'];
+    if (!validProviders.includes(provider)) {
+      return res.status(400).json({ error: `Proveedor inválido. Válidos: ${validProviders.join(', ')}` });
+    }
+    if (!apiKey || apiKey.trim().length < 10) {
+      return res.status(400).json({ error: 'API key inválida' });
+    }
+
+    await db.collection('users').doc(uid).update({
+      ai_provider: provider,
+      ai_api_key: apiKey.trim(),
+      ai_updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Update running tenant if active
+    tenantManager.setTenantAIConfig(uid, provider, apiKey.trim());
+
+    res.json({ success: true, provider, providerLabel: PROVIDER_LABELS[provider] });
+  } catch (err) {
+    console.error('[AI-CONFIG] Error saving:', err.message);
+    res.status(500).json({ error: 'Error al guardar configuración de IA' });
+  }
+});
+
+// POST /api/tenant/:uid/ai-test — Test AI connection with a simple prompt
+app.post('/api/tenant/:uid/ai-test', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { provider, apiKey } = req.body;
+    const validProviders = ['gemini', 'openai', 'claude'];
+    if (!validProviders.includes(provider)) {
+      return res.status(400).json({ error: `Proveedor inválido` });
+    }
+    if (!apiKey || apiKey.trim().length < 10) {
+      return res.status(400).json({ error: 'API key inválida' });
+    }
+
+    const testPrompt = 'Responde únicamente con la palabra "OK" si puedes leer este mensaje.';
+    const startTime = Date.now();
+    const response = await callAI(provider, apiKey.trim(), testPrompt);
+    const latency = Date.now() - startTime;
+
+    if (!response) {
+      return res.status(400).json({ error: 'No se recibió respuesta del proveedor. Verifica tu API key.' });
+    }
+
+    res.json({
+      success: true,
+      provider,
+      providerLabel: PROVIDER_LABELS[provider],
+      response: response.substring(0, 100),
+      latencyMs: latency
+    });
+  } catch (err) {
+    console.error('[AI-TEST] Error:', err.message);
+    const msg = err.message.includes('401') || err.message.includes('403')
+      ? 'API key inválida o sin permisos'
+      : err.message.includes('404')
+        ? 'Modelo no disponible con esta key'
+        : `Error de conexión: ${err.message.substring(0, 100)}`;
+    res.status(400).json({ error: msg });
+  }
+});
+
+// DELETE /api/tenant/:uid/ai-config — Reset to default (Gemini with global key)
+app.delete('/api/tenant/:uid/ai-config', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    await db.collection('users').doc(uid).update({
+      ai_provider: admin.firestore.FieldValue.delete(),
+      ai_api_key: admin.firestore.FieldValue.delete(),
+      ai_updated_at: admin.firestore.FieldValue.delete()
+    });
+
+    // Reset running tenant to global Gemini
+    const globalKey = process.env.GEMINI_API_KEY;
+    tenantManager.setTenantAIConfig(uid, 'gemini', globalKey);
+
+    res.json({ success: true, provider: 'gemini', providerLabel: 'Google Gemini (default)' });
+  } catch (err) {
+    console.error('[AI-CONFIG] Error resetting:', err.message);
+    res.status(500).json({ error: 'Error al restablecer configuración' });
+  }
+});
 
 // POST /api/tenant/:uid/export — Generate encrypted .miia backup
 app.post('/api/tenant/:uid/export', async (req, res) => {
