@@ -157,6 +157,7 @@ const FAMILY_CONTACTS = {
 // VARIABLES GLOBALES
 // ============================================
 
+const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
 let whatsappClient = null;
 let qrCode = null;
 let isReady = false;
@@ -2580,11 +2581,10 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   // geminiApiKey is optional now - users can test WhatsApp without it
   const apiKeyToUse = geminiApiKey || '';
 
-  // If this is the owner UID and owner WhatsApp is already running, reuse it
-  const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
-  if (uid === OWNER_UID && whatsappClient && isReady) {
-    console.log(`[INIT] ♻️ Owner UID detected — reusing owner WhatsApp client`);
-    return res.json({ success: true, uid, isReady: true, hasQR: false, reusing: true });
+  // Owner always uses initWhatsApp() — never create a tenant Chromium for owner (OOM)
+  if (uid === OWNER_UID) {
+    if (!whatsappClient) initWhatsApp();
+    return res.json({ success: true, uid, isReady: !!isReady, hasQR: !!qrCode, reusing: true });
   }
 
   const tenant = tenantManager.initTenant(uid, apiKeyToUse, io);
@@ -2621,8 +2621,6 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
   console.log(`[QR] GET /api/tenant/${uid}/qr - exists: ${status.exists}, hasQR: ${status.hasQR}, isReady: ${status.isReady}`);
 
   if (!status.exists) {
-    // Check if this is the owner UID and owner WhatsApp is running
-    const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
     if (uid === OWNER_UID && whatsappClient) {
       console.log(`[QR] ♻️ Owner UID — returning owner client status`);
       return res.json({ qrCode: qrCode || null, isReady: isReady, isAuthenticated: isReady, phase: isReady ? 'ready' : (qrCode ? 'qr_ready' : 'initializing') });
