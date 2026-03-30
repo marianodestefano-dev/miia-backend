@@ -9,7 +9,7 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { Client, LocalAuth, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
 const FirestoreSessionStore = require('./firestore_session_store');
 
 // CEREBRO ABSOLUTO — módulo de aprendizaje autónomo nocturno
@@ -111,6 +111,7 @@ const io = socketIO(server, {
 });
 
 app.use(compression());
+app.use(express.static(path.join(__dirname, '../miia-frontend')));
 // CORS: Allow all origins for now (can be restricted later)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -349,7 +350,7 @@ function isWithinSchedule() {
 // ============================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
-const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent';
+const GEMINI_URL = process.env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
 async function callGeminiAPI(messages, systemPrompt) {
   try {
@@ -2106,25 +2107,20 @@ function initWhatsApp() {
   console.log('║   🚀 INICIALIZANDO WHATSAPP CLIENT    ║');
   console.log('╚════════════════════════════════════════╝\n');
   
-  // LocalAuth: stores WhatsApp session locally on disk (works on developer machine)
-  console.log('[WA] Using LocalAuth with local session storage');
+  // RemoteAuth: stores WhatsApp session in Firestore (works on Railway)
+  console.log('[WA] Using RemoteAuth with Firestore session storage');
+  const store = new FirestoreSessionStore();
 
   whatsappClient = new Client({
-    authStrategy: new LocalAuth({
-      clientId: `MIIA-${OWNER_UID}`
+    authStrategy: new RemoteAuth({
+      clientId: `tenant-${OWNER_UID}`,
+      store,
+      backupSyncIntervalMs: 300000
     }),
-    userAgent: 'Mozilla/5.0 (compatible; MIIA-APP/1.0; +https://lobsterscrm.com)',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     puppeteer: {
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu'
-      ]
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     }
   });
 
@@ -2660,7 +2656,13 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
   console.log(`[QR] GET /api/tenant/${uid}/qr - exists: ${status.exists}, hasQR: ${status.hasQR}, isReady: ${status.isReady}`);
 
   if (!status.exists) {
-    if (uid === OWNER_UID && whatsappClient) {
+    if (uid === OWNER_UID) {
+      // Auto-init owner if not started yet
+      if (!whatsappClient) {
+        console.log(`[QR] 🚀 Owner UID — auto-starting WhatsApp`);
+        initRetryCount = 0;
+        initWhatsApp();
+      }
       console.log(`[QR] ♻️ Owner UID — returning owner client status`);
       return res.json({ qrCode: qrCode || null, isReady: isReady, isAuthenticated: isReady, phase: isReady ? 'ready' : (qrCode ? 'qr_ready' : 'initializing') });
     }
