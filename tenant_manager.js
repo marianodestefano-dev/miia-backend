@@ -273,44 +273,61 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
     }
 
     // Polling fallback: whatsapp-web.js `message` events can be unreliable.
-    // WhatsApp Web marks messages as read automatically, so unreadCount is always 0.
-    // Instead, track the last message timestamp per chat and process newer ones.
+    // Every 5s: fetch chats, detect new messages by timestamp comparison.
     tenant._lastSeenMsgIds = new Set();
     tenant._lastSeenTimestamps = {}; // chatId → last processed msg timestamp (seconds)
-    const POLL_WINDOW_SEC = 120; // process messages from the last 2 minutes on first poll
+    tenant._pollCount = 0;
 
     tenant._pollInterval = setInterval(async () => {
       if (!tenant.isReady || !tenant.client) return;
+      tenant._pollCount++;
       try {
         const chats = await client.getChats();
+        const nowSec = Math.floor(Date.now() / 1000);
+
+        if (tenant._pollCount <= 3 || tenant._pollCount % 12 === 0) {
+          console.log(`[TM:${uid}] 🔄 POLL #${tenant._pollCount} — chats: ${chats.length}`);
+        }
+
         for (const chat of chats) {
           if (chat.isGroup) continue;
           const chatId = chat.id._serialized;
-          // Skip if last message in this chat is not newer than what we've seen
-          const lastMsgTs = chat.lastMessage ? chat.lastMessage.timestamp : 0;
-          const lastSeenTs = tenant._lastSeenTimestamps[chatId] || (Math.floor(Date.now() / 1000) - POLL_WINDOW_SEC);
-          if (lastMsgTs <= lastSeenTs) continue;
 
-          // There's a newer message — fetch recent messages
-          const messages = await chat.fetchMessages({ limit: 10 });
+          // First time we see this chat: record current state, don't replay history
+          if (!(chatId in tenant._lastSeenTimestamps)) {
+            const ts = (chat.lastMessage && chat.lastMessage.timestamp) ? chat.lastMessage.timestamp : nowSec;
+            tenant._lastSeenTimestamps[chatId] = ts;
+            if (chat.lastMessage && chat.lastMessage.id && chat.lastMessage.id._serialized) {
+              tenant._lastSeenMsgIds.add(chat.lastMessage.id._serialized);
+            }
+            continue; // snapshot only, don't process
+          }
+
+          const lastSeenTs = tenant._lastSeenTimestamps[chatId];
+          const lastMsgTs = (chat.lastMessage && chat.lastMessage.timestamp) ? chat.lastMessage.timestamp : 0;
+
+          // No new message in this chat
+          if (lastMsgTs === 0 || lastMsgTs <= lastSeenTs) continue;
+
+          // New message detected — fetch and process
+          const messages = await chat.fetchMessages({ limit: 5 });
           for (const msg of messages) {
             if (msg.fromMe) continue;
-            if (!msg.body || msg.body.trim() === '') continue;
+            if (!msg.body || !msg.body.trim()) continue;
             if (tenant._lastSeenMsgIds.has(msg.id._serialized)) continue;
             if (msg.timestamp <= lastSeenTs) continue;
             tenant._lastSeenMsgIds.add(msg.id._serialized);
             console.log(`[TM:${uid}] 📨 POLL message from ${msg.from}: "${(msg.body||'').substring(0,40)}"`);
             processTenantMessage(uid, msg.from, msg.body);
           }
-          // Update last seen timestamp for this chat
           tenant._lastSeenTimestamps[chatId] = lastMsgTs;
         }
-        // Keep Set size manageable
+
         if (tenant._lastSeenMsgIds.size > 2000) {
           tenant._lastSeenMsgIds = new Set([...tenant._lastSeenMsgIds].slice(-1000));
         }
       } catch (err) {
-        // Ignore poll errors silently
+        console.error(`[TM:${uid}] ❌ Poll error:`, err.message);
       }
     }, 5000);
   });
