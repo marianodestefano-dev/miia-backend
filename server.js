@@ -2212,9 +2212,8 @@ function initWhatsApp() {
 io.on('connection', (socket) => {
   console.log('👤 Cliente conectado via Socket.io');
   
-  if (!whatsappClient && !process.env.SKIP_WA_INIT) {
-    initWhatsApp();
-  }
+  // Owner WhatsApp init via Socket.IO desactivado — solo sistema multi-tenant
+  // if (!whatsappClient) initWhatsApp(); // DISABLED
 
   // Si WhatsApp ya está conectado, avisar inmediatamente
   if (isReady && whatsappClient) {
@@ -4182,10 +4181,8 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // Auto-inicializar WhatsApp al arrancar (no esperar a Socket.io)
-  if (!process.env.SKIP_WA_INIT) {
-    initWhatsApp();
-  }
+  // Owner WhatsApp auto-init desactivado — solo usa el sistema multi-tenant
+  // initWhatsApp(); // DISABLED: solo un numero activo (+573054169969 via tenant)
 });
 
 // Export app for testing
