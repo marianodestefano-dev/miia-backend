@@ -4073,6 +4073,20 @@ app.post('/api/admin/user', express.json(), verifyAdminToken, async (req, res) =
   }
 });
 
+app.post('/api/admin/user/:uid/reset-password', verifyAdminToken, async (req, res) => {
+  try {
+    const { uid } = req.params;
+    // Generate a random 10-char password
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
+    let password = '';
+    for (let i = 0; i < 10; i++) password += chars[Math.floor(Math.random() * chars.length)];
+    await admin.auth().updateUser(uid, { password });
+    res.json({ success: true, password });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
 
   try {
