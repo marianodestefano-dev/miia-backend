@@ -98,9 +98,12 @@ try {
   console.error('[FIREBASE] Stack:', e.stack);
 }
 
-// STRIPE — procesamiento de pagos
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder');
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_placeholder';
+// PADDLE — procesamiento de pagos
+const { Paddle, Environment, EventName } = require('@paddle/paddle-node-sdk');
+const paddle = new Paddle(process.env.PADDLE_API_KEY || 'placeholder', {
+  environment: process.env.PADDLE_ENV === 'sandbox' ? Environment.sandbox : Environment.production
+});
+const PADDLE_WEBHOOK_SECRET = process.env.PADDLE_WEBHOOK_SECRET || '';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://miia-frontend-one.vercel.app';
 
 // ============================================
@@ -4169,129 +4172,107 @@ app.post('/api/logout', async (req, res) => {
 });
 
 // ============================================
-// STRIPE CHECKOUT SESSIONS
+// PADDLE CHECKOUT
 // ============================================
-app.post('/api/stripe/subscribe', express.json(), async (req, res) => {
+app.post('/api/paddle/subscribe', express.json(), async (req, res) => {
   try {
     const { uid, plan } = req.body;
     if (!uid || !plan) return res.status(400).json({ error: 'uid y plan requeridos' });
 
-    const prices = {
-      monthly: 1200,      // $12.00
-      quarterly: 3000,    // $30.00
-      semestral: 5500,    // $55.00
-      annual: 7500        // $75.00
+    const priceIds = {
+      monthly:   process.env.PADDLE_PRICE_MONTHLY,
+      quarterly: process.env.PADDLE_PRICE_QUARTERLY,
+      semestral: process.env.PADDLE_PRICE_SEMESTRAL,
+      annual:    process.env.PADDLE_PRICE_ANNUAL
     };
+    const priceId = priceIds[plan];
+    if (!priceId) return res.status(400).json({ error: 'plan inválido o price ID no configurado' });
 
-    if (!prices[plan]) return res.status(400).json({ error: 'plan inválido' });
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: { name: `MIIA — Plan ${plan}` },
-          unit_amount: prices[plan]
-        },
-        quantity: 1
-      }],
-      mode: 'payment',
-      success_url: FRONTEND_URL + '/owner-dashboard.html?sub_success=1',
-      cancel_url: FRONTEND_URL + '/owner-dashboard.html',
-      metadata: { uid, plan, type: 'subscription' }
+    const transaction = await paddle.transactions.create({
+      items: [{ priceId, quantity: 1 }],
+      customData: { uid, plan, type: 'subscription' },
+      checkout: { url: FRONTEND_URL + '/owner-dashboard.html?sub_success=1' }
     });
 
-    res.json({ url: session.url });
-  } catch (error) {
-    console.error('Error Stripe subscribe:', error);
-    res.status(500).json({ error: error.message });
+    res.json({ url: transaction.checkout?.url || null, transactionId: transaction.id });
+  } catch (e) {
+    console.error('[PADDLE] subscribe error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
-app.post('/api/stripe/create-checkout-session', express.json(), async (req, res) => {
+app.post('/api/paddle/agent-checkout', express.json(), async (req, res) => {
   try {
-    const { uid, type, agentCount } = req.body;
-    if (!uid || type !== 'agent') return res.status(400).json({ error: 'uid y type=agent requeridos' });
+    const { uid, agentCount } = req.body;
+    if (!uid) return res.status(400).json({ error: 'uid requerido' });
 
-    // Precio dinámico: $3.00 base, -10% por cada agente adicional
-    // agentCount es el número actual (antes de compra)
-    const basePriceCents = 300;
-    const priceInCents = Math.round(basePriceCents * Math.pow(0.9, agentCount));
+    const priceId = process.env.PADDLE_PRICE_AGENT_EXTRA;
+    if (!priceId) return res.status(500).json({ error: 'PADDLE_PRICE_AGENT_EXTRA no configurado' });
 
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: { name: 'Agente adicional MIIA' },
-          unit_amount: priceInCents
-        },
-        quantity: 1
-      }],
-      mode: 'payment',
-      success_url: FRONTEND_URL + '/owner-dashboard.html?agent_success=1',
-      cancel_url: FRONTEND_URL + '/owner-dashboard.html',
-      metadata: { uid, type: 'agent', agentCount }
+    const transaction = await paddle.transactions.create({
+      items: [{ priceId, quantity: 1 }],
+      customData: { uid, type: 'agent', agentCount: String(agentCount || 0) },
+      checkout: { url: FRONTEND_URL + '/owner-dashboard.html?agent_success=1' }
     });
 
-    res.json({ url: session.url });
-  } catch (error) {
-    console.error('Error Stripe agent checkout:', error);
-    res.status(500).json({ error: error.message });
+    res.json({ url: transaction.checkout?.url || null });
+  } catch (e) {
+    console.error('[PADDLE] agent-checkout error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
 // ============================================
-// STRIPE WEBHOOK
+// PADDLE WEBHOOK
 // ============================================
-app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-
+app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
-    const event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+    const signature = req.headers['paddle-signature'];
+    if (PADDLE_WEBHOOK_SECRET && signature) {
+      const isValid = paddle.webhooks.isSignatureValid(req.body, PADDLE_WEBHOOK_SECRET, signature);
+      if (!isValid) return res.status(401).send('Invalid signature');
+    }
 
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      const { uid, plan, type } = session.metadata;
+    const event = JSON.parse(req.body.toString());
+    const eventType = event.event_type;
+    const data = event.data;
+    const customData = data?.custom_data || {};
+    const { uid, plan, type } = customData;
 
-      console.log('✅ Pago completado:', { uid, plan, type });
-
-      if (type === 'subscription' && plan) {
-        // Actualizar plan en Firestore
-        const prices = {
-          monthly: 1,
-          quarterly: 3,
-          semestral: 6,
-          annual: 12
-        };
-        const months = prices[plan] || 1;
+    if (eventType === 'transaction.completed') {
+      if (type === 'subscription' && plan && uid) {
+        const durations = { monthly: 1, quarterly: 3, semestral: 6, annual: 12 };
+        const months = durations[plan] || 1;
         const now = new Date();
         const endDate = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
-
         await admin.firestore().collection('users').doc(uid).update({
-          plan: plan,
-          plan_start_date: now,
-          plan_end_date: endDate,
-          payment_status: 'active'
+          plan, plan_start_date: now, plan_end_date: endDate, payment_status: 'active'
         });
-
-        console.log(`📝 Plan actualizado para ${uid}: ${plan}`);
-      } else if (type === 'agent') {
-        // Incrementar agents_limit
+        console.log(`[PADDLE] Plan ${plan} activado para ${uid}`);
+      } else if (type === 'agent' && uid) {
         await admin.firestore().collection('users').doc(uid).update({
           agents_limit: admin.firestore.FieldValue.increment(1)
         });
-
-        console.log(`👥 Agente adicional comprado para ${uid}`);
+        console.log(`[PADDLE] Agente extra comprado por ${uid}`);
       }
+    } else if (eventType === 'subscription.canceled' && uid) {
+      await admin.firestore().collection('users').doc(uid).update({
+        payment_status: 'canceled'
+      });
+      console.log(`[PADDLE] Suscripción cancelada para ${uid}`);
     }
 
     res.json({ received: true });
-  } catch (err) {
-    console.error('Webhook error:', err);
-    res.status(400).send(`Webhook Error: ${err.message}`);
+  } catch (e) {
+    console.error('[PADDLE] webhook error:', e.message);
+    res.status(400).send('Webhook error: ' + e.message);
   }
 });
+
+// Endpoints Stripe deprecados
+app.post('/api/stripe/subscribe', (req, res) => res.status(410).json({ error: 'Migrado a Paddle. Usar /api/paddle/subscribe' }));
+app.post('/api/stripe/create-checkout-session', (req, res) => res.status(410).json({ error: 'Migrado a Paddle. Usar /api/paddle/agent-checkout' }));
+app.post('/api/stripe/webhook', (req, res) => res.status(410).send('Webhook Stripe desactivado'));
 
 // ============================================
 // SERVIDOR
