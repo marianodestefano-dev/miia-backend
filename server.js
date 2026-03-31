@@ -2613,6 +2613,10 @@ app.get('/api/status', (req, res) => {
   // Check tenant first if uid param provided
   const uid = req.query.uid;
   if (uid) {
+    // Owner siempre usa el client principal
+    if (uid === OWNER_UID) {
+      return res.json({ connected: isReady, hasQR: !!qrCode, tenant: uid });
+    }
     const status = tenantManager.getTenantStatus(uid);
     return res.json({ connected: status.isReady, hasQR: status.hasQR, tenant: uid });
   }
@@ -2703,20 +2707,22 @@ app.get('/api/tenant/:uid/status', (req, res) => {
 // GET /api/tenant/:uid/qr — Get tenant QR code (if pending scan)
 app.get('/api/tenant/:uid/qr', (req, res) => {
   const uid = req.params.uid;
+
+  // Owner SIEMPRE usa el client owner — nunca un tenant duplicado
+  if (uid === OWNER_UID) {
+    if (!whatsappClient) {
+      console.log(`[QR] 🚀 Owner UID — auto-starting WhatsApp`);
+      initRetryCount = 0;
+      initWhatsApp();
+    }
+    console.log(`[QR] ♻️ Owner UID — returning owner client status (isReady: ${isReady}, hasQR: ${!!qrCode})`);
+    return res.json({ qrCode: qrCode || null, isReady: isReady, isAuthenticated: isReady, phase: isReady ? 'ready' : (qrCode ? 'qr_ready' : 'initializing') });
+  }
+
   const status = tenantManager.getTenantStatus(uid);
   console.log(`[QR] GET /api/tenant/${uid}/qr - exists: ${status.exists}, hasQR: ${status.hasQR}, isReady: ${status.isReady}`);
 
   if (!status.exists) {
-    if (uid === OWNER_UID) {
-      // Auto-init owner if not started yet
-      if (!whatsappClient) {
-        console.log(`[QR] 🚀 Owner UID — auto-starting WhatsApp`);
-        initRetryCount = 0;
-        initWhatsApp();
-      }
-      console.log(`[QR] ♻️ Owner UID — returning owner client status`);
-      return res.json({ qrCode: qrCode || null, isReady: isReady, isAuthenticated: isReady, phase: isReady ? 'ready' : (qrCode ? 'qr_ready' : 'initializing') });
-    }
     console.log(`[QR] ❌ Tenant NOT found in map for UID: ${uid}`);
     return res.status(404).json({ error: 'Tenant no encontrado. Llama a /api/tenant/init primero.' });
   }
