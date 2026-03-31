@@ -39,3 +39,6 @@ Thumbs.db
 
 # Scraped pages / normativa files
 Páginas*
+
+# Runtime database (contains user configs and potential credentials)
+data/db.json
