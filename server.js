@@ -4275,6 +4275,142 @@ app.post('/api/stripe/create-checkout-session', (req, res) => res.status(410).js
 app.post('/api/stripe/webhook', (req, res) => res.status(410).send('Webhook Stripe desactivado'));
 
 // ============================================
+// PAYPAL CHECKOUT
+// ============================================
+const PAYPAL_BASE = process.env.PAYPAL_ENV === 'sandbox'
+  ? 'https://api-m.sandbox.paypal.com'
+  : 'https://api-m.paypal.com';
+
+async function getPayPalToken() {
+  const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
+  const r = await fetch(`${PAYPAL_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials'
+  });
+  const d = await r.json();
+  return d.access_token;
+}
+
+app.post('/api/paypal/subscribe', express.json(), async (req, res) => {
+  try {
+    const { uid, plan } = req.body;
+    if (!uid || !plan) return res.status(400).json({ error: 'uid y plan requeridos' });
+    const prices = { monthly: '12.00', quarterly: '30.00', semestral: '55.00', annual: '75.00' };
+    const price = prices[plan];
+    if (!price) return res.status(400).json({ error: 'plan inválido' });
+
+    const token = await getPayPalToken();
+    const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        intent: 'CAPTURE',
+        purchase_units: [{ amount: { currency_code: 'USD', value: price }, description: `MIIA Plan ${plan}` }],
+        application_context: {
+          return_url: `${FRONTEND_URL}/owner-dashboard.html?paypal_capture=1&plan=${plan}&uid=${uid}`,
+          cancel_url: `${FRONTEND_URL}/owner-dashboard.html`
+        }
+      })
+    });
+    const order = await r.json();
+    const approvalUrl = order.links?.find(l => l.rel === 'approve')?.href;
+    if (!approvalUrl) return res.status(500).json({ error: 'No se pudo crear la orden PayPal', detail: order });
+    res.json({ url: approvalUrl });
+  } catch (e) {
+    console.error('[PAYPAL] subscribe error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/paypal/agent-checkout', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.body;
+    if (!uid) return res.status(400).json({ error: 'uid requerido' });
+
+    const token = await getPayPalToken();
+    const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        intent: 'CAPTURE',
+        purchase_units: [{ amount: { currency_code: 'USD', value: '3.00' }, description: 'Agente adicional MIIA' }],
+        application_context: {
+          return_url: `${FRONTEND_URL}/owner-dashboard.html?paypal_agent_capture=1&uid=${uid}`,
+          cancel_url: `${FRONTEND_URL}/owner-dashboard.html`
+        }
+      })
+    });
+    const order = await r.json();
+    const approvalUrl = order.links?.find(l => l.rel === 'approve')?.href;
+    if (!approvalUrl) return res.status(500).json({ error: 'No se pudo crear la orden PayPal' });
+    res.json({ url: approvalUrl });
+  } catch (e) {
+    console.error('[PAYPAL] agent-checkout error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/paypal/capture', express.json(), async (req, res) => {
+  try {
+    const { token, plan, uid } = req.body;
+    if (!token || !plan || !uid) return res.status(400).json({ error: 'token, plan y uid requeridos' });
+
+    const accessToken = await getPayPalToken();
+    const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${token}/capture`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+    });
+    const capture = await r.json();
+
+    if (capture.status === 'COMPLETED') {
+      const durations = { monthly: 1, quarterly: 3, semestral: 6, annual: 12 };
+      const months = durations[plan] || 1;
+      const now = new Date();
+      const endDate = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+      await admin.firestore().collection('users').doc(uid).update({
+        plan, plan_start_date: now, plan_end_date: endDate, payment_status: 'active'
+      });
+      console.log(`[PAYPAL] Plan ${plan} activado para ${uid}`);
+      res.json({ success: true });
+    } else {
+      console.error('[PAYPAL] capture status:', capture.status, capture);
+      res.status(400).json({ error: 'Pago no completado', status: capture.status });
+    }
+  } catch (e) {
+    console.error('[PAYPAL] capture error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/paypal/capture-agent', express.json(), async (req, res) => {
+  try {
+    const { token, uid } = req.body;
+    if (!token || !uid) return res.status(400).json({ error: 'token y uid requeridos' });
+
+    const accessToken = await getPayPalToken();
+    const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${token}/capture`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+    });
+    const capture = await r.json();
+
+    if (capture.status === 'COMPLETED') {
+      await admin.firestore().collection('users').doc(uid).update({
+        agents_limit: admin.firestore.FieldValue.increment(1)
+      });
+      console.log(`[PAYPAL] Agente extra comprado por ${uid}`);
+      res.json({ success: true });
+    } else {
+      res.status(400).json({ error: 'Pago no completado', status: capture.status });
+    }
+  } catch (e) {
+    console.error('[PAYPAL] capture-agent error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
 // SERVIDOR
 // ============================================
 
