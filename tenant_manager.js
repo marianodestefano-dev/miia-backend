@@ -202,10 +202,6 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
       clientId: `tenant-${uid}`,
       backupSyncIntervalMs: 300000
     }),
-    webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
-    },
     puppeteer: {
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -216,11 +212,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding'
+        '--disable-gpu'
       ]
     }
   });
@@ -230,7 +222,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
   client.on('qr', async (qr) => {
     try {
       console.log(`[TM:${uid}] 📱 QR received from WhatsApp client`);
-      const qrDataUrl = await qrcode.toDataURL(qr, { scale: 8, width: 512, margin: 2 });
+      const qrDataUrl = await qrcode.toDataURL(qr);
       console.log(`[TM:${uid}] 📝 QR DataURL length: ${qrDataUrl.length}, starts with: ${qrDataUrl.substring(0, 50)}`);
       tenant.qrCode = qrDataUrl;
       console.log(`[TM:${uid}] ✅ QR stored in tenant object`);
@@ -248,20 +240,15 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
     tenant.qrCode = null;
     tenant.isAuthenticated = true;
 
-    // If ready doesn't fire in 45s, destroy and auto-reinit (Railway injection issue)
+    // If ready doesn't fire in 3 minutes, destroy and let user retry
     tenant._readyTimeout = setTimeout(async () => {
       if (!tenant.isReady) {
-        console.error(`[TM:${uid}] ⏱️ Timeout: authenticated but ready never fired. Auto-restarting client.`);
+        console.error(`[TM:${uid}] ⏱️ Timeout: authenticated but ready never fired. Destroying client.`);
         try { await client.destroy(); } catch (e) { /* ignore */ }
         tenant.isAuthenticated = false;
         tenants.delete(uid);
-        // Auto-reinit after short delay so QR is re-generated
-        setTimeout(() => {
-          console.log(`[TM:${uid}] 🔄 Auto-reinit after ready timeout...`);
-          initTenant(uid, geminiApiKey, ioInstance, aiConfig);
-        }, 3000);
       }
-    }, 45 * 1000);
+    }, 3 * 60 * 1000);
   });
 
   client.on('auth_failure', (msg) => {
