@@ -222,7 +222,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
   client.on('qr', async (qr) => {
     try {
       console.log(`[TM:${uid}] 📱 QR received from WhatsApp client`);
-      const qrDataUrl = await qrcode.toDataURL(qr);
+      const qrDataUrl = await qrcode.toDataURL(qr, { scale: 8, width: 512, margin: 2 });
       console.log(`[TM:${uid}] 📝 QR DataURL length: ${qrDataUrl.length}, starts with: ${qrDataUrl.substring(0, 50)}`);
       tenant.qrCode = qrDataUrl;
       console.log(`[TM:${uid}] ✅ QR stored in tenant object`);

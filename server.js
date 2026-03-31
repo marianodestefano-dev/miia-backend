@@ -2163,7 +2163,7 @@ function initWhatsApp() {
   whatsappClient.on('qr', async (qr) => {
     console.log('[WA] 📱 QR CODE GENERADO');
     console.log('[WA] 📱 Convirtiendo a DataURL...');
-    qrCode = await qrcode.toDataURL(qr);
+    qrCode = await qrcode.toDataURL(qr, { scale: 8, width: 512, margin: 2 });
     console.log('[WA] 📱 QR DataURL generado, longitud:', qrCode.length);
     console.log('[WA] 📡 Emitiendo evento "qr" via Socket.io...');
     io.emit('qr', qrCode);
