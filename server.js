@@ -2723,6 +2723,32 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
   res.json({ qrCode: status.qrCode, isReady: status.isReady, isAuthenticated: status.isAuthenticated, phase: 'qr_ready' });
 });
 
+// POST /api/tenant/:uid/request-pairing-code — Request 8-digit pairing code instead of QR
+app.post('/api/tenant/:uid/request-pairing-code', express.json(), async (req, res) => {
+  const uid = req.params.uid;
+  const { phone } = req.body; // e.g. "5491112345678" (international format, no + or spaces)
+  if (!phone) return res.status(400).json({ error: 'Número de teléfono requerido (ej: 5491112345678)' });
+
+  try {
+    let client = null;
+    if (uid === OWNER_UID) {
+      if (!whatsappClient) { initRetryCount = 0; initWhatsApp(); }
+      client = whatsappClient;
+    } else {
+      const t = tenantManager.getTenant(uid);
+      if (t) client = t.client;
+    }
+    if (!client) return res.status(404).json({ error: 'WhatsApp no inicializado. Esperá unos segundos e intentá de nuevo.' });
+
+    const code = await client.requestPairingCode(phone.replace(/\D/g, ''));
+    console.log(`[PAIRING] Código generado para ${uid}: ${code}`);
+    res.json({ code });
+  } catch (e) {
+    console.error('[PAIRING] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/tenant/:uid/logout — Disconnect tenant WhatsApp
 app.post('/api/tenant/:uid/logout', async (req, res) => {
   const result = await tenantManager.destroyTenant(req.params.uid);
