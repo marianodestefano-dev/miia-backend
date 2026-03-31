@@ -4536,11 +4536,15 @@ server.listen(PORT, () => {
 
   // Auto-start owner WhatsApp on boot using the FULL handleIncomingMessage logic.
   // This handles "hola miia", family contacts, Medilink leads, admin commands, etc.
-  console.log(`[AUTO-INIT] 🚀 Auto-starting owner WhatsApp (full MIIA logic)...`);
-  try {
-    initWhatsApp();
-  } catch (err) {
-    console.error('[AUTO-INIT] ❌ Error auto-starting WhatsApp:', err.message);
+  if (process.env.SKIP_WA_INIT === 'true') {
+    console.log('[AUTO-INIT] ⏭️  SKIP_WA_INIT=true — owner WhatsApp NOT auto-started. Use /api/tenant/init to connect tenants manually.');
+  } else {
+    console.log(`[AUTO-INIT] 🚀 Auto-starting owner WhatsApp (full MIIA logic)...`);
+    try {
+      initWhatsApp();
+    } catch (err) {
+      console.error('[AUTO-INIT] ❌ Error auto-starting WhatsApp:', err.message);
+    }
   }
 });
 
