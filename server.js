@@ -3663,7 +3663,7 @@ function decryptBackup(payload, masterKeyOnly) {
 app.get('/api/tenant/:uid/ai-config', async (req, res) => {
   try {
     const { uid } = req.params;
-    const doc = await db.collection('users').doc(uid).get();
+    const doc = await admin.firestore().collection('users').doc(uid).get();
     if (!doc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
     const data = doc.data();
     res.json({
