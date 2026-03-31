@@ -2735,12 +2735,7 @@ app.post('/api/tenant/:uid/request-pairing-code', express.json(), async (req, re
       if (!whatsappClient) { initRetryCount = 0; initWhatsApp(); }
       client = whatsappClient;
     } else {
-      const status = tenantManager.getTenantStatus(uid);
-      if (status.exists) {
-        // access client via internal map exposed through initTenant result or status
-        const allTenants = tenantManager.getAllTenants ? tenantManager.getAllTenants() : null;
-        if (allTenants) client = allTenants.get(uid)?.client;
-      }
+      client = tenantManager.getTenantClient(uid);
     }
     if (!client) return res.status(404).json({ error: 'WhatsApp no inicializado. Esperá unos segundos e intentá de nuevo.' });
 

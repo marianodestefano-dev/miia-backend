@@ -474,6 +474,11 @@ function appendTenantTraining(uid, newData) {
 /**
  * Get all active tenants (for admin/monitoring).
  */
+function getTenantClient(uid) {
+  const t = tenants.get(uid);
+  return t ? t.client : null;
+}
+
 function getAllTenants() {
   const result = [];
   for (const [uid, t] of tenants) {
@@ -558,6 +563,7 @@ module.exports = {
   initTenant,
   destroyTenant,
   getTenantStatus,
+  getTenantClient,
   getTenantConversations,
   appendTenantTraining,
   setTenantTrainingData,
