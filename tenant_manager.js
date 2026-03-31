@@ -202,6 +202,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
       clientId: `tenant-${uid}`,
       backupSyncIntervalMs: 300000
     }),
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     puppeteer: {
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -212,7 +213,12 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--disable-gpu'
+        '--single-process',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding'
       ]
     }
   });
@@ -222,7 +228,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
   client.on('qr', async (qr) => {
     try {
       console.log(`[TM:${uid}] 📱 QR received from WhatsApp client`);
-      const qrDataUrl = await qrcode.toDataURL(qr);
+      const qrDataUrl = await qrcode.toDataURL(qr, { scale: 8, width: 512, margin: 2 });
       console.log(`[TM:${uid}] 📝 QR DataURL length: ${qrDataUrl.length}, starts with: ${qrDataUrl.substring(0, 50)}`);
       tenant.qrCode = qrDataUrl;
       console.log(`[TM:${uid}] ✅ QR stored in tenant object`);
