@@ -4196,8 +4196,8 @@ app.post('/api/stripe/subscribe', express.json(), async (req, res) => {
         quantity: 1
       }],
       mode: 'payment',
-      success_url: FRONTEND_URL + '/dashboard.html?sub_success=1',
-      cancel_url: FRONTEND_URL + '/dashboard.html',
+      success_url: FRONTEND_URL + '/owner-dashboard.html?sub_success=1',
+      cancel_url: FRONTEND_URL + '/owner-dashboard.html',
       metadata: { uid, plan, type: 'subscription' }
     });
 
@@ -4229,8 +4229,8 @@ app.post('/api/stripe/create-checkout-session', express.json(), async (req, res)
         quantity: 1
       }],
       mode: 'payment',
-      success_url: FRONTEND_URL + '/dashboard.html?agent_success=1',
-      cancel_url: FRONTEND_URL + '/dashboard.html',
+      success_url: FRONTEND_URL + '/owner-dashboard.html?agent_success=1',
+      cancel_url: FRONTEND_URL + '/owner-dashboard.html',
       metadata: { uid, type: 'agent', agentCount }
     });
 
