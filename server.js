@@ -3365,13 +3365,14 @@ app.post('/api/admin-chat', express.json(), async (req, res) => {
     const adnStr = cerebroAbsoluto.getTrainingData();
     const historyStr = history.slice(-10).map(m => `${m.role === 'user' ? 'Mariano' : 'MIIA'}: ${m.content}`).join('\n');
 
-    const prompt = `# PROMPT MAESTRO — MIIA Admin Chat (training.html)
-Sos MIIA, asistente de Mariano. Estás en el panel de entrenamiento donde Mariano puede conversar con vos, hacerte preguntas sobre lo que sabés, testear respuestas, y enseñarte cosas nuevas.
+    const prompt = `# PROMPT MAESTRO — MIIA Admin Chat
+Sos MIIA, asistente de Mariano. Estás en el panel de entrenamiento donde Mariano puede conversar con vos, hacerte preguntas, testear respuestas, y enseñarte cosas nuevas.
 
 ANTI-BOT: NUNCA empieces con "Entendido", "Perfecto", "Claro", "Por supuesto". Variá la estructura. Sé natural, directa, humana.
-Para guardar conocimiento nuevo, Mariano usa el prefijo "APRENDE:" — eso lo maneja un sistema separado. En este chat solo conversás.
 
-## Tu conocimiento actual (ADN + aprendizajes):
+AUTO-APRENDIZAJE: Si en la conversación Mariano te cuenta información NUEVA sobre su negocio (productos, precios, clientes, reglas de venta, procedimientos, información importante), incluí al FINAL de tu respuesta el tag [GUARDAR_APRENDIZAJE:texto breve a guardar]. Solo si la info es genuinamente nueva y útil para recordar en futuros chats de WhatsApp. No guardes preguntas, tests, ni información obvia. Para información que Mariano quiere guardar explícitamente, usa el prefijo APRENDE: que dispara el guardado directo.
+
+## Tu conocimiento actual:
 ${adnStr || '(sin aprendizajes cargados aún)'}
 
 ## Historial de esta sesión:
@@ -3380,10 +3381,20 @@ ${historyStr || '(inicio de sesión)'}
 ## Mariano dice ahora:
 ${message}
 
-Respondé de forma natural, concisa y útil. Si pregunta qué sabés, mostrá ejemplos concretos. Si pregunta algo que no sabés, decilo honestamente.`;
+Respondé natural, concisa y útil. Si pregunta qué sabés, mostrá ejemplos. Si no sabés algo, decilo.`;
 
-    const response = await generateAIContent(prompt);
-    res.json({ response: response || 'No pude generar respuesta.', type: 'chat' });
+    let response = await generateAIContent(prompt);
+    let autoSaved = null;
+    // Check for auto-learning tag
+    const autoLearnMatch = response && response.match(/\[GUARDAR_APRENDIZAJE:([^\]]+)\]/);
+    if (autoLearnMatch) {
+      const toLearn = autoLearnMatch[1].trim();
+      cerebroAbsoluto.appendLearning(toLearn, 'MIIA_CHAT_AUTO');
+      saveDB();
+      autoSaved = toLearn;
+      response = response.replace(autoLearnMatch[0], '').trim();
+    }
+    res.json({ response: response || 'No pude generar respuesta.', type: 'chat', autoSaved });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4076,10 +4087,19 @@ app.post('/api/admin/user', express.json(), verifyAdminToken, async (req, res) =
 app.post('/api/admin/user/:uid/reset-password', verifyAdminToken, async (req, res) => {
   try {
     const { uid } = req.params;
-    // Generate a random 10-char password
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
+    // Generate a random 10-char password — guaranteed to have letters, digit, and special char
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
+    const digits = '23456789';
+    const specials = '!@#$';
+    const all = letters + digits + specials;
     let password = '';
-    for (let i = 0; i < 10; i++) password += chars[Math.floor(Math.random() * chars.length)];
+    // Guarantee at least 1 digit, 1 uppercase, 1 special
+    password += letters[Math.floor(Math.random() * letters.length)];
+    password += digits[Math.floor(Math.random() * digits.length)];
+    password += specials[Math.floor(Math.random() * specials.length)];
+    for (let i = 3; i < 10; i++) password += all[Math.floor(Math.random() * all.length)];
+    // Shuffle
+    password = password.split('').sort(() => Math.random() - 0.5).join('');
     await admin.auth().updateUser(uid, { password });
     res.json({ success: true, password });
   } catch (e) {
