@@ -202,6 +202,10 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
       clientId: `tenant-${uid}`,
       backupSyncIntervalMs: 300000
     }),
+    webVersionCache: {
+      type: 'remote',
+      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+    },
     puppeteer: {
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -212,7 +216,6 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--single-process',
         '--disable-gpu',
         '--disable-extensions',
         '--disable-background-timer-throttling',
@@ -245,15 +248,20 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
     tenant.qrCode = null;
     tenant.isAuthenticated = true;
 
-    // If ready doesn't fire in 3 minutes, destroy and let user retry
+    // If ready doesn't fire in 45s, destroy and auto-reinit (Railway injection issue)
     tenant._readyTimeout = setTimeout(async () => {
       if (!tenant.isReady) {
-        console.error(`[TM:${uid}] ⏱️ Timeout: authenticated but ready never fired. Destroying client.`);
+        console.error(`[TM:${uid}] ⏱️ Timeout: authenticated but ready never fired. Auto-restarting client.`);
         try { await client.destroy(); } catch (e) { /* ignore */ }
         tenant.isAuthenticated = false;
         tenants.delete(uid);
+        // Auto-reinit after short delay so QR is re-generated
+        setTimeout(() => {
+          console.log(`[TM:${uid}] 🔄 Auto-reinit after ready timeout...`);
+          initTenant(uid, geminiApiKey, ioInstance, aiConfig);
+        }, 3000);
       }
-    }, 3 * 60 * 1000);
+    }, 45 * 1000);
   });
 
   client.on('auth_failure', (msg) => {
