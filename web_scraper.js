@@ -18,7 +18,7 @@
 // ─────────────────────────────────────────────
 
 const SOURCES = [
-  { name: 'Minsalud Colombia',  url: 'https://www.minsalud.gov.co/Paginas/Default.aspx',  pais: 'COLOMBIA' },
+  { name: 'Minsalud Colombia',  url: 'https://www.minsalud.gov.co/Normatividad_Nuevo/Forms/AllItems.aspx',  pais: 'COLOMBIA' },
   { name: 'Minsal Chile',       url: 'https://www.minsal.cl/',                             pais: 'CHILE' },
   { name: 'SSA Mexico',         url: 'https://www.gob.mx/salud',                           pais: 'MEXICO' },
   { name: 'Minsalud Argentina', url: 'https://www.argentina.gob.ar/salud',                 pais: 'ARGENTINA' },
@@ -121,6 +121,17 @@ ${text}`;
       fecha:  new Date().toLocaleDateString('es-ES')
     });
     console.log(`[WEB SCRAPER] ${source.name}: novedad pendiente de enviar a Mariano (${result.length} chars).`);
+
+    // Auto-save regulatory content to cerebro without waiting for manual approval
+    const regulatoryKeywords = ['resolución', 'resolución', 'decreto', 'circular', 'rips', 'habilitación', 'normativa'];
+    const textLower = (result || '').toLowerCase();
+    if (regulatoryKeywords.some(k => textLower.includes(k))) {
+      try {
+        if (typeof _appendLearning === 'function') {
+          _appendLearning(`[NORMATIVA AUTO ${source.pais} ${new Date().toLocaleDateString('es-ES')}]\n${result}`, 'SCRAPER');
+        }
+      } catch(e) { /* ignore */ }
+    }
 
   } catch (e) {
     console.error(`[WEB SCRAPER] Error scrapeando ${source.name}:`, e.message);
