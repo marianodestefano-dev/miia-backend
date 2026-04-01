@@ -305,12 +305,22 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       if (type !== 'notify') return; // Only process new messages, not history
 
       for (const msg of messages) {
-        // Skip own messages
-        if (msg.key.fromMe) continue;
+        const from = msg.key.remoteJid;
+        const isGroup = from?.endsWith('@g.us');
+        const isStatus = from === 'status@broadcast';
+        const isFromMe = msg.key.fromMe;
+
         // Skip group messages
-        if (msg.key.remoteJid?.endsWith('@g.us')) continue;
+        if (isGroup) continue;
         // Skip status broadcasts
-        if (msg.key.remoteJid === 'status@broadcast') continue;
+        if (isStatus) continue;
+
+        // For owner with onMessage: allow self-chat (fromMe + from === from)
+        // For regular tenants: skip fromMe messages
+        const isSelfChat = isFromMe && from === from; // Always true for self-chat
+        const shouldProcess = !isFromMe || (tenant.onMessage && isFromMe);
+
+        if (!shouldProcess) continue;
 
         // Extract text body
         const body = msg.message?.conversation
@@ -321,8 +331,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
         if (!body.trim()) continue;
 
-        const from = msg.key.remoteJid;
-        console.log(`[TM:${uid}] 📨 Message from ${from}: "${body.substring(0, 40)}"`);
+        console.log(`[TM:${uid}] 📨 Message from ${from}${isFromMe ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
 
         // If custom onMessage handler is set (owner), delegate to it
         if (tenant.onMessage) {
