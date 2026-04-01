@@ -951,14 +951,27 @@ Nuevo resumen actualizado:`;
       generateAIContent(summaryPrompt).then(s => { if (s) { leadSummaries[phone] = s.trim(); saveDB(); } }).catch(() => {});
     }
 
-    // ⚠️ OWNER DETECTION: Sin hardcodes. Basado en UID en Firestore
-    // El owner es el usuario cuyo UID = OWNER_UID
-    // Para self-chat: si fromMe=true, probablemente es el owner (pero verificar OWNER_UID)
-    const isOwnerNumber = phone && (
-      phone.includes(OWNER_UID) ||  // Si el phone contiene el OWNER_UID
-      (isAlreadySavedParam && true)  // Si el mensaje ya fue guardado, probablemente es self-chat del owner
-    );
-    const isSelfChat = isOwnerNumber; // For logging purposes
+    // ⚠️ OWNER DETECTION: Comparar con el número real guardado en Firestore
+    // El owner es el usuario cuyo número WhatsApp coincide con whatsapp_owner_number
+    let isOwnerNumber = false;
+
+    if (OWNER_UID) {
+      try {
+        const userDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+        if (userDoc.exists) {
+          const ownerPhoneFromDb = userDoc.data()?.whatsapp_owner_number;
+          const basePhone = phone.split('@')[0];
+          if (ownerPhoneFromDb && basePhone === ownerPhoneFromDb) {
+            isOwnerNumber = true;
+            console.log(`[OWNER] ✅ Mensaje del owner detectado: ${basePhone}`);
+          }
+        }
+      } catch (e) {
+        console.error(`[OWNER] Error verificando número:`, e.message);
+      }
+    }
+
+    const isSelfChat = isOwnerNumber && isAlreadySavedParam; // Self-chat: owner + fromMe
 
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
     // EXCEPTO: owner y family contacts responden siempre
@@ -2654,12 +2667,13 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
       isReady = true;
       io.emit('whatsapp_ready', { status: 'connected' });
 
-      // Guardar número de WhatsApp en Firestore
+      // Guardar número de WhatsApp en Firestore (para detección de owner)
       try {
         const waNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
         if (waNumber) {
           admin.firestore().collection('users').doc(OWNER_UID).update({
-            whatsapp_number: waNumber,
+            whatsapp_owner_number: waNumber,
+            whatsapp_owner_jid: `${waNumber}@s.whatsapp.net`,
             whatsapp_connected_at: new Date()
           }).catch(e => console.log('[WA] No se pudo guardar número:', e.message));
         }
@@ -4667,10 +4681,11 @@ server.listen(PORT, () => {
                 isReady = true;
                 io.emit('whatsapp_ready', { status: 'connected' });
 
-                // Guardar/actualizar número
+                // Guardar/actualizar número del owner para detección correcta
                 if (connectedNumber) {
                   admin.firestore().collection('users').doc(OWNER_UID).update({
-                    whatsapp_number: connectedNumber,
+                    whatsapp_owner_number: connectedNumber,
+                    whatsapp_owner_jid: `${connectedNumber}@s.whatsapp.net`,
                     whatsapp_connected_at: new Date()
                   }).catch(() => {});
                 }

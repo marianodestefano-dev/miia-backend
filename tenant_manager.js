@@ -255,6 +255,24 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         tenant.isAuthenticated = true;
         tenant.qrCode = null;
         tenant._initializing = false;
+
+        // 🔑 Extraer y guardar número real del usuario en Firestore
+        try {
+          const ownerPhone = sock.user?.id?.split('@')[0]?.split(':')[0];
+          if (ownerPhone) {
+            tenant.ownerPhone = ownerPhone;
+            console.log(`[TM:${uid}] 📱 Número extraído: ${ownerPhone}`);
+            // Guardar en Firestore para uso posterior en server.js
+            admin.firestore().collection('users').doc(uid).update({
+              whatsapp_owner_number: ownerPhone,
+              whatsapp_owner_jid: `${ownerPhone}@s.whatsapp.net`,
+              owner_phone_updated_at: new Date()
+            }).catch(err => console.error(`[TM:${uid}] Error guardando número:`, err.message));
+          }
+        } catch (e) {
+          console.error(`[TM:${uid}] Error extrayendo número:`, e.message);
+        }
+
         if (ioInstance) {
           ioInstance.to(`tenant:${uid}`).emit('whatsapp_ready', { uid, status: 'connected' });
           ioInstance.emit(`tenant_ready_${uid}`, { status: 'connected' });
