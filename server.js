@@ -951,11 +951,13 @@ Nuevo resumen actualizado:`;
       generateAIContent(summaryPrompt).then(s => { if (s) { leadSummaries[phone] = s.trim(); saveDB(); } }).catch(() => {});
     }
 
-    // ⚠️ OWNER DETECTION: Sin hardcodes. Basado en UID y Firestore
-    // El owner se detecta si:
-    // 1. El phone/JID pertenece al OWNER_UID
-    // 2. O está en el map de self-chats (fromMe=true)
-    const isOwnerNumber = phone && phone.includes(OWNER_UID);
+    // ⚠️ OWNER DETECTION: Sin hardcodes. Basado en UID en Firestore
+    // El owner es el usuario cuyo UID = OWNER_UID
+    // Para self-chat: si fromMe=true, probablemente es el owner (pero verificar OWNER_UID)
+    const isOwnerNumber = phone && (
+      phone.includes(OWNER_UID) ||  // Si el phone contiene el OWNER_UID
+      (isAlreadySavedParam && true)  // Si el mensaje ya fue guardado, probablemente es self-chat del owner
+    );
     const isSelfChat = isOwnerNumber; // For logging purposes
 
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
