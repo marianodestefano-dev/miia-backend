@@ -51,3 +51,40 @@ En sesiones anteriores se modificaron estas zonas sin cuidado y se rompió la co
 - El frontend usa `BACKEND_URL` / `API` constants para las URLs del backend
 - Railway autodeploy desde GitHub push a `main`
 - Vercel autodeploy desde GitHub push a `main`
+- Todos los mensajes de commit, explicaciones y alertas deben estar EN ESPAÑOL
+
+---
+
+## 📋 PLAN PENDIENTE — Tareas ordenadas por criticidad
+
+> **REGLA**: Cada tarea se trabaja en orden. Después de hacer commit, pedir aprobación a Mariano. Si aprueba → marcar ✅ y eliminar del plan. Si rechaza → revertir y discutir.
+
+### 🔴 CRÍTICOS (MIIA no funciona correctamente sin estos)
+
+- [ ] **P1: Verificar que MIIA responda en self-chat** — El fix de isSelfChat ya está deployed. Mariano debe probar mandando "Hola MIIA" y confirmar que responde. Si no responde, revisar logs. | Modelo: ninguno (test manual) | Costo: $0
+- [ ] **P2: Auto-reconnect sin clic manual** — Los logs muestran "0 sesiones de Baileys encontradas" al startup, Mariano tuvo que hacer clic en "Conectar". La sesión debería persistir en Firestore y reconectar sola. Investigar por qué no encuentra la sesión. | Modelo: Haiku | Costo: ~$0.50
+- [ ] **P3: Endpoint documentos roto en admin-dashboard** — El frontend llama a `/api/tenant/:uid/documents/upload` pero el backend tiene `/api/documents/upload` (sin tenant). Tab "Documentos" en admin no funciona. | Modelo: Haiku | Costo: ~$0.10
+- [ ] **P4: Exportar setTenantTrainingData en tenant_manager** — La función existe (línea 630) pero NO está en module.exports (línea 650-661). Training data no persiste correctamente en auto-reconexión. | Modelo: Haiku | Costo: ~$0.10
+
+### 🟡 IMPORTANTES (Funcionan pero tienen problemas)
+
+- [ ] **P5: Limpiar código muerto de whatsapp-web.js** — Fallback en processMediaMessage() (server.js línea ~1585) referencia API vieja. Código muerto que puede confundir. | Modelo: Haiku | Costo: ~$0.10
+- [ ] **P6: cerebro_absoluto.js usa getChats() de whatsapp-web.js** — Verificación fallida silenciosa. No rompe nada pero el minado nocturno no funciona. | Modelo: Sonnet | Costo: ~$0.50
+- [ ] **P7: Archivos obsoletos** — firestore_session_store.js, messageProcessor.js, cerebro_medilink_backup.js ya no se usan. Eliminar para limpieza. | Modelo: Haiku | Costo: ~$0.05
+
+### 🟢 MEJORAS (Nice to have, no urgentes)
+
+- [ ] **P8: Detección de festivos en silencio nocturno** — Actualmente solo bloquea domingos + 9PM-6AM. No detecta festivos de Colombia/Argentina. | Modelo: Haiku | Costo: ~$0.30
+- [ ] **P9: Paddle — crear productos y configurar webhook** — El código está 100% implementado. Mariano necesita crear productos en Paddle dashboard y configurar webhook URL. | Modelo: ninguno (manual) | Costo: $0
+- [ ] **P10: "Ver como usuario" en sidebar admin** — Funcionalidad de impersonación incompleta. | Modelo: Sonnet | Costo: ~$1.00
+- [ ] **P11: Notificación email cuando WhatsApp se desconecta** — Para saber si MIIA se cayó sin estar mirando logs. | Modelo: Sonnet | Costo: ~$0.50
+
+### 💰 RESUMEN DE COSTOS ESTIMADOS
+| Prioridad | Tareas | Costo estimado | Modelo recomendado |
+|-----------|--------|----------------|-------------------|
+| 🔴 Críticos | P1-P4 | ~$0.70 | Haiku (P2-P4), Manual (P1) |
+| 🟡 Importantes | P5-P7 | ~$0.65 | Haiku (P5,P7), Sonnet (P6) |
+| 🟢 Mejoras | P8-P11 | ~$1.80 | Haiku (P8), Sonnet (P10-P11), Manual (P9) |
+| **TOTAL** | **11 tareas** | **~$3.15 USD** | **Haiku para 70% de tareas** |
+
+> **CONSEJO PARA MARIANO**: Usá **Haiku** para tareas simples (P2-P5, P7-P8). Solo usá **Sonnet** cuando la tarea necesite entender mucho contexto (P6, P10, P11). **Opus** solo para debugging complejo donde Haiku/Sonnet fallen. Esto te ahorra ~90% vs usar Opus para todo.
