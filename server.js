@@ -1461,7 +1461,7 @@ Nuevo resumen actualizado:`;
 - +57 Colombia → COLOMBIA / COP / descuento 30%
 - +56 Chile → CHILE / CLP / descuento 25%
 - +52 México → MEXICO / MXN / descuento 25%
-- +34 España → ESPAÑA / EUR / descuento 20%
+- +34 España → ESPAÑA / USD / descuento 20% (no usar EUR — no existe)
 - +54 Argentina → ARGENTINA / USD / descuento 20%, incluirFactura=false, incluirRecetaAR=true
 - Otros → INTERNACIONAL / USD / descuento 20%
 
@@ -1601,7 +1601,7 @@ WA S:$15 M:$35 L:$70 XL:$170 | Factura S:$10 M:$17 L:$35 XL:$60 | Firma S:$25 M:
 - +57 Colombia → COLOMBIA / COP / descuento 30%
 - +56 Chile → CHILE / CLP / descuento 25%
 - +52 México → MEXICO / MXN / descuento 25%
-- +34 España → ESPAÑA / EUR / descuento 20%
+- +34 España → ESPAÑA / USD / descuento 20% (no usar EUR — no existe)
 - +54 Argentina → ARGENTINA / USD / descuento 20%, incluirFactura=false, incluirRecetaAR=true
 - Otros → INTERNACIONAL / USD / descuento 20%
 
