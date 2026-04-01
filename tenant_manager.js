@@ -202,6 +202,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
       clientId: `tenant-${uid}`,
       backupSyncIntervalMs: 300000
     }),
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     puppeteer: {
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -212,7 +213,15 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}) {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--disable-gpu'
+        '--single-process',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--js-flags=--max-old-space-size=256',
+        '--disable-features=TranslateUI',
+        '--disable-ipc-flooding-protection'
       ]
     }
   });
