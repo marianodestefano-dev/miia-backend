@@ -541,20 +541,27 @@ async function safeSendMessage(target, content, options = {}) {
     const targetNumber = target.split('@')[0]?.split(':')[0];
     const isSelfChat = ownerNumber && targetNumber && ownerNumber === targetNumber;
 
+    let sendTarget = target;
     let sendOptions = {};
+
     if (isSelfChat) {
-      // Para self-chat, usar el mensaje completo anterior como quoted
+      // Para self-chat, convertir JID a @lid (no @s.whatsapp.net)
+      // Baileys recibe self-chat como {number}@lid, así que enviar igual
+      sendTarget = `${targetNumber}@lid`;
+      console.log(`[SELF-CHAT] 🔧 Convertido JID: ${target} → ${sendTarget}`);
+
+      // Usar el mensaje completo anterior como quoted
       const savedMessage = lastMessageKey[target];
-      if (savedMessage && savedMessage.key) {
-        // Baileys espera: { quoted: messageObject }
+      if (savedMessage) {
+        // Baileys espera: { quoted: messageObject } con estructura completa
         sendOptions.quoted = savedMessage;
-        console.log(`[SELF-CHAT FIX] ✅ Usando quoted message (id: ${savedMessage.id?._serialized?.substring(0, 20)}...)`);
+        console.log(`[SELF-CHAT] ✅ Usando quoted message para entregar en self-chat`);
       } else {
-        console.log(`[SELF-CHAT FIX] ⚠️ No hay mensaje anterior para quoted. Enviando sin quoted...`);
+        console.log(`[SELF-CHAT] ⚠️ No hay mensaje anterior. Intentando sin quoted...`);
       }
     }
 
-    const result = await ownerSock.sendMessage(target, baileysContent, sendOptions);
+    const result = await ownerSock.sendMessage(sendTarget, baileysContent, sendOptions);
     // Registrar mensaje como enviado por bot para que message_create lo ignore
     const sentBody = (typeof content === 'string' ? content : '').trim();
     if (sentBody) {
