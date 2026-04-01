@@ -8,7 +8,29 @@ Este archivo es leído automáticamente en CADA conversación, con cualquier mod
 
 **SI VES ESTE MENSAJE, LA COMPACTACIÓN ACABA DE OCURRIR Y PERDISTE CONTEXTO.**
 
-**ANTES de responder a Mariano, DEBES:**
+---
+
+## 🚨🚨🚨 CHECKLIST OBLIGATORIO — INICIO DE SESIÓN 🚨🚨🚨
+
+**NO HAGAS NADA MÁS HASTA COMPLETAR ESTO. NO ES OPCIONAL.**
+
+1. ✅ **Abre `miia-backend/RESUMEN_EJECUTIVO_MIIA.md`** y lee línea 3: "ÚLTIMA ACTUALIZACIÓN"
+2. ✅ **¿Dice fecha/hora de HOY?**
+   - ✅ Sí → Ve a paso 3
+   - ❌ No (desactualizado) → Ve a paso 4
+3. ✅ **Lee RESUMEN_EJECUTIVO completo (toma 3 min)** → Ve a paso 5
+4. ✅ **EMERGENCIA: Archivo desactualizado**
+   - Abre Railway logs (últimos 30-60 min)
+   - Busca: `[BAILEYS-STORE]`, `[TM]`, `[MIIA]`, `[PADDLE]`, `[SENT]`
+   - **ACTUALIZA RESUMEN_EJECUTIVO_MIIA.md CON INFO REAL AHORA**
+   - Ve a paso 5
+5. ✅ **Verifica concordancia**: ¿Matches RESUMEN con realidad en logs?
+   - ✅ Sí → Responde a Mariano
+   - ❌ No (hay discrepancias) → **ACTUALIZA RESUMEN PRIMERO, LUEGO responde**
+
+---
+
+**DESPUÉS de completar checklist, ANTES de responder a Mariano, DEBES:**
 1. **Leer `RESUMEN_EJECUTIVO_MIIA.md`** — Contiene TODO lo necesario para no perder el hilo
 2. **Recordar LA ESENCIA**: MIIA responde en el self-chat de WhatsApp del usuario (no es un bot separado)
 3. **Recordar ESTADO ACTUAL**: Ver sección ESTADO en RESUMEN_EJECUTIVO (se actualiza cada sesión)

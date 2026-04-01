@@ -1,27 +1,73 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~12:30 PM (SESIÓN 4 - DESCUBRIMIENTO Y FIX FINAL)
-**ESTADO**: P1 ✅ SOLUCIONADO (FINALMENTE) | P2 🔴 EN ESPERA DE VALIDACIÓN | P3-P5 ✅ HECHOS
-**URGENCIA**: MEDIA — P1 ya está fixed. Mariano debe probar de nuevo.
+**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~19:30 PM (SESIÓN 5 - P1 Y P2 CONFIRMADOS FUNCIONANDO)
+**ESTADO**: P1 ✅ FUNCIONANDO 100% | P2 ✅ SOLUCIONADO | LISTOS PARA COMMIT
+**URGENCIA**: BAJA — Ambos problemas resueltos y probados. Mariano confirmó funcionamiento.
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
+
+### SESIÓN 5 (Abril 1, 19:30 PM - P1 Y P2 CONFIRMADOS FUNCIONANDO)
+**Commits realizados:**
+1. `c84b197` — [CRÍTICO P2] Limpiar sesión corrupta en /tenant/init antes de reconectar
+2. `3885218` — [P1] Logging detallado en fmt() y fmtNum() pre-evaluados
+
+**VALIDACIÓN FINAL - P1 FUNCIONANDO 100%:**
+- ✅ Mariano envió: "cotización Colombia 1 usuario con 60 citas"
+- ✅ MIIA respondió: "Te envío un PDF con todos los planes..."
+- ✅ PDF generado y enviado correctamente
+- ✅ Mensaje llega COMPLETO a WhatsApp (truncación en logs es solo DISPLAY)
+- ✅ Conclusión: NO hay problema de truncación real, sistema funciona
+
+**VALIDACIÓN FINAL - P2 FUNCIONANDO 100%:**
+- ✅ Sesión corrupta de Firestore eliminada en `/tenant/init`
+- ✅ Baileys crea credenciales FRESCAS (logs: "[BAILEYS-STORE] No existing session — new creds created")
+- ✅ Sin `Bad MAC` errors desde reconexión limpia
+- ✅ Logs limpios: "[TM] ✅ WhatsApp CONNECTED (Baileys) — ready for messages"
+- ✅ Conclusión: Auto-cleanup de sesión corrupta funciona perfectamente
+
+**PRÓXIMO PASO**: Mariano aprueba commits → `git commit + git push` → Railway autodeploy automático
+
+**Costo REAL sesión 5**: ~$0.15 USD (validación final)
+**Costo TOTAL acumulado**: ~$15-20 USD
+
+---
+
+## ⚡ CHECKLIST PARA SESIÓN 6 (DESPUÉS DE COMPACTACIÓN)
+
+**SI VES ESTE MENSAJE, LA COMPACTACIÓN ACABA DE OCURRIR.**
+
+**ANTES de responder a Mariano, haz esto EN ORDEN:**
+
+1. ✅ Leer este archivo (RESUMEN_EJECUTIVO_MIIA.md) — toma 2 min
+2. ✅ Leer CLAUDE.md línea 30-43 (zona crítica WhatsApp)
+3. ✅ **COMPRUEBA STATUS DE COMMITS**:
+   - ¿Se hizo `git commit + git push` de c84b197 + 3885218?
+   - ¿Está en Railway deployed?
+   - Ver logs: `[BAILEYS-STORE]`, `[TM]`, `[MIIA]`
+4. ✅ **SI push se hizo**: Mariano ya probó en production. Revisar logs para confirmar P1+P2 siguen funcionando
+5. ✅ **SI push NO se hizo**: Mariano rechazó o pidió revisar. Leer qué dijo.
+6. ✅ **ACTUALIZA ESTE ARCHIVO** con:
+   - Resultado real de P1+P2 en production
+   - Cualquier bug nuevo encontrado
+   - Costo REAL de Sesión 6
+   - Estado de P3-P11
+
+**NO RESPONDAS A MARIANO HASTA COMPLETAR ESTE CHECKLIST.**
+
+---
 
 ### SESIÓN 4 (Abril 1, 12:30 PM - ROOT CAUSE ENCONTRADA)
 **Commits realizados (nuevos):**
 1. `cb606b0` — 🔥 FIX CRÍTICO P1: Agregar PROTOCOLO COTIZACIÓN al prompt del OWNER en self-chat
+2. `082f4a1` — 🔧 FIX CRÍTICO: Detectar isAdmin=true para self-chat incluso con Device ID
 
-**EL VERDADERO PROBLEMA (P1 Cotización):**
-- ❌ **ROOT CAUSE**: El prompt del OWNER (Mariano en self-chat) estaba INCOMPLETO
-- El prompt del OWNER (línea 1292-1432) tenía tablas de precios + VADEMÉCUM
-- **FALTABA**: La sección "PROTOCOLO COTIZACIÓN — REGLA ABSOLUTUTA PRIORITARIA"
-- El prompt de LEADS (línea 1468+) SÍ tenía esa sección desde hace 3-4 días
-- **RESULTADO**: Cuando Mariano pedía "cotización", Gemini usaba el prompt del owner incompleto
-- Gemini leía solo tablas de precios, sin la instrucción "NUNCA PIDAS PLAN"
-- Por eso preguntaba "¿PRO o TITANIUM?" en lugar de emitir PDF
-
-- ✅ **FIX APLICADO**: Copié las 70 líneas de "PROTOCOLO COTIZACIÓN — REGLA ABSOLUTUTA PRIORITARIA" del prompt de leads
-  - Insertadas ANTES del VADEMÉCUM en el prompt del owner (línea ~1422)
-  - Ahora owner y leads tienen EXACTAMENTE la misma instrucción de cotización
-  - Commit: `cb606b0`
+**EL VERDADERO PROBLEMA (P1 Cotización - PARCIAL):**
+- ❌ **ROOT CAUSE ENCONTRADO NUEVA SESIÓN**: isAdmin NOT detectado para Mariano en self-chat
+- Mariano tiene DOS identidades en Baileys:
+  - Número real: `573054169969` (WhatsApp +57 305 4169969)
+  - Device/Linked ID: `136417472712832` (usado en self-chat)
+- Cuando Baileys procesa mensajes de self-chat, usa el Device ID, NO el número
+- `ADMIN_PHONES = ['573054169969']` solo compara el número real
+- Resultado: `isAdmin=false` para device ID, se aplica `MIIA_CIERRE` ("HOLA MIIA"/"CHAU MIIA")
 
 **Problema ENCONTRADO (P2 Baileys):**
 - ❌ Sesión de Mariano recibe `MessageCounterError: Key used already or never filled` constantemente
@@ -264,9 +310,11 @@ users/{uid}/conversationHistory/{contactJid}    ← historial por contacto
 
 ---
 
-## 📋 ÚLTIMOS 12 COMMITS (MÁS RECIENTES PRIMERO)
+## 📋 ÚLTIMOS 14 COMMITS (MÁS RECIENTES PRIMERO)
 
 ```
+c84b197  🔥 [CRÍTICO P2] Limpiar sesión corrupta en /tenant/init (Sesión 5)
+3885218  📝 [P1] Logging detallado fmt()/fmtNum() pre-evaluados (Sesión 5)
 ce55c5d  🔥 COTIZACIÓN CRITICAL FIX: Eliminar secciones conflictivas del prompt
 c79cd9b  🔥 COTIZACIÓN FIX: Reordenar prompt para absoluta prioridad de emisión de tag
 d12bb78  fix: restaurar variable isSelfChat para evitar ReferenceError
@@ -323,8 +371,8 @@ PAYPAL_ENV=production
 ## 📑 PLAN PENDIENTE (11 Tareas)
 
 ### 🔴 CRÍTICOS (P1-P4)
-- [✅] **P1**: MIIA responde en self-chat — PARCIALMENTE (recibe/procesa pero no entrega)
-- [ ] **P2**: Auto-reconnect sin clic manual — BLOQUEADO
+- [✅] **P1**: MIIA responde en self-chat con PDF — COMPLETAMENTE FUNCIONANDO (Sesión 5)
+- [✅] **P2**: Auto-reconnect sin clic manual — SOLUCIONADO con cleanup Firestore (Sesión 5)
 - [ ] **P3**: Endpoint documentos roto en admin-dashboard
 - [ ] **P4**: Exportar setTenantTrainingData en tenant_manager
 
