@@ -2614,15 +2614,10 @@ app.get('/api/status', (req, res) => {
   // Check tenant first if uid param provided
   const uid = req.query.uid;
   if (uid) {
-    // Owner siempre usa el client principal
-    if (uid === OWNER_UID) {
-      return res.json({ connected: isReady, hasQR: !!qrCode, tenant: uid });
-    }
     const status = tenantManager.getTenantStatus(uid);
     return res.json({ connected: status.isReady, hasQR: status.hasQR, tenant: uid });
   }
-  // Fall back to single-tenant (original Mariano session)
-  res.json({ connected: isReady, hasQR: !!qrCode });
+  res.json({ connected: false, hasQR: false });
 });
 
 // ─── /api/conversations — contacts.html-compatible format ─────────────────────
@@ -2669,24 +2664,24 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   // geminiApiKey is optional now - users can test WhatsApp without it
   const apiKeyToUse = geminiApiKey || '';
 
-  // Owner always uses initWhatsApp() — never create a tenant Chromium for owner (OOM)
-  if (uid === OWNER_UID) {
-    if (!whatsappClient) {
-      initRetryCount = 0; // Reset retry counter on user manual init
-      initWhatsApp();
-    }
-    return res.json({ success: true, uid, isReady: !!isReady, hasQR: !!qrCode, reusing: true });
-  }
-
+  // TODOS los usuarios van por el mismo flujo: tenant_manager
   const tenant = tenantManager.initTenant(uid, apiKeyToUse, io);
-  console.log(`[INIT] ✅ Tenant initialized. Stored in map. Checking Medilink status...`);
+  console.log(`[INIT] ✅ WhatsApp iniciado para ${uid}. Checking role...`);
 
-  // Verificar si el usuario es equipo Medilink (@healthatom.com) → activar cerebro Medilink
+  // Cargar cerebro compartido si es miembro de una empresa
   try {
     const userDoc = await admin.firestore().collection('users').doc(uid).get();
-    if (userDoc.exists && userDoc.data().role === 'owner_member') {
-      tenant.isOwnerMember = true;
-      console.log(`[TM:${uid}] 🧠 Cerebro Medilink activado (owner_member)`);
+    if (userDoc.exists) {
+      const userData = userDoc.data();
+      if (userData.role === 'owner_member') {
+        tenant.isOwnerMember = true;
+        console.log(`[TM:${uid}] 🧠 Cerebro compartido activado (owner_member)`);
+      }
+      // Si el usuario tiene parent_client_uid, cargar el cerebro de la empresa
+      if (userData.parent_client_uid) {
+        tenant.parentClientUid = userData.parent_client_uid;
+        console.log(`[TM:${uid}] 🔗 Agente de empresa ${userData.parent_client_uid}`);
+      }
     }
   } catch (e) { console.log(`[TM:${uid}] No se pudo verificar rol:`, e.message); }
 
@@ -2708,18 +2703,6 @@ app.get('/api/tenant/:uid/status', (req, res) => {
 // GET /api/tenant/:uid/qr — Get tenant QR code (if pending scan)
 app.get('/api/tenant/:uid/qr', (req, res) => {
   const uid = req.params.uid;
-
-  // Owner SIEMPRE usa el client owner — nunca un tenant duplicado
-  if (uid === OWNER_UID) {
-    if (!whatsappClient) {
-      console.log(`[QR] 🚀 Owner UID — auto-starting WhatsApp`);
-      initRetryCount = 0;
-      initWhatsApp();
-    }
-    console.log(`[QR] ♻️ Owner UID — returning owner client status (isReady: ${isReady}, hasQR: ${!!qrCode})`);
-    return res.json({ qrCode: qrCode || null, isReady: isReady, isAuthenticated: isReady, phase: isReady ? 'ready' : (qrCode ? 'qr_ready' : 'initializing') });
-  }
-
   const status = tenantManager.getTenantStatus(uid);
   console.log(`[QR] GET /api/tenant/${uid}/qr - exists: ${status.exists}, hasQR: ${status.hasQR}, isReady: ${status.isReady}`);
 
@@ -2750,13 +2733,7 @@ app.post('/api/tenant/:uid/request-pairing-code', express.json(), async (req, re
   if (!phone) return res.status(400).json({ error: 'Número de teléfono requerido (ej: 5491112345678)' });
 
   try {
-    let client = null;
-    if (uid === OWNER_UID) {
-      if (!whatsappClient) { initRetryCount = 0; initWhatsApp(); }
-      client = whatsappClient;
-    } else {
-      client = tenantManager.getTenantClient(uid);
-    }
+    const client = tenantManager.getTenantClient(uid);
     if (!client) return res.status(404).json({ error: 'WhatsApp no inicializado. Esperá unos segundos e intentá de nuevo.' });
 
     const code = await client.requestPairingCode(phone.replace(/\D/g, ''));
@@ -4541,18 +4518,9 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // Auto-start owner WhatsApp on boot using the FULL handleIncomingMessage logic.
-  // This handles "hola miia", family contacts, Medilink leads, admin commands, etc.
-  if (process.env.SKIP_WA_INIT === 'true') {
-    console.log('[AUTO-INIT] ⏭️  SKIP_WA_INIT=true — owner WhatsApp NOT auto-started. Use /api/tenant/init to connect tenants manually.');
-  } else {
-    console.log(`[AUTO-INIT] 🚀 Auto-starting owner WhatsApp (full MIIA logic)...`);
-    try {
-      initWhatsApp();
-    } catch (err) {
-      console.error('[AUTO-INIT] ❌ Error auto-starting WhatsApp:', err.message);
-    }
-  }
+  // WhatsApp se inicia cuando cada usuario hace click en "Conectar WhatsApp"
+  // No hay auto-start — cada usuario se conecta por demand via /api/tenant/init
+  console.log('[AUTO-INIT] ℹ️  WhatsApp se conecta bajo demanda. Cada usuario inicia su propia conexión.');
 });
 
 // ============================================

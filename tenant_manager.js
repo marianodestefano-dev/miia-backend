@@ -472,6 +472,14 @@ function appendTenantTraining(uid, newData) {
 }
 
 /**
+ * Get the raw WhatsApp client for a tenant (used for pairing code).
+ */
+function getTenantClient(uid) {
+  const t = tenants.get(uid);
+  return t ? t.client : null;
+}
+
+/**
  * Get all active tenants (for admin/monitoring).
  */
 function getAllTenants() {
@@ -558,6 +566,7 @@ module.exports = {
   initTenant,
   destroyTenant,
   getTenantStatus,
+  getTenantClient,
   getTenantConversations,
   appendTenantTraining,
   setTenantTrainingData,
