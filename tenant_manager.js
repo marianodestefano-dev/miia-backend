@@ -28,6 +28,7 @@ const { buildTenantPrompt, buildOwnerLeadPrompt } = require('./prompt_builder');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 const tenants = new Map();
+const tenantErrors = new Map(); // Rastrear errores: { uid: { count, windowStart } }
 
 const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
 if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -317,6 +318,39 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           await deleteFirestoreSession(`tenant-${uid}`);
           if (ioInstance) {
             ioInstance.emit(`tenant_disconnected_${uid}`, { reason: 'logged_out' });
+          }
+        }
+      }
+
+      // ⚠️ DETECTAR ERRORES CRIPTOGRÁFICOS (MessageCounterError)
+      if (update.error) {
+        const errorMsg = update.error?.message || String(update.error);
+        if (errorMsg.includes('MessageCounterError') || errorMsg.includes('Key used already')) {
+          if (!tenantErrors.has(uid)) {
+            tenantErrors.set(uid, { count: 0, windowStart: Date.now() });
+          }
+          const errTracker = tenantErrors.get(uid);
+          const now = Date.now();
+          if (now - errTracker.windowStart > 30000) {
+            errTracker.count = 0;
+            errTracker.windowStart = now;
+          }
+          errTracker.count++;
+          console.warn(`[TM:${uid}] 🔐 MessageCounterError ${errTracker.count}/5: ${errorMsg.substring(0,60)}...`);
+          if (errTracker.count >= 5) {
+            console.error(`[TM:${uid}] 💥 SESIÓN CORRUPTA. Reconectando...`);
+            tenantErrors.delete(uid);
+            try {
+              if (tenant.sock) await tenant.sock.logout().catch(() => {});
+              await deleteFirestoreSession(`tenant-${uid}`);
+              await admin.firestore().collection('users').doc(uid).update({
+                whatsapp_needs_reconnect: true,
+                whatsapp_recovery_at: new Date()
+              }).catch(() => {});
+              console.log(`[TM:${uid}] ✅ Sesión limpiada. Usuario debe hacer nuevo QR.`);
+            } catch (e) {
+              console.error(`[TM:${uid}] Error limpiando:`, e.message);
+            }
           }
         }
       }
