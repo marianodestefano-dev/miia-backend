@@ -536,10 +536,16 @@ async function safeSendMessage(target, content, options = {}) {
       baileysContent = { text: String(content) };
     }
 
-    // 🔧 FIX SELF-CHAT: Baileys necesita el MENSAJE COMPLETO para quoted en self-chat
-    const ownerNumber = ownerSock?.user?.id?.split('@')[0]?.split(':')[0];
-    const targetNumber = target.split('@')[0]?.split(':')[0];
-    const isSelfChat = ownerNumber && targetNumber && ownerNumber === targetNumber;
+    // 🔧 FIX SELF-CHAT: Usar el flag que se pasa en options
+    // Si no viene el flag, intentar calcularlo (fallback)
+    let isSelfChat = options?.isSelfChat || false;
+
+    if (!isSelfChat && options?.isSelfChat !== false) {
+      // Fallback: intentar calcular si es self-chat
+      const ownerNumber = ownerSock?.user?.id?.split('@')[0]?.split(':')[0];
+      const targetNumber = target.split('@')[0]?.split(':')[0];
+      isSelfChat = ownerNumber && targetNumber && ownerNumber === targetNumber;
+    }
 
     let sendTarget = target;
     let sendOptions = {};
@@ -547,6 +553,7 @@ async function safeSendMessage(target, content, options = {}) {
     if (isSelfChat) {
       // Para self-chat, convertir JID a @lid (no @s.whatsapp.net)
       // Baileys recibe self-chat como {number}@lid, así que enviar igual
+      const targetNumber = target.split('@')[0]?.split(':')[0];
       sendTarget = `${targetNumber}@lid`;
       console.log(`[SELF-CHAT] 🔧 Convertido JID: ${target} → ${sendTarget}`);
 
@@ -562,7 +569,7 @@ async function safeSendMessage(target, content, options = {}) {
     }
 
     console.log(`[SEND-DEBUG] Intentando enviar a: ${sendTarget}`);
-    console.log(`[SEND-DEBUG] isSelfChat: ${isSelfChat}`);
+    console.log(`[SEND-DEBUG] isSelfChat (CORRECTO): ${isSelfChat}`);
     console.log(`[SEND-DEBUG] sendOptions: ${JSON.stringify(Object.keys(sendOptions))}`);
     console.log(`[SEND-DEBUG] baileysContent: ${JSON.stringify(baileysContent).substring(0, 100)}`);
 
@@ -1576,8 +1583,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     await new Promise(r => setTimeout(r, humanDelay));
 
     lastAiSentBody[phone] = aiMessage.trim();
-    console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused}`);
-    await safeSendMessage(phone, aiMessage);
+    console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused} | isSelfChat=${isSelfChat}`);
+    await safeSendMessage(phone, aiMessage, { isSelfChat });
 
     io.emit('ai_response', {
       to: phone,
