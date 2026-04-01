@@ -19,7 +19,10 @@
 
 const fs        = require('fs');
 const path      = require('path');
-const puppeteer = require('puppeteer');
+let puppeteer;
+try { puppeteer = require('puppeteer-core'); } catch(e) {
+  console.warn('[COTIZACION] puppeteer-core no disponible — generación de PDF deshabilitada');
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // MATRICES DE PRECIOS (fuente: prompt_maestro.md)
@@ -627,11 +630,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 // ─────────────────────────────────────────────────────────────────────
 
 async function generarPDF(params) {
+  if (!puppeteer) throw new Error('puppeteer no instalado — PDF no disponible');
   let browser;
   try {
     const html = buildHTML(params);
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
     const page = await browser.newPage();
