@@ -958,17 +958,26 @@ Nuevo resumen actualizado:`;
     if (OWNER_UID) {
       try {
         const userDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+        const basePhone = phone.split('@')[0];
+
         if (userDoc.exists) {
           const ownerPhoneFromDb = userDoc.data()?.whatsapp_owner_number;
-          const basePhone = phone.split('@')[0];
+          console.log(`[OWNER-DEBUG] OWNER_UID=${OWNER_UID}, basePhone=${basePhone}, ownerPhoneFromDb=${ownerPhoneFromDb}`);
+
           if (ownerPhoneFromDb && basePhone === ownerPhoneFromDb) {
             isOwnerNumber = true;
             console.log(`[OWNER] ✅ Mensaje del owner detectado: ${basePhone}`);
+          } else {
+            console.log(`[OWNER] ❌ No es owner - basePhone(${basePhone}) !== ownerPhoneFromDb(${ownerPhoneFromDb})`);
           }
+        } else {
+          console.warn(`[OWNER] ⚠️ Documento del usuario no encontrado en Firestore para ${OWNER_UID}`);
         }
       } catch (e) {
-        console.error(`[OWNER] Error verificando número:`, e.message);
+        console.error(`[OWNER] ❌ Error verificando número:`, e.message);
       }
+    } else {
+      console.warn(`[OWNER] ⚠️ OWNER_UID no está definido`);
     }
 
     const isSelfChat = isOwnerNumber && isAlreadySavedParam; // Self-chat: owner + fromMe

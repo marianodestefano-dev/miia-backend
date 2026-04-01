@@ -15,6 +15,7 @@
 
 'use strict';
 
+const admin = require('firebase-admin');
 const makeWASocket = require('@whiskeysockets/baileys').default;
 const { DisconnectReason, useMultiFileAuthState, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { useFirestoreAuthState, deleteFirestoreSession } = require('./baileys_session_store');
@@ -261,16 +262,22 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           const ownerPhone = sock.user?.id?.split('@')[0]?.split(':')[0];
           if (ownerPhone) {
             tenant.ownerPhone = ownerPhone;
-            console.log(`[TM:${uid}] 📱 Número extraído: ${ownerPhone}`);
+            console.log(`[TM:${uid}] 📱 Número extraído de sock.user.id: ${ownerPhone}`);
             // Guardar en Firestore para uso posterior en server.js
             admin.firestore().collection('users').doc(uid).update({
               whatsapp_owner_number: ownerPhone,
               whatsapp_owner_jid: `${ownerPhone}@s.whatsapp.net`,
               owner_phone_updated_at: new Date()
-            }).catch(err => console.error(`[TM:${uid}] Error guardando número:`, err.message));
+            }).then(() => {
+              console.log(`[TM:${uid}] ✅ Número guardado en Firestore: ${ownerPhone}`);
+            }).catch(err => {
+              console.error(`[TM:${uid}] ❌ Error guardando número en Firestore:`, err.message);
+            });
+          } else {
+            console.warn(`[TM:${uid}] ⚠️ No se pudo extraer número de sock.user.id:`, sock.user?.id);
           }
         } catch (e) {
-          console.error(`[TM:${uid}] Error extrayendo número:`, e.message);
+          console.error(`[TM:${uid}] ❌ Error extrayendo número:`, e.message);
         }
 
         if (ioInstance) {
