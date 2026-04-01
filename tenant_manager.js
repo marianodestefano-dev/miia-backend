@@ -351,7 +351,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         // For owner with onMessage: allow self-chat (fromMe + from === from)
         // For regular tenants: skip fromMe messages
         const isSelfChat = isFromMe && from === from; // Always true for self-chat
-        const shouldProcess = !isFromMe || (tenant.onMessage && isFromMe);
+
+        // FIX: Si es owner (tenant.onMessage existe), procesar TODO (entrantes + self-chat)
+        // Si es cliente normal, solo procesar entrantes (!isFromMe)
+        const isOwner = !!tenant.onMessage;
+        const shouldProcess = isOwner ? true : !isFromMe;
 
         if (!shouldProcess) continue;
 
