@@ -4583,23 +4583,9 @@ server.listen(PORT, () => {
 
             console.log(`[AUTO-INIT] 🔄 Reconectando ${isOwner ? 'OWNER' : 'tenant'} ${uid.substring(0, 12)}... (WA: ${savedNumber || 'sin registro'})`);
 
-            // Construir opciones — el owner necesita onMessage y onReady especiales
+            // Construir opciones — el owner necesita onReady especial (no onMessage)
+            // El flujo de mensajes es manejado por processTenantMessage en tenant_manager.js
             const options = isOwner ? {
-              onMessage: (baileysMsg, from, body) => {
-                const adapted = {
-                  from,
-                  to: baileysMsg.key.remoteJid,
-                  fromMe: !!baileysMsg.key.fromMe,
-                  body,
-                  id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
-                  hasMedia: !!(baileysMsg.message?.imageMessage || baileysMsg.message?.audioMessage || baileysMsg.message?.videoMessage || baileysMsg.message?.documentMessage || baileysMsg.message?.stickerMessage),
-                  type: baileysMsg.message?.imageMessage ? 'image' : baileysMsg.message?.audioMessage ? 'audio' : baileysMsg.message?.videoMessage ? 'video' : baileysMsg.message?.documentMessage ? 'document' : baileysMsg.message?.stickerMessage ? 'sticker' : 'chat',
-                  isStatus: from === 'status@broadcast',
-                  timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
-                  _baileysMsg: baileysMsg
-                };
-                handleIncomingMessage(adapted);
-              },
               onReady: (sock) => {
                 // Verificar que el número conectado coincide con el guardado
                 const connectedNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
