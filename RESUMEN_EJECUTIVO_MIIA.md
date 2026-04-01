@@ -37,18 +37,21 @@
 
 ---
 
-## ⚡ SESIÓN 6 (Abril 1, 15:17 PM - POST-COMPACTACIÓN — P2 AUTO-CLEANUP AGRESIVO)
+## ⚡ SESIÓN 6 (Abril 1, 20:18 PM - POST-COMPACTACIÓN — P2 AUTO-CLEANUP + NOTIFICACIONES)
 
 **PROBLEMA ENCONTRADO:**
 - MessageCounterError seguía ocurriendo incluso con commit 3ba7b1e deployed
 - Razón: errores de libsignal no se capturaban como `connection.update` event
 - Resultado: sesión corrupta no se limpiaba preemptivamente
+- Dashboard NO notificaba al usuario cuando limpieza ocurría
 
-**SOLUCIÓN IMPLEMENTADA — Commit a0f4c86:**
+**SOLUCIÓN IMPLEMENTADA:**
+
+**Backend (Commit a0f4c86):**
 1. ✅ Endpoint POST `/api/tenant/:uid/clean-session` en server.js
    - Elimina sesión corrupta de Firestore
    - Marca usuario para reconectar
-   - Notifica vía Socket.IO
+   - Emite Socket.IO event: `tenant_recovery_needed_${uid}`
 
 2. ✅ Función `cleanupCorruptedSession()` en tenant_manager.js
    - Maneja logout + session delete + user notification
@@ -59,22 +62,29 @@
    - Cuenta errores en ventana de 30 segundos
    - Cuando alcanza 5 → ejecuta cleanup automático
 
-4. ✅ Mejorado detector en connection.update
-   - Simplificado y más robusto
+**Frontend (Commit 9463adc):**
+1. ✅ Socket.IO script (CDN v4.7.2) agregado a owner-dashboard.html
+2. ✅ Inicialización de Socket.IO cuando usuario autentica
+3. ✅ Listener para `tenant_recovery_needed_${uid}`:
+   - Muestra toast con warning
+   - Recarga automáticamente QR modal
+4. ✅ Listeners futuros para whatsapp_ready / whatsapp_disconnected
 
-**MECANISMO:**
-- Error libsignal ocurre → console.error("MessageCounterError...")
-- Monitor global intercepta → contador += 1
-- Contador == 5 → cleanupCorruptedSession()
-- Sesión eliminada, usuario notificado, debe reconectar con QR
+**MECANISMO COMPLETO:**
+1. Error libsignal ocurre → console.error("MessageCounterError...")
+2. Monitor backend intercepta → contador += 1
+3. Contador == 5 → cleanupCorruptedSession()
+4. Backend emite: `io.emit('tenant_recovery_needed_${uid}', {...})`
+5. Frontend recibe → muestra toast: "⚠️ Tu sesión fue reiniciada..."
+6. Dashboard carga QR automáticamente
+7. Usuario escanea QR → reconexión
 
-**SIGUIENTE PASO:**
-- Railway auto-redeploy (se hizo git push)
-- Mariano prueba P2: envía mensaje → esperamos detectar MessageCounterError → auto-cleanup
-- Luego prueba P1: envía "cotización Colombia X usuario con Y citas" → PDF
+**STATUS ACTUAL:**
+- ✅ Both railway auto-deploys done (backend + frontend)
+- ⏳ Awaiting user test: envía mensaje → auto-cleanup → notificación → QR
 
-**Costo REAL sesión 6**: ~$0.25 USD (implementación auto-cleanup)
-**Costo TOTAL acumulado**: ~$15.50 USD
+**Costo REAL sesión 6**: ~$0.50 USD (backend auto-cleanup + frontend Socket.IO)
+**Costo TOTAL acumulado**: ~$16.00 USD
 
 ---
 
