@@ -163,6 +163,7 @@ function calcularCotizacion(params) {
     descuento        = 30
   } = params;
 
+  console.log(`[COTIZ-DEBUG] calcularCotizacion recibió: moneda=${moneda}, usuarios=${usuarios}, citasMes=${citasMes}, descuento=${descuento}`);
   if (!PRECIOS[moneda]) throw new Error(`Moneda no soportada: ${moneda}`);
 
   const nAdic = Math.max(0, usuarios - 1);
@@ -277,11 +278,15 @@ function buildHTML(params) {
     fecha           = new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
   } = params;
 
+  console.log(`[COTIZ-DEBUG] buildHTML iniciado para ${nombre}, moneda=${moneda}`);
   const logo  = getLogoBase64();
+  console.log(`[COTIZ-DEBUG] Logo obtenido, llamando calcularCotizacion...`);
   const calc  = calcularCotizacion(params);
+  console.log(`[COTIZ-DEBUG] calcularCotizacion completado`);
   const { planes, bolsas, nAdic, enviosWA, enviosFactFirm, recetaAR } = calc;
   const { esencial: es, pro, titanium: ti } = planes;
   const p     = PRECIOS[moneda];
+  console.log(`[COTIZ-DEBUG] PRECIOS[${moneda}] =`, p ? 'OK' : 'UNDEFINED');
 
   const logoTag = logo
     ? `<img class="logo-img" src="${logo}" alt="Medilink">`
