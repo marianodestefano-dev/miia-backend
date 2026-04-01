@@ -5127,29 +5127,31 @@ server.listen(PORT, () => {
           console.log(`[AUTO-INIT] OWNER_UID desde env: ${OWNER_UID}`);
         }
 
-        // 2. Buscar TODAS las sesiones de Baileys guardadas
-        const sessionsSnap = await admin.firestore().collection('baileys_sessions').get();
-        const sessionIds = sessionsSnap.docs
-          .map(d => d.id)
-          .filter(id => id.startsWith('tenant-'));
+        // 2. Buscar usuarios que tengan whatsapp_number guardado (indica que conectaron antes)
+        // FIX: NO usar .get() en baileys_sessions porque el doc padre no existe (solo subcollecciones)
+        // En cambio, buscar en users collection + verificar creds en subcollección directamente
+        const usersWithWA = await admin.firestore().collection('users')
+          .where('whatsapp_number', '!=', null)
+          .get();
 
-        console.log(`[AUTO-INIT] 📋 ${sessionIds.length} sesión(es) de Baileys encontradas en Firestore.`);
+        const sessionIds = usersWithWA.docs.map(d => d.id);
+        console.log(`[AUTO-INIT] 📋 ${sessionIds.length} usuario(s) con WhatsApp previo encontrados en Firestore.`);
 
-        for (const sessionId of sessionIds) {
-          const uid = sessionId.replace('tenant-', '');
+        for (const uid of sessionIds) {
+          const sessionId = `tenant-${uid}`;
 
           try {
-            // Verificar que tiene creds guardados
+            // Verificar que tiene creds guardados en la subcollección
             const cDoc = await admin.firestore().collection('baileys_sessions').doc(sessionId).collection('data').doc('creds').get();
             if (!cDoc.exists) {
-              console.log(`[AUTO-INIT] ⏭️ ${uid.substring(0, 12)}... sin creds, saltando.`);
+              console.log(`[AUTO-INIT] ⏭️ ${uid.substring(0, 12)}... sin creds en Firestore, saltando.`);
               continue;
             }
 
-            // Verificar usuario en Firestore y obtener su whatsapp_number
-            const userDoc = await admin.firestore().collection('users').doc(uid).get();
-            if (!userDoc.exists) {
-              console.log(`[AUTO-INIT] ⚠️ ${uid.substring(0, 12)}... tiene sesión pero no existe en users. Saltando.`);
+            // Obtener datos del usuario
+            const userDoc = usersWithWA.docs.find(d => d.id === uid);
+            if (!userDoc) {
+              console.log(`[AUTO-INIT] ⚠️ ${uid.substring(0, 12)}... sin datos de usuario. Saltando.`);
               continue;
             }
 
