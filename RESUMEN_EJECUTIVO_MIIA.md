@@ -1,22 +1,27 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~12:10 PM (SESIÓN 3 - Post-compactación)
-**ESTADO**: P1 🔥 COTIZACIÓN CRITICAL FIX | P2 🔴 BLOQUEADO (sesión desincronizada) | P3-P5 ✅ HECHOS
-**URGENCIA**: CRÍTICA — P1: Cotización no emite PDF (fix aplicado). P2: Baileys MessageCounterError destruyendo sesión.
+**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~12:30 PM (SESIÓN 4 - DESCUBRIMIENTO Y FIX FINAL)
+**ESTADO**: P1 ✅ SOLUCIONADO (FINALMENTE) | P2 🔴 EN ESPERA DE VALIDACIÓN | P3-P5 ✅ HECHOS
+**URGENCIA**: MEDIA — P1 ya está fixed. Mariano debe probar de nuevo.
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
 
-### SESIÓN 3 (Abril 1, 12:10 PM - POST-COMPACTACIÓN)
+### SESIÓN 4 (Abril 1, 12:30 PM - ROOT CAUSE ENCONTRADA)
 **Commits realizados (nuevos):**
-1. `c79cd9b` — COTIZACIÓN FIX: Reordenar prompt para absoluta prioridad de emisión de tag
-2. `ce55c5d` — COTIZACIÓN CRITICAL FIX: Eliminar secciones conflictivas del prompt
+1. `cb606b0` — 🔥 FIX CRÍTICO P1: Agregar PROTOCOLO COTIZACIÓN al prompt del OWNER en self-chat
 
-**Problema ENCONTRADO (P1 Cotización):**
-- ❌ Gemini recibía 3 secciones CONFLICTIVAS en el prompt admin:
-  1. "ESTRUCTURA DE RESPUESTA REQUERIDA" (línea 1422) → pide generar TABLA EN TEXTO
-  2. "PROTOCOLO COTIZACIÓN EN PDF" (línea 1429) → viejo, desfasado
-  3. "PROTOCOLO COTIZACIÓN PRIORITARIA" (línea 1503) → NUEVO, correcto
-- Resultado: Gemini confundido → cuando pedían cotización, preguntaba "¿qué plan?" en lugar de emitir tag
-- ✅ **FIX APLICADO**: Eliminadas secciones viejas (1422-1440). Ahora solo está el PROTOCOLO COTIZACIÓN nuevo.
+**EL VERDADERO PROBLEMA (P1 Cotización):**
+- ❌ **ROOT CAUSE**: El prompt del OWNER (Mariano en self-chat) estaba INCOMPLETO
+- El prompt del OWNER (línea 1292-1432) tenía tablas de precios + VADEMÉCUM
+- **FALTABA**: La sección "PROTOCOLO COTIZACIÓN — REGLA ABSOLUTUTA PRIORITARIA"
+- El prompt de LEADS (línea 1468+) SÍ tenía esa sección desde hace 3-4 días
+- **RESULTADO**: Cuando Mariano pedía "cotización", Gemini usaba el prompt del owner incompleto
+- Gemini leía solo tablas de precios, sin la instrucción "NUNCA PIDAS PLAN"
+- Por eso preguntaba "¿PRO o TITANIUM?" en lugar de emitir PDF
+
+- ✅ **FIX APLICADO**: Copié las 70 líneas de "PROTOCOLO COTIZACIÓN — REGLA ABSOLUTUTA PRIORITARIA" del prompt de leads
+  - Insertadas ANTES del VADEMÉCUM en el prompt del owner (línea ~1422)
+  - Ahora owner y leads tienen EXACTAMENTE la misma instrucción de cotización
+  - Commit: `cb606b0`
 
 **Problema ENCONTRADO (P2 Baileys):**
 - ❌ Sesión de Mariano recibe `MessageCounterError: Key used already or never filled` constantemente
@@ -26,11 +31,14 @@
 - Efecto: Mensajes no se descifran, sesión inestable
 
 **Siguiente paso INMEDIATO:**
-1. ✅ Probar P1: Mariano envía "cotización Colombia 1 usuario" → debe recibir PDF (no pregunta de plan)
-2. 🔴 Luego P2: Implementar auto-cleanup para sesiones con MessageCounterError (reconexión automática)
+1. ✅ **PROBAR P1 AHORA**: Mariano envía "cotización Colombia 1 usuario"
+   - Esperado: MIIA responde "Te envío un PDF..." + tag [GENERAR_COTIZACION_PDF]
+   - **NO** debe preguntar "¿plan PRO o TITANIUM?"
+2. 🔴 Si P1 ÉXITO: Continuar con P2 (Baileys auto-cleanup)
+3. 🔴 Si P1 FALLO: Hay OTRA sección escondida conflictiva (unlikely, pero posible)
 
-**Costo REAL esta sesión 3**: ~$0.30 USD (investigación, git commits, análisis Firestore)
-**Costo TOTAL acumulado**: ~$15-18 USD
+**Costo REAL sesión 4**: ~$0.15 USD (investigación comparativa, git commit)
+**Costo TOTAL acumulado**: ~$15-20 USD
 
 ---
 
