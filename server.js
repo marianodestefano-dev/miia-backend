@@ -556,16 +556,8 @@ async function safeSendMessage(target, content, options = {}) {
       const targetNumber = target.split('@')[0]?.split(':')[0];
       sendTarget = `${targetNumber}@lid`;
       console.log(`[SELF-CHAT] 🔧 Convertido JID: ${target} → ${sendTarget}`);
-
-      // Usar el mensaje completo anterior como quoted
-      const savedMessage = lastMessageKey[target];
-      if (savedMessage) {
-        // Baileys espera: { quoted: messageObject } con estructura completa
-        sendOptions.quoted = savedMessage;
-        console.log(`[SELF-CHAT] ✅ Usando quoted message para entregar en self-chat`);
-      } else {
-        console.log(`[SELF-CHAT] ⚠️ No hay mensaje anterior. Intentando sin quoted...`);
-      }
+      // Nota: No usar quoted message por ahora, enviar solo a @lid
+      // Baileys debería entregar en self-chat con el JID @lid correcto
     }
 
     console.log(`[SEND-DEBUG] Intentando enviar a: ${sendTarget}`);
