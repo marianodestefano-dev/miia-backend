@@ -3077,6 +3077,14 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
     return res.status(400).json({ error: 'uid requerido' });
   }
 
+  // 🔄 LIMPIAR SESIÓN VIEJA/CORRUPTA DE FIRESTORE (P2: Auto-cleanup)
+  try {
+    await admin.firestore().collection('baileys_sessions').doc(`tenant-${uid}`).delete();
+    console.log(`[INIT] 🧹 Sesión vieja eliminada. Será regenerada con QR nuevo.`);
+  } catch (e) {
+    console.log(`[INIT] ℹ️ No había sesión vieja (o error al eliminar): ${e.message}`);
+  }
+
   // geminiApiKey is optional now - users can test WhatsApp without it
   const apiKeyToUse = geminiApiKey || '';
 
