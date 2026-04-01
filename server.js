@@ -1606,11 +1606,21 @@ async function processMediaMessage(message) {
       return { text: null, mediaType: 'unknown' };
     }
   } else {
-    // Legacy whatsapp-web.js path (fallback)
-    media = await Promise.race([
-      message.downloadMedia(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Media download timeout')), MEDIA_TIMEOUT_MS))
-    ]);
+    // ❌ CRITICAL: This path should NEVER execute. whatsapp-web.js is deprecated.
+    // If we reach here, message structure is broken: missing _baileysMsg field.
+    // This indicates a critical bug in message processing.
+    // Google/Amazon/NASA standard: FAIL LOUDLY, don't silently return null.
+    const errorMsg =
+      '[CRITICAL] Message structure violation: _baileysMsg field missing. ' +
+      'All messages from Baileys MUST have _baileysMsg. ' +
+      'This indicates broken message handling pipeline.';
+    console.error(`[MEDIA] ${errorMsg}`);
+    console.error('[MEDIA] Message object:', JSON.stringify({
+      hasMedia: message.hasMedia,
+      keys: Object.keys(message).slice(0, 5)
+    }));
+    // Throw instead of returning null — forces visibility in monitoring
+    throw new Error(errorMsg);
   }
 
   if (!media || !media.data || !media.mimetype) {
@@ -4697,9 +4707,21 @@ server.listen(PORT, () => {
 
 const uploadMiddleware = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-app.post('/api/documents/upload', uploadMiddleware.single('file'), async (req, res) => {
+// ✅ P3: Endpoint de documentos multi-tenant
+app.post('/api/tenant/:uid/documents/upload', uploadMiddleware.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo' });
+    const { uid } = req.params;
+
+    // Validación NASA-grade: fallar si UID inválido
+    if (!uid || typeof uid !== 'string' || uid.length < 10) {
+      console.error(`[DOCS] ⚠️ Invalid UID: ${uid}`);
+      return res.status(400).json({ error: 'UID inválido' });
+    }
+
+    if (!req.file) {
+      console.warn(`[DOCS:${uid}] No file received`);
+      return res.status(400).json({ error: 'No se recibió ningún archivo' });
+    }
     const { buffer, mimetype, originalname } = req.file;
     let text = '';
 

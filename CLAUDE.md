@@ -13,6 +13,7 @@ Este archivo es leído automáticamente en CADA conversación, con cualquier mod
 2. **Recordar LA ESENCIA**: MIIA responde en el self-chat de WhatsApp del usuario (no es un bot separado)
 3. **Recordar ESTADO ACTUAL**: P1 está 80% hecho (recibe/procesa pero mensaje no se entrega)
 4. **Recordar URGENCIA**: P1 está bloqueado en "envío a self-chat", P2-P11 esperan
+5. **Actualizar el `RESUMEN_EJECUTIVO_MIIA.md`**: con lo anterior hecho a tu compactar
 
 **NO RESPONDAS HASTA HABER LEÍDO ESE ARCHIVO COMPLETO.**
 

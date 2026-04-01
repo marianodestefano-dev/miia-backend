@@ -63,19 +63,18 @@ Usuario Tenant (Vendedor B2B)
 
 ## 🔴 PROBLEMAS CRÍTICOS ACTUALES
 
-### P1: ✅ PARCIALMENTE RESUELTO (¿Necesita fix en envío a self-chat?)
-**Status**: MIIA recibe y procesa mensajes en self-chat, PERO:
-- ✅ Mensaje llega al backend: `"Hola miia"`
-- ✅ Se abre sesión: `136417472712832@s.whatsapp.net`
-- ✅ Gemini genera respuesta (151 caracteres)
-- ✅ Log dice: `[SENT] Mensaje enviado`
-- ❌ **PERO**: Mariano NO recibe el mensaje en su WhatsApp
-- **Raíz probable**: Baileys envía a JID incorrecto o self-chat requiere método especial
+### P1: 🔧 EN PRUEBA — FIX de self-chat quotedMessage
+**Status**: MIIA recibe y procesa mensajes en self-chat, PERO mensaje no se entregaba.
 
-**Fix requerido**:
-- Revisar envío a self-chat en server.js línea ~1000-1100
-- Probablemente usar `sock.sendMessage()` con opciones especiales
-- O enviar a Saved Messages / Broadcast List en lugar de self-chat directo
+**Raíz encontrada**: Baileys **NO soporta `sendMessage()` normal a self-chat**. Requiere usar `quotedMessage` (referenciar un mensaje anterior).
+
+**Fix implementado** (commit `1e23cdc`):
+1. ✅ Guardar `message.key` cuando llega un mensaje (guardado en `lastMessageKey[target]`)
+2. ✅ Usar ese key como `quotedMessage` en self-chat via `sock.sendMessage(target, content, { quoted: { key } })`
+3. ✅ Server.js líneas 2173-2177: guardar messageKey
+4. ✅ Server.js línea 549: usar quotedMessage en safeSendMessage()
+
+**Esperando resultado**: Railway deploying (~5-10 min), Mariano probará escribiendo "Hola MIIA"
 
 ### P2: Auto-reconnect sin clic manual
 **Status**: BLOQUEADO
