@@ -933,11 +933,12 @@ Nuevo resumen actualizado:`;
     const myNumber = (getOwnerSock() && getOwnerSock().user)
       ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
     // Self-chat: el owner hablando consigo mismo. Detectar robustamente.
-    const phoneBase = phone.split('@')[0].split(':')[0]; // Extract just the number (handle :123 format)
+    const phoneBase = phone.split('@')[0].split(':')[0]; // Extract just the number
     const myBase = myNumber.split('@')[0].split(':')[0];
     const isSelfChat = phoneBase === myBase;
-    console.log(`[SELF-CHAT-DEBUG] phone=${phone}, myNumber=${myNumber}, phoneBase=${phoneBase}, myBase=${myBase}, isSelfChat=${isSelfChat}`);
-    // Silencio nocturno: 9PM–6AM Bogotá + domingos completos — registrar pendiente y no responder
+
+    // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
+    // PERO: el owner en self-chat SIEMPRE responde (isSelfChat=true)
     if (!isSelfChat && !isFamilyContact && !isAdmin) {
       const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
       const h = bogotaNow.getHours();
