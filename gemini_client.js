@@ -12,7 +12,7 @@
 
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args)).catch(() => require('node-fetch')(...args));
 
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+const DEFAULT_MODEL = 'gemini-2.5-flash'; // 2.0-flash → 404, 1.5-flash → 404, 2.5-pro → 503
 const RETRY_DELAYS = [8000, 20000, 45000];
 const MAX_RETRIES = 3;
 

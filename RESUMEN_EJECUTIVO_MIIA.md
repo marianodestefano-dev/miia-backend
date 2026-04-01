@@ -1,9 +1,58 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~19:30 PM (SESIÓN 5 - P1 Y P2 CONFIRMADOS FUNCIONANDO)
-**ESTADO**: P1 ✅ FUNCIONANDO 100% | P2 ✅ SOLUCIONADO | LISTOS PARA COMMIT
-**URGENCIA**: BAJA — Ambos problemas resueltos y probados. Mariano confirmó funcionamiento.
+**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~22:00 PM (SESIÓN 7 — PDF async fix + Railway branch fix)
+**ESTADO**: P1 ⏳ FIXES APLICADOS, PENDIENTE TEST | P2 ✅ AUTO-CLEANUP FUNCIONANDO
+**URGENCIA**: MEDIA — Esperando Railway deploy de b893376 en rama `main-test` para verificar PDF
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
+
+---
+
+## ⚡ SESIÓN 7 (Abril 1, ~21:00 PM — PDF Fix Real + Railway Branch Issue)
+
+**PROBLEMA CRÍTICO ENCONTRADO: Railway corría commit desconocido**
+- Railway mostraba dea85565 / 92e67adb — commits NO presentes en nuestro git
+- Railway tenía un snapshot interno cacheado, no sincronizaba con GitHub
+- Intento disconnect/reconnect de rama `main` → no sirvió
+- Intento push dummy commit → Railway siguió mostrando commit viejo
+- **SOLUCIÓN**: Crear rama `main-test` y cambiar Railway a esa rama → finalmente deployó código correcto
+
+**ESTADO ACTUAL DE RAMAS:**
+- `main-test` → Railway production (commit b893376 — todos los fixes de sesión 7)
+- `main` → GitHub solo (commit e41dc61 — sin fixes de sesión 7)
+- **TODO PENDIENTE**: Merge main-test → main (o dejar Railway en main-test permanente)
+
+---
+
+### FIXES APLICADOS EN SESIÓN 7 (commit b893376, rama main-test):
+
+**Fix 1 — cotizacion_generator.js: Uint8Array → Buffer (CRÍTICO)**
+- Error real: `page.pdf() retornó inválido: object` → `Buffer.isBuffer()` retorna false para Uint8Array
+- Puppeteer moderno (Railway/Docker) retorna `Uint8Array`, NO `Buffer`
+- Fix: `const buffer = Buffer.isBuffer(pdfResult) ? pdfResult : Buffer.from(pdfResult);`
+- Antes: PDF nunca se generaba. Ahora: buffer se convierte correctamente
+
+**Fix 2 — server.js: PDF dispatch async + honest error message**
+- Antes: `enviarCotizacionWA()` se llamaba como fire-and-forget (sin await)
+- MIIA decía "Te envío un PDF" ANTES de saber si el PDF funcionó
+- Fix: `await enviarCotizacionWA()` con try/catch y flag `pdfOk`
+- Si PDF falla → MIIA dice: "Hubo un problema generando el PDF. Intenta de nuevo."
+- Si PDF OK → historial registra "[Cotización PDF enviada]" (antes se registraba siempre)
+
+**Fix 3 — server.js: MODO TEST para self-chat**
+- Antes: MIIA trataba al owner como cliente externo en self-chat → pedía "Para mayor precisión, confirma..."
+- Fix: Instrucción MODO TEST en prompt admin
+- "Cuando Mariano pide cotización en su self-chat, está PROBANDO. Decile 'Generando...' y ejecutá directo. NUNCA pidas confirmación de datos que ya dio."
+
+**Commits sesión 7:**
+- `6035cc5` — Fix Uint8Array + async PDF dispatch (primer commit)
+- `b893376` — Todos los fixes juntos en main-test
+
+**Status Railway:**
+- ⏳ Railway debería estar deployando b893376 de rama `main-test`
+- ✅ Una vez deployed: probar "cotización Colombia 1 usuario con 60 citas"
+- Esperado: PDF llega + no pide confirmaciones innecesarias
+
+---
 
 ### SESIÓN 5 (Abril 1, 19:30 PM - P1 Y P2 CONFIRMADOS FUNCIONANDO)
 **Commits realizados:**
@@ -436,8 +485,8 @@ PAYPAL_ENV=production
 ## 📑 PLAN PENDIENTE (11 Tareas)
 
 ### 🔴 CRÍTICOS (P1-P4)
-- [✅] **P1**: MIIA responde en self-chat con PDF — COMPLETAMENTE FUNCIONANDO (Sesión 5)
-- [✅] **P2**: Auto-reconnect sin clic manual — SOLUCIONADO con cleanup Firestore (Sesión 5)
+- [⏳] **P1**: PDF cotización — fixes aplicados (Uint8Array+async+MODO TEST), pendiente verificar con Railway b893376
+- [✅] **P2**: Auto-cleanup MessageCounterError — FUNCIONANDO (sesión 6+7, contadores y cleanup confirmados en logs)
 - [ ] **P3**: Endpoint documentos roto en admin-dashboard
 - [ ] **P4**: Exportar setTenantTrainingData en tenant_manager
 
