@@ -936,6 +936,7 @@ Nuevo resumen actualizado:`;
     const phoneBase = phone.split('@')[0].split(':')[0]; // Extract just the number (handle :123 format)
     const myBase = myNumber.split('@')[0].split(':')[0];
     const isSelfChat = phoneBase === myBase;
+    console.log(`[SELF-CHAT-DEBUG] phone=${phone}, myNumber=${myNumber}, phoneBase=${phoneBase}, myBase=${myBase}, isSelfChat=${isSelfChat}`);
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos — registrar pendiente y no responder
     if (!isSelfChat && !isFamilyContact && !isAdmin) {
       const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
