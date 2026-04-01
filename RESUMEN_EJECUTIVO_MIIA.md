@@ -47,7 +47,7 @@
 
 **SOLUCIÓN IMPLEMENTADA:**
 
-**Backend (Commit a0f4c86):**
+**Backend (Commits a0f4c86 + 89f12b5):**
 1. ✅ Endpoint POST `/api/tenant/:uid/clean-session` en server.js
    - Elimina sesión corrupta de Firestore
    - Marca usuario para reconectar
@@ -62,6 +62,12 @@
    - Cuenta errores en ventana de 30 segundos
    - Cuando alcanza 5 → ejecuta cleanup automático
 
+4. ✅ Nuevo módulo mail_service.js
+   - Envío de emails por SMTP (Gmail, Office 365, etc)
+   - Email HTML con instrucciones de reconexión
+   - Variables de entorno: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+   - Integrado en cleanupCorruptedSession() para notificación automática
+
 **Frontend (Commit 9463adc):**
 1. ✅ Socket.IO script (CDN v4.7.2) agregado a owner-dashboard.html
 2. ✅ Inicialización de Socket.IO cuando usuario autentica
@@ -70,21 +76,40 @@
    - Recarga automáticamente QR modal
 4. ✅ Listeners futuros para whatsapp_ready / whatsapp_disconnected
 
-**MECANISMO COMPLETO:**
+**MECANISMO COMPLETO — 3 CANALES DE NOTIFICACIÓN:**
 1. Error libsignal ocurre → console.error("MessageCounterError...")
 2. Monitor backend intercepta → contador += 1
 3. Contador == 5 → cleanupCorruptedSession()
-4. Backend emite: `io.emit('tenant_recovery_needed_${uid}', {...})`
-5. Frontend recibe → muestra toast: "⚠️ Tu sesión fue reiniciada..."
-6. Dashboard carga QR automáticamente
-7. Usuario escanea QR → reconexión
+4. **CANAL 1 - Socket.IO (tiempo real < 100ms):**
+   - Backend emite: `io.emit('tenant_recovery_needed_${uid}', {...})`
+   - Frontend recibe → muestra toast: "⚠️ Tu sesión fue reiniciada..."
+   - Dashboard recarga QR automáticamente
+5. **CANAL 2 - Email (si SMTP configurado):**
+   - Backend obtiene email de Firestore
+   - mail_service.js envía HTML con instrucciones
+   - Incluye UID, razón técnica, fecha/hora
+6. **CANAL 3 - Firestore flag:**
+   - `whatsapp_needs_reconnect: true` persiste para auditoría
+7. Usuario escanea QR → reconexión automática
+
+**CONFIGURACIÓN REQUERIDA para EMAIL:**
+```env
+SMTP_HOST=smtp.gmail.com (o tu proveedor)
+SMTP_PORT=587
+SMTP_USER=tu-email@gmail.com
+SMTP_PASS=tu-contraseña-app
+SMTP_FROM="MIIA Alertas <noreply@miia.app>"
+```
+Sin esto: Socket.IO + Firestore funcionan, pero emails se saltan con warning.
 
 **STATUS ACTUAL:**
-- ✅ Both railway auto-deploys done (backend + frontend)
-- ⏳ Awaiting user test: envía mensaje → auto-cleanup → notificación → QR
+- ✅ Backend: 3 commits (a0f4c86, 8ad387a, 89f12b5)
+- ✅ Frontend: 1 commit (9463adc)
+- ⏳ Railway/Vercel auto-deploy en progreso
+- ⏳ Email DESACTIVADO hasta que Mariano configure SMTP
 
-**Costo REAL sesión 6**: ~$0.50 USD (backend auto-cleanup + frontend Socket.IO)
-**Costo TOTAL acumulado**: ~$16.00 USD
+**Costo REAL sesión 6**: ~$0.75 USD (backend auto-cleanup + email service + Socket.IO)
+**Costo TOTAL acumulado**: ~$16.25 USD
 
 ---
 
