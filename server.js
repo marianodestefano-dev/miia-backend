@@ -1289,6 +1289,14 @@ Nuevo resumen actualizado:`;
     // Construcción del system prompt
     const leadName = leadNames[phone] || '';
     let activeSystemPrompt = '';
+
+    // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin (sin verificar número)
+    // Baileys usa Device ID en self-chat (ej: 136417472712832) que NO coincide con ADMIN_PHONES
+    if (isSelfChat && !isAdmin) {
+      isAdmin = true;
+      console.log(`[ADMIN-FIX] 🔧 Self-chat detectado: reasignando isAdmin=true (numero=${basePhone} no matched ADMIN_PHONES, pero isSelfChat=true)`);
+    }
+
     if (isAdmin) {
       activeSystemPrompt = `
 # 🧠 PROMPT MAESTRO: LOBSTERS CRM & ADN MIIA v6.0 🧬🚀
