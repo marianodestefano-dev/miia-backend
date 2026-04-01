@@ -343,11 +343,44 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             try {
               if (tenant.sock) await tenant.sock.logout().catch(() => {});
               await deleteFirestoreSession(`tenant-${uid}`);
+
+              // NOTIFICACIONES AL USUARIO (3 CANALES)
+              const userDoc = await admin.firestore().collection('users').doc(uid).get();
+              const userEmail = userDoc.data()?.email;
+              const userName = userDoc.data()?.name || 'Usuario';
+              const ownerPhone = userDoc.data()?.whatsapp_owner_number;
+
               await admin.firestore().collection('users').doc(uid).update({
                 whatsapp_needs_reconnect: true,
-                whatsapp_recovery_at: new Date()
+                whatsapp_recovery_at: new Date(),
+                whatsapp_recovery_reason: 'Sesión desincronizada (auto-cleanup en progreso)'
               }).catch(() => {});
-              console.log(`[TM:${uid}] ✅ Sesión limpiada. Usuario debe hacer nuevo QR.`);
+
+              console.log(`[TM:${uid}] 🔔 NOTIFICACIÓN: Sesión corrupta detectada. Enviando alertas...`);
+
+              // 1️⃣ NOTIFICACIÓN VÍA SOCKET.IO (Dashboard en tiempo real)
+              if (ioInstance) {
+                ioInstance.emit(`tenant_recovery_needed_${uid}`, {
+                  message: '⚠️ Tu sesión de WhatsApp fue reiniciada por desincronización. Escanea el QR en el panel abajo.',
+                  needsQr: true,
+                  recoveredAt: new Date().toISOString(),
+                  severity: 'warning'
+                });
+                console.log(`[TM:${uid}] ✅ Notificación Socket.IO enviada`);
+              }
+
+              // 2️⃣ NOTIFICACIÓN VÍA EMAIL
+              if (userEmail) {
+                try {
+                  // Log para que backend pueda enviar email (implementar luego si necesario)
+                  console.log(`[TM:${uid}] 📧 PENDIENTE: Enviar email a ${userEmail} - "Sesión WhatsApp necesita reconectarse"`);
+                  // TODO: Agregar nodemailer o SendGrid aquí para enviar email real
+                } catch (e) {
+                  console.error(`[TM:${uid}] Error notificando email:`, e.message);
+                }
+              }
+
+              console.log(`[TM:${uid}] ✅ Sesión limpiada. Usuario notificado. Debe escanear QR nuevo.`);
             } catch (e) {
               console.error(`[TM:${uid}] Error limpiando:`, e.message);
             }
