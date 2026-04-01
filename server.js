@@ -1365,6 +1365,7 @@ Nuevo resumen actualizado:`;
 - Auto-Sanación: Reinicio de socket ante caídas.
 - NUNCA mencionar la palabra "LOBSTERS" a familiares ni leads. Eres la "Asistente Personal" de Mariano.
 - En el self-chat de Mariano (cuando hablás con su propio número): SIEMPRE respondé hablando CON Mariano. NUNCA confundas el contexto de un "dile a familiar" ejecutado con la conversación actual. Si el historial tiene mensajes sobre Ale, familia u otro contacto, esos son comandos ya ejecutados — el interlocutor actual sigue siendo MARIANO, no ese familiar.
+- MODO TEST self-chat: Cuando Mariano te pide una cotización en su propio chat, está probando el sistema. Generá el JSON normalmente pero NO le hables como si fuera un cliente externo ni le pidas confirmación de datos que ya dio. Decile algo como "Generando cotización..." y ejecutá directo. NUNCA digas "Para mayor precisión, confirma..." al owner.
 
 ## 🧨 REGLA DE ORO FAMILIAR
 - Usa el "vínculo heredado": NO digas "Mariano dice", di "Siento que te conozco por lo que Mariano me cuenta de ti".
@@ -1821,29 +1822,39 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         else if (aiMessage[i] === '}') { depth--; if (depth === 0) { jsonEnd = i + 1; break; } }
       }
       if (jsonEnd !== -1) {
+        let pdfOk = false;
         try {
           const jsonStr = aiMessage.substring(jsonStart, jsonEnd);
           console.log(`[COTIZ] JSON detectado: ${jsonStr.substring(0, 300)}`);
           const cotizData = JSON.parse(jsonStr);
           console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios, citasMes: cotizData.citasMes });
-          cotizacionGenerator.enviarCotizacionWA(getOwnerSock(), phone, cotizData)
-            .then(() => console.log(`[COTIZ] PDF enviado a ${phone}`))
-            .catch(e => console.error('[COTIZ] Error PDF:', e.message));
-        } catch (e) { console.error('[COTIZ] JSON inválido en tag:', e.message); }
+          // Esperar resultado del PDF antes de continuar
+          await cotizacionGenerator.enviarCotizacionWA(getOwnerSock(), phone, cotizData);
+          pdfOk = true;
+          console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
+        } catch (e) {
+          console.error('[COTIZ] Error PDF:', e.message);
+        }
         // Conservar texto breve antes/después del tag para enviarlo como mensaje acompañante
         const textoBefore = aiMessage.substring(0, cotizTagIdx).trim();
         const textoAfter  = aiMessage.substring(jsonEnd + 1).replace(/\]/, '').trim();
-        const textoExtra  = (textoBefore || textoAfter)
+        let textoExtra  = (textoBefore || textoAfter)
           ? (textoBefore + (textoAfter ? ' ' + textoAfter : '')).trim().substring(0, 300)
           : '';
-        // Registrar en historial que se envió el PDF
-        conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada a este lead. No volver a enviarla a menos que el lead lo pida explícitamente.]', timestamp: Date.now() });
-        if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
-        // Activar seguimiento automático a 3 días
-        if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
-        conversationMetadata[phone].lastCotizacionSent = Date.now();
-        conversationMetadata[phone].followUpState = 'pending';
-        saveDB();
+        if (!pdfOk) {
+          // PDF falló — no decir "te envío PDF", dar mensaje honesto
+          textoExtra = 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
+        }
+        if (pdfOk) {
+          // Solo registrar en historial si el PDF se envió realmente
+          conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada a este lead. No volver a enviarla a menos que el lead lo pida explícitamente.]', timestamp: Date.now() });
+          if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
+          // Activar seguimiento automático a 3 días
+          if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+          conversationMetadata[phone].lastCotizacionSent = Date.now();
+          conversationMetadata[phone].followUpState = 'pending';
+          saveDB();
+        }
         aiMessage = textoExtra;
       }
     } else {
