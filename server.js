@@ -1814,7 +1814,10 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       }
       if (jsonEnd !== -1) {
         try {
-          const cotizData = JSON.parse(aiMessage.substring(jsonStart, jsonEnd));
+          const jsonStr = aiMessage.substring(jsonStart, jsonEnd);
+          console.log(`[COTIZ] JSON detectado: ${jsonStr.substring(0, 300)}`);
+          const cotizData = JSON.parse(jsonStr);
+          console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios, citasMes: cotizData.citasMes });
           cotizacionGenerator.enviarCotizacionWA(getOwnerSock(), phone, cotizData)
             .then(() => console.log(`[COTIZ] PDF enviado a ${phone}`))
             .catch(e => console.error('[COTIZ] Error PDF:', e.message));
