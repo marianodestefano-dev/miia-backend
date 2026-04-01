@@ -714,15 +714,16 @@ async function generarPDF(params) {
     console.log(`[PDF-INIT] setContent iniciado...`);
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30000 });
     console.log(`[PDF-INIT] setContent completado, generando PDF...`);
-    const buffer = await page.pdf({
+    const pdfResult = await page.pdf({
       format: 'A4',
       printBackground: true,
       margin: { top: 0, right: 0, bottom: 0, left: 0 },
       timeout: 30000
     });
-    if (!buffer || !Buffer.isBuffer(buffer)) {
-      throw new Error(`page.pdf() retornó inválido: ${typeof buffer}`);
+    if (!pdfResult) {
+      throw new Error('page.pdf() retornó null/undefined');
     }
+    const buffer = Buffer.isBuffer(pdfResult) ? pdfResult : Buffer.from(pdfResult);
     console.log(`[PDF-INIT] PDF generado exitosamente, size: ${buffer.length} bytes`);
     return buffer;
   } catch (e) {
