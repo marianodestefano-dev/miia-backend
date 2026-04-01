@@ -4,6 +4,20 @@ Este archivo es leído automáticamente en CADA conversación, con cualquier mod
 
 ---
 
+## 🚨 DESPUÉS DE COMPACTACIÓN — ACCIÓN INMEDIATA
+
+**SI VES ESTE MENSAJE, LA COMPACTACIÓN ACABA DE OCURRIR Y PERDISTE CONTEXTO.**
+
+**ANTES de responder a Mariano, DEBES:**
+1. **Leer `RESUMEN_EJECUTIVO_MIIA.md`** — Contiene TODO lo necesario para no perder el hilo
+2. **Recordar LA ESENCIA**: MIIA responde en el self-chat de WhatsApp del usuario (no es un bot separado)
+3. **Recordar ESTADO ACTUAL**: P1 está 80% hecho (recibe/procesa pero mensaje no se entrega)
+4. **Recordar URGENCIA**: P1 está bloqueado en "envío a self-chat", P2-P11 esperan
+
+**NO RESPONDAS HASTA HABER LEÍDO ESE ARCHIVO COMPLETO.**
+
+---
+
 ## 🚨🔴⚠️ ALERTA — ZONA CRÍTICA DE WHATSAPP — NO MODIFICAR SIN AVISO 🔴🚨⚠️
 
 Los siguientes archivos y funciones son **CRÍTICOS para la conexión WhatsApp**. Modificarlos sin cuidado **ROMPE toda la vinculación**.

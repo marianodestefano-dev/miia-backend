@@ -202,6 +202,7 @@ let leadNames = { '573163937365@s.whatsapp.net': 'Dr. Mariano' }; // { phone: 'n
 let lastSentByBot = {};
 let sentMessageIds = new Set();
 let lastAiSentBody = {};
+let lastMessageKey = {};    // 🔧 Para self-chat: guardar message.key más reciente por contacto
 let miiaPausedUntil = 0;
 let trainingData = '';
 let leadSummaries = {};
@@ -534,7 +535,25 @@ async function safeSendMessage(target, content, options = {}) {
     } else {
       baileysContent = { text: String(content) };
     }
-    const result = await ownerSock.sendMessage(target, baileysContent);
+
+    // 🔧 FIX SELF-CHAT: Baileys necesita quotedMessage para self-chat en Linked Device
+    const ownerNumber = ownerSock?.user?.id?.split('@')[0]?.split(':')[0];
+    const targetNumber = target.split('@')[0]?.split(':')[0];
+    const isSelfChat = ownerNumber && targetNumber && ownerNumber === targetNumber;
+
+    let sendOptions = {};
+    if (isSelfChat) {
+      // Para self-chat, usar el último message.key guardado
+      const savedKey = lastMessageKey[target];
+      if (savedKey) {
+        sendOptions.quoted = { key: savedKey };
+        console.log(`[SELF-CHAT FIX] ✅ Usando quotedMessage para self-chat ${targetNumber}`);
+      } else {
+        console.log(`[SELF-CHAT FIX] ⚠️ No hay messageKey guardado para ${targetNumber}. Intentando sin quoted...`);
+      }
+    }
+
+    const result = await ownerSock.sendMessage(target, baileysContent, sendOptions);
     // Registrar mensaje como enviado por bot para que message_create lo ignore
     const sentBody = (typeof content === 'string' ? content : '').trim();
     if (sentBody) {
@@ -547,7 +566,7 @@ async function safeSendMessage(target, content, options = {}) {
         }
       }, 10000);
     }
-    console.log(`[SENT] Mensaje enviado a ${target.split('@')[0]}`);
+    console.log(`[SENT] Mensaje enviado a ${target.split('@')[0]}${isSelfChat ? ' (SELF-CHAT)' : ''}`);
     return result;
   } catch (e) {
     console.error(`[ERROR SENT] Fallo al enviar a ${target}:`, e.message);
@@ -2148,6 +2167,12 @@ async function handleIncomingMessage(message) {
       }
     }
     // ────────────────────────────────────────────────────────────────────
+
+    // 🔧 Guardar message.key para self-chat quotedMessage
+    if (message.key) {
+      lastMessageKey[effectiveTarget] = message.key;
+      console.log(`[SELF-CHAT] Guardado messageKey para ${effectiveTarget}`);
+    }
 
     // Emitir mensaje entrante al frontend
     try {
