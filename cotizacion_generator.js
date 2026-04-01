@@ -391,14 +391,25 @@ function buildHTML(params) {
   }
 
   // ── Tabla de rangos de bolsas ────────────────────────────────────
+  console.log(`[COTIZ-DEBUG] p.rangos =`, p.rangos ? JSON.stringify(p.rangos) : 'UNDEFINED');
   const rWA  = p.rangos.WA;
   const rFac = p.rangos.factura;
   const rFir = p.rangos.firma;
+  console.log(`[COTIZ-DEBUG] rWA =`, rWA ? JSON.stringify(rWA) : 'UNDEFINED');
+  console.log(`[COTIZ-DEBUG] rFac =`, rFac ? JSON.stringify(rFac) : 'UNDEFINED');
+  console.log(`[COTIZ-DEBUG] rFir =`, rFir ? JSON.stringify(rFir) : 'UNDEFINED');
 
   let bolsasRangos = '';
-  if (incluirWA)      bolsasRangos += `<tr><td>WhatsApp — Recordatorios</td><td><b>${fmtNum(enviosWA)}</b></td><td>${rWA.S}</td><td>${rWA.M}</td><td>${fmtNum(rWA.L)}</td><td>${fmtNum(rWA.XL)}</td></tr>`;
-  if (incluirFactura) bolsasRangos += `<tr><td>Facturación Electrónica</td><td><b>${enviosFactFirm}</b></td><td>${rFac.S}</td><td>${rFac.M}</td><td>${rFac.L}</td><td>${rFac.XL}</td></tr>`;
-  if (incluirFirma)   bolsasRangos += `<tr><td>Firma Electrónica</td><td><b>${enviosFactFirm}</b></td><td>${rFir.S}</td><td>${rFir.M}</td><td>${rFir.L}</td><td>${rFir.XL}</td></tr>`;
+  try {
+    if (incluirWA)      bolsasRangos += `<tr><td>WhatsApp — Recordatorios</td><td><b>${fmtNum(enviosWA)}</b></td><td>${rWA.S}</td><td>${rWA.M}</td><td>${fmtNum(rWA.L)}</td><td>${fmtNum(rWA.XL)}</td></tr>`;
+    if (incluirFactura) bolsasRangos += `<tr><td>Facturación Electrónica</td><td><b>${enviosFactFirm}</b></td><td>${rFac.S}</td><td>${rFac.M}</td><td>${rFac.L}</td><td>${rFac.XL}</td></tr>`;
+    if (incluirFirma)   bolsasRangos += `<tr><td>Firma Electrónica</td><td><b>${enviosFactFirm}</b></td><td>${rFir.S}</td><td>${rFir.M}</td><td>${rFir.L}</td><td>${rFir.XL}</td></tr>`;
+    console.log(`[COTIZ-DEBUG] bolsasRangos construida exitosamente`);
+  } catch(e) {
+    console.error(`[COTIZ-ERROR-RANGOS] Error en tabla de rangos: ${e.message}`);
+    console.error(`[COTIZ-ERROR-RANGOS] Stack: ${e.stack}`);
+    throw e;
+  }
 
   let bolsasAsignadas = '';
   if (incluirWA && bolsas.wa)         bolsasAsignadas += `<tr><td>WhatsApp — Recordatorios</td><td>&#215;2/cita</td><td>${citasMes}</td><td>${fmtNum(enviosWA)} envíos</td><td><b>${bolsas.wa.tier}: hasta ${fmtNum(bolsas.wa.limiteEnvios)} envíos</b></td></tr>`;
