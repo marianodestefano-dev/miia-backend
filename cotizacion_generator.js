@@ -652,15 +652,9 @@ async function generarPDF(params) {
 // ENVIAR POR WHATSAPP
 // ─────────────────────────────────────────────────────────────────────
 
-async function enviarCotizacionWA(client, phone, params) {
-  const { MessageMedia } = require('whatsapp-web.js');
+async function enviarCotizacionWA(sock, phone, params) {
   const buffer       = await generarPDF(params);
   const nombreLimpio = (params.nombre || 'Lead').replace(/[^a-zA-Z0-9]/g, '_');
-  const media        = new MessageMedia(
-    'application/pdf',
-    buffer.toString('base64'),
-    `Cotizacion_Medilink_${nombreLimpio}.pdf`
-  );
 
   const primerNombre = (params.nombre || 'Doctor').split(' ')[0];
   const vigencia     = params.vigencia || '';
@@ -679,7 +673,13 @@ https://meetings.hubspot.com/marianodestefano/demomedilink
 
 Quedo atento.`;
 
-  await client.sendMessage(phone, media, { caption });
+  // Baileys API: send document with caption
+  await sock.sendMessage(phone, {
+    document: buffer,
+    mimetype: 'application/pdf',
+    fileName: `Cotizacion_Medilink_${nombreLimpio}.pdf`,
+    caption
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────

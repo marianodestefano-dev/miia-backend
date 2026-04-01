@@ -156,6 +156,14 @@ async function extractDNAChronological() {
     return;
   }
 
+  // Baileys no tiene getChats() — el minado masivo requiere whatsapp-web.js
+  // El aprendizaje en tiempo real (appendLearning) SÍ funciona con Baileys
+  if (typeof _client.getChats !== 'function') {
+    console.log('[CEREBRO ABSOLUTO] Baileys detectado — minado masivo no disponible. Aprendizaje en tiempo real activo.');
+    _isRunning = false;
+    return;
+  }
+
   _isRunning = true;
   console.log(`[CEREBRO ABSOLUTO] Iniciando minado. Limite hoy: ${adnMinerState.dailyLimit} chats.`);
 

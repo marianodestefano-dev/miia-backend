@@ -3,12 +3,8 @@ require('dotenv').config();
 // Fix: gRPC DNS resolver for Firebase Admin SDK on Railway/Docker (Node 18)
 process.env.GRPC_DNS_RESOLVER = 'native';
 
-// Fix: catch ENOENT unlink crash from whatsapp-web.js RemoteAuth internals
+// Catch unhandled rejections
 process.on('unhandledRejection', (err) => {
-  if (err && err.code === 'ENOENT' && err.syscall === 'unlink' && err.path && err.path.includes('.wwebjs_auth')) {
-    console.warn('[WA] ENOENT unlink ignorado (zip ya eliminado por Railway):', err.path);
-    return;
-  }
   console.error('[UNHANDLED REJECTION]', err);
 });
 
@@ -21,8 +17,7 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
-const FirestoreSessionStore = require('./firestore_session_store');
+// WhatsApp: Baileys (via tenant_manager.js) — no Chrome/Puppeteer needed
 
 // CEREBRO ABSOLUTO — módulo de aprendizaje autónomo nocturno
 const cerebroAbsoluto = require('./cerebro_absoluto');
@@ -185,13 +180,23 @@ const FAMILY_CONTACTS = {
 
 const OWNER_UID = process.env.OWNER_UID || '';
 if (!OWNER_UID) console.warn('[CONFIG] ⚠️  OWNER_UID no configurado en variables de entorno. El owner será tratado como tenant.');
-let whatsappClient = null;
-let qrCode = null;
-let isReady = false;
-let initRetryCount = 0; // Counter para evitar loop infinito de reintentos
+// whatsappClient ahora es un getter que busca el sock del owner en tenant_manager
+// Esto mantiene compatibilidad con toda la lógica existente del owner
+function getOwnerSock() {
+  if (!OWNER_UID) return null;
+  return tenantManager.getTenantClient(OWNER_UID);
+}
+function getOwnerStatus() {
+  if (!OWNER_UID) return { isReady: false };
+  return tenantManager.getTenantStatus(OWNER_UID);
+}
+// Legacy compat — código existente usa estas variables
+Object.defineProperty(global, '_ownerReady', { get: () => getOwnerStatus().isReady, configurable: true });
+let qrCode = null; // Legacy — tenant_manager maneja QR ahora
+let isReady = false; // Se actualiza desde tenant events
 let conversations = {}; // { phone: [{ role, content, timestamp }] }
-let contactTypes = { '573163937365@c.us': 'lead' }; // { phone: 'familia' | 'lead' | 'cliente' }
-let leadNames = { '573163937365@c.us': 'Dr. Mariano' }; // { phone: 'nombre' }
+let contactTypes = { '573163937365@s.whatsapp.net': 'lead' }; // { phone: 'familia' | 'lead' | 'cliente' }
+let leadNames = { '573163937365@s.whatsapp.net': 'Dr. Mariano' }; // { phone: 'nombre' }
 
 // --- Variables MIIA (portadas desde index.js) ---
 let lastSentByBot = {};
@@ -284,7 +289,7 @@ let userProfile = {
   // Google Calendar
   googleTokens: null, calendarEnabled: false, googleCalendarId: 'primary'
 };
-const BLACKLISTED_NUMBERS = ['573023317570@c.us'];
+const BLACKLISTED_NUMBERS = ['573023317570@s.whatsapp.net'];
 const OWNER_PHONE = '573054169969';
 const ADMIN_PHONES = ['573054169969'];
 let automationSettings = {
@@ -347,6 +352,9 @@ loadDB();
 // ============================================
 
 const getBasePhone = (p) => (p || '').split('@')[0];
+// Baileys uses @s.whatsapp.net, whatsapp-web.js used @s.whatsapp.net
+// Normalize all JIDs to Baileys format
+const toJid = (phone) => phone.includes('@') ? phone.replace('@s.whatsapp.net', '@s.whatsapp.net') : `${phone}@s.whatsapp.net`;
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 const ensureConversation = (p) => { if (!conversations[p]) conversations[p] = []; return conversations[p]; };
 
@@ -478,7 +486,8 @@ async function safeSendMessage(target, content, options = {}) {
     console.log(`[WA] BLOQUEO: Envío a STATUS abortado (${target})`);
     return null;
   }
-  if (!isReady || !whatsappClient) {
+  const ownerSock = getOwnerSock();
+  if (!ownerSock) {
     console.log(`⚠️ [INTERCEPTADO] WhatsApp no está listo.`);
     return null;
   }
@@ -508,7 +517,24 @@ async function safeSendMessage(target, content, options = {}) {
     await new Promise(r => setTimeout(r, delay));
   }
   try {
-    const result = await whatsappClient.sendMessage(target, content, options);
+    // Baileys API: sendMessage(jid, content)
+    let baileysContent;
+    if (typeof content === 'string') {
+      baileysContent = { text: content };
+    } else if (content && content.mimetype && content.data) {
+      // Legacy MessageMedia compat: { mimetype, data, filename }
+      const buffer = Buffer.from(content.data, 'base64');
+      if (content.mimetype.startsWith('image/')) {
+        baileysContent = { image: buffer, caption: options.caption || '' };
+      } else if (content.mimetype.startsWith('audio/')) {
+        baileysContent = { audio: buffer, mimetype: content.mimetype, ptt: !!options.sendAudioAsVoice };
+      } else {
+        baileysContent = { document: buffer, mimetype: content.mimetype, fileName: content.filename || 'file' };
+      }
+    } else {
+      baileysContent = { text: String(content) };
+    }
+    const result = await ownerSock.sendMessage(target, baileysContent);
     // Registrar mensaje como enviado por bot para que message_create lo ignore
     const sentBody = (typeof content === 'string' ? content : '').trim();
     if (sentBody) {
@@ -706,7 +732,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
       const phones = Object.keys(equipoMedilink);
       let enviados = 0;
       for (const num of phones) {
-        const target = `${num}@c.us`;
+        const target = `${num}@s.whatsapp.net`;
         try {
           const nombreMiembro = equipoMedilink[num].name || leadNames[target] || null;
           const promptEquipo = `Sos MIIA, asistente IA de Medilink. Mariano te pide que le transmitas este mensaje a un integrante del equipo${nombreMiembro ? ` (${nombreMiembro})` : ''}: "${tema}". Redactá un mensaje breve, cálido y profesional. Si no sabés su nombre, no lo inventes.`;
@@ -745,7 +771,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
           let enviados = 0;
           for (const [fPhone, fInfo] of familyEntries) {
             if (fPhone === OWNER_PHONE) continue;
-            const targetSerialized = fPhone.includes('@') ? fPhone : `${fPhone}@c.us`;
+            const targetSerialized = fPhone.includes('@') ? fPhone : `${fPhone}@s.whatsapp.net`;
             try {
               const promptFamilia = `Sos MIIA, asistente de Mariano. Le vas a escribir un mensaje a ${fInfo.name} (${fInfo.relation} de Mariano). Su personalidad: ${fInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle esto: "${familyMsg}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. Usá el emoji de esta persona: ${fInfo.emoji || ''}.`;
               const msg = await generateAIContent(promptFamilia);
@@ -790,7 +816,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
 
         if (foundFamily) {
           const [familyPhone, familyInfo] = foundFamily;
-          const targetSerialized = familyPhone.includes('@') ? familyPhone : `${familyPhone}@c.us`;
+          const targetSerialized = familyPhone.includes('@') ? familyPhone : `${familyPhone}@s.whatsapp.net`;
           try {
             const promptFamiliar = `Sos MIIA, asistente de Mariano. Le vas a escribir un mensaje a ${familyInfo.name} (${familyInfo.relation} de Mariano). Su personalidad y tu relación con él/ella: ${familyInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle: "${realMessage || 'un saludo'}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. NO repitas sus palabras literalmente. Usá el emoji: ${familyInfo.emoji || ''}. ${!familyInfo.isHandshakeDone ? 'Es el primer contacto — presentate brevemente.' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
@@ -904,8 +930,8 @@ Nuevo resumen actualizado:`;
       generateAIContent(summaryPrompt).then(s => { if (s) { leadSummaries[phone] = s.trim(); saveDB(); } }).catch(() => {});
     }
 
-    const myNumber = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
-      ? whatsappClient.info.wid._serialized : `${OWNER_PHONE}@c.us`;
+    const myNumber = (getOwnerSock() && getOwnerSock().user)
+      ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
     const isSelfChat = phone === myNumber || phone.split('@')[0] === myNumber.split('@')[0];
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos — registrar pendiente y no responder
     if (!isSelfChat && !isFamilyContact && !isAdmin) {
@@ -971,7 +997,7 @@ Nuevo resumen actualizado:`;
         // Alertar al dueño
         const contactName = leadNames[phone] || phone.split('@')[0];
         const alertType = isInsult ? '⚠️ INSULTO' : '🔔 QUEJA';
-        safeSendMessage(`${OWNER_PHONE}@c.us`,
+        safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
           `${alertType} recibido de *${contactName}* (+${phone.split('@')[0]})\n\n📩 "${effectiveMsg.substring(0, 300)}"\n\nMIIA respondió con empatía. Considera contactarlo manualmente.`
         ).catch(() => {});
 
@@ -1338,7 +1364,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         if (qrMethod) {
           const base64Data = qrMethod.qr_image_base64.replace(/^data:image\/\w+;base64,/, '');
           const mimeType = qrMethod.qr_image_base64.match(/^data:(image\/\w+);/)?.[1] || 'image/png';
-          const media = new MessageMedia(mimeType, base64Data, 'pago_qr.png');
+          const media = { mimetype: mimeType, data: base64Data, filename: 'pago_qr.png' };
           await safeSendMessage(phone, media, { caption: qrMethod.qr_description || 'Aquí tienes el QR para pagar 👆' });
           console.log(`[COBROS] QR enviado a ${phone}`);
         }
@@ -1365,7 +1391,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       if (jsonEnd !== -1) {
         try {
           const cotizData = JSON.parse(aiMessage.substring(jsonStart, jsonEnd));
-          cotizacionGenerator.enviarCotizacionWA(whatsappClient, phone, cotizData)
+          cotizacionGenerator.enviarCotizacionWA(getOwnerSock(), phone, cotizData)
             .then(() => console.log(`[COTIZ] PDF enviado a ${phone}`))
             .catch(e => console.error('[COTIZ] Error PDF:', e.message));
         } catch (e) { console.error('[COTIZ] JSON inválido en tag:', e.message); }
@@ -1413,15 +1439,13 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       const parts = aiMessage.split('[MSG_SPLIT]').map(p => p.trim()).filter(p => p.length > 0);
       if (parts.length >= 2) {
         try {
-          const cs1 = await whatsappClient.getChatById(phone);
-          await cs1.sendStateTyping();
+          if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('composing', phone);
           await new Promise(r => setTimeout(r, Math.min(parts[0].length * 60, 12000)));
         } catch (e) { /* ignore */ }
         await safeSendMessage(phone, parts[0]);
         await new Promise(r => setTimeout(r, 1500 + Math.floor(Math.random() * 1000)));
         try {
-          const cs2 = await whatsappClient.getChatById(phone);
-          await cs2.sendStateTyping();
+          if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('composing', phone);
           await new Promise(r => setTimeout(r, Math.min(parts[1].length * 60, 10000)));
         } catch (e) { /* ignore */ }
         await safeSendMessage(phone, parts[1]);
@@ -1468,8 +1492,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
     // Simular typing y enviar
     try {
-      const chatState = await whatsappClient.getChatById(phone);
-      await chatState.sendStateTyping();
+      if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('composing', phone);
       const typingDuration = Math.min(Math.max(aiMessage.length * 65, 2500), 15000);
       await new Promise(r => setTimeout(r, typingDuration));
     } catch (e) { /* ignore typing errors */ }
@@ -1532,10 +1555,36 @@ function getMediaType(mimetype) {
 }
 
 async function processMediaMessage(message) {
-  const media = await Promise.race([
-    message.downloadMedia(),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('Media download timeout')), MEDIA_TIMEOUT_MS))
-  ]);
+  let media;
+
+  // Baileys adapter: message._baileysMsg contains the raw Baileys message
+  if (message._baileysMsg) {
+    try {
+      const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+      const buffer = await Promise.race([
+        downloadMediaMessage(message._baileysMsg, 'buffer', {}),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Media download timeout')), MEDIA_TIMEOUT_MS))
+      ]);
+      if (!buffer) return { text: null, mediaType: 'unknown' };
+      const msgContent = message._baileysMsg.message;
+      const mimetype = msgContent?.imageMessage?.mimetype
+        || msgContent?.audioMessage?.mimetype
+        || msgContent?.videoMessage?.mimetype
+        || msgContent?.documentMessage?.mimetype
+        || msgContent?.stickerMessage?.mimetype
+        || 'application/octet-stream';
+      media = { data: buffer.toString('base64'), mimetype };
+    } catch (e) {
+      console.error(`[MEDIA] Baileys download error:`, e.message);
+      return { text: null, mediaType: 'unknown' };
+    }
+  } else {
+    // Legacy whatsapp-web.js path (fallback)
+    media = await Promise.race([
+      message.downloadMedia(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Media download timeout')), MEDIA_TIMEOUT_MS))
+    ]);
+  }
 
   if (!media || !media.data || !media.mimetype) {
     return { text: null, mediaType: 'unknown' };
@@ -1585,7 +1634,12 @@ async function processMediaMessage(message) {
     return { text: null, mediaType };
   }
 
-  console.log(`[MEDIA] ${mediaType} procesado OK (${text.length} chars)`);
+  // Liberar memoria: descartar el buffer de media inmediatamente
+  // Solo conservamos el TEXTO interpretado, nunca el archivo original
+  media.data = null;
+  media = null;
+
+  console.log(`[MEDIA] ${mediaType} procesado OK (${text.length} chars) — media descartada de RAM`);
   return { text: text.trim(), mediaType };
 }
 
@@ -1633,7 +1687,7 @@ async function handleIncomingMessage(message) {
       await safeSendMessage(leadPhone, `Recibí tu ${tipoLabel}, un momento por favor`);
 
       // ALERTA a Mariano con datos del lead
-      await safeSendMessage(`${OWNER_PHONE}@c.us`,
+      await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
         `⚠️ *MEDIA NO PROCESADA*\n` +
         `Lead: *${leadName}* (${leadPhone.split('@')[0]})\n` +
         `Tipo: ${tipoLabel}\n` +
@@ -1656,9 +1710,9 @@ async function handleIncomingMessage(message) {
   }
 
   // Guardia de auto-bucle (self-chat)
-  const myNumber = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
-    ? whatsappClient.info.wid._serialized : `${OWNER_PHONE}@c.us`;
-  const isSelfChat = targetPhoneId === myNumber || targetPhoneId.split('@')[0] === myNumber.split('@')[0];
+  const myNumber = (getOwnerSock() && getOwnerSock().user)
+    ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
+  const isSelfChat = targetPhoneId === myNumber || targetPhoneId.split('@')[0] === myNumber.split('@')[0].split(':')[0];
   const now = Date.now();
 
   if (isSelfChat) {
@@ -1707,7 +1761,7 @@ async function handleIncomingMessage(message) {
       if (subscriptionState[targetPhone]) delete subscriptionState[targetPhone];
       console.log(`[MIIA] 🎉 CONVERSIÓN: ${clientName} ahora es cliente (${targetPhone})`);
       // Notificar a Mariano
-      safeSendMessage(`${OWNER_PHONE}@c.us`,
+      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
         `🎉 *¡Nuevo cliente!* ${clientName} acaba de convertirse en cliente de Medilink.`
       ).catch(() => {});
     }
@@ -1750,7 +1804,7 @@ async function handleIncomingMessage(message) {
       if (contact && contact.id) phone = contact.id._serialized;
     } catch (e) {}
 
-    // Fix @lid para mensajes ENTRANTES: el chat real tiene el número @c.us correcto
+    // Fix @lid para mensajes ENTRANTES: el chat real tiene el número @s.whatsapp.net correcto
     if (!fromMe && phone.includes('@lid')) {
       try {
         const chat = await message.getChat();
@@ -1764,21 +1818,21 @@ async function handleIncomingMessage(message) {
     let effectiveTarget = phone;
     if (fromMe) {
       if (message.to && message.to.includes('@lid')) {
-        // WhatsApp Linked Devices: message.to llega como @lid en lugar de @c.us
+        // WhatsApp Linked Devices: message.to llega como @lid en lugar de @s.whatsapp.net
         const senderBase = (message.from || phone).split('@')[0];
         const recipientBase = message.to.split(':')[0].split('@')[0];
         if (senderBase === recipientBase) {
           // Self-chat explícito (mismo número)
-          effectiveTarget = `${senderBase}@c.us`;
+          effectiveTarget = `${senderBase}@s.whatsapp.net`;
         } else {
           // Verificar si el sender es el dueño de la cuenta conectada (self-chat vía linked device)
-          const connectedBase = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
-            ? whatsappClient.info.wid._serialized.split('@')[0] : null;
+          const connectedBase = (getOwnerSock() && getOwnerSock().user)
+            ? getOwnerSock().user.id.split('@')[0].split(':')[0] : null;
           if (connectedBase && connectedBase === senderBase) {
             // El dueño se escribe a sí mismo desde otro dispositivo → self-chat
-            effectiveTarget = `${senderBase}@c.us`;
+            effectiveTarget = `${senderBase}@s.whatsapp.net`;
           } else {
-            effectiveTarget = `${recipientBase}@c.us`;
+            effectiveTarget = `${recipientBase}@s.whatsapp.net`;
           }
         }
       } else {
@@ -1832,8 +1886,8 @@ async function handleIncomingMessage(message) {
 
     // Self-chat: solo responder si MIIA es mencionada
     // Fallback a OWNER_PHONE si whatsappClient.info aún no está disponible
-    const myNumberFull = (whatsappClient && whatsappClient.info && whatsappClient.info.wid)
-      ? whatsappClient.info.wid._serialized : `${OWNER_PHONE}@c.us`;
+    const myNumberFull = (getOwnerSock() && getOwnerSock().user)
+      ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
     // senderNumber: quién envió este mensaje (cuando fromMe=true, es el dueño)
     const senderNumber = (message.from || '').split('@')[0];
     const isSelfChatMsg = fromMe && (
@@ -2042,7 +2096,7 @@ async function handleIncomingMessage(message) {
       subscriptionState[effectiveTarget].data = { phone: effectiveTarget, nombre: leadName, respuesta: body };
       estadisticas.registrarInteresado({ phone: effectiveTarget, nombre: leadName, respuesta: body });
       if (conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget].followUpState = 'converted';
-      await safeSendMessage(`${OWNER_PHONE}@c.us`,
+      await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
         `🔔 *${leadName}* está listo para comprar.\n\nSus datos:\n${body}\n\nCreá el link de pago y enviáselo.`);
       await safeSendMessage(effectiveTarget,
         `¡Perfecto! Recibí todo. Voy a crear tu link de acceso y en cuanto esté listo te lo mando. ¡Gracias por confiar en Medilink! 🙌`);
@@ -2131,165 +2185,15 @@ async function handleIncomingMessage(message) {
 }
 
 // ============================================
-// WHATSAPP CLIENT INITIALIZATION
+// WHATSAPP — Baileys (via tenant_manager.js)
 // ============================================
-
-function initWhatsApp() {
-  if (whatsappClient) {
-    console.log('[WA] ⚠️  Cliente WhatsApp ya inicializado');
-    return;
-  }
-
-  console.log('\n╔════════════════════════════════════════╗');
-  console.log('║   🚀 INICIALIZANDO WHATSAPP CLIENT    ║');
-  console.log('╚════════════════════════════════════════╝\n');
-  
-  // RemoteAuth: stores WhatsApp session in Firestore (works on Railway)
-  console.log('[WA] Using RemoteAuth with Firestore session storage');
-  const store = new FirestoreSessionStore();
-
-  whatsappClient = new Client({
-    authStrategy: new RemoteAuth({
-      clientId: `tenant-${OWNER_UID}`,
-      store,
-      backupSyncIntervalMs: 300000
-    }),
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    puppeteer: {
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-extensions',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding'
-      ]
-    }
-  });
-
-  whatsappClient.on('qr', async (qr) => {
-    console.log('[WA] 📱 QR CODE GENERADO');
-    console.log('[WA] 📱 Convirtiendo a DataURL...');
-    qrCode = await qrcode.toDataURL(qr, { scale: 8, width: 512, margin: 2 });
-    console.log('[WA] 📱 QR DataURL generado, longitud:', qrCode.length);
-    console.log('[WA] 📡 Emitiendo evento "qr" via Socket.io...');
-    io.emit('qr', qrCode);
-    console.log('[WA] ✅ QR emitido a clientes conectados');
-  });
-
-  whatsappClient.on('authenticated', () => {
-    console.log('[WA] ✅ WHATSAPP AUTENTICADO CORRECTAMENTE');
-    qrCode = null;
-  });
-
-  whatsappClient.on('remote_session_saved', () => {
-    console.log('[WA] ✅ Sesión guardada en Firestore (RemoteAuth backup)');
-  });
-
-  whatsappClient.on('ready', () => {
-    const connectedNumber = whatsappClient.info?.wid?.user || 'desconocido';
-    console.log('\n╔════════════════════════════════════════╗');
-    console.log('║   ✅ WHATSAPP LISTO                   ║');
-    console.log('║   🤖 MIIA AUTO-RESPONSE ACTIVADA      ║');
-    console.log('╚════════════════════════════════════════╝\n');
-    console.log(`[WA] 📱 Número conectado: +${connectedNumber}`);
-    isReady = true;
-    io.emit('whatsapp_ready', { status: 'connected' });
-
-    // Guardar número de WhatsApp conectado en Firestore (para consent records)
-    try {
-      const waNumber = whatsappClient.info?.wid?.user;
-      if (waNumber && OWNER_UID && admin.apps.length > 0) {
-        admin.firestore().collection('users').doc(OWNER_UID).update({
-          whatsapp_number: waNumber,
-          whatsapp_connected_at: new Date()
-        }).catch(e => console.log('[WA] No se pudo guardar número en Firestore:', e.message));
-      }
-    } catch (e) { console.log('[WA] Error guardando número WA:', e.message); }
-
-    // Inicializar / reconectar CEREBRO ABSOLUTO
-    cerebroAbsoluto.init({
-      whatsappClient,
-      generateAIContent,
-      onTrainingUpdate: () => { saveDB(); },
-      dataDir: DATA_DIR,
-      initialTrainingData: cerebroAbsoluto.getTrainingData()
-    });
-
-    // Inicializar SCRAPER REGULATORIO
-    webScraper.init({
-      generateAIContent,
-      appendLearning: cerebroAbsoluto.appendLearning
-    });
-  });
-
-  // ⭐⭐⭐ EVENTO PRINCIPAL - LÓGICA COMPLETA MIIA ⭐⭐⭐
-  whatsappClient.on('message_create', (msg) => {
-    handleIncomingMessage(msg);
-  });
-
-  whatsappClient.on('disconnected', (reason) => {
-    console.log('\n╔════════════════════════════════════════╗');
-    console.log('║   ❌ WHATSAPP DESCONECTADO            ║');
-    console.log('╚════════════════════════════════════════╝');
-    console.log('[WA] ❌ Razón:', reason);
-    isReady = false;
-    whatsappClient = null;
-    io.emit('whatsapp_disconnected', { reason });
-  });
-
-  console.log('[WA] 🔄 Llamando a client.initialize()...');
-  whatsappClient.initialize().catch(async err => {
-    const errMsg = err?.message || String(err) || 'unknown error';
-    const errStr = JSON.stringify(err, Object.getOwnPropertyNames(err));
-    console.error('[WA] ❌ Error en initialize():', errMsg);
-    console.error('[WA] ❌ Error detail:', errStr);
-    // Si la sesión es corrupta, limpiarla para que el próximo boot pida QR
-    if (errMsg === 'undefined' || errMsg === 'unknown error' || errMsg.includes('ENOENT') || errMsg.includes('corrupt') || errMsg.includes('auth timeout') || errMsg.includes('timeout') || errMsg.includes('session') || errMsg.includes('401') || errMsg.includes('403')) {
-      try {
-        console.log('[WA] 🗑️ Limpiando sesión potencialmente corrupta (intento #' + (initRetryCount + 1) + '/3)...');
-        const store = new FirestoreSessionStore();
-        await store.delete({ session: `RemoteAuth-tenant-${OWNER_UID}` });
-
-        // También limpiar el archivo zip del disco local si existe
-        const sessionZipPaths = [
-          path.join('/app', '.wwebjs_auth', `RemoteAuth-tenant-${OWNER_UID}.zip`),
-          path.join(process.cwd(), '.wwebjs_auth', `RemoteAuth-tenant-${OWNER_UID}.zip`),
-          path.join('.wwebjs_auth', `RemoteAuth-tenant-${OWNER_UID}.zip`),
-        ];
-        for (const zipPath of sessionZipPaths) {
-          if (fs.existsSync(zipPath)) {
-            fs.unlinkSync(zipPath);
-            console.log(`[WA] 🗑️ Borrado archivo zip local: ${zipPath}`);
-          }
-        }
-
-        whatsappClient = null;
-        isReady = false;
-        qrCode = null;
-
-        // NO reintentar automáticamente — el rate limiting de WhatsApp es agresivo
-        // El usuario debe hacer POST /api/tenant/init manualmente cuando quiera intentar de nuevo
-        console.log('[WA] ⛔ Conexión rechazada por WhatsApp (posiblemente rate-limited). Esperando acción del usuario.');
-      } catch (e) {
-        console.error('[WA] ❌ Error limpiando sesión:', e.message);
-        whatsappClient = null;
-        isReady = false;
-      }
-    } else {
-      whatsappClient = null;
-      isReady = false;
-    }
-  });
-  console.log('[WA] 🔄 Initialize() llamado, esperando conexión...\n');
-}
+// initWhatsApp() ya no existe. Todos los usuarios (incluido el owner)
+// se conectan via POST /api/tenant/init → tenant_manager.initTenant()
+// que usa Baileys internamente (sin Chrome/Puppeteer).
+//
+// El owner legacy flow se mantiene compatible: safeSendMessage() y
+// handleIncomingMessage() usan getOwnerSock() para obtener el socket
+// del owner desde tenant_manager.
 
 // ============================================
 // SOCKET.IO EVENTS
@@ -2297,35 +2201,35 @@ function initWhatsApp() {
 
 io.on('connection', (socket) => {
   console.log('👤 Cliente conectado via Socket.io');
-  
-  // if (!whatsappClient) initWhatsApp();
 
-  // Si WhatsApp ya está conectado, avisar inmediatamente
-  if (isReady && whatsappClient) {
+  // Si WhatsApp del owner ya está conectado, avisar inmediatamente
+  const ownerStatus = getOwnerStatus();
+  if (ownerStatus.isReady) {
     socket.emit('whatsapp_ready', { status: 'connected' });
-  } else if (qrCode) {
-    socket.emit('qr', qrCode);
+  } else if (ownerStatus.hasQR && ownerStatus.qrCode) {
+    socket.emit('qr', ownerStatus.qrCode);
   }
-  
-  socket.emit('whatsapp_status', { isReady, qrCode });
+
+  socket.emit('whatsapp_status', { isReady: ownerStatus.isReady, qrCode: ownerStatus.qrCode || null });
 
   socket.on('check_status', () => {
-    if (isReady && whatsappClient) {
+    if (getOwnerStatus().isReady) {
       socket.emit('whatsapp_ready', { status: 'connected' });
     }
   });
 
-  // Enviar mensaje manual desde frontend
+  // Enviar mensaje manual desde frontend (Baileys API)
   socket.on('send_message', async (data) => {
     const { to, message } = data;
-    
-    if (!isReady) {
+    const sock = getOwnerSock();
+
+    if (!sock) {
       socket.emit('error', { message: 'WhatsApp no conectado' });
       return;
     }
 
     try {
-      await whatsappClient.sendMessage(to, message);
+      await sock.sendMessage(to, { text: message });
       socket.emit('message_sent', { to, message });
       console.log(`[MANUAL] Mensaje enviado a ${to}`);
     } catch (error) {
@@ -2334,27 +2238,20 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Obtener lista de chats
+  // Obtener lista de chats — Baileys no tiene getChats, return stored conversations
   socket.on('get_chats', async () => {
-    if (!isReady) {
+    if (!getOwnerSock()) {
       socket.emit('error', { message: 'WhatsApp no conectado' });
       return;
     }
 
     try {
-      const chats = await whatsappClient.getChats();
-      const chatList = [];
-      
-      for (let i = 0; i < Math.min(chats.length, 50); i++) {
-        const chat = chats[i];
-        const contact = await chat.getContact();
-        chatList.push({
-          id: chat.id._serialized,
-          name: contact.pushname || contact.number,
-          lastMessage: chat.lastMessage?.body || '',
-          timestamp: chat.timestamp
-        });
-      }
+      const chatList = Object.entries(conversations).slice(0, 50).map(([phone, msgs]) => ({
+        id: phone,
+        name: leadNames[phone] || phone.split('@')[0],
+        lastMessage: msgs.length > 0 ? msgs[msgs.length - 1].content : '',
+        timestamp: msgs.length > 0 ? msgs[msgs.length - 1].timestamp : null
+      }));
 
       socket.emit('chats_list', chatList);
     } catch (error) {
@@ -2514,8 +2411,8 @@ app.get('/api/tenant/:uid/agent-conversations', requireRole('owner', 'agent'), a
     const filtered = {};
     for (const phone of assignedLeads) {
       if (conversations[phone]) filtered[phone] = conversations[phone];
-      // Also try with @c.us suffix
-      const phoneWithSuffix = phone.includes('@') ? phone : `${phone}@c.us`;
+      // Also try with @s.whatsapp.net suffix
+      const phoneWithSuffix = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
       if (conversations[phoneWithSuffix]) filtered[phoneWithSuffix] = conversations[phoneWithSuffix];
     }
 
@@ -2665,7 +2562,58 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   const apiKeyToUse = geminiApiKey || '';
 
   // TODOS los usuarios van por el mismo flujo: tenant_manager
-  const tenant = tenantManager.initTenant(uid, apiKeyToUse, io);
+  // Si es el OWNER, conectar handleIncomingMessage y cerebro_absoluto
+  const isOwner = (OWNER_UID && uid === OWNER_UID);
+  const tenantOptions = isOwner ? {
+    onMessage: (baileysMsg, from, body) => {
+      // Adapter: convert Baileys message to whatsapp-web.js-like format for handleIncomingMessage
+      const adapted = {
+        from,
+        to: baileysMsg.key.remoteJid,
+        fromMe: !!baileysMsg.key.fromMe,
+        body,
+        id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
+        hasMedia: !!(baileysMsg.message?.imageMessage || baileysMsg.message?.audioMessage || baileysMsg.message?.videoMessage || baileysMsg.message?.documentMessage || baileysMsg.message?.stickerMessage),
+        type: baileysMsg.message?.imageMessage ? 'image' : baileysMsg.message?.audioMessage ? 'audio' : baileysMsg.message?.videoMessage ? 'video' : baileysMsg.message?.documentMessage ? 'document' : baileysMsg.message?.stickerMessage ? 'sticker' : 'chat',
+        isStatus: from === 'status@broadcast',
+        timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
+        _baileysMsg: baileysMsg  // Para que processMediaMessage pueda descargar media
+      };
+      handleIncomingMessage(adapted);
+    },
+    onReady: (sock) => {
+      console.log(`[WA] ✅ Owner connected via Baileys`);
+      isReady = true;
+      io.emit('whatsapp_ready', { status: 'connected' });
+
+      // Guardar número de WhatsApp en Firestore
+      try {
+        const waNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
+        if (waNumber) {
+          admin.firestore().collection('users').doc(OWNER_UID).update({
+            whatsapp_number: waNumber,
+            whatsapp_connected_at: new Date()
+          }).catch(e => console.log('[WA] No se pudo guardar número:', e.message));
+        }
+      } catch (e) {}
+
+      // Inicializar CEREBRO ABSOLUTO
+      cerebroAbsoluto.init({
+        whatsappClient: sock,
+        generateAIContent,
+        onTrainingUpdate: () => { saveDB(); },
+        dataDir: DATA_DIR,
+        initialTrainingData: cerebroAbsoluto.getTrainingData()
+      });
+
+      // Inicializar SCRAPER REGULATORIO
+      webScraper.init({
+        generateAIContent,
+        appendLearning: cerebroAbsoluto.appendLearning
+      });
+    }
+  } : {};
+  const tenant = tenantManager.initTenant(uid, apiKeyToUse, io, {}, tenantOptions);
   console.log(`[INIT] ✅ WhatsApp iniciado para ${uid}. Checking role...`);
 
   // Cargar cerebro compartido si es miembro de una empresa
@@ -2918,7 +2866,7 @@ app.get('/api/stats', (req, res) => {
 
 async function processMorningWakeup() {
   try {
-    if (!whatsappClient || !isReady) return;
+    if (!getOwnerSock() || !getOwnerStatus().isReady) return;
     if (nightPendingLeads.size === 0) return;
 
     const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
@@ -3126,7 +3074,8 @@ Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el int
           try {
             const ringPath = path.join(__dirname, 'assets', 'ring.ogg');
             if (fs.existsSync(ringPath)) {
-              const ringMedia = MessageMedia.fromFilePath(ringPath);
+              const ringBuffer = fs.readFileSync(ringPath);
+              const ringMedia = { mimetype: 'audio/ogg; codecs=opus', data: ringBuffer.toString('base64'), filename: 'ring.ogg' };
               await safeSendMessage(phone, ringMedia, { sendAudioAsVoice: true });
               await new Promise(r => setTimeout(r, 3000));
               console.log(`[FOLLOW-UP] Tono de atención enviado a ${leadName} (intento ${currentAttempt + 1})`);
@@ -3149,7 +3098,7 @@ Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el int
 
 async function processMorningBriefing() {
   try {
-    if (!whatsappClient || !isReady) return;
+    if (!getOwnerSock() || !getOwnerStatus().isReady) return;
 
     const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
     const h         = bogotaNow.getHours();
@@ -3204,7 +3153,7 @@ async function processMorningBriefing() {
     // Sección leads (informativa, sin aprobación)
     if (leadsSection) briefing += leadsSection;
 
-    await safeSendMessage(`${OWNER_PHONE}@c.us`, briefing);
+    await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, briefing);
     console.log(`[BRIEFING] Briefing interactivo enviado a Mariano (${scraperResults.length} regulatorias, leads: ${!!pendingEntries}).`);
   } catch (e) {
     console.error('[BRIEFING] Error:', e.message);
@@ -3306,7 +3255,7 @@ app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
       saveDB();
       console.log(`[HELPCENTER] ✅ Aprendizaje completo: ${learned}/${articleUrls.length} artículos procesados.`);
       // Notify Mariano via WhatsApp
-      safeSendMessage(`${OWNER_PHONE}@c.us`, `✅ *Centro de Ayuda Medilink aprendido*\n${learned} artículos procesados y guardados en mi memoria.`).catch(() => {});
+      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ *Centro de Ayuda Medilink aprendido*\n${learned} artículos procesados y guardados en mi memoria.`).catch(() => {});
     } catch (e) {
       console.error('[HELPCENTER] Error general:', e.message);
     }
@@ -3315,7 +3264,7 @@ app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
 
 // Endpoint para disparar el minado manualmente desde el panel
 app.post('/api/cerebro/mine-dna', async (_req, res) => {
-  if (!whatsappClient || !isReady) {
+  if (!getOwnerSock() || !getOwnerStatus().isReady) {
     return res.status(503).json({ error: 'WhatsApp no conectado.' });
   }
   res.json({ success: true, message: 'CEREBRO ABSOLUTO activado en segundo plano.' });
@@ -4212,11 +4161,9 @@ async function rebuildTenantBrainFromFirestore(uid) {
 // ============================================
 app.post('/api/logout', async (req, res) => {
   try {
-    if (whatsappClient) {
+    if (OWNER_UID && getOwnerSock()) {
       console.log('🔌 Desvinculando WhatsApp...');
-      await whatsappClient.logout();
-      await whatsappClient.destroy();
-      whatsappClient = null;
+      await tenantManager.destroyTenant(OWNER_UID);
       isReady = false;
       console.log('✅ WhatsApp desvinculado');
     }
