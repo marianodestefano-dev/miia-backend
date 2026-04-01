@@ -4,20 +4,22 @@ Este archivo es leído automáticamente en CADA conversación, con cualquier mod
 
 ---
 
-## ⛔ ZONA CRÍTICA — WHATSAPP (NO MODIFICAR SIN AVISO)
+## 🚨🔴⚠️ ALERTA — ZONA CRÍTICA DE WHATSAPP — NO MODIFICAR SIN AVISO 🔴🚨⚠️
 
-Los siguientes archivos y funciones son **críticos para la conexión WhatsApp**. Modificarlos sin cuidado rompe toda la vinculación.
+Los siguientes archivos y funciones son **CRÍTICOS para la conexión WhatsApp**. Modificarlos sin cuidado **ROMPE toda la vinculación**.
 
-### Archivos protegidos:
-- `server.js` — auto-reconnect block (lines ~4533-4647), endpoints `/api/tenant/:uid/qr`, message handling para owner
-- `tenant_manager.js` — TODO EL ARCHIVO. Especialmente: `startBaileysConnection()`, message filtering logic (líneas ~304-342), eventos `qr`/`authenticated`/`ready`/`disconnected`
+### 📁 Archivos protegidos:
+- `server.js` — bloque de auto-reconnect (líneas ~4533-4647), endpoints `/api/tenant/:uid/qr`, manejo de mensajes del owner
+- `tenant_manager.js` — **TODO EL ARCHIVO**. Especialmente: `startBaileysConnection()`, lógica de filtrado de mensajes (líneas ~304-342), eventos `qr`/`authenticated`/`ready`/`disconnected`
 
-### Regla obligatoria ANTES de tocar cualquiera de estos archivos:
-1. Decirle a Mariano QUÉ vas a cambiar y POR QUÉ
-2. Esperar su confirmación explícita
-3. Cambiar SOLO lo mínimo necesario
+### ✋ Regla OBLIGATORIA ANTES de tocar cualquiera de estos archivos:
+1. **Explicar a Mariano EN ESPAÑOL** qué se va a cambiar y por qué
+2. **Esperar su confirmación EXPLÍCITA** (no asumir que acepta)
+3. Cambiar **SOLO lo mínimo necesario**
+4. Mostrar ejemplos concretos del comportamiento ANTES vs DESPUÉS
+5. **SIEMPRE usar en la descripción del comando Bash (campo description)** el prefijo: `🚨🔴⚠️ ALERTA: ZONA CRÍTICA —` seguido del archivo y resumen del cambio. Esto aplica a CUALQUIER git commit, git add, o edición que toque `server.js` o `tenant_manager.js`. Mariano necesita ver esta alerta en el popup "Allow this bash command" para estar atento.
 
-### ¿Por qué esta regla existe?
+### ❓ ¿Por qué esta regla existe?
 En sesiones anteriores se modificaron estas zonas sin cuidado y se rompió la conexión WhatsApp. El auto-reconnect y el message filtering de Baileys son delicados. Cualquier cambio pequeño puede romper el flujo QR→authenticated→ready o bloquear mensajes legítimos.
 
 ---

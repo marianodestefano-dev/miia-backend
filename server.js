@@ -932,7 +932,10 @@ Nuevo resumen actualizado:`;
 
     const myNumber = (getOwnerSock() && getOwnerSock().user)
       ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
-    const isSelfChat = phone === myNumber || phone.split('@')[0] === myNumber.split('@')[0];
+    // Self-chat: el owner hablando consigo mismo. Detectar robustamente.
+    const phoneBase = phone.split('@')[0].split(':')[0]; // Extract just the number (handle :123 format)
+    const myBase = myNumber.split('@')[0].split(':')[0];
+    const isSelfChat = phoneBase === myBase;
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos — registrar pendiente y no responder
     if (!isSelfChat && !isFamilyContact && !isAdmin) {
       const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
