@@ -717,10 +717,17 @@ async function generarPDF(params) {
     const buffer = await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 }  // Números, no strings
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      timeout: 30000
     });
+    if (!buffer || !Buffer.isBuffer(buffer)) {
+      throw new Error(`page.pdf() retornó inválido: ${typeof buffer}`);
+    }
     console.log(`[PDF-INIT] PDF generado exitosamente, size: ${buffer.length} bytes`);
     return buffer;
+  } catch (e) {
+    console.error(`[PDF-INIT] Error generando PDF:`, e.message);
+    throw e;
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
