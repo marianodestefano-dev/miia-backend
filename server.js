@@ -541,6 +541,15 @@ async function safeSendMessage(target, content, options = {}) {
     const targetNumber = target.split('@')[0]?.split(':')[0];
     const isSelfChat = ownerNumber && targetNumber && ownerNumber === targetNumber;
 
+    console.log(`[SELF-CHAT-SEND-DEBUG]`, {
+      target,
+      ownerNumber,
+      targetNumber,
+      isSelfChat,
+      savedKeyExists: !!lastMessageKey[target],
+      savedKeyType: lastMessageKey[target] ? typeof lastMessageKey[target] : 'undefined'
+    });
+
     let sendOptions = {};
     if (isSelfChat) {
       // Para self-chat, usar el último message.key guardado
@@ -548,6 +557,7 @@ async function safeSendMessage(target, content, options = {}) {
       if (savedKey) {
         sendOptions.quoted = { key: savedKey };
         console.log(`[SELF-CHAT FIX] ✅ Usando quotedMessage para self-chat ${targetNumber}`);
+        console.log(`[SELF-CHAT FIX] Quoted key:`, JSON.stringify(savedKey).substring(0, 100));
       } else {
         console.log(`[SELF-CHAT FIX] ⚠️ No hay messageKey guardado para ${targetNumber}. Intentando sin quoted...`);
       }
@@ -2178,10 +2188,22 @@ async function handleIncomingMessage(message) {
     }
     // ────────────────────────────────────────────────────────────────────
 
-    // 🔧 Guardar message.key para self-chat quotedMessage
+    // 🔧 Guardar message.key para self-chat quotedMessage (DEBUG CRITICAL)
+    console.log(`[SELF-CHAT-DEBUG] message.key structure:`, {
+      hasKey: !!message.key,
+      keyType: typeof message.key,
+      keyKeys: message.key ? Object.keys(message.key) : 'N/A'
+    });
+
     if (message.key) {
       lastMessageKey[effectiveTarget] = message.key;
-      console.log(`[SELF-CHAT] Guardado messageKey para ${effectiveTarget}`);
+      console.log(`[SELF-CHAT] ✅ Guardado messageKey para ${effectiveTarget}`);
+    } else if (message.id && message.id._serialized) {
+      // Fallback: usar message.id._serialized como key
+      lastMessageKey[effectiveTarget] = { id: message.id._serialized };
+      console.log(`[SELF-CHAT] ⚠️ Usando fallback message.id._serialized para ${effectiveTarget}`);
+    } else {
+      console.log(`[SELF-CHAT] ❌ NO message.key ni message.id encontrado para ${effectiveTarget}`);
     }
 
     // Emitir mensaje entrante al frontend
