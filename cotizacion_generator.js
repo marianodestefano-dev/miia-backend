@@ -289,19 +289,24 @@ function buildHTML(params) {
   console.log(`[COTIZ-DEBUG] Logo obtenido, llamando calcularCotizacion...`);
   const calc  = calcularCotizacion(params);
   console.log(`[COTIZ-DEBUG] calcularCotizacion completado`);
+  console.log(`[COTIZ-DEBUG] calc.bolsas =`, calc.bolsas ? Object.keys(calc.bolsas) : 'undefined');
   const { planes, bolsas, nAdic, enviosWA, enviosFactFirm, recetaAR } = calc;
   const { esencial: es, pro, titanium: ti } = planes;
   const p     = PRECIOS[moneda];
   console.log(`[COTIZ-DEBUG] PRECIOS[${moneda}] =`, p ? 'OK' : 'UNDEFINED');
+  console.log(`[COTIZ-DEBUG] Construyendo logoTag...`);
 
   const logoTag = logo
     ? `<img class="logo-img" src="${logo}" alt="Medilink">`
     : '<span class="logo-txt">medilink</span>';
+  console.log(`[COTIZ-DEBUG] logoTag construido`);
 
   // ── Filas de bolsas ──────────────────────────────────────────────
   let bolsasRows = '';
+  console.log(`[COTIZ-DEBUG] Iniciando bolsasRows, incluirWA=${incluirWA}, bolsas.wa=${bolsas.wa ? 'OK' : 'undefined'}`);
 
   if (incluirWA && bolsas.wa) {
+    console.log(`[COTIZ-DEBUG] Entrando en sección WA bolsa...`);
     const b = bolsas.wa;
     bolsasRows += `
       <tr class="row-even">
