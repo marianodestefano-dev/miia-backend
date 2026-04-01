@@ -951,36 +951,35 @@ Nuevo resumen actualizado:`;
       generateAIContent(summaryPrompt).then(s => { if (s) { leadSummaries[phone] = s.trim(); saveDB(); } }).catch(() => {});
     }
 
-    // ⚠️ OWNER DETECTION: Comparar con el número real guardado en Firestore
-    // El owner es el usuario cuyo número WhatsApp coincide con whatsapp_owner_number
+    // ⚠️ OWNER DETECTION: Detectar owner en self-chat o por comparación de número
+    // El owner puede detectarse de dos formas:
+    // 1. Self-chat: isAlreadySavedParam=true → es un mensaje del owner en su self-chat
+    // 2. Número coincide: basePhone === whatsapp_owner_number (para otros casos)
     let isOwnerNumber = false;
+    const isSelfChat = isAlreadySavedParam; // Self-chat es cuando fromMe=true (isAlreadySavedParam indica esto)
 
-    if (OWNER_UID) {
+    if (isSelfChat) {
+      // En self-chat, el owner SIEMPRE responde (sin importar la hora)
+      isOwnerNumber = true;
+      console.log(`[OWNER] ✅ Detectado self-chat del owner (isAlreadySavedParam=true)`);
+    } else if (OWNER_UID) {
+      // No es self-chat, verificar si el número coincide con el owner
       try {
         const userDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
         const basePhone = phone.split('@')[0];
 
         if (userDoc.exists) {
           const ownerPhoneFromDb = userDoc.data()?.whatsapp_owner_number;
-          console.log(`[OWNER-DEBUG] OWNER_UID=${OWNER_UID}, basePhone=${basePhone}, ownerPhoneFromDb=${ownerPhoneFromDb}`);
 
           if (ownerPhoneFromDb && basePhone === ownerPhoneFromDb) {
             isOwnerNumber = true;
-            console.log(`[OWNER] ✅ Mensaje del owner detectado: ${basePhone}`);
-          } else {
-            console.log(`[OWNER] ❌ No es owner - basePhone(${basePhone}) !== ownerPhoneFromDb(${ownerPhoneFromDb})`);
+            console.log(`[OWNER] ✅ Detectado owner por número: ${basePhone}`);
           }
-        } else {
-          console.warn(`[OWNER] ⚠️ Documento del usuario no encontrado en Firestore para ${OWNER_UID}`);
         }
       } catch (e) {
-        console.error(`[OWNER] ❌ Error verificando número:`, e.message);
+        console.error(`[OWNER] Error verificando número:`, e.message);
       }
-    } else {
-      console.warn(`[OWNER] ⚠️ OWNER_UID no está definido`);
     }
-
-    const isSelfChat = isOwnerNumber && isAlreadySavedParam; // Self-chat: owner + fromMe
 
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
     // EXCEPTO: owner y family contacts responden siempre
