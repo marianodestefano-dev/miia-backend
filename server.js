@@ -733,7 +733,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     if (!conversations[phone]) conversations[phone] = [];
     const familyInfo = familyContacts[basePhone];
     const isFamilyContact = !!familyInfo;
-    const isAdmin = ADMIN_PHONES.includes(basePhone);
+    let isAdmin = ADMIN_PHONES.includes(basePhone);  // ← CAMBIO: const → let (para poder reasignar en self-chat)
 
     // Recuperar mensaje real del historial cuando fue llamado con userMessage=null
     const effectiveMsg = userMessage ||
