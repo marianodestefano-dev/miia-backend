@@ -106,19 +106,30 @@ const PRECIOS = {
 
 /** Formatea un número como moneda con separador de miles apropiado */
 function fmt(value, moneda) {
-  const n = Number(value);
-  const sepMiles = (moneda === 'USD' || moneda === 'MXN') ? ',' : '.';
-  if (moneda === 'MXN' && n % 1 !== 0) {
-    const int = Math.floor(n);
-    const dec = Math.round((n - int) * 100).toString().padStart(2, '0');
-    return '$ ' + int.toString().replace(/\B(?=(\d{3})+(?!\d))/g, sepMiles) + '.' + dec;
+  try {
+    const n = Number(value);
+    const sepMiles = (moneda === 'USD' || moneda === 'MXN') ? ',' : '.';
+    if (moneda === 'MXN' && n % 1 !== 0) {
+      const int = Math.floor(n);
+      const dec = Math.round((n - int) * 100).toString().padStart(2, '0');
+      return '$ ' + int.toString().replace(/\B(?=(\d{3})+(?!\d))/g, sepMiles) + '.' + dec;
+    }
+    return '$ ' + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, sepMiles);
+  } catch(e) {
+    console.error(`[FMT-ERROR] value=${value}, moneda=${moneda}, error=${e.message}`);
+    throw e;
   }
-  return '$ ' + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, sepMiles);
 }
 
 /** Formatea número plano (para rangos de bolsas) */
 function fmtNum(n) {
-  return Math.round(Number(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  try {
+    const result = Math.round(Number(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return result;
+  } catch(e) {
+    console.error(`[FMTNUM-ERROR] n=${n}, error=${e.message}`);
+    throw e;
+  }
 }
 
 /** Precio del usuario adicional según total de usuarios */
@@ -308,6 +319,8 @@ function buildHTML(params) {
   if (incluirWA && bolsas.wa) {
     console.log(`[COTIZ-DEBUG] Entrando en sección WA bolsa...`);
     const b = bolsas.wa;
+    console.log(`[COTIZ-DEBUG] b.wa object:`, JSON.stringify(b));
+    console.log(`[COTIZ-DEBUG] b.tier=${b.tier}, b.limiteEnvios=${b.limiteEnvios}, b.precio=${b.precio}`);
     bolsasRows += `
       <tr class="row-even">
         <td class="td-desc">BOLSA WHATSAPP — RECORDATORIOS
