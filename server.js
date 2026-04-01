@@ -951,12 +951,11 @@ Nuevo resumen actualizado:`;
       generateAIContent(summaryPrompt).then(s => { if (s) { leadSummaries[phone] = s.trim(); saveDB(); } }).catch(() => {});
     }
 
-    // ⚠️ TEMPORARY FIX: El owner siempre responde, sin restricción de silencio nocturno
-    // TODO: Revisar por qué isSelfChat no funciona correctamente
-    const isOwnerNumber = phone && (
-      phone.includes('136417472712832') ||  // Hardcoded owner number
-      phone.includes('bq2BbtCVF8cZo30tum584zrGATJ3')  // Owner UID
-    );
+    // ⚠️ OWNER DETECTION: Sin hardcodes. Basado en UID y Firestore
+    // El owner se detecta si:
+    // 1. El phone/JID pertenece al OWNER_UID
+    // 2. O está en el map de self-chats (fromMe=true)
+    const isOwnerNumber = phone && phone.includes(OWNER_UID);
     const isSelfChat = isOwnerNumber; // For logging purposes
 
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
