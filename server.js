@@ -4530,9 +4530,81 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // WhatsApp se inicia cuando cada usuario hace click en "Conectar WhatsApp"
-  // No hay auto-start — cada usuario se conecta por demand via /api/tenant/init
-  console.log('[AUTO-INIT] ℹ️  WhatsApp se conecta bajo demanda. Cada usuario inicia su propia conexión.');
+  // Auto-reconexión del owner al iniciar el servidor
+  // Si hay credenciales de Baileys en Firestore, reconecta automáticamente
+  if (OWNER_UID && !process.env.SKIP_WA_INIT) {
+    console.log('[AUTO-INIT] 🔄 Intentando auto-reconexión del owner...');
+    setTimeout(async () => {
+      try {
+        // Verificar si hay sesión de Baileys guardada
+        const credsDoc = await admin.firestore().collection('baileys_sessions').doc(OWNER_UID).collection('data').doc('creds').get();
+        if (credsDoc.exists) {
+          console.log('[AUTO-INIT] 🔑 Credenciales encontradas. Reconectando owner...');
+          // Obtener API key del owner desde Firestore
+          let ownerGeminiKey = process.env.GEMINI_API_KEY || '';
+          try {
+            const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+            if (ownerDoc.exists && ownerDoc.data().gemini_api_key) {
+              ownerGeminiKey = ownerDoc.data().gemini_api_key;
+            }
+          } catch (_) {}
+
+          // Crear las mismas opciones que usa /api/tenant/init para el owner
+          const ownerOptions = {
+            onMessage: (baileysMsg, from, body) => {
+              const adapted = {
+                from,
+                to: baileysMsg.key.remoteJid,
+                fromMe: !!baileysMsg.key.fromMe,
+                body,
+                id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
+                hasMedia: !!(baileysMsg.message?.imageMessage || baileysMsg.message?.audioMessage || baileysMsg.message?.videoMessage || baileysMsg.message?.documentMessage || baileysMsg.message?.stickerMessage),
+                type: baileysMsg.message?.imageMessage ? 'image' : baileysMsg.message?.audioMessage ? 'audio' : baileysMsg.message?.videoMessage ? 'video' : baileysMsg.message?.documentMessage ? 'document' : baileysMsg.message?.stickerMessage ? 'sticker' : 'chat',
+                isStatus: from === 'status@broadcast',
+                timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
+                _baileysMsg: baileysMsg
+              };
+              handleIncomingMessage(adapted);
+            },
+            onReady: (sock) => {
+              console.log('[AUTO-INIT] ✅ Owner reconnected via Baileys');
+              isReady = true;
+              io.emit('whatsapp_ready', { status: 'connected' });
+              try {
+                const waNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
+                if (waNumber) {
+                  admin.firestore().collection('users').doc(OWNER_UID).update({
+                    whatsapp_number: waNumber,
+                    whatsapp_connected_at: new Date()
+                  }).catch(() => {});
+                }
+              } catch (_) {}
+              cerebroAbsoluto.init({
+                whatsappClient: sock,
+                generateAIContent,
+                onTrainingUpdate: () => { saveDB(); },
+                dataDir: DATA_DIR,
+                initialTrainingData: cerebroAbsoluto.getTrainingData()
+              });
+              webScraper.init({
+                generateAIContent,
+                appendLearning: cerebroAbsoluto.appendLearning
+              });
+            }
+          };
+
+          tenantManager.initTenant(OWNER_UID, ownerGeminiKey, io, {}, ownerOptions);
+          console.log('[AUTO-INIT] 🚀 Owner init disparado. Esperando conexión...');
+        } else {
+          console.log('[AUTO-INIT] ⚠️ Sin credenciales de Baileys. El owner debe vincular WhatsApp manualmente.');
+        }
+      } catch (e) {
+        console.error('[AUTO-INIT] ❌ Error en auto-reconexión:', e.message);
+      }
+    }, 3000); // Esperar 3s a que todo esté listo
+  } else {
+    console.log('[AUTO-INIT] ℹ️ WhatsApp se conecta bajo demanda. OWNER_UID:', OWNER_UID || 'no configurado');
+  }
 });
 
 // ============================================
