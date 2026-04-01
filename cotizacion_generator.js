@@ -697,10 +697,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 // ─────────────────────────────────────────────────────────────────────
 
 async function generarPDF(params) {
+  console.log(`[PDF-INIT] generarPDF iniciado, puppeteer available: ${!!puppeteer}`);
   if (!puppeteer) throw new Error('puppeteer no instalado — PDF no disponible');
   let browser;
   try {
+    console.log(`[PDF-INIT] Llamando buildHTML...`);
     const html = buildHTML(params);
+    console.log(`[PDF-INIT] buildHTML completado, html length: ${html.length}`);
     browser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
