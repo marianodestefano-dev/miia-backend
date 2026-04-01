@@ -754,7 +754,24 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         conversationMetadata[phone].dileAHandshakePending = false;
         conversationMetadata[phone].dileAActive = true;
         console.log(`[DILE A] ✅ Handshake completado con ${conversationMetadata[phone].dileAContact}`);
-        await safeSendMessage(phone, `¡Hola! Acá estoy, lista para lo que necesites. 💕`);
+
+        // Generar respuesta creativa a "HOLA MIIA"
+        const contactName = conversationMetadata[phone].dileAContact;
+        const contactInfo = familyContacts[phone.split('@')[0]] || {};
+        const promptHolaMiia = `Sos MIIA, asistente de Mariano. ${contactName} acaba de escribir "HOLA MIIA" para activar nuestra conversación después del handshake.
+Tu personalidad con ${contactName}: ${contactInfo.personality || 'Amistosa y natural'}.
+Generá una respuesta breve (máx 2 renglones), cálida y natural, que muestre que estás lista para conversar.
+NO repitas "Hola" ni "estoy lista", sé creativa y acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '💕'}`;
+
+        try {
+          const respuestaHola = await generateAIContent(promptHolaMiia);
+          if (respuestaHola) {
+            await safeSendMessage(phone, respuestaHola.trim());
+          }
+        } catch (e) {
+          console.error(`[DILE A] Error generando respuesta HOLA MIIA:`, e.message);
+          await safeSendMessage(phone, `¡Acá estoy! Listos para lo que necesites. 💕`);
+        }
         return;
       }
 
@@ -763,7 +780,24 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         conversationMetadata[phone].dileAActive = false;
         conversationMetadata[phone].dileAMode = false;
         console.log(`[DILE A] 👋 Conversación terminada con ${conversationMetadata[phone].dileAContact}`);
-        await safeSendMessage(phone, `¡Chaauuu! Cuando quieras hablar, aquí estoy. 💕`);
+
+        // Generar despedida creativa
+        const contactName = conversationMetadata[phone].dileAContact;
+        const contactInfo = familyContacts[phone.split('@')[0]] || {};
+        const promptChauMiia = `Sos MIIA, asistente de Mariano. ${contactName} acaba de escribir "CHAU MIIA" para terminar nuestra conversación.
+Tu personalidad con ${contactName}: ${contactInfo.personality || 'Amistosa y natural'}.
+Generá una despedida breve (máx 2 renglones), cálida y natural. IMPORTANTE: recordale que si quiere volver a hablar conmigo, debe escribir "HOLA MIIA" (con dos ii) en el chat.
+Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '💕'}`;
+
+        try {
+          const despedida = await generateAIContent(promptChauMiia);
+          if (despedida) {
+            await safeSendMessage(phone, despedida.trim());
+          }
+        } catch (e) {
+          console.error(`[DILE A] Error generando despedida CHAU MIIA:`, e.message);
+          await safeSendMessage(phone, `¡Chaauuu! Si quieres volver a hablar, escribe HOLA MIIA en el chat. 💕`);
+        }
         saveDB();
         return;
       }
@@ -954,16 +988,50 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
               const cleanMsg = miiaMsg.trim();
               const isFirstContact = !familyInfo.isHandshakeDone;
 
-              // En primer contacto: agregar instrucción completa de HOLA MIIA / CHAU MIIA
-              // En contactos posteriores: ocasionalmente recordar (1 en 5 veces)
+              // En primer contacto: generar handshake CREATIVO de autoría de MIIA
+              // En contactos posteriores: ocasionalmente recordar de forma creativa
               let finalMsg = cleanMsg;
               if (isFirstContact) {
-                // Primer mensaje: incluir handshake obligatorio
-                finalMsg = `${cleanMsg}\n\nResponde solamente *HOLA MIIA* y aquí estaré! Chaauuu 👋`;
+                // Primer mensaje: generar handshake creativo
+                const promptHandshake = `Sos MIIA, asistente de Mariano. Acabas de escribir un mensaje inicial a ${familyInfo.name} (${familyInfo.relation} de Mariano).
+Ahora necesitás generar el handshake — la instrucción creativa y natural para que ${familyInfo.name} sepa cómo activar la conversación contigo.
+Tu tono: ${familyInfo.personality || 'Amistosa y natural'}.
+
+Generá un handshake CREATIVO (máx 2 renglones) que le diga a ${familyInfo.name}:
+- Que responda HOLA MIIA (mayúsculas) para continuar hablando contigo
+- De forma natural, acorde a su personalidad, NO como una instrucción rígida
+- Ejemplo tono (NO literal): "Dale, cuando quieras seguir hablando conmigo, escribí HOLA MIIA y acá estaré"
+- Usá el emoji: ${familyInfo.emoji || '💕'}`;
+
+                try {
+                  const handshakeMsg = await generateAIContent(promptHandshake);
+                  if (handshakeMsg) {
+                    finalMsg = `${cleanMsg}\n\n${handshakeMsg.trim()}`;
+                  }
+                } catch (e) {
+                  console.error(`[DILE A] Error generando handshake creativo:`, e.message);
+                  finalMsg = `${cleanMsg}\n\nResponde *HOLA MIIA* cuando quieras seguir hablando conmigo. 💕`;
+                }
               } else {
-                // Mensajes posteriores: recordar ocasionalmente (20% de probabilidad)
+                // Mensajes posteriores: recordar ocasionalmente de forma creativa (20%)
                 if (Math.random() < 0.2) {
-                  finalMsg = cleanMsg + MIIA_CIERRE;
+                  const promptRecordatorio = `Sos MIIA, asistente de Mariano. Estás hablando con ${familyInfo.name} (${familyInfo.relation}).
+Generá un recordatorio NATURAL Y BREVE (1 renglón máx) sobre cómo terminar la conversación:
+- Si quiere seguir: nada que hacer (sigue escribiendo)
+- Si quiere terminar: escriba CHAU MIIA (con dos ii)
+- Recuérdalo de forma creativa y acorde a su personalidad, NO como instrucción rígida
+Tono: ${familyInfo.personality || 'Amistosa'}.
+Emoji: ${familyInfo.emoji || ''}`;
+
+                  try {
+                    const recordatorioMsg = await generateAIContent(promptRecordatorio);
+                    if (recordatorioMsg) {
+                      finalMsg = cleanMsg + '\n\n' + recordatorioMsg.trim();
+                    }
+                  } catch (e) {
+                    // Si falla generación, usar MIIA_CIERRE como fallback
+                    finalMsg = cleanMsg + MIIA_CIERRE;
+                  }
                 }
               }
 
