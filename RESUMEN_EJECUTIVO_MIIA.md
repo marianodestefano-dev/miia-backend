@@ -5,15 +5,60 @@
 **URGENCIA**: CRITICA — Sin P2, WhatsApp se desconecta en cada restart
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
 
-### SESIÓN ACTUAL (Abril 1, duración ~3 horas)
-**Commits realizados:**
-- `1e23cdc` — Self-chat quotedMessage fix (P1 solución propuesta)
-- `e90958e` — P3 (endpoint multi-tenant) + P5 (NASA-grade error handling)
-- `5331cb8` — Lecciones aprendidas documentadas
-- `392f28b` — Retry deployment (Railway timeout)
+### SESIÓN ACTUAL 2 (Abril 1, duración ~4 horas - LARGA)
+**Commits realizados (en orden):**
+1. `489c61c` — Restructurar detección owner con whatsapp_owner_number
+2. `ba59bae` — Agregar import firebase-admin en tenant_manager.js
+3. `12e60a6` — Detectar owner en self-chat sin comparación de número
+4. `563dd7c` — Usar @lid en lugar de @s.whatsapp.net para self-chat
+5. `08eb8eb` — Logging exhaustivo en safeSendMessage
+6. `6054178` — Pasar isSelfChat como flag (FINAL FIX)
+7. `2a3d0ab` — Remover quoted message que causa error en Baileys (ÚLTIMO)
 
-**Costo REAL esta sesión**: ~$3-5 USD (Haiku, múltiples reads/greps/debugging)
-**Costo acumulado hasta ahora**: ~$6.50-8.50 USD (no $0.70 como estimé inicialmente)
+**Problema encontrado:**
+- MIIA SÍ genera respuestas ✅
+- MIIA SÍ detecta self-chat ✅
+- MIIA SÍ convierte JID a @lid ✅
+- Pero: Error "Cannot read properties of undefined (reading 'fromMe')" al enviar con quoted message
+- Fix: Enviar a @lid SIN quoted message
+
+**Costo REAL esta sesión 2**: ~$8-10 USD (múltiples deployments, debugging exhaustivo)
+**Costo TOTAL acumulado**: ~$15-18 USD
+
+---
+
+## 🔍 PRÓXIMOS PASOS A INVESTIGAR (CUANDO VUELVAS)
+
+**Si P1 SIGUE SIN FUNCIONAR después del fix 2a3d0ab:**
+
+1. ✅ Verificar que Railway deployó `2a3d0ab` (Remover quoted message)
+   - Si está ACTIVE y sin errores → el problema NO es el código
+
+2. 🔐 **Revisar registro de SUPER ADMIN en Firestore:**
+   - El usuario admin (`bq2BbtCVF8cZo30tum584zrGATJ3`) tiene todos estos campos?
+     - `role: 'admin'`
+     - `whatsapp_owner_number: '573054169969'` ✅ (debería estar guardado)
+     - `whatsapp_owner_jid: '573054169969@s.whatsapp.net'`
+   - Si falta alguno → ese es el problema
+
+3. 🔌 **Verificar estructura de Baileys en runtime:**
+   - ¿El socket tiene `sock.user.id`?
+   - ¿El socket está realmente READY cuando intenta enviar?
+   - Log: `[MIIA] Enviando mensaje ... | isReady=true` — ¿dice true?
+
+4. 🎯 **Si logs muestran `[SEND-OK] ✅ sendMessage retornó exitosamente`:**
+   - Entonces el problema es DESPUÉS del send (Baileys internamente rechaza)
+   - Podría ser:
+     - JID @lid incorrecto para esa sesión
+     - Credenciales expiradas
+     - Baileys esperando otro formato
+
+5. ⚡ **Opción nuclear si nada funciona:**
+   - Como sugeriste: recrear registro admin sin hardcodear
+   - Usar flow: QR → Baileys auto-detecta número → guardar en Firestore
+   - Eliminar cualquier hardcode de OWNER_PHONE
+
+**RECUERDA:** Estamos a nada. El mensaje se está generando, se está intentando enviar. Solo no llega a WhatsApp.
 
 ---
 
