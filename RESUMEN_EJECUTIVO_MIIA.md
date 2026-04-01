@@ -1,64 +1,80 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~08:45 AM (después de sesión larga)
-**ESTADO**: P1 🔧 EN PRUEBA | P3 ✅ HECHO | P4 ✅ HECHO | P5 ✅ HECHO | P2,P6-P11 PENDIENTES
-**URGENCIA**: CRITICA — Sin P2, WhatsApp se desconecta en cada restart
+**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~12:10 PM (SESIÓN 3 - Post-compactación)
+**ESTADO**: P1 🔥 COTIZACIÓN CRITICAL FIX | P2 🔴 BLOQUEADO (sesión desincronizada) | P3-P5 ✅ HECHOS
+**URGENCIA**: CRÍTICA — P1: Cotización no emite PDF (fix aplicado). P2: Baileys MessageCounterError destruyendo sesión.
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
 
-### SESIÓN ACTUAL 2 (Abril 1, duración ~4 horas - LARGA)
-**Commits realizados (en orden):**
-1. `489c61c` — Restructurar detección owner con whatsapp_owner_number
-2. `ba59bae` — Agregar import firebase-admin en tenant_manager.js
-3. `12e60a6` — Detectar owner en self-chat sin comparación de número
-4. `563dd7c` — Usar @lid en lugar de @s.whatsapp.net para self-chat
-5. `08eb8eb` — Logging exhaustivo en safeSendMessage
-6. `6054178` — Pasar isSelfChat como flag (FINAL FIX)
-7. `2a3d0ab` — Remover quoted message que causa error en Baileys (ÚLTIMO)
+### SESIÓN 3 (Abril 1, 12:10 PM - POST-COMPACTACIÓN)
+**Commits realizados (nuevos):**
+1. `c79cd9b` — COTIZACIÓN FIX: Reordenar prompt para absoluta prioridad de emisión de tag
+2. `ce55c5d` — COTIZACIÓN CRITICAL FIX: Eliminar secciones conflictivas del prompt
 
-**Problema encontrado:**
-- MIIA SÍ genera respuestas ✅
-- MIIA SÍ detecta self-chat ✅
-- MIIA SÍ convierte JID a @lid ✅
-- Pero: Error "Cannot read properties of undefined (reading 'fromMe')" al enviar con quoted message
-- Fix: Enviar a @lid SIN quoted message
+**Problema ENCONTRADO (P1 Cotización):**
+- ❌ Gemini recibía 3 secciones CONFLICTIVAS en el prompt admin:
+  1. "ESTRUCTURA DE RESPUESTA REQUERIDA" (línea 1422) → pide generar TABLA EN TEXTO
+  2. "PROTOCOLO COTIZACIÓN EN PDF" (línea 1429) → viejo, desfasado
+  3. "PROTOCOLO COTIZACIÓN PRIORITARIA" (línea 1503) → NUEVO, correcto
+- Resultado: Gemini confundido → cuando pedían cotización, preguntaba "¿qué plan?" en lugar de emitir tag
+- ✅ **FIX APLICADO**: Eliminadas secciones viejas (1422-1440). Ahora solo está el PROTOCOLO COTIZACIÓN nuevo.
 
-**Costo REAL esta sesión 2**: ~$8-10 USD (múltiples deployments, debugging exhaustivo)
+**Problema ENCONTRADO (P2 Baileys):**
+- ❌ Sesión de Mariano recibe `MessageCounterError: Key used already or never filled` constantemente
+- UID: `bq2BbtCVF8cZo30tum584zrGATJ3`
+- WhatsApp: **+57 305 4169969** (NO +57 301 4259700 que es compañero de trabajo)
+- Causa: Session desincronizada criptográficamente con WhatsApp servers
+- Efecto: Mensajes no se descifran, sesión inestable
+
+**Siguiente paso INMEDIATO:**
+1. ✅ Probar P1: Mariano envía "cotización Colombia 1 usuario" → debe recibir PDF (no pregunta de plan)
+2. 🔴 Luego P2: Implementar auto-cleanup para sesiones con MessageCounterError (reconexión automática)
+
+**Costo REAL esta sesión 3**: ~$0.30 USD (investigación, git commits, análisis Firestore)
 **Costo TOTAL acumulado**: ~$15-18 USD
 
 ---
 
-## 🔍 PRÓXIMOS PASOS A INVESTIGAR (CUANDO VUELVAS)
+## 🔍 PRÓXIMOS PASOS INMEDIATOS (SESIÓN 3 EN PROGRESO)
 
-**Si P1 SIGUE SIN FUNCIONAR después del fix 2a3d0ab:**
+### PASO 1: Validar P1 (Cotización) — 5 MINUTOS
+**Qué hacer:**
+1. Mariano envía a MIIA: `"cotización Colombia 1 usuario"`
+2. Esperar respuesta
+3. ✅ **ÉXITO**: Recibe PDF + texto "Te envío un PDF..."
+4. ❌ **FALLO**: Sigue pidiendo "¿qué plan?" → hay otro conflicto escondido
 
-1. ✅ Verificar que Railway deployó `2a3d0ab` (Remover quoted message)
-   - Si está ACTIVE y sin errores → el problema NO es el código
+**Si ÉXITO → ir a PASO 2**
+**Si FALLO → investigar qué sección del prompt SIGUE causando confusión**
 
-2. 🔐 **Revisar registro de SUPER ADMIN en Firestore:**
-   - El usuario admin (`bq2BbtCVF8cZo30tum584zrGATJ3`) tiene todos estos campos?
-     - `role: 'admin'`
-     - `whatsapp_owner_number: '573054169969'` ✅ (debería estar guardado)
-     - `whatsapp_owner_jid: '573054169969@s.whatsapp.net'`
-   - Si falta alguno → ese es el problema
+---
 
-3. 🔌 **Verificar estructura de Baileys en runtime:**
-   - ¿El socket tiene `sock.user.id`?
-   - ¿El socket está realmente READY cuando intenta enviar?
-   - Log: `[MIIA] Enviando mensaje ... | isReady=true` — ¿dice true?
+### PASO 2: Implementar P2 (Auto-cleanup Baileys) — 1-2 HORAS
+**Problema actual:** Sesión de Mariano sufre `MessageCounterError` constantemente
 
-4. 🎯 **Si logs muestran `[SEND-OK] ✅ sendMessage retornó exitosamente`:**
-   - Entonces el problema es DESPUÉS del send (Baileys internamente rechaza)
-   - Podría ser:
-     - JID @lid incorrecto para esa sesión
-     - Credenciales expiradas
-     - Baileys esperando otro formato
+**Solución a codificar:**
+```javascript
+// En tenant_manager.js, agregar:
+1. Contador de MessageCounterError por sesión
+2. Si contador > 5 en 30 segundos:
+   - Ejecutar sock.logout()
+   - Borrar sesión de Firestore
+   - Marcar como "needs_reconnect: true"
+3. MIIA avisa a Mariano: "Sesión se reinició, escanea QR"
+```
 
-5. ⚡ **Opción nuclear si nada funciona:**
-   - Como sugeriste: recrear registro admin sin hardcodear
-   - Usar flow: QR → Baileys auto-detecta número → guardar en Firestore
-   - Eliminar cualquier hardcode de OWNER_PHONE
+**Archivos a modificar:**
+- `tenant_manager.js` → línea ~337 (evento `messages.upsert`) → agregar contador
+- `baileys_session_store.js` → mejorar validación de creds
+- `server.js` → agregar endpoint para detectar/limpiar sesiones corruptas
 
-**RECUERDA:** Estamos a nada. El mensaje se está generando, se está intentando enviar. Solo no llega a WhatsApp.
+**Costo estimado:** $1-2 USD
+
+---
+
+### SECUENCIA CORRECTA:
+1. ✅ **TEST P1** (5 min) — Mariano envía "cotización"
+2. ✅ **IMPLEMENTAR P2** (1-2 horas) — Auto-cleanup MessageCounterError
+3. ✅ **TEST P2** — Provocar error, verificar que auto-cleanup funciona
 
 ---
 
@@ -119,39 +135,56 @@ Usuario Tenant (Vendedor B2B)
 
 ## 🔴 PROBLEMAS CRÍTICOS ACTUALES
 
-### P1: 🔧 EN PRUEBA — FIX de self-chat quotedMessage
+### P1: 🔥 COTIZACIÓN — CRITICAL FIX JUST APPLIED
 
-**Problema encontrado:**
-- ✅ MIIA recibe mensaje en self-chat
-- ✅ Gemini genera respuesta
-- ✅ Log dice `[SENT] Mensaje enviado`
-- ❌ **Mariano NO recibe mensaje en WhatsApp**
+**Problema encontrado (Sesión 3):**
+- ❌ Gemini ignoraba instrucción "NUNCA PIDAS POR PLAN"
+- ❌ Cuando usuario decía "cotización Colombia 1 usuario", MIIA preguntaba "¿PRO o TITANIUM?"
+- ❌ En lugar de emitir tag `[GENERAR_COTIZACION_PDF:...]`
 
-**Raíz**: Baileys **rechaza silenciosamente** `sendMessage()` a self-chat sin `quotedMessage`.
+**Raíz identificada:**
+- El prompt admin tenía 3 secciones de cotización CONFLICTIVAS
+- Gemini leía primero "ESTRUCTURA DE RESPUESTA REQUERIDA" → generar tabla
+- Conflictaba con "PROTOCOLO COTIZACIÓN PRIORITARIA" → emitir tag
+- Resultado: Confusión → pregunta por plan
 
-**Fix implementado** (commit `1e23cdc`):
-1. ✅ Guardar `message.key` cuando llega mensaje (map `lastMessageKey[target]`)
-2. ✅ Usar ese key como `quotedMessage` en safeSendMessage() para self-chat
-3. ✅ Server.js línea 2173-2177: `lastMessageKey[effectiveTarget] = message.key`
-4. ✅ Server.js línea 549-562: `sendOptions.quoted = { key: savedKey }` si isSelfChat
+**Fix implementado** (commits `c79cd9b` + `ce55c5d`):
+1. ✅ Eliminadas líneas 1422-1440 (secciones viejas)
+2. ✅ Mantenido SOLO "PROTOCOLO COTIZACIÓN — REGLA ABSOLUTUTA PRIORITARIA"
+3. ✅ Agregado ejemplo concreto del JSON exacto que debe emitir
+4. ✅ Pushed a Railway (ce55c5d)
 
-**Estado**: Awaiting Railway deploy completion. Mariano testea con "Hola MIIA" cuando esté listo.
-**Railway status**: Retry en progreso (timeout anterior, no error de código)
+**Estado**: ✅ DEPLOYED. **AWAITING TEST**: Mariano debe enviar "cotización Colombia 1 usuario"
+**Resultado esperado**: PDF + aviso de precisión (NO pregunta de plan)
 
-### P2: Auto-reconnect sin clic manual
-**Status**: PENDIENTE (no iniciado aún)
-- Sesiones se guardan en Firestore ✅
-- Al restart, busca sesiones ✅
-- PERO: Las credenciales se pierden/expiran, Baileys rechaza reconectar ❌
-- Resultado: Mariano debe hacer clic "Conectar" y escanear QR nuevamente
+### P2: 🔴 BLOQUEADO — Session Corruption (MessageCounterError)
+**Status**: CRÍTICO, INVESTIGADO EN SESIÓN 3
 
-**Investigación pendiente** (cuando comience P2):
-- ¿Firestore tiene credenciales con estructura correcta?
-- ¿Baileys deserializa Buffers correctamente?
-- ¿Las credenciales expiran después de X tiempo?
-- ¿Hay un bug en useFirestoreAuthState() al cargar creds?
+**Problema identificado:**
+- ❌ Sesión de Mariano recibe `MessageCounterError: Key used already or never filled` constantemente
+- ❌ Baileys **no puede desencriptar mensajes** → desincronización criptográfica
+- ❌ WhatsApp servers rechaza porque las claves están out-of-sync
+- Efecto: Sesión inestable, mensajes se pierden
 
-**Costo estimado (realista)**: $2-3 USD (debugging, puede haber múltiples intentos)
+**Datos actuales de Mariano:**
+- UID: `bq2BbtCVF8cZo30tum584zrGATJ3`
+- WhatsApp: `+57 305 4169969` (número correcto, NO +57 301 4259700)
+- Firestore: baileys_sessions/tenant-bq2BbtCVF8cZo30tum584zrGATJ3
+- Estado: whatsapp_connected_at hace poco pero con errores criptográficos
+
+**Solución a implementar:**
+1. **Auto-cleanup**: Si sesión recibe 5+ MessageCounterError en 30s → logout automático
+2. **Reconexión forzada**: Marcar session como "needs_reconnect: true" → obliga nuevo QR
+3. **Validación de creds**: Al cargar de Firestore, verificar integridad (Buffers, timestamps)
+4. **Event cleanup**: Asegurar que `.off()` se llama cuando sock.logout()
+
+**Investigación pendiente:**
+- ¿Las creds en Firestore están corruptas o desincronizadas?
+- ¿Baileys deserializa correctamente desde JSON?
+- ¿Hay threads de evento que siguen escuchando después de logout()?
+
+**Costo estimado**: $1-2 USD (debugging Baileys, implementación auto-cleanup)
+**BLOQUEANTE PARA**: Disponibilidad 24/7 de MIIA. Sin esto, desconexiones frecuentes.
 
 ---
 
@@ -223,9 +256,11 @@ users/{uid}/conversationHistory/{contactJid}    ← historial por contacto
 
 ---
 
-## 📋 ÚLTIMOS 10 COMMITS (MÁS RECIENTES PRIMERO)
+## 📋 ÚLTIMOS 12 COMMITS (MÁS RECIENTES PRIMERO)
 
 ```
+ce55c5d  🔥 COTIZACIÓN CRITICAL FIX: Eliminar secciones conflictivas del prompt
+c79cd9b  🔥 COTIZACIÓN FIX: Reordenar prompt para absoluta prioridad de emisión de tag
 d12bb78  fix: restaurar variable isSelfChat para evitar ReferenceError
 9cd901d  🔥 HOTFIX: Hardcodear número owner para bypass silencio nocturno
 7a86c32  debug: agregar logging para creds.update y saveCreds

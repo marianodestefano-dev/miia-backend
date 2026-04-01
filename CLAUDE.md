@@ -11,12 +11,19 @@ Este archivo es leído automáticamente en CADA conversación, con cualquier mod
 **ANTES de responder a Mariano, DEBES:**
 1. **Leer `RESUMEN_EJECUTIVO_MIIA.md`** — Contiene TODO lo necesario para no perder el hilo
 2. **Recordar LA ESENCIA**: MIIA responde en el self-chat de WhatsApp del usuario (no es un bot separado)
-3. **Recordar ESTADO ACTUAL**: P1 está 80% hecho (recibe/procesa pero mensaje no se entrega)
-4. **Recordar URGENCIA**: P1 está bloqueado en "envío a self-chat", P2-P11 esperan
-5. **Actualizar el `RESUMEN_EJECUTIVO_MIIA.md`**: con lo anterior hecho a tu compactar
+3. **Recordar ESTADO ACTUAL**: Ver sección ESTADO en RESUMEN_EJECUTIVO (se actualiza cada sesión)
+4. **Recordar URGENCIA**: Ver sección URGENCIA en RESUMEN_EJECUTIVO (crítica siempre)
+5. **⚠️ OBLIGATORIO - Actualizar el `RESUMEN_EJECUTIVO_MIIA.md`**: APENAS regresas de compactación, ANTES de responder a Mariano. Registra:
+   - Commits nuevos realizados en esta sesión
+   - Estado actual de P1-P11
+   - Problemas encontrados
+   - Siguientes pasos
+   - Costo REAL de esta sesión
 6. absolutamente todo siempre le respondes, piensas y hablas en ESPAÑOL
 
-**NO RESPONDAS HASTA HABER LEÍDO ESE ARCHIVO COMPLETO.**
+**NO RESPONDAS HASTA HABER: (1) LEÍDO RESUMEN_EJECUTIVO COMPLETO, (2) ACTUALIZADO CON NUEVOS DATOS**
+
+**RECUERDA**: Mariano se frustra cuando gastas su contexto investigando lo que ya sabías. El RESUMEN es tu responsabilidad actualizarlo INMEDIATAMENTE.
 
 ---
 
