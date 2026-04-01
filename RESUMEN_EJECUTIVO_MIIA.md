@@ -1,9 +1,19 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 06:30 AM
-**ESTADO**: P1 ✅ FUNCIONA | P2-P11 PENDIENTES
+**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~08:45 AM (después de sesión larga)
+**ESTADO**: P1 🔧 EN PRUEBA | P3 ✅ HECHO | P4 ✅ HECHO | P5 ✅ HECHO | P2,P6-P11 PENDIENTES
 **URGENCIA**: CRITICA — Sin P2, WhatsApp se desconecta en cada restart
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
+
+### SESIÓN ACTUAL (Abril 1, duración ~3 horas)
+**Commits realizados:**
+- `1e23cdc` — Self-chat quotedMessage fix (P1 solución propuesta)
+- `e90958e` — P3 (endpoint multi-tenant) + P5 (NASA-grade error handling)
+- `5331cb8` — Lecciones aprendidas documentadas
+- `392f28b` — Retry deployment (Railway timeout)
+
+**Costo REAL esta sesión**: ~$3-5 USD (Haiku, múltiples reads/greps/debugging)
+**Costo acumulado hasta ahora**: ~$6.50-8.50 USD (no $0.70 como estimé inicialmente)
 
 ---
 
@@ -65,29 +75,38 @@ Usuario Tenant (Vendedor B2B)
 ## 🔴 PROBLEMAS CRÍTICOS ACTUALES
 
 ### P1: 🔧 EN PRUEBA — FIX de self-chat quotedMessage
-**Status**: MIIA recibe y procesa mensajes en self-chat, PERO mensaje no se entregaba.
 
-**Raíz encontrada**: Baileys **NO soporta `sendMessage()` normal a self-chat**. Requiere usar `quotedMessage` (referenciar un mensaje anterior).
+**Problema encontrado:**
+- ✅ MIIA recibe mensaje en self-chat
+- ✅ Gemini genera respuesta
+- ✅ Log dice `[SENT] Mensaje enviado`
+- ❌ **Mariano NO recibe mensaje en WhatsApp**
+
+**Raíz**: Baileys **rechaza silenciosamente** `sendMessage()` a self-chat sin `quotedMessage`.
 
 **Fix implementado** (commit `1e23cdc`):
-1. ✅ Guardar `message.key` cuando llega un mensaje (guardado en `lastMessageKey[target]`)
-2. ✅ Usar ese key como `quotedMessage` en self-chat via `sock.sendMessage(target, content, { quoted: { key } })`
-3. ✅ Server.js líneas 2173-2177: guardar messageKey
-4. ✅ Server.js línea 549: usar quotedMessage en safeSendMessage()
+1. ✅ Guardar `message.key` cuando llega mensaje (map `lastMessageKey[target]`)
+2. ✅ Usar ese key como `quotedMessage` en safeSendMessage() para self-chat
+3. ✅ Server.js línea 2173-2177: `lastMessageKey[effectiveTarget] = message.key`
+4. ✅ Server.js línea 549-562: `sendOptions.quoted = { key: savedKey }` si isSelfChat
 
-**Esperando resultado**: Railway deploying (~5-10 min), Mariano probará escribiendo "Hola MIIA"
+**Estado**: Awaiting Railway deploy completion. Mariano testea con "Hola MIIA" cuando esté listo.
+**Railway status**: Retry en progreso (timeout anterior, no error de código)
 
 ### P2: Auto-reconnect sin clic manual
-**Status**: BLOQUEADO
+**Status**: PENDIENTE (no iniciado aún)
 - Sesiones se guardan en Firestore ✅
 - Al restart, busca sesiones ✅
 - PERO: Las credenciales se pierden/expiran, Baileys rechaza reconectar ❌
 - Resultado: Mariano debe hacer clic "Conectar" y escanear QR nuevamente
 
-**Investigación pendiente**:
-- Firestore tiene las credenciales con estructura correcta?
-- Baileys deserializa Buffers correctamente?
-- Las credenciales expiran después de X tiempo?
+**Investigación pendiente** (cuando comience P2):
+- ¿Firestore tiene credenciales con estructura correcta?
+- ¿Baileys deserializa Buffers correctamente?
+- ¿Las credenciales expiran después de X tiempo?
+- ¿Hay un bug en useFirestoreAuthState() al cargar creds?
+
+**Costo estimado (realista)**: $2-3 USD (debugging, puede haber múltiples intentos)
 
 ---
 
@@ -234,17 +253,33 @@ PAYPAL_ENV=production
 
 ---
 
+## 🔍 PROTOCOLO DESPUÉS DE COMPACTACIÓN
+
+**INSTRUCCIONES OBLIGATORIAS para la próxima sesión:**
+
+1. ✅ **PRIMERO**: Leer ESTE ARCHIVO completo (RESUMEN_EJECUTIVO_MIIA.md)
+2. ✅ Leer CLAUDE.md para alertas críticas
+3. ✅ Leer LECCIONES APRENDIDAS (abajo en este archivo)
+4. ✅ Actualizar este archivo con:
+   - Resultado de P1 (¿Mariano recibió el mensaje?)
+   - Cualquier nuevo bug encontrado
+   - Costos REALES de esta sesión
+   - Lecciones nuevas aprendidas
+
+**NO hagas nada más hasta haber leído TODO esto.**
+
 ## 🔍 CHECKLIST DE DEBUG PARA NUEVA SESIÓN
 
 Si compactación ocurre:
 
-1. ✅ Leer ESTE ARCHIVO (RESUMEN_EJECUTIVO_MIIA.md)
-2. ✅ Leer CLAUDE.md para ALERTA CRÍTICA
-3. ✅ Recordar: **LA ESENCIA = MIIA responde en self-chat**
-4. ✅ Recordar: **P1 está 80% hecho, falta fix en envío a self-chat**
+1. ✅ Leer RESUMEN_EJECUTIVO_MIIA.md completo (toma 5 min, ahorra 30 min)
+2. ✅ Recordar: **LA ESENCIA = MIIA responde en self-chat (Mis contactos)**
+3. ✅ Recordar: **P1 está 🔧 EN PRUEBA (quotedMessage fix awaiting Railway)**
+4. ✅ Recordar: **P3, P4, P5 ya hechos con Google+Amazon+NASA standard**
 5. ✅ Revisar logs de Railway para estado actual
-6. ✅ No asumir que Mariano perdió contexto — ÉL SÍ LO TIENE, TÚ NO
+6. ✅ NO asumir que Mariano perdió contexto — ÉL SÍ LO TIENE, TÚ NO
 7. ✅ Preguntar primero qué está pasando, no sugerir soluciones
+8. ✅ **ANTES de responder**, actualizar este resumen con resultado de P1
 
 ---
 
