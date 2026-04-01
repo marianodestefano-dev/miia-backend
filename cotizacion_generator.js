@@ -321,36 +321,63 @@ function buildHTML(params) {
     const b = bolsas.wa;
     console.log(`[COTIZ-DEBUG] b.wa object:`, JSON.stringify(b));
     console.log(`[COTIZ-DEBUG] b.tier=${b.tier}, b.limiteEnvios=${b.limiteEnvios}, b.precio=${b.precio}`);
-    bolsasRows += `
+    try {
+      const limiteFormatted = fmtNum(b.limiteEnvios);
+      console.log(`[COTIZ-DEBUG] limiteFormatted: ${limiteFormatted}`);
+      const precioFormatted = fmt(b.precio, moneda);
+      console.log(`[COTIZ-DEBUG] precioFormatted: ${precioFormatted}`);
+      bolsasRows += `
       <tr class="row-even">
         <td class="td-desc">BOLSA WHATSAPP — RECORDATORIOS
-          <span class="td-sub">Bolsa ${b.tier}: hasta ${fmtNum(b.limiteEnvios)} envíos/mes</span></td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
+          <span class="td-sub">Bolsa ${b.tier}: hasta ${limiteFormatted} envíos/mes</span></td>
+        <td class="td-price">${precioFormatted}</td>
+        <td class="td-price">${precioFormatted}</td>
+        <td class="td-price">${precioFormatted}</td>
       </tr>`;
+      console.log(`[COTIZ-DEBUG] Sección WA bolsa completada exitosamente`);
+    } catch(e) {
+      console.error(`[COTIZ-ERROR-WA] Error en sección WA: ${e.message}`);
+      console.error(`[COTIZ-ERROR-WA] Stack: ${e.stack}`);
+      throw e;
+    }
   }
   if (incluirFirma && bolsas.firma) {
     const b = bolsas.firma;
-    bolsasRows += `
+    try {
+      const limiteFormatted = fmtNum(b.limiteEnvios);
+      const precioFormatted = fmt(b.precio, moneda);
+      bolsasRows += `
       <tr class="row-odd">
         <td class="td-desc">BOLSA FIRMA ELECTRÓNICA
-          <span class="td-sub">Bolsa ${b.tier}: hasta ${fmtNum(b.limiteEnvios)} envíos/mes</span></td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
+          <span class="td-sub">Bolsa ${b.tier}: hasta ${limiteFormatted} envíos/mes</span></td>
+        <td class="td-price">${precioFormatted}</td>
+        <td class="td-price">${precioFormatted}</td>
+        <td class="td-price">${precioFormatted}</td>
       </tr>`;
+    } catch(e) {
+      console.error(`[COTIZ-ERROR-FIRMA] Error en sección Firma: ${e.message}`);
+      console.error(`[COTIZ-ERROR-FIRMA] Stack: ${e.stack}`);
+      throw e;
+    }
   }
   if (incluirFactura && bolsas.factura) {
     const b = bolsas.factura;
-    bolsasRows += `
+    try {
+      const limiteFormatted = fmtNum(b.limiteEnvios);
+      const precioFormatted = fmt(b.precio, moneda);
+      bolsasRows += `
       <tr class="row-even">
         <td class="td-desc">FACTURADOR ELECTRÓNICO
-          <span class="td-sub">Bolsa ${b.tier}: hasta ${fmtNum(b.limiteEnvios)} envíos/mes</span></td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
-        <td class="td-price">${fmt(b.precio, moneda)}</td>
+          <span class="td-sub">Bolsa ${b.tier}: hasta ${limiteFormatted} envíos/mes</span></td>
+        <td class="td-price">${precioFormatted}</td>
+        <td class="td-price">${precioFormatted}</td>
+        <td class="td-price">${precioFormatted}</td>
       </tr>`;
+    } catch(e) {
+      console.error(`[COTIZ-ERROR-FACTURA] Error en sección Factura: ${e.message}`);
+      console.error(`[COTIZ-ERROR-FACTURA] Stack: ${e.stack}`);
+      throw e;
+    }
   }
   if (incluirRecetaAR) {
     bolsasRows += `
