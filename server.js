@@ -3222,6 +3222,34 @@ app.post('/api/tenant/:uid/logout', async (req, res) => {
   res.json(result);
 });
 
+// POST /api/tenant/:uid/clean-session — Clean corrupted Baileys session (MessageCounterError recovery)
+app.post('/api/tenant/:uid/clean-session', express.json(), async (req, res) => {
+  const uid = req.params.uid;
+  try {
+    console.log(`[CLEAN-SESSION] 🔧 Limpiando sesión corrupta para ${uid}...`);
+
+    // Eliminar sesión de Firestore (fuerza reconexión)
+    const { deleteFirestoreSession } = require('./baileys_session_store');
+    await deleteFirestoreSession(`tenant-${uid}`);
+
+    // Marcar en Firestore que necesita reconectar
+    await admin.firestore().collection('users').doc(uid).update({
+      whatsapp_needs_reconnect: true,
+      whatsapp_recovery_at: new Date(),
+      whatsapp_recovery_reason: 'Sesión corrupta limpiada automáticamente por MessageCounterError'
+    }).catch(() => {});
+
+    // Destruir el tenant en memoria
+    tenantManager.destroyTenant(uid);
+
+    console.log(`[CLEAN-SESSION] ✅ Sesión ${uid} limpiada. Usuario debe reconectar.`);
+    res.json({ success: true, message: 'Sesión limpiada. Por favor, reconecta.' });
+  } catch (err) {
+    console.error(`[CLEAN-SESSION] ❌ Error limpiando sesión ${uid}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/tenant/:uid/conversations — Get tenant conversations (contacts.html)
 app.get('/api/tenant/:uid/conversations', async (req, res) => {
   try {

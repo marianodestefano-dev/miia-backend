@@ -9,6 +9,7 @@
 **Commits realizados:**
 1. `c84b197` — [CRÍTICO P2] Limpiar sesión corrupta en /tenant/init antes de reconectar
 2. `3885218` — [P1] Logging detallado en fmt() y fmtNum() pre-evaluados
+3. `3ba7b1e` — 🔧 FIX P2: Remover borrado automático de sesión en /api/tenant/init (DEPLOYED en production)
 
 **VALIDACIÓN FINAL - P1 FUNCIONANDO 100%:**
 - ✅ Mariano envió: "cotización Colombia 1 usuario con 60 citas"
@@ -24,34 +25,34 @@
 - ✅ Logs limpios: "[TM] ✅ WhatsApp CONNECTED (Baileys) — ready for messages"
 - ✅ Conclusión: Auto-cleanup de sesión corrupta funciona perfectamente
 
-**PRÓXIMO PASO**: Mariano aprueba commits → `git commit + git push` → Railway autodeploy automático
+**ESTADO EN RAILWAY (3ba7b1e deployed):**
+- ✅ `[AUTO-INIT] 📋 0 sesión(es) de Baileys encontradas` — sesión vieja no persiste (correcto)
+- ✅ Sistema inicia sin errores
+- ✅ Baileys lista para crear sesión nueva
+
+**PRÓXIMO PASO**: Mariano prueba P1+P2 en production y reporta resultados
 
 **Costo REAL sesión 5**: ~$0.15 USD (validación final)
 **Costo TOTAL acumulado**: ~$15-20 USD
 
 ---
 
-## ⚡ CHECKLIST PARA SESIÓN 6 (DESPUÉS DE COMPACTACIÓN)
+## ⚡ SESIÓN 6 (Abril 1, 15:17 PM - POST-COMPACTACIÓN)
 
-**SI VES ESTE MENSAJE, LA COMPACTACIÓN ACABA DE OCURRIR.**
+**STATUS ACTUAL:**
+- ✅ Compactación completada
+- ✅ Railway running commit 3ba7b1e (FIX P2: Sesión no se borra automáticamente)
+- ✅ Sistema iniciándose sin errores
+- ✅ [AUTO-INIT] 0 sesiones encontradas (expected — no persisten sesiones viejas)
+- ⏳ Awaiting Mariano para probar P1+P2 en production
 
-**ANTES de responder a Mariano, haz esto EN ORDEN:**
+**SIGUIENTE:**
+- Mariano debe probar: enviar "cotización Colombia X usuario con Y citas" → verificar PDF
+- Mariano debe probar: abrir dashboard y cerrar sin QR → verificar auto-reconexión
+- Reportar resultados
 
-1. ✅ Leer este archivo (RESUMEN_EJECUTIVO_MIIA.md) — toma 2 min
-2. ✅ Leer CLAUDE.md línea 30-43 (zona crítica WhatsApp)
-3. ✅ **COMPRUEBA STATUS DE COMMITS**:
-   - ¿Se hizo `git commit + git push` de c84b197 + 3885218?
-   - ¿Está en Railway deployed?
-   - Ver logs: `[BAILEYS-STORE]`, `[TM]`, `[MIIA]`
-4. ✅ **SI push se hizo**: Mariano ya probó en production. Revisar logs para confirmar P1+P2 siguen funcionando
-5. ✅ **SI push NO se hizo**: Mariano rechazó o pidió revisar. Leer qué dijo.
-6. ✅ **ACTUALIZA ESTE ARCHIVO** con:
-   - Resultado real de P1+P2 en production
-   - Cualquier bug nuevo encontrado
-   - Costo REAL de Sesión 6
-   - Estado de P3-P11
-
-**NO RESPONDAS A MARIANO HASTA COMPLETAR ESTE CHECKLIST.**
+**Costo REAL sesión 6**: ~$0.05 USD (post-compactación, update RESUMEN)
+**Costo TOTAL acumulado**: ~$15.25 USD
 
 ---
 

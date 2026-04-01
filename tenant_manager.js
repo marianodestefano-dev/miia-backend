@@ -36,7 +36,77 @@ if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 // Silent logger for Baileys (avoid noisy output)
 const baileysLogger = pino({ level: 'silent' });
 
+// ─── Global error monitor for libsignal MessageCounterError ───
+const originalConsoleError = console.error;
+console.error = function(...args) {
+  const errorStr = args.map(a => String(a)).join(' ');
+  if (errorStr.includes('MessageCounterError') || errorStr.includes('Key used already')) {
+    // Intentar extraer UID de contexto si está disponible
+    for (const [uid, tenant] of tenants) {
+      if (!tenantErrors.has(uid)) {
+        tenantErrors.set(uid, { count: 0, windowStart: Date.now() });
+      }
+      const errTracker = tenantErrors.get(uid);
+      const now = Date.now();
+      if (now - errTracker.windowStart > 30000) {
+        errTracker.count = 0;
+        errTracker.windowStart = now;
+      }
+      errTracker.count++;
+      if (errTracker.count <= 5) {
+        console.log(`[TM:${uid}] 🔐 libsignal error detected ${errTracker.count}/5 - will cleanup if reaches 5`);
+      }
+      if (errTracker.count === 5) {
+        console.log(`[TM:${uid}] 💥 5 errors detected - triggering cleanup...`);
+        cleanupCorruptedSession(uid, tenant.io).catch(e => console.log(`[TM:${uid}] cleanup error:`, e.message));
+        tenantErrors.delete(uid);
+      }
+    }
+  }
+  return originalConsoleError.apply(console, args);
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async function cleanupCorruptedSession(uid, ioInstance) {
+  try {
+    console.log(`[TM:${uid}] 🧹 Iniciando cleanup de sesión corrupta...`);
+
+    // Eliminar sesión de Firestore
+    await deleteFirestoreSession(`tenant-${uid}`);
+
+    // Marcar en Firestore que necesita reconectar
+    await admin.firestore().collection('users').doc(uid).update({
+      whatsapp_needs_reconnect: true,
+      whatsapp_recovery_at: new Date(),
+      whatsapp_recovery_reason: 'Sesión corrupta detectada por MessageCounterError (auto-cleanup)'
+    }).catch(() => {});
+
+    // Notificar vía Socket.IO
+    if (ioInstance) {
+      ioInstance.emit(`tenant_recovery_needed_${uid}`, {
+        message: '⚠️ Tu sesión de WhatsApp fue reiniciada por desincronización. Por favor, escanea el QR nuevamente.',
+        needsQr: true,
+        recoveredAt: new Date().toISOString(),
+        severity: 'warning'
+      });
+      console.log(`[TM:${uid}] ✅ Notificación Socket.IO enviada`);
+    }
+
+    // Destruir tenant en memoria
+    if (tenants.has(uid)) {
+      const t = tenants.get(uid);
+      if (t.sock) {
+        try { await t.sock.logout().catch(() => {}); } catch (e) {}
+      }
+      tenants.delete(uid);
+    }
+
+    console.log(`[TM:${uid}] ✅ Sesión limpiada exitosamente. Usuario debe reconectar.`);
+  } catch (e) {
+    console.error(`[TM:${uid}] ❌ Error en cleanup:`, e.message);
+  }
+}
 
 function getTenantDataDir(uid) {
   const dir = path.join(DATA_ROOT, uid);
@@ -338,52 +408,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           errTracker.count++;
           console.warn(`[TM:${uid}] 🔐 MessageCounterError ${errTracker.count}/5: ${errorMsg.substring(0,60)}...`);
           if (errTracker.count >= 5) {
-            console.error(`[TM:${uid}] 💥 SESIÓN CORRUPTA. Reconectando...`);
+            console.error(`[TM:${uid}] 💥 SESIÓN CORRUPTA DETECTADA. Limpiando...`);
             tenantErrors.delete(uid);
-            try {
-              if (tenant.sock) await tenant.sock.logout().catch(() => {});
-              await deleteFirestoreSession(`tenant-${uid}`);
-
-              // NOTIFICACIONES AL USUARIO (3 CANALES)
-              const userDoc = await admin.firestore().collection('users').doc(uid).get();
-              const userEmail = userDoc.data()?.email;
-              const userName = userDoc.data()?.name || 'Usuario';
-              const ownerPhone = userDoc.data()?.whatsapp_owner_number;
-
-              await admin.firestore().collection('users').doc(uid).update({
-                whatsapp_needs_reconnect: true,
-                whatsapp_recovery_at: new Date(),
-                whatsapp_recovery_reason: 'Sesión desincronizada (auto-cleanup en progreso)'
-              }).catch(() => {});
-
-              console.log(`[TM:${uid}] 🔔 NOTIFICACIÓN: Sesión corrupta detectada. Enviando alertas...`);
-
-              // 1️⃣ NOTIFICACIÓN VÍA SOCKET.IO (Dashboard en tiempo real)
-              if (ioInstance) {
-                ioInstance.emit(`tenant_recovery_needed_${uid}`, {
-                  message: '⚠️ Tu sesión de WhatsApp fue reiniciada por desincronización. Escanea el QR en el panel abajo.',
-                  needsQr: true,
-                  recoveredAt: new Date().toISOString(),
-                  severity: 'warning'
-                });
-                console.log(`[TM:${uid}] ✅ Notificación Socket.IO enviada`);
-              }
-
-              // 2️⃣ NOTIFICACIÓN VÍA EMAIL
-              if (userEmail) {
-                try {
-                  // Log para que backend pueda enviar email (implementar luego si necesario)
-                  console.log(`[TM:${uid}] 📧 PENDIENTE: Enviar email a ${userEmail} - "Sesión WhatsApp necesita reconectarse"`);
-                  // TODO: Agregar nodemailer o SendGrid aquí para enviar email real
-                } catch (e) {
-                  console.error(`[TM:${uid}] Error notificando email:`, e.message);
-                }
-              }
-
-              console.log(`[TM:${uid}] ✅ Sesión limpiada. Usuario notificado. Debe escanear QR nuevo.`);
-            } catch (e) {
-              console.error(`[TM:${uid}] Error limpiando:`, e.message);
-            }
+            await cleanupCorruptedSession(uid, ioInstance);
           }
         }
       }
