@@ -1571,11 +1571,17 @@ SOLO EMITE EL TAG (nada más, nada menos):
 - España: 20%
 - Otros: 20%
 
+**SI FALTA ALGÚN DATO (ej: solo usuarios, sin citas/mes):**
+1. Asumir el dato faltante (citasMes=70 si falta)
+2. Emitir el tag con los datos disponibles
+3. Agregar ANTES del tag una línea diciendo: "Te envío un PDF con datos generales. Para una cotización más precisa, respondé el discovery completo (cuántos usuarios y citas/mes exactos)."
+4. LUEGO emite el tag
+
 **SI LEAD NO RESPONDE DISCOVERY (2+ intentos):**
 Asumir: usuarios=1, citasMes=70, descuento=30
-Emite el tag de todas formas.
+Emite el tag + mismo mensaje de precisión.
 
-**CRÍTICO:** El tag VA SOLO EN SU LÍNEA. El sistema lo procesa automáticamente. No agregues nada antes ni después.
+**CRÍTICO:** El tag VA EN SU LÍNEA. El sistema lo procesa automáticamente. El mensaje de advertencia va ANTES, en línea(s) anterior(es).
 
 **PAÍS y MONEDA — usar SIEMPRE el del lead según su número o lo que diga explícitamente:**
 | Código tel. | pais a usar        | moneda |
