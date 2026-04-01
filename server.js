@@ -980,7 +980,8 @@ Nuevo resumen actualizado:`;
     if (isSelfChat) {
       // En self-chat, el owner SIEMPRE responde (sin importar la hora)
       isOwnerNumber = true;
-      console.log(`[OWNER] ✅ Detectado self-chat del owner (isAlreadySavedParam=true)`);
+      isAdmin = true;  // ← MIIA reconoce que habla CON el owner, no A el owner
+      console.log(`[OWNER] ✅ Detectado self-chat del owner (isAlreadySavedParam=true) — isAdmin=true`);
     } else if (OWNER_UID) {
       // No es self-chat, verificar si el número coincide con el owner
       try {
@@ -1925,6 +1926,28 @@ async function handleIncomingMessage(message) {
     const baseTarget = effectiveTarget.replace(/[^0-9]/g, '');
     let isAllowed = allowedLeads.some(l => l.replace(/[^0-9]/g, '') === baseTarget) || !!familyContacts[baseTarget];
     const existsInCRM = !!conversations[effectiveTarget];
+
+    // NUEVO: Si no está en allowedLeads, verificar si está registrado en Firestore como usuario MIIA
+    if (!isAllowed && !existsInCRM && !fromMe) {
+      try {
+        const userSnapshot = await admin.firestore()
+          .collection('users')
+          .where('whatsapp_phone', '==', baseTarget)
+          .limit(1)
+          .get();
+
+        if (!userSnapshot.empty) {
+          isAllowed = true;
+          allowedLeads.push(effectiveTarget);
+          saveDB();
+          const userData = userSnapshot.docs[0].data();
+          const userName = userData.name || userData.email || 'Usuario MIIA';
+          console.log(`[WA] ✅ ${baseTarget} es usuario MIIA registrado (${userName}) — permitido automáticamente`);
+        }
+      } catch (e) {
+        console.error(`[WA] Error buscando usuario en Firestore:`, e.message);
+      }
+    }
 
     // Auto-takeover para leads desconocidos con keywords de negocio
     if (!isAllowed && !existsInCRM && !fromMe) {
