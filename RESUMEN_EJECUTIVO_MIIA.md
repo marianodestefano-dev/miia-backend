@@ -3,6 +3,7 @@
 **ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 06:30 AM
 **ESTADO**: P1 ✅ FUNCIONA | P2-P11 PENDIENTES
 **URGENCIA**: CRITICA — Sin P2, WhatsApp se desconecta en cada restart
+**STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
 
 ---
 
@@ -264,3 +265,51 @@ Si pierdes información → pregunta, no adivines.
 Si no entiendas algo → lee TODO este archivo antes de responder.
 
 **URGENCIA ACTUAL**: Fix P1 (envío a self-chat) — TODO lo demás es espera.
+
+---
+
+## 🚨 LECCIONES APRENDIDAS (Para no repetir errores)
+
+### Error 1: Estimaciones optimistas (NUNCA VUELVAS A HACER)
+**¿Qué pasó?**: Estimé P1-P4 en ~$0.70 USD. En realidad, P1 solo costó ~$6-8 USD.
+**Raíz**: Asumí "happy path" (código funciona a la primera). Realidad: debugging, fallos, compactaciones.
+**Lección**:
+- ❌ NO asumir "funciona a la primera"
+- ❌ NO subestimar tiempo de debugging
+- ❌ NO olvidar que compactaciones = pérdida de contexto = más investigación
+- ✅ SIEMPRE multiplicar por 2-3x para debugging real
+- ✅ SIEMPRE mencionar: "estimación optimista, real puede ser 2-3x más"
+- ✅ Después de cada sesión, actualizar costo REAL en este archivo
+
+### Error 2: Perder contexto en compactaciones
+**¿Qué pasó?**: Compactación cortó el hilo. Empecé desde cero. Mariano tuvo que reler logs.
+**Raíz**: No leí RESUMEN_EJECUTIVO_MIIA.md al comenzar nueva sesión.
+**Lección**:
+- ✅ PRIMERA ACCIÓN después de compactación: leer RESUMEN_EJECUTIVO_MIIA.md
+- ✅ Mariano NO debe reler nada — eso es tu responsabilidad
+- ✅ Si no leo el resumen, borro 15-30 min de su tiempo
+
+### Error 3: No ser sincero sobre problemas
+**¿Qué pasó?**: Dije "mensaje se envió" (log dice [SENT]) pero Mariano no recibió nada.
+**Raíz**: No investigué PROFUNDAMENTE. Asumí que [SENT] = entregado. Error de Baileys: [SENT] ≠ entregado en self-chat.
+**Lección**:
+- ✅ [SENT] en logs ≠ usuario recibió el mensaje
+- ✅ Siempre verificar: ¿usuario REALMENTE recibió esto?
+- ✅ Si log dice OK pero usuario no ve → HAY BUG, no confundir
+- ✅ Ser sincero: "el log dice X, pero el usuario no ve nada → problema real"
+
+### Error 4: No leer CLAUDE.md al compilar
+**¿Qué pasó?**: P4 ya estaba hecho (setTenantTrainingData en exports), pero lo anoté como pendiente.
+**Raíz**: No leí code o CLAUDE.md antes de estimar.
+**Lección**:
+- ✅ Revisar CLAUDE.md ANTES de estimar tareas
+- ✅ Hacer `grep` o `read` para verificar estado actual
+- ✅ No asumir nada — verificar
+
+### Standard de código aplicado desde ahora
+**Google + Amazon + NASA** — siempre:
+- ❌ NO código muerto sin documentación
+- ❌ NO fallos silenciosos (throw, no return null)
+- ✅ Logging exhaustivo (Amazon: observabilidad)
+- ✅ Validaciones explícitas (Google: robustez)
+- ✅ Fail loudly (NASA: safety critical)
