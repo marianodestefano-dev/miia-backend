@@ -4530,14 +4530,16 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // Auto-reconexión del owner al iniciar el servidor
-  // Si hay credenciales de Baileys en Firestore, reconecta automáticamente
+  // Auto-reconexión al iniciar el servidor
+  console.log(`[AUTO-INIT] OWNER_UID="${OWNER_UID}", SKIP_WA_INIT="${process.env.SKIP_WA_INIT || ''}"`);
   if (OWNER_UID && !process.env.SKIP_WA_INIT) {
     console.log('[AUTO-INIT] 🔄 Intentando auto-reconexión del owner...');
     setTimeout(async () => {
       try {
-        // Verificar si hay sesión de Baileys guardada
-        const credsDoc = await admin.firestore().collection('baileys_sessions').doc(OWNER_UID).collection('data').doc('creds').get();
+        // Verificar si hay sesión de Baileys guardada (clientId = "tenant-{uid}")
+        const clientId = `tenant-${OWNER_UID}`;
+        console.log(`[AUTO-INIT] Buscando credenciales en baileys_sessions/${clientId}/data/creds...`);
+        const credsDoc = await admin.firestore().collection('baileys_sessions').doc(clientId).collection('data').doc('creds').get();
         if (credsDoc.exists) {
           console.log('[AUTO-INIT] 🔑 Credenciales encontradas. Reconectando owner...');
           // Obtener API key del owner desde Firestore
@@ -4599,7 +4601,44 @@ server.listen(PORT, () => {
           console.log('[AUTO-INIT] ⚠️ Sin credenciales de Baileys. El owner debe vincular WhatsApp manualmente.');
         }
       } catch (e) {
-        console.error('[AUTO-INIT] ❌ Error en auto-reconexión:', e.message);
+        console.error('[AUTO-INIT] ❌ Error en auto-reconexión owner:', e.message);
+      }
+
+      // Auto-reconectar TODOS los usuarios (no-owner) con sesión guardada
+      try {
+        const sessionsSnap = await admin.firestore().collection('baileys_sessions').get();
+        const otherSessions = sessionsSnap.docs
+          .map(d => d.id)
+          .filter(id => id.startsWith('tenant-') && id !== `tenant-${OWNER_UID}`);
+
+        if (otherSessions.length > 0) {
+          console.log(`[AUTO-INIT] 🔄 Reconectando ${otherSessions.length} tenant(s)...`);
+          for (const sessionId of otherSessions) {
+            const uid = sessionId.replace('tenant-', '');
+            try {
+              // Verificar que tiene creds
+              const cDoc = await admin.firestore().collection('baileys_sessions').doc(sessionId).collection('data').doc('creds').get();
+              if (!cDoc.exists) continue;
+
+              // Obtener gemini key del usuario
+              let gKey = '';
+              try {
+                const uDoc = await admin.firestore().collection('users').doc(uid).get();
+                if (uDoc.exists) gKey = uDoc.data().gemini_api_key || '';
+              } catch (_) {}
+
+              tenantManager.initTenant(uid, gKey, io, {}, {});
+              console.log(`[AUTO-INIT] 🚀 Tenant ${uid.substring(0, 12)}... init disparado`);
+
+              // Pequeña pausa entre inits para no saturar
+              await new Promise(r => setTimeout(r, 1000));
+            } catch (e) {
+              console.error(`[AUTO-INIT] ❌ Error reconectando tenant ${uid}:`, e.message);
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[AUTO-INIT] ❌ Error reconectando tenants:', e.message);
       }
     }, 3000); // Esperar 3s a que todo esté listo
   } else {
