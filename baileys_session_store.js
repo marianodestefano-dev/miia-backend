@@ -40,6 +40,9 @@ async function useFirestoreAuthState(clientId) {
   async function writeCreds(creds) {
     try {
       const data = JSON.parse(JSON.stringify(creds, BufferJSON.replacer));
+      // CRÍTICO: crear el documento padre para que auto-init pueda encontrarlo con .get()
+      // En Firestore, subcollecciones no crean el doc padre automáticamente
+      await docRef.set({ updatedAt: new Date() }, { merge: true });
       await docRef.collection('data').doc('creds').set(data);
     } catch (e) {
       console.error(`[BAILEYS-STORE:${clientId}] Error writing creds:`, e.message);
