@@ -251,9 +251,15 @@ function renderCell(v) {
 
 function getLogoBase64() {
   try {
-    const buf = fs.readFileSync(path.join(__dirname, 'Medilink_logo.png'));
-    return 'data:image/png;base64,' + buf.toString('base64');
-  } catch (_) {
+    const logoPath = path.join(__dirname, 'Medilink_logo.png');
+    console.log(`[COTIZ-DEBUG] Buscando logo en: ${logoPath}`);
+    const buf = fs.readFileSync(logoPath);
+    console.log(`[COTIZ-DEBUG] Logo leído, buffer size: ${buf.length}`);
+    const base64 = buf.toString('base64');
+    console.log(`[COTIZ-DEBUG] Convertido a base64, size: ${base64.length}`);
+    return 'data:image/png;base64,' + base64;
+  } catch (e) {
+    console.error(`[COTIZ-DEBUG] Error leyendo logo: ${e.message}`);
     return '';
   }
 }
