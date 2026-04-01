@@ -689,6 +689,7 @@ function getPromoVigencia() {
 
 async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = false) {
   const basePhone = phone.split('@')[0];
+  console.log(`[MIIA-RESPONSE-DEBUG] phone=${phone}, basePhone=${basePhone}`);
   try {
     if (!conversations[phone]) conversations[phone] = [];
     const familyInfo = familyContacts[basePhone];
