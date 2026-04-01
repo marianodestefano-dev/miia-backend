@@ -183,7 +183,8 @@ const FAMILY_CONTACTS = {
 // VARIABLES GLOBALES
 // ============================================
 
-const OWNER_UID = process.env.OWNER_UID || 'aEiDDauuakUE5saEEBilmho0rF43';
+const OWNER_UID = process.env.OWNER_UID || '';
+if (!OWNER_UID) console.warn('[CONFIG] ⚠️  OWNER_UID no configurado en variables de entorno. El owner será tratado como tenant.');
 let whatsappClient = null;
 let qrCode = null;
 let isReady = false;
