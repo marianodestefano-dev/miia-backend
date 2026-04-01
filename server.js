@@ -22,6 +22,9 @@ const crypto = require('crypto');
 // CEREBRO ABSOLUTO — módulo de aprendizaje autónomo nocturno
 const cerebroAbsoluto = require('./cerebro_absoluto');
 
+// CONFIDENCE ENGINE — evaluación inteligente de contenido importante para aprendizaje autónomo
+const confidenceEngine = require('./confidence_engine');
+
 // GENERADOR DE COTIZACIONES PDF
 const cotizacionGenerator = require('./cotizacion_generator');
 
@@ -739,6 +742,93 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     const effectiveMsg = userMessage ||
       (conversations[phone] || []).slice().reverse().find(m => m.role === 'user')?.content || null;
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MANEJO DE COMANDOS "DILE A" — HOLA MIIA / CHAU MIIA
+    // Detecta cuando contactos de "dile a" activan/desactivan conversación
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (conversationMetadata[phone]?.dileAMode) {
+      const msgUpper = effectiveMsg ? effectiveMsg.toUpperCase().trim() : '';
+
+      // Detectar "HOLA MIIA" para activar conversación
+      if (msgUpper === 'HOLA MIIA') {
+        conversationMetadata[phone].dileAHandshakePending = false;
+        conversationMetadata[phone].dileAActive = true;
+        console.log(`[DILE A] ✅ Handshake completado con ${conversationMetadata[phone].dileAContact}`);
+        await safeSendMessage(phone, `¡Hola! Acá estoy, lista para lo que necesites. 💕`);
+        return;
+      }
+
+      // Detectar "CHAU MIIA" para desactivar conversación
+      if (msgUpper === 'CHAU MIIA') {
+        conversationMetadata[phone].dileAActive = false;
+        conversationMetadata[phone].dileAMode = false;
+        console.log(`[DILE A] 👋 Conversación terminada con ${conversationMetadata[phone].dileAContact}`);
+        await safeSendMessage(phone, `¡Chaauuu! Cuando quieras hablar, aquí estoy. 💕`);
+        saveDB();
+        return;
+      }
+
+      // Si handshake pendiente: no responder a otros mensajes
+      if (conversationMetadata[phone].dileAHandshakePending) {
+        console.log(`[DILE A] ⏸️ Esperando handshake de ${conversationMetadata[phone].dileAContact} (recibió: "${effectiveMsg}")`);
+        return; // Ignorar mensajes hasta que diga "HOLA MIIA"
+      }
+
+      // Si no está activa la conversación: no responder
+      if (!conversationMetadata[phone].dileAActive) {
+        console.log(`[DILE A] 🔒 Conversación desactivada con ${conversationMetadata[phone].dileAContact}`);
+        return; // No responder hasta que diga "HOLA MIIA"
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MANEJO DE FEEDBACK PARA PREGUNTAS DE APRENDIZAJE
+    // Si Mariano responde a "¿Debería memorizar esto?", procesar su feedback
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (isAdmin && conversationMetadata[phone]?.pendingLearningAskedAt &&
+        effectiveMsg && Date.now() - conversationMetadata[phone].pendingLearningAskedAt < 300000) {
+      // 300 segundos = 5 minutos de ventana para responder
+      const msgLower = effectiveMsg.toLowerCase().trim();
+      const isYes = /^(sí|si|yes|ok|dale|claro|perfecto|gracias|acepto|listo)$/i.test(msgLower) ||
+                    msgLower.includes('sí') || msgLower.includes('si');
+      const isNo = /^(no|nope|nah|no|nada)$/i.test(msgLower);
+      const isPartial = /^(solo|algunas|algunas de|parte|parcial)$/i.test(msgLower);
+
+      if (isYes || isNo || isPartial) {
+        const feedback = isYes ? 'yes' : (isNo ? 'no' : 'partial');
+        const pendingQuestions = conversationMetadata[phone].pendingLearningQuestions || [];
+
+        if (pendingQuestions.length > 0) {
+          // Procesar el feedback para la pregunta más reciente
+          const question = pendingQuestions[pendingQuestions.length - 1];
+
+          console.log(`[LEARNING] 📥 Feedback de Mariano: "${feedback}" sobre: "${question.text.substring(0, 60)}..."`);
+
+          if (feedback === 'yes') {
+            // Guardar el aprendizaje
+            cerebroAbsoluto.appendLearning(question.text, 'MIIA_AUTO');
+            saveDB();
+            await safeSendMessage(phone, `✅ Memorizando permanentemente: "${question.text.substring(0, 100)}${question.text.length > 100 ? '...' : ''}"`);
+            console.log(`[LEARNING] ✅ Guardado después de feedback sí: "${question.text.substring(0, 80)}..."`);
+          } else if (feedback === 'no') {
+            await safeSendMessage(phone, '✅ Entendido, no lo memorizo.');
+            console.log(`[LEARNING] ⊘ Descartado por feedback no: "${question.text.substring(0, 80)}..."`);
+          } else if (feedback === 'partial') {
+            await safeSendMessage(phone, '✅ Anotado para revisión posterior.');
+          }
+
+          // Registrar feedback para aprendizaje futuro
+          confidenceEngine.recordFeedback(question.text, feedback, question.importance);
+
+          // Limpiar metadata
+          conversationMetadata[phone].pendingLearningAskedAt = null;
+          conversationMetadata[phone].pendingLearningQuestions = [];
+          saveDB();
+          return; // No continuar con procesamiento normal
+        }
+      }
+    }
+
     // Comando de enseñanza directa: "aprende: texto" / "miia recuerda: texto" / etc.
     const learnCmdMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:aprende|recuerda|guarda):\s*(.+)/is);
     if (isAdmin && learnCmdMatch) {
@@ -862,11 +952,31 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
             const miiaMsg = await generateAIContent(promptFamiliar);
             if (miiaMsg) {
               const cleanMsg = miiaMsg.trim();
-              await safeSendMessage(targetSerialized, cleanMsg + MIIA_CIERRE);
+              const isFirstContact = !familyInfo.isHandshakeDone;
+
+              // En primer contacto: agregar instrucción completa de HOLA MIIA / CHAU MIIA
+              // En contactos posteriores: ocasionalmente recordar (1 en 5 veces)
+              let finalMsg = cleanMsg;
+              if (isFirstContact) {
+                // Primer mensaje: incluir handshake obligatorio
+                finalMsg = `${cleanMsg}\n\nResponde solamente *HOLA MIIA* y aquí estaré! Chaauuu 👋`;
+              } else {
+                // Mensajes posteriores: recordar ocasionalmente (20% de probabilidad)
+                if (Math.random() < 0.2) {
+                  finalMsg = cleanMsg + MIIA_CIERRE;
+                }
+              }
+
+              await safeSendMessage(targetSerialized, finalMsg);
               familyInfo.isHandshakeDone = true;
               familyInfo.affinity = (familyInfo.affinity || 0) + 1;
               if (!allowedLeads.includes(targetSerialized)) allowedLeads.push(targetSerialized);
               if (conversationMetadata[targetSerialized]) conversationMetadata[targetSerialized].miiaFamilyPaused = false;
+              // Agregar metadata: este contacto está en "dile a mode"
+              conversationMetadata[targetSerialized] = conversationMetadata[targetSerialized] || {};
+              conversationMetadata[targetSerialized].dileAMode = true;
+              conversationMetadata[targetSerialized].dileAContact = familyInfo.name;
+              conversationMetadata[targetSerialized].dileAHandshakePending = isFirstContact;
               conversations[targetSerialized] = conversations[targetSerialized] || [];
               conversations[targetSerialized].push({ role: 'assistant', content: cleanMsg, timestamp: Date.now() });
               saveDB();
@@ -1135,12 +1245,29 @@ Nuevo resumen actualizado:`;
 - MARIA ISABEL: Esposa de Jota. Madre de Renata, ama los perros (Kiara). Preguntarle siempre por Kiara.
 
 ## 🤝 COMANDO "MIIA dile a [Contacto] [Tema]"
-- Uso: Exclusivo para familia/amigos. No para leads.
-- Acción: MIIA genera un mensaje creativo basado en la personalidad guardada del contacto.
-- Handshake Hook (primera interacción): Obligar al contacto a decir "Hola Miia" con la frase:
-  "Responde solamente Hola Miia y aquí estaré! Chaauuu"
-- Medicamento Proactivo (primer mensaje en modo "Dile a"):
-  Agregá al final de tu mensaje: "${MIIA_CIERRE}"
+**Uso**: Exclusivo para familia/amigos. No para leads.
+**Acción**: MIIA genera un mensaje creativo basado en la personalidad del contacto.
+
+**FLUJO CRÍTICO:**
+1. **PRIMER MENSAJE (Handshake obligatorio)**:
+   - Al final del mensaje: "Responde solamente *HOLA MIIA* y aquí estaré! Chaauuu 👋"
+   - El contacto DEBE responder "HOLA MIIA" para que MIIA continúe hablando
+   - Si responde cualquier otra cosa, MIIA NO RESPONDE (espera "HOLA MIIA")
+
+2. **MENSAJES POSTERIORES (Conversación activa)**:
+   - Cada 5 mensajes aprox., incluír recordatorio:
+     "*Si quieres seguir hablando, responde HOLA MIIA. Si prefieres terminar, escribe CHAU MIIA.*"
+   - El contacto puede seguir escribiendo libremente
+   - MIIA responde normalmente hasta que el contacto diga "CHAU MIIA"
+
+3. **COMANDOS OBLIGADOS** (en MAYÚSCULAS):
+   - **"HOLA MIIA"** → Activa la conversación (después del handshake)
+   - **"CHAU MIIA"** → Termina la conversación. MIIA no responde más hasta nuevo "dile a"
+
+**NOTAS IMPORTANTES:**
+- NO confundas "Hola Miia" casual con el comando "HOLA MIIA" (obligatoriamente MAYÚSCULAS)
+- En self-chat de Mariano, nunca uses este comando — estás hablando directamente
+- El objetivo es que el contacto CONTROLE cuándo habla con MIIA y cuándo no
 
 ## ⚙️ MOTOR DE AFINIDAD
 - Tu trato evoluciona: a más charlas, más cariñosa y cercana te vuelves (escala 0-100).
@@ -1313,17 +1440,33 @@ Cuando detectes alguna de estas señales, hacé la recomendación con confianza 
 - Trabaja con aseguradoras, prepagadas, EPS (Colombia), FONASA/ISAPRES (Chile), IMSS/ISSSTE (México) o tiene convenios o contratos similares en cualquier país
 *Motivo: el plan PRO incluye el módulo **Convenios** — permite gestionar prestaciones cubiertas por aseguradoras, generar reportes para liquidación y manejar co-pagos. Sin este módulo, no puede operar con convenios de forma organizada.*
 
-## DISCOVERY Y ESTILO DE CONVERSACIÓN
-Para armar una cotización personalizada necesitás saber:
-(1) cuántos profesionales de salud (médicos, terapeutas, etc.) usarán el sistema — un "usuario" es cada profesional que necesita acceso,
-(2) cuántas citas atienden al mes aproximadamente,
-(3) si necesitan módulos adicionales: recordatorios por WhatsApp, factura electrónica, firma digital.
+## DISCOVERY Y ESTILO DE CONVERSACIÓN — ADAPTACIÓN CRÍTICA
 
-ADAPTATE AL LEAD:
-- Lead DIRECTO (mensajes cortos, tarda en responder): Ve al grano. Preguntá todo en un solo mensaje breve y claro. No pierdas su atención con rodeos.
-- Lead CONVERSACIONAL (fluye, escribe bien, responde rápido): Mostrá genuino interés en su clínica. Hacé las preguntas de forma natural dentro de la conversación, sin sonar a formulario.
+**DATOS OBLIGATORIOS para cotización** (no negociable):
+1. **¿Cuántos profesionales** de salud usarán el sistema? (= usuarios)
+2. **¿Cuántas citas al mes** aproximadamente?
 
-En cualquier caso: explicá en pocas palabras POR QUÉ necesitás esos datos — "para armar una tarifa que cubra exactamente tu operación, sin que pagues de más". Si el lead ya mencionó algún dato, úsalo y no lo repitas.
+**ADAPTATE AL ESTILO DEL LEAD — CÓMO PREGUNTAR:**
+
+**🏃 Lead DIRECTO** (mensajes cortos, "dame rápido", dice "completa"):
+- Hazlo EN UN SOLO MENSAJE breve y al punto
+- Ej: "Para armar tu cotización necesito 2 datos: ¿cuántos médicos trabajan contigo y cuántas citas hacen al mes?"
+- Si responde con datos: genera PDF
+- Si dice "no sé" o elude: asumir defaults (1 usuario, 70 citas) + enviar + aclaración "Para exactitud, confirma estos datos"
+
+**💬 Lead CONVERSACIONAL** (fluye, escribe bien, responde bien):
+- Preguntá de forma natural dentro de la conversación
+- Explicá POR QUÉ necesitás los datos: "para armar una tarifa que cubra exactamente tu operación, sin que pagues de más"
+- Pregunta 1 a la vez, espera respuesta, continúa fluyendo
+- Si menciona un dato, no lo repitas — úsalo
+
+**Detección automática del estilo:**
+- DIRECTO: ≤25 caracteres promedio por mensaje, dice "dame", "rápido", "completa"
+- CONVERSACIONAL: >50 caracteres, responde preguntas con detalle, fluye natural
+
+**En self-chat con Mariano (modo testing):**
+- Si escribe "para españa 1 usuario" → MIIA entiende: estos SON los datos, envía PDF
+- Mantén tono personal pero eficiente
 Cuando tu respuesta tenga más de 5-6 líneas de texto, partila en 2 mensajes usando el separador literal \`[MSG_SPLIT]\` en el punto de corte más natural. El primer mensaje es el núcleo; el segundo, el detalle o complemento. NUNCA uses \`[MSG_SPLIT]\` dentro de un tag \`[GENERAR_COTIZACION_PDF:...]\`.
 Tu objetivo: que el lead sienta que lo estás ayudando a resolver su problema, no que le estás vendiendo un software.
 
@@ -1331,8 +1474,37 @@ Tu objetivo: que el lead sienta que lo estás ayudando a resolver su problema, n
 Cuando un lead pregunta CÓMO funciona algo, CÓMO configurarlo, o tiene dudas técnicas sobre el software, podés compartir el link directo del artículo relevante de: https://ayuda.softwaremedilink.com/es/
 Usá estos links como respaldo para dar respuestas concretas y creíbles. Siempre que compartas un link, mencioná brevemente para qué sirve ese artículo.
 
-## COTIZACIÓN EN PDF
-Cuando tengas los datos del lead (usuarios + citas/mes), emitís este tag en su propia línea (NO dentro de texto):
+## COTIZACIÓN EN PDF — ADAPTACIÓN INTELIGENTE
+
+**ANTES de enviar PDF: SIEMPRE verificar que tenés los datos básicos**
+Sin excepciones, MIIA necesita saber:
+1. **Usuarios (profesionales)**
+2. **Citas/mes aproximado**
+
+**PROTOCOLO SEGÚN ESTILO DEL LEAD:**
+
+### Lead DIRECTO (mensajes cortos, "dame completa", sin rodeos):
+- Hacer discovery en UN SOLO MENSAJE breve y directo
+- Pregunta: "¿Cuántos profesionales y cuántas citas/mes aproximadamente?"
+- Si aún así pide PDF sin responder:
+  - Asumir defaults (1 usuario, 70 citas/mes)
+  - Enviar PDF + aclaración: "Esto es estimado con datos mínimos. Para cotización exacta, necesito confirmar..."
+
+### Lead CONVERSACIONAL (fluye, escribe bien):
+- Hacer discovery dentro de la conversación natural
+- Preguntas separadas, con contexto y explicación
+- Esperar respuestas antes de generar PDF
+
+### Self-Chat con Mariano (modo trabajo/testing):
+- Mantener tono personal + leal
+- Si pide "dame completa para españa 1 usuario":
+  - Detectar que es AUTO-testing (no es un lead real)
+  - Asumir: 1 usuario, 70 citas/mes, PRO, España/USD, descuento 30%
+  - Generar PDF directamente SIN pedir más confirmación
+  - Aclaración opcional: "Aquí va la cotización con parámetros estándar"
+
+**CUANDO TENGAS los datos del lead (usuarios + citas/mes):**
+Emitís este tag en su propia línea (NO dentro de texto):
 [GENERAR_COTIZACION_PDF:{"nombre":"${leadName || 'Lead'}","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":70,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"descuento":30,"vigencia":"${promoVigencia}"}]
 
 **PAÍS y MONEDA — usar SIEMPRE el del lead según su número o lo que diga explícitamente:**
@@ -1342,10 +1514,11 @@ Cuando tengas los datos del lead (usuarios + citas/mes), emitís este tag en su 
 | +56         | CHILE             | CLP    |
 | +52         | MEXICO            | MXN    |
 | +54         | ARGENTINA         | USD    |
+| +34 (España)| ESPAÑA (INTL)    | USD    |
 | +1809/+1829 | REPUBLICA_DOMINICANA | USD |
 | Resto       | INTERNACIONAL     | USD    |
 
-En el self-chat con Mariano: usá el país que él pida explícitamente, sin inferirlo de su número.
+En el self-chat con Mariano: usá el país que él pida explícitamente, sin inferirlo de su número. Si dice "españa", use ESPAÑA con moneda USD.
 
 **REGLAS POR PAÍS (OBLIGATORIAS):**
 - **ARGENTINA**: SIEMPRE \`incluirFactura:false\` (no vendemos factura electrónica en Argentina). SIEMPRE \`incluirRecetaAR:true\` — es el módulo exclusivo de Argentina de receta médica digital ($3 USD/mes). Solo quitarlo si el lead lo pide explícitamente.
@@ -1375,7 +1548,38 @@ Nadie más en el continente lo ha logrado. Garantiza la máxima seguridad de dat
 Mencionalo con orgullo empático cuando:
 - El lead compara con otra plataforma (Dentalink, Doctocliq, HolaDoc, Agenda Pro, u otras)
 - El lead pregunta sobre seguridad o privacidad de datos
-- El lead duda y pide razones concretas para elegir Medilink`;
+- El lead duda y pide razones concretas para elegir Medilink
+
+## 🧠 PROTOCOLO DE APRENDIZAJE AUTÓNOMO — [GUARDAR_APRENDIZAJE:...]
+Cuando detectes contenido importante que Mariano te enseña, márcalo automáticamente con el tag \`[GUARDAR_APRENDIZAJE:...]\` para que el sistema lo evalúe y memorice.
+
+**Usá este tag cuando:**
+- Mariano te enseña un PROMPT MAESTRO o instrucción estratégica (reglas de negocio, mejores prácticas, procesos)
+- Te proporciona matrices de precios, tarifas, o rangos de descuento
+- Te explica normativa, regulaciones o requisitos legales por país
+- Te comparte estructuras, templates o formatos que debo usar
+- Te da feedback sobre cómo debería responder o comportarme
+- Recibís documentos, links o información que debería persistir en mi memoria
+
+**Formato:**
+Incluí el tag EN UNA LÍNEA APARTE, así:
+\`[GUARDAR_APRENDIZAJE:Texto o contenido que deseas que memorice]\`
+
+**Ejemplos:**
+\`[GUARDAR_APRENDIZAJE:Cuando el lead diga "receta digital", ofrecé Receta Digital AR ($3 USD/mes) SOLO en Argentina]\`
+\`[GUARDAR_APRENDIZAJE:PROMPT MAESTRO CONFIGURADOR: [todo el prompt aquí]]\`
+
+**Qué sucede:**
+1. El sistema evalúa la importancia del contenido (0-100)
+2. Si confianza >= 85%: Lo memoriza automáticamente ✅
+3. Si 70-84%: Te pregunta "¿Debería memorizar esto?" para confirmar 🤔
+4. Si < 70%: Lo descarta como ruido
+5. Tu feedback ("sí", "no", "parcial") entrena el sistema para futuras decisiones
+
+**IMPORTANTE:**
+- NO uses este tag en cada frase — usalo solo para contenido realmente importante
+- El tag NO aparecerá en la respuesta que envío (el sistema lo procesa y lo oculta)
+- Funciona en self-chat, entrenamiento por URL, documentos, y web scraping`;
     }
 
     // Sistema de confianza progresiva
@@ -1441,11 +1645,56 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       } catch (e) { console.error('[COBROS] Error enviando QR:', e.message); }
     }
     // Tag de aprendizaje universal — MIIA guarda conocimiento desde cualquier canal
-    const learnTagMatch = aiMessage.match(/\[GUARDAR_APRENDIZAJE:([^\]]+)\]/);
-    if (learnTagMatch) {
-      cerebroAbsoluto.appendLearning(learnTagMatch[1], 'MIIA_AUTO');
-      saveDB();
-      aiMessage = aiMessage.replace(learnTagMatch[0], '').trim();
+    // Ahora con evaluación de confianza inteligente (save/ask/ignore)
+    const learnTagRegex = /\[GUARDAR_APRENDIZAJE:([^\]]+)\]/g;
+    let learnMatch;
+    const pendingQuestions = [];
+
+    while ((learnMatch = learnTagRegex.exec(aiMessage)) !== null) {
+      const textToLearn = learnMatch[1];
+
+      if (isAdmin) {
+        // Para el admin (Mariano), evaluar importancia con confidence engine
+        try {
+          const importance = await confidenceEngine.evaluateImportance(textToLearn, callGemini);
+          const { action, confidence, reason } = confidenceEngine.decideAction(importance, textToLearn);
+
+          console.log(`[CONFIDENCE] ${reason} (${confidence}%)`);
+
+          if (action === 'save') {
+            // Auto-save si confianza alta (>=85%)
+            cerebroAbsoluto.appendLearning(textToLearn, 'MIIA_AUTO');
+            console.log(`[LEARNING] ✅ Guardado automáticamente: "${textToLearn.substring(0, 80)}..."`);
+          } else if (action === 'ask') {
+            // Preguntar a Mariano si duda (70-84%)
+            pendingQuestions.push({
+              text: textToLearn,
+              importance,
+              confidence
+            });
+            console.log(`[LEARNING] ❓ Preguntando a Mariano sobre: "${textToLearn.substring(0, 80)}..."`);
+          }
+          // Si action === 'ignore' (<70%): no hacer nada
+        } catch (e) {
+          console.error(`[CONFIDENCE] Error evaluando importancia:`, e.message);
+          // Fallback: guardar igualmente ante error
+          cerebroAbsoluto.appendLearning(textToLearn, 'MIIA_AUTO');
+        }
+      } else {
+        // No-admin: solo guardar (no preguntar a leads)
+        cerebroAbsoluto.appendLearning(textToLearn, 'MIIA_AUTO');
+      }
+    }
+
+    saveDB();
+    // Remover todos los tags de la respuesta final
+    aiMessage = aiMessage.replace(/\[GUARDAR_APRENDIZAJE:[^\]]+\]/g, '').trim();
+
+    // Si hay preguntas pendientes para Mariano, guardarlas en metadata para procesarlas después
+    if (pendingQuestions.length > 0) {
+      if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+      conversationMetadata[phone].pendingLearningQuestions = pendingQuestions;
+      conversationMetadata[phone].pendingLearningAskedAt = Date.now();
     }
     // Detectar y procesar tag de cotización PDF
     const cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
@@ -1586,6 +1835,29 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       timestamp: Date.now(),
       type: contactTypes[phone] || 'lead'
     });
+
+    // Enviar preguntas de aprendizaje pendientes a Mariano
+    if (isAdmin && conversationMetadata[phone]?.pendingLearningQuestions?.length > 0) {
+      const pendingQuestions = conversationMetadata[phone].pendingLearningQuestions;
+      await new Promise(r => setTimeout(r, 2000 + Math.random() * 1000)); // Esperar un poco para naturalidad
+
+      for (let i = 0; i < pendingQuestions.length; i++) {
+        const question = pendingQuestions[i];
+        const preview = question.text.substring(0, 250) + (question.text.length > 250 ? '...' : '');
+        const questionText = `🤔 Confianza: ${question.confidence}% — ¿Debería memorizar esto permanentemente?\n\n"${preview}"`;
+
+        await safeSendMessage(phone, questionText);
+        console.log(`[LEARNING] 📬 Pregunta enviada a Mariano sobre: "${question.text.substring(0, 60)}..."`);
+
+        // Esperar entre preguntas
+        if (i < pendingQuestions.length - 1) {
+          await new Promise(r => setTimeout(r, 1500 + Math.random() * 500));
+        }
+      }
+
+      // Limpiar metadata después de enviar preguntas
+      conversationMetadata[phone].pendingLearningQuestions = [];
+    }
 
   } catch (err) {
     console.error(`[MIIA] ❌ Error en processMiiaResponse para ${phone}:`, err.message);
