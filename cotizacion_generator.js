@@ -711,12 +711,15 @@ async function generarPDF(params) {
     });
     const page = await browser.newPage();
     await page.setViewport({ width: 794, height: 1123, deviceScaleFactor: 1 });
+    console.log(`[PDF-INIT] setContent iniciado...`);
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    console.log(`[PDF-INIT] setContent completado, generando PDF...`);
     const buffer = await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: { top: '0', right: '0', bottom: '0', left: '0' }
+      margin: { top: 0, right: 0, bottom: 0, left: 0 }  // Números, no strings
     });
+    console.log(`[PDF-INIT] PDF generado exitosamente, size: ${buffer.length} bytes`);
     return buffer;
   } finally {
     if (browser) await browser.close().catch(() => {});
