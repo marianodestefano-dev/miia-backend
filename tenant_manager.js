@@ -38,11 +38,21 @@ if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 const baileysLogger = pino({ level: 'silent' });
 
 // ─── Global error monitor for libsignal MessageCounterError ───
+const SERVER_START_TIME = Date.now();
+const STARTUP_GRACE_PERIOD = 90000; // 90s — ignorar errores de mensajes encolados al inicio
+
 const originalConsoleError = console.error;
 console.error = function(...args) {
   const errorStr = args.map(a => String(a)).join(' ');
   if (errorStr.includes('MessageCounterError') || errorStr.includes('Key used already')) {
-    // Intentar extraer UID de contexto si está disponible
+    // CRÍTICO: los primeros 90s después del startup son errores de mensajes viejos encolados
+    // — NO contar hacia el cleanup o se borra la sesión en cada redeploy
+    const uptime = Date.now() - SERVER_START_TIME;
+    if (uptime < STARTUP_GRACE_PERIOD) {
+      console.log(`[TM] 🔐 libsignal error ignorado (startup grace period, uptime=${Math.round(uptime/1000)}s)`);
+      return originalConsoleError.apply(console, args);
+    }
+
     for (const [uid, tenant] of tenants) {
       if (!tenantErrors.has(uid)) {
         tenantErrors.set(uid, { count: 0, windowStart: Date.now() });

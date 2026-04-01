@@ -2442,8 +2442,10 @@ async function handleIncomingMessage(message) {
       console.log(`[MIIA] ✅ Sesión abierta para ${effectiveTarget}`);
     }
 
-    // MIIA responde si: se mencionó explícitamente OR la sesión ya está activa
-    const isMIIAActive = isMIIAMentioned || isMIIASessionActive;
+    // FIX: Owner self-chat SIEMPRE activa MIIA — sin necesidad de decir "hola miia"
+    // Para familia/leads: requiere keyword o sesión activa
+    // El estado de sesión se pierde en cada redeploy (Railway filesystem efímero)
+    const isMIIAActive = isSelfChatMsg ? true : (isMIIAMentioned || isMIIASessionActive);
 
     const isFamily = !!familyContacts[effectiveTarget.split('@')[0]];
     const isEquipo = !!equipoMedilink[effectiveTarget.split('@')[0]];
