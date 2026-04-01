@@ -937,6 +937,7 @@ Nuevo resumen actualizado:`;
       phone.includes('136417472712832') ||  // Hardcoded owner number
       phone.includes('bq2BbtCVF8cZo30tum584zrGATJ3')  // Owner UID
     );
+    const isSelfChat = isOwnerNumber; // For logging purposes
 
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
     // EXCEPTO: owner y family contacts responden siempre
