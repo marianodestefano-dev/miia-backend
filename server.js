@@ -510,8 +510,11 @@ async function safeSendMessage(target, content, options = {}) {
   }
   hourlySendLog.count++;
 
-  // BLINDAJE: Limitar largo de respuesta (máx 1200 chars — cortar por párrafo, no por punto)
-  if (typeof content === 'string' && content.length > 1200) {
+  // BLINDAJE: Limitar largo de respuesta (máx 1200 chars — EXCEPTO si contiene tags especiales)
+  // Los tags [GENERAR_COTIZACION_PDF:...] y [GUARDAR_APRENDIZAJE:...] NUNCA se cortan
+  const tieneTagEspecial = content.includes('[GENERAR_COTIZACION_PDF:') || content.includes('[GUARDAR_APRENDIZAJE:');
+
+  if (typeof content === 'string' && content.length > 1200 && !tieneTagEspecial) {
     let cutPoint = content.lastIndexOf('\n\n', 1200);
     if (cutPoint < 400) cutPoint = content.lastIndexOf('\n', 1200);
     if (cutPoint < 400) cutPoint = 1200;
