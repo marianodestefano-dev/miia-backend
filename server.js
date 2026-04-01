@@ -561,7 +561,20 @@ async function safeSendMessage(target, content, options = {}) {
       }
     }
 
+    console.log(`[SEND-DEBUG] Intentando enviar a: ${sendTarget}`);
+    console.log(`[SEND-DEBUG] isSelfChat: ${isSelfChat}`);
+    console.log(`[SEND-DEBUG] sendOptions: ${JSON.stringify(Object.keys(sendOptions))}`);
+    console.log(`[SEND-DEBUG] baileysContent: ${JSON.stringify(baileysContent).substring(0, 100)}`);
+
     const result = await ownerSock.sendMessage(sendTarget, baileysContent, sendOptions);
+
+    console.log(`[SEND-DEBUG] Resultado de sendMessage:`, result);
+    if (result?.error) {
+      console.error(`[SEND-ERROR] ❌ Error enviando:`, result.error);
+    } else {
+      console.log(`[SEND-OK] ✅ sendMessage retornó exitosamente`);
+    }
+
     // Registrar mensaje como enviado por bot para que message_create lo ignore
     const sentBody = (typeof content === 'string' ? content : '').trim();
     if (sentBody) {
