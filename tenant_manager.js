@@ -298,7 +298,15 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     });
 
     // ─── Save credentials on update ───
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async (creds) => {
+      console.log(`[TM:${uid}] 💾 creds.update fired, saving to Firestore...`);
+      try {
+        await saveCreds(creds);
+        console.log(`[TM:${uid}] ✅ Creds saved successfully`);
+      } catch (e) {
+        console.error(`[TM:${uid}] ❌ Error saving creds:`, e.message);
+      }
+    });
 
     // ─── Incoming messages ───
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
