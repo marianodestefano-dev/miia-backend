@@ -178,8 +178,8 @@ const FAMILY_CONTACTS = {
 // VARIABLES GLOBALES
 // ============================================
 
-const OWNER_UID = process.env.OWNER_UID || '';
-if (!OWNER_UID) console.warn('[CONFIG] ⚠️  OWNER_UID no configurado en variables de entorno. El owner será tratado como tenant.');
+let OWNER_UID = process.env.OWNER_UID || '';
+if (!OWNER_UID) console.log('[CONFIG] ℹ️ OWNER_UID no configurado — se auto-detectará desde Firestore (role=admin).');
 // whatsappClient ahora es un getter que busca el sock del owner en tenant_manager
 // Esto mantiene compatibilidad con toda la lógica existente del owner
 function getOwnerSock() {
@@ -4530,119 +4530,145 @@ server.listen(PORT, () => {
   
   console.log('\n═══════════════════════════════════\n');
 
-  // Auto-reconexión al iniciar el servidor
-  console.log(`[AUTO-INIT] OWNER_UID="${OWNER_UID}", SKIP_WA_INIT="${process.env.SKIP_WA_INIT || ''}"`);
-  if (OWNER_UID && !process.env.SKIP_WA_INIT) {
-    console.log('[AUTO-INIT] 🔄 Intentando auto-reconexión del owner...');
+  // ═══ AUTO-RECONEXIÓN DE TODOS LOS USUARIOS ═══
+  // Al iniciar el servidor, busca TODAS las sesiones de Baileys guardadas
+  // y reconecta automáticamente verificando que el número coincida con Firestore.
+  if (!process.env.SKIP_WA_INIT) {
     setTimeout(async () => {
       try {
-        // Verificar si hay sesión de Baileys guardada (clientId = "tenant-{uid}")
-        const clientId = `tenant-${OWNER_UID}`;
-        console.log(`[AUTO-INIT] Buscando credenciales en baileys_sessions/${clientId}/data/creds...`);
-        const credsDoc = await admin.firestore().collection('baileys_sessions').doc(clientId).collection('data').doc('creds').get();
-        if (credsDoc.exists) {
-          console.log('[AUTO-INIT] 🔑 Credenciales encontradas. Reconectando owner...');
-          // Obtener API key del owner desde Firestore
-          let ownerGeminiKey = process.env.GEMINI_API_KEY || '';
-          try {
-            const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
-            if (ownerDoc.exists && ownerDoc.data().gemini_api_key) {
-              ownerGeminiKey = ownerDoc.data().gemini_api_key;
-            }
-          } catch (_) {}
+        // 1. Auto-detectar OWNER_UID si no está en env
+        if (!OWNER_UID) {
+          console.log('[AUTO-INIT] 🔍 OWNER_UID no configurado. Buscando admin en Firestore...');
+          const adminSnap = await admin.firestore().collection('users').where('role', '==', 'admin').limit(1).get();
+          if (!adminSnap.empty) {
+            OWNER_UID = adminSnap.docs[0].id;
+            console.log(`[AUTO-INIT] ✅ Admin auto-detectado: ${OWNER_UID}`);
+          } else {
+            console.log('[AUTO-INIT] ⚠️ No se encontró usuario con role=admin en Firestore.');
+          }
+        } else {
+          console.log(`[AUTO-INIT] OWNER_UID desde env: ${OWNER_UID}`);
+        }
 
-          // Crear las mismas opciones que usa /api/tenant/init para el owner
-          const ownerOptions = {
-            onMessage: (baileysMsg, from, body) => {
-              const adapted = {
-                from,
-                to: baileysMsg.key.remoteJid,
-                fromMe: !!baileysMsg.key.fromMe,
-                body,
-                id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
-                hasMedia: !!(baileysMsg.message?.imageMessage || baileysMsg.message?.audioMessage || baileysMsg.message?.videoMessage || baileysMsg.message?.documentMessage || baileysMsg.message?.stickerMessage),
-                type: baileysMsg.message?.imageMessage ? 'image' : baileysMsg.message?.audioMessage ? 'audio' : baileysMsg.message?.videoMessage ? 'video' : baileysMsg.message?.documentMessage ? 'document' : baileysMsg.message?.stickerMessage ? 'sticker' : 'chat',
-                isStatus: from === 'status@broadcast',
-                timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
-                _baileysMsg: baileysMsg
-              };
-              handleIncomingMessage(adapted);
-            },
-            onReady: (sock) => {
-              console.log('[AUTO-INIT] ✅ Owner reconnected via Baileys');
-              isReady = true;
-              io.emit('whatsapp_ready', { status: 'connected' });
-              try {
-                const waNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
-                if (waNumber) {
+        // 2. Buscar TODAS las sesiones de Baileys guardadas
+        const sessionsSnap = await admin.firestore().collection('baileys_sessions').get();
+        const sessionIds = sessionsSnap.docs
+          .map(d => d.id)
+          .filter(id => id.startsWith('tenant-'));
+
+        console.log(`[AUTO-INIT] 📋 ${sessionIds.length} sesión(es) de Baileys encontradas en Firestore.`);
+
+        for (const sessionId of sessionIds) {
+          const uid = sessionId.replace('tenant-', '');
+
+          try {
+            // Verificar que tiene creds guardados
+            const cDoc = await admin.firestore().collection('baileys_sessions').doc(sessionId).collection('data').doc('creds').get();
+            if (!cDoc.exists) {
+              console.log(`[AUTO-INIT] ⏭️ ${uid.substring(0, 12)}... sin creds, saltando.`);
+              continue;
+            }
+
+            // Verificar usuario en Firestore y obtener su whatsapp_number
+            const userDoc = await admin.firestore().collection('users').doc(uid).get();
+            if (!userDoc.exists) {
+              console.log(`[AUTO-INIT] ⚠️ ${uid.substring(0, 12)}... tiene sesión pero no existe en users. Saltando.`);
+              continue;
+            }
+
+            const userData = userDoc.data();
+            const savedNumber = userData.whatsapp_number || null;
+            const gKey = userData.gemini_api_key || process.env.GEMINI_API_KEY || '';
+            const isOwner = (uid === OWNER_UID);
+
+            console.log(`[AUTO-INIT] 🔄 Reconectando ${isOwner ? 'OWNER' : 'tenant'} ${uid.substring(0, 12)}... (WA: ${savedNumber || 'sin registro'})`);
+
+            // Construir opciones — el owner necesita onMessage y onReady especiales
+            const options = isOwner ? {
+              onMessage: (baileysMsg, from, body) => {
+                const adapted = {
+                  from,
+                  to: baileysMsg.key.remoteJid,
+                  fromMe: !!baileysMsg.key.fromMe,
+                  body,
+                  id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
+                  hasMedia: !!(baileysMsg.message?.imageMessage || baileysMsg.message?.audioMessage || baileysMsg.message?.videoMessage || baileysMsg.message?.documentMessage || baileysMsg.message?.stickerMessage),
+                  type: baileysMsg.message?.imageMessage ? 'image' : baileysMsg.message?.audioMessage ? 'audio' : baileysMsg.message?.videoMessage ? 'video' : baileysMsg.message?.documentMessage ? 'document' : baileysMsg.message?.stickerMessage ? 'sticker' : 'chat',
+                  isStatus: from === 'status@broadcast',
+                  timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
+                  _baileysMsg: baileysMsg
+                };
+                handleIncomingMessage(adapted);
+              },
+              onReady: (sock) => {
+                // Verificar que el número conectado coincide con el guardado
+                const connectedNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
+                if (savedNumber && connectedNumber && connectedNumber !== savedNumber) {
+                  console.log(`[AUTO-INIT] 🚫 OWNER: número no coincide! Guardado: ${savedNumber}, Conectado: ${connectedNumber}. Desconectando.`);
+                  sock.logout().catch(() => {});
+                  return;
+                }
+
+                console.log(`[AUTO-INIT] ✅ Owner conectado (${connectedNumber})`);
+                isReady = true;
+                io.emit('whatsapp_ready', { status: 'connected' });
+
+                // Guardar/actualizar número
+                if (connectedNumber) {
                   admin.firestore().collection('users').doc(OWNER_UID).update({
-                    whatsapp_number: waNumber,
+                    whatsapp_number: connectedNumber,
                     whatsapp_connected_at: new Date()
                   }).catch(() => {});
                 }
-              } catch (_) {}
-              cerebroAbsoluto.init({
-                whatsappClient: sock,
-                generateAIContent,
-                onTrainingUpdate: () => { saveDB(); },
-                dataDir: DATA_DIR,
-                initialTrainingData: cerebroAbsoluto.getTrainingData()
-              });
-              webScraper.init({
-                generateAIContent,
-                appendLearning: cerebroAbsoluto.appendLearning
-              });
-            }
-          };
 
-          tenantManager.initTenant(OWNER_UID, ownerGeminiKey, io, {}, ownerOptions);
-          console.log('[AUTO-INIT] 🚀 Owner init disparado. Esperando conexión...');
-        } else {
-          console.log('[AUTO-INIT] ⚠️ Sin credenciales de Baileys. El owner debe vincular WhatsApp manualmente.');
-        }
-      } catch (e) {
-        console.error('[AUTO-INIT] ❌ Error en auto-reconexión owner:', e.message);
-      }
+                cerebroAbsoluto.init({
+                  whatsappClient: sock,
+                  generateAIContent,
+                  onTrainingUpdate: () => { saveDB(); },
+                  dataDir: DATA_DIR,
+                  initialTrainingData: cerebroAbsoluto.getTrainingData()
+                });
+                webScraper.init({
+                  generateAIContent,
+                  appendLearning: cerebroAbsoluto.appendLearning
+                });
+              }
+            } : {
+              // Tenant no-owner: verificar número al conectar
+              onReady: (sock) => {
+                const connectedNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
+                if (savedNumber && connectedNumber && connectedNumber !== savedNumber) {
+                  console.log(`[AUTO-INIT] 🚫 Tenant ${uid.substring(0, 12)}...: número no coincide! Guardado: ${savedNumber}, Conectado: ${connectedNumber}. Desconectando.`);
+                  sock.logout().catch(() => {});
+                  return;
+                }
+                console.log(`[AUTO-INIT] ✅ Tenant ${uid.substring(0, 12)}... conectado (${connectedNumber})`);
+                if (connectedNumber) {
+                  admin.firestore().collection('users').doc(uid).update({
+                    whatsapp_number: connectedNumber,
+                    whatsapp_connected_at: new Date()
+                  }).catch(() => {});
+                }
+              }
+            };
 
-      // Auto-reconectar TODOS los usuarios (no-owner) con sesión guardada
-      try {
-        const sessionsSnap = await admin.firestore().collection('baileys_sessions').get();
-        const otherSessions = sessionsSnap.docs
-          .map(d => d.id)
-          .filter(id => id.startsWith('tenant-') && id !== `tenant-${OWNER_UID}`);
+            tenantManager.initTenant(uid, gKey, io, {}, options);
+            console.log(`[AUTO-INIT] 🚀 ${isOwner ? 'Owner' : 'Tenant'} ${uid.substring(0, 12)}... init disparado`);
 
-        if (otherSessions.length > 0) {
-          console.log(`[AUTO-INIT] 🔄 Reconectando ${otherSessions.length} tenant(s)...`);
-          for (const sessionId of otherSessions) {
-            const uid = sessionId.replace('tenant-', '');
-            try {
-              // Verificar que tiene creds
-              const cDoc = await admin.firestore().collection('baileys_sessions').doc(sessionId).collection('data').doc('creds').get();
-              if (!cDoc.exists) continue;
-
-              // Obtener gemini key del usuario
-              let gKey = '';
-              try {
-                const uDoc = await admin.firestore().collection('users').doc(uid).get();
-                if (uDoc.exists) gKey = uDoc.data().gemini_api_key || '';
-              } catch (_) {}
-
-              tenantManager.initTenant(uid, gKey, io, {}, {});
-              console.log(`[AUTO-INIT] 🚀 Tenant ${uid.substring(0, 12)}... init disparado`);
-
-              // Pequeña pausa entre inits para no saturar
-              await new Promise(r => setTimeout(r, 1000));
-            } catch (e) {
-              console.error(`[AUTO-INIT] ❌ Error reconectando tenant ${uid}:`, e.message);
-            }
+            // Pausa 1.5s entre inits para no saturar WhatsApp
+            await new Promise(r => setTimeout(r, 1500));
+          } catch (e) {
+            console.error(`[AUTO-INIT] ❌ Error reconectando ${uid.substring(0, 12)}...:`, e.message);
           }
         }
+
+        console.log('[AUTO-INIT] ✅ Auto-reconexión completada.');
       } catch (e) {
-        console.error('[AUTO-INIT] ❌ Error reconectando tenants:', e.message);
+        console.error('[AUTO-INIT] ❌ Error general:', e.message);
       }
-    }, 3000); // Esperar 3s a que todo esté listo
+    }, 3000);
   } else {
-    console.log('[AUTO-INIT] ℹ️ WhatsApp se conecta bajo demanda. OWNER_UID:', OWNER_UID || 'no configurado');
+    console.log('[AUTO-INIT] ⏭️ SKIP_WA_INIT activo. Sin auto-reconexión.');
   }
 });
 
