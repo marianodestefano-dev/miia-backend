@@ -931,22 +931,23 @@ Nuevo resumen actualizado:`;
       generateAIContent(summaryPrompt).then(s => { if (s) { leadSummaries[phone] = s.trim(); saveDB(); } }).catch(() => {});
     }
 
-    const myNumber = (getOwnerSock() && getOwnerSock().user)
-      ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
-    // Self-chat: el owner hablando consigo mismo. Detectar robustamente.
-    const phoneBase = phone.split('@')[0].split(':')[0]; // Extract just the number
-    const myBase = myNumber.split('@')[0].split(':')[0];
-    const isSelfChat = phoneBase === myBase;
+    // ⚠️ TEMPORARY FIX: El owner siempre responde, sin restricción de silencio nocturno
+    // TODO: Revisar por qué isSelfChat no funciona correctamente
+    const isOwnerNumber = phone && (
+      phone.includes('136417472712832') ||  // Hardcoded owner number
+      phone.includes('bq2BbtCVF8cZo30tum584zrGATJ3')  // Owner UID
+    );
 
     // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
-    // PERO: el owner en self-chat SIEMPRE responde (isSelfChat=true)
-    if (!isSelfChat && !isFamilyContact && !isAdmin) {
+    // EXCEPTO: owner y family contacts responden siempre
+    if (!isOwnerNumber && !isFamilyContact && !isAdmin) {
       const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
       const h = bogotaNow.getHours();
       const day = bogotaNow.getDay(); // 0=domingo
       if (h >= 21 || h < 6 || day === 0) {
+        const basePhone = phone.split('@')[0];
         nightPendingLeads.add(phone);
-        console.log(`[WA] Silencio para ${phone} (${h}h Bogotá, día=${day}). Pendiente registrado.`);
+        console.log(`[WA] Silencio para ${basePhone} (${h}h Bogotá, día=${day}). Pendiente registrado.`);
         return;
       }
     }
