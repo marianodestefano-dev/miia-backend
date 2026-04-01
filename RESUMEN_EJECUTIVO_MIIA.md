@@ -108,8 +108,15 @@ Sin esto: Socket.IO + Firestore funcionan, pero emails se saltan con warning.
 - ⏳ Railway/Vercel auto-deploy en progreso
 - ⏳ Email DESACTIVADO hasta que Mariano configure SMTP
 
-**Costo REAL sesión 6**: ~$0.75 USD (backend auto-cleanup + email service + Socket.IO)
-**Costo TOTAL acumulado**: ~$16.25 USD
+**⚠️ P1 ERROR ENCONTRADO Y FIJO (commit f408c58):**
+- Error: `Cannot read properties of undefined (reading 'toString')`
+- Causa: Márgenes PDF eran strings ('0') en lugar de números (0)
+- puppeteer.pdf() requiere valores numéricos para margin
+- FIX: cambiar `margin: { top: '0', right: '0', bottom: '0', left: '0' }` → `{ top: 0, right: 0, bottom: 0, left: 0 }`
+- Status: **PDF debería generar exitosamente ahora**
+
+**Costo REAL sesión 6**: ~$1.00 USD (backend auto-cleanup + email + Socket.IO + P1 PDF fix)
+**Costo TOTAL acumulado**: ~$16.75 USD
 
 ---
 
