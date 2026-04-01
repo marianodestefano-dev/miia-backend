@@ -4074,6 +4074,71 @@ app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
   }
 });
 
+// ── Admin Support Chat (Gemini) ──────────────────────────────────────────
+app.post('/api/admin/support-chat', express.json(), async (req, res) => {
+  // Auth inline (verifyAdminToken is defined below)
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
+    const decoded = await admin.auth().verifyIdToken(authHeader.substring(7));
+    const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
+    if (!doc.exists || doc.data().role !== 'admin') return res.status(403).json({ error: 'No admin' });
+
+    const { message, history } = req.body;
+    if (!message) return res.status(400).json({ error: 'message requerido' });
+
+    const systemPrompt = `Eres el asistente técnico de MIIA, un sistema SaaS de ventas por WhatsApp creado por Mariano De Stefano.
+Arquitectura: Backend Node.js en Railway, Frontend estático en Vercel, Firebase Auth + Firestore como DB, Baileys para conexión WhatsApp (WebSocket directo, sin Chrome), Google Gemini API para IA, Paddle para pagos.
+El super admin te consulta sobre problemas técnicos. Responde de forma concisa y técnica en español.
+Si te preguntan sobre una caída, da pasos concretos para diagnosticar (revisar logs de Railway, verificar Firestore, etc).
+URLs útiles: Railway dashboard, Firebase console, GitHub repo, Vercel dashboard.`;
+
+    const historyContext = (history || []).map(h => `${h.role === 'user' ? 'Admin' : 'Asistente'}: ${h.text}`).join('\n');
+    const fullPrompt = `${systemPrompt}\n\n${historyContext ? 'Historial:\n' + historyContext + '\n\n' : ''}Admin: ${message}\n\nAsistente:`;
+
+    const reply = await generateAIContent(fullPrompt);
+    res.json({ reply: reply || 'No pude generar una respuesta. Verificá que la API Key de Gemini esté activa.' });
+  } catch (e) {
+    console.error('[SUPPORT CHAT]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Admin Email Migration ────────────────────────────────────────────────
+app.post('/api/admin/migrate-email', express.json(), async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
+    const decoded = await admin.auth().verifyIdToken(authHeader.substring(7));
+    const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
+    if (!doc.exists || doc.data().role !== 'admin') return res.status(403).json({ error: 'No admin' });
+
+    const { newEmail } = req.body;
+    if (!newEmail || !newEmail.includes('@')) return res.status(400).json({ error: 'Email inválido' });
+
+    const currentEmail = decoded.email;
+
+    // 1. Update Firebase Auth email
+    await admin.auth().updateUser(decoded.uid, { email: newEmail });
+
+    // 2. Update Firestore user doc
+    await admin.firestore().collection('users').doc(decoded.uid).update({ email: newEmail });
+
+    // 3. Log instruction for Railway env update
+    console.log(`[ADMIN MIGRATE] Email migrado: ${currentEmail} → ${newEmail}. IMPORTANTE: Actualizar ADMIN_EMAILS en Railway.`);
+
+    res.json({
+      success: true,
+      message: `Email migrado de ${currentEmail} a ${newEmail}. IMPORTANTE: Actualizá la variable ADMIN_EMAILS en Railway manualmente.`,
+      oldEmail: currentEmail,
+      newEmail
+    });
+  } catch (e) {
+    console.error('[ADMIN MIGRATE]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Middleware: verify Firebase Admin ─────────────────────────────────────
 
 async function verifyAdminToken(req, res, next) {
