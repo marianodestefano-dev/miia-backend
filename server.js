@@ -749,7 +749,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     // MANEJO DE COMANDOS "DILE A" — HOLA MIIA / CHAU MIIA
     // Detecta cuando contactos de "dile a" activan/desactivan conversación
     // ═══════════════════════════════════════════════════════════════════════════
-    if (conversationMetadata[phone]?.dileAMode) {
+    if (conversationMetadata[phone]?.dileAMode && !isSelfChat) {
       const msgUpper = effectiveMsg ? effectiveMsg.toUpperCase().trim() : '';
 
       // Detectar "HOLA MIIA" para activar conversación
@@ -1535,63 +1535,45 @@ Cuando detectes alguna de estas señales, hacé la recomendación con confianza 
 - Trabaja con aseguradoras, prepagadas, EPS (Colombia), FONASA/ISAPRES (Chile), IMSS/ISSSTE (México) o tiene convenios o contratos similares en cualquier país
 *Motivo: el plan PRO incluye el módulo **Convenios** — permite gestionar prestaciones cubiertas por aseguradoras, generar reportes para liquidación y manejar co-pagos. Sin este módulo, no puede operar con convenios de forma organizada.*
 
-## DISCOVERY Y ESTILO DE CONVERSACIÓN — ADAPTACIÓN INTELIGENTE
+## 🎯 PROTOCOLO COTIZACIÓN — ULTRA SIMPLIFICADO
 
-**DATOS OBLIGATORIOS para cotización** (no negociable):
-1. **¿Cuántos profesionales** de salud usarán el sistema? (= usuarios)
-2. **¿Cuántas citas al mes** aproximadamente?
+**PASO 1: DETECTAR SI TIENES DATOS**
+Lee el mensaje del lead/Mariano. ¿Contiene AMBOS datos?
+- [X] ¿Cuántos usuarios (profesionales)?
+- [X] ¿Cuántas citas/mes?
 
-**ANÁLISIS AUTOMÁTICO DEL ESTILO DEL LEAD:**
-Lee el historial de conversación. Detecta patrones:
-- **DIRECTO**: ≤25 caracteres promedio por mensaje, dice "dame", "rápido", "completa", no elabora
-- **CONVERSACIONAL**: >50 caracteres, responde con detalle, fluye natural, hace preguntas
+**PASO 2: SI TIENES AMBOS DATOS — RESPUESTA EXACTA**
+NO generes tabla ni explicación.
+SOLO responde con:
 
-**ADAPTATE AL ESTILO DEL LEAD — CÓMO PREGUNTAR:**
+\`[GENERAR_COTIZACION_PDF:{"nombre":"Medilink Lead","pais":"COLOMBIA","moneda":"COP","usuarios":X,"citasMes":Y,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"descuento":30}]\`
 
-**🏃 Lead DIRECTO** (mensajes cortos, "dame rápido", dice "completa"):
-- Hazlo EN UN SOLO MENSAJE breve y al punto (creado por ti, NO template fijo)
-- Ejemplo: "Para armar tu cotización exacta necesito 2 datos: ¿cuántos profesionales trabajan con vos y cuántas citas/mes?"
-- Si responde con datos: EMITIR TAG [GENERAR_COTIZACION_PDF:...]
-- Si dice "no sé" o elude: asumir defaults (1 usuario, 70 citas) + EMITIR TAG + aclaración "Para exactitud, luego confirmas datos"
+(Reemplaza X=usuarios, Y=citas/mes, pais=del lead)
 
-**💬 Lead CONVERSACIONAL** (fluye, escribe bien, responde bien):
-- Preguntá de forma natural dentro de la conversación
-- Explicá POR QUÉ: "para armar una tarifa que cubra exactamente tu operación"
-- Pregunta 1 a la vez, espera respuesta, continúa fluyendo
-- Si menciona un dato, úsalo y no lo repitas
-- Una vez tengas usuarios + citas/mes: EMITIR TAG [GENERAR_COTIZACION_PDF:...]
+**EJEMPLO:**
+- Lead: "1 usuario, 100 citas en Colombia"
+- MIIA responde SOLO:
+\`[GENERAR_COTIZACION_PDF:{"nombre":"Medilink Lead","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":100,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"descuento":30}]\`
 
-**En self-chat con Mariano (modo testing):**
-- Si escribe "para españa 1 usuario" → Mariano está dando datos DIRECTAMENTE
-- EMITIR TAG [GENERAR_COTIZACION_PDF:...] INMEDIATAMENTE, NO preguntes más
-- Mantén tono personal pero eficiente
+**PASO 3: SI TE FALTAN DATOS — PREGUNTA BREVE**
+- Lead DIRECTO: "Para la cotización necesito: ¿cuántos profesionales y cuántas citas/mes?"
+- Lead CONVERSACIONAL: Integra las preguntas naturalmente en la conversación
 
-**REGLA DE ORO — CUÁNDO EMITIR EL TAG:**
-**CUANDO TENGAS usuarios + citas/mes, DEBES emitir el tag [GENERAR_COTIZACION_PDF:...] en su propia línea.**
-NO generes la cotización en texto. El tag genera el PDF automáticamente.
+**PAÍS Y MONEDA:**
+- +57 Colombia → COLOMBIA / COP
+- +56 Chile → CHILE / CLP
+- +52 México → MEXICO / MXN
+- +34 España → ESPAÑA / EUR
+- Otros → INTERNACIONAL / USD
 
-**EJEMPLOS (hazlos propios, pero estructura similar):**
+**CASO ESPECIAL: Si el lead no responde a discovery**
+Asumir defaults (1 usuario, 70 citas) y emitir el tag de todas formas.
 
-*Lead DIRECTO responde "1 usuario, 100 citas":*
-→ "Perfecto, te paso la cotización:"
-→ [GENERAR_COTIZACION_PDF:{"nombre":"Lead","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":100,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"descuento":30}]
-
-*Lead CONVERSACIONAL proporciona datos después de charlar:*
-→ "Excelente. Con 3 usuarios y 150 citas/mes, acá va tu cotización:"
-→ [GENERAR_COTIZACION_PDF:{"nombre":"Clínica XYZ","pais":"COLOMBIA","moneda":"COP","usuarios":3,"citasMes":150,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"descuento":30}]
-
-**REGLA:** El tag debe estar SOLO EN SU LÍNEA. NO mezcles el tag con otro texto en la misma línea.
-
-Cuando tu respuesta tenga más de 5-6 líneas, partila en 2 con \`[MSG_SPLIT]\` — NUNCA uses \`[MSG_SPLIT]\` dentro del tag.
-Tu objetivo: que el lead sienta que lo estás ayudando, no vendiendo.
-
-## BASE DE CONOCIMIENTO — CENTRO DE AYUDA MEDILINK
-Cuando un lead pregunta CÓMO funciona algo o tiene dudas técnicas, compartí: https://ayuda.softwaremedilink.com/es/
-
-## COTIZACIÓN EN PDF — PROTOCOLO OFICIAL
-
-**SIEMPRE EMITIR EL TAG CUANDO TENGAS usuarios + citas/mes:**
-\`[GENERAR_COTIZACION_PDF:{"nombre":"${leadName || 'Lead'}","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":70,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"descuento":30,"vigencia":"${promoVigencia}"}]\`
+**IMPORTANTE:**
+- El tag DEBE ir en su propia línea
+- NO generates texto de cotización
+- El sistema convierte el tag a PDF automáticamente
+- NO preguntes nada más una vez emites el tag
 
 **PAÍS y MONEDA — usar SIEMPRE el del lead según su número o lo que diga explícitamente:**
 | Código tel. | pais a usar        | moneda |
