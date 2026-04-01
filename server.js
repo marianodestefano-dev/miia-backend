@@ -2182,7 +2182,27 @@ async function handleIncomingMessage(message) {
     // Baileys necesita la estructura completa del mensaje, no solo una key
     if (message) {
       lastMessageKey[effectiveTarget] = message;
-      console.log(`[SELF-CHAT] ✅ Guardado mensaje completo para quoted (from: ${message.from?.split('@')[0]})`);
+
+      // 🔧 CRÍTICO: Si effectiveTarget es un UID, buscar el número REAL en Firestore
+      // Ejemplo: 136417472712832@s.whatsapp.net → buscar users/{uid}.whatsapp_number
+      const baseTarget = effectiveTarget.split('@')[0];
+      if (baseTarget.length > 12 && !baseTarget.startsWith('+')) {
+        // Probablemente es un UID, buscar en Firestore
+        admin.firestore().collection('users').doc(baseTarget).get()
+          .then(doc => {
+            if (doc.exists) {
+              const realNumber = doc.data().whatsapp_number;
+              if (realNumber) {
+                const realJid = `${realNumber}@s.whatsapp.net`;
+                lastMessageKey[realJid] = message;
+                console.log(`[SELF-CHAT] 🔧 Guardado también en JID real: ${realJid}`);
+              }
+            }
+          })
+          .catch(e => console.error(`[SELF-CHAT] Error buscando número real:`, e.message));
+      }
+
+      console.log(`[SELF-CHAT] ✅ Guardado mensaje completo para quoted`);
     } else {
       console.log(`[SELF-CHAT] ❌ No hay mensaje para guardar`);
     }
