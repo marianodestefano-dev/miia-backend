@@ -25,6 +25,7 @@ const path = require('path');
 const pino = require('pino');
 const { callAI } = require('./ai_client');
 const { buildTenantPrompt, buildOwnerLeadPrompt } = require('./prompt_builder');
+const { sendSessionRecoveryEmail } = require('./mail_service');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 const tenants = new Map();
@@ -72,25 +73,57 @@ async function cleanupCorruptedSession(uid, ioInstance) {
   try {
     console.log(`[TM:${uid}] 🧹 Iniciando cleanup de sesión corrupta...`);
 
+    // Obtener datos del usuario para notificaciones
+    let userEmail = '';
+    let userName = 'Usuario MIIA';
+    try {
+      const userDoc = await admin.firestore().collection('users').doc(uid).get();
+      if (userDoc.exists) {
+        userEmail = userDoc.data()?.email || '';
+        userName = userDoc.data()?.name || 'Usuario MIIA';
+      }
+    } catch (e) {
+      console.warn(`[TM:${uid}] ⚠️ No se pudo obtener datos del usuario:`, e.message);
+    }
+
     // Eliminar sesión de Firestore
     await deleteFirestoreSession(`tenant-${uid}`);
 
     // Marcar en Firestore que necesita reconectar
+    const recoveryTimestamp = new Date();
     await admin.firestore().collection('users').doc(uid).update({
       whatsapp_needs_reconnect: true,
-      whatsapp_recovery_at: new Date(),
+      whatsapp_recovery_at: recoveryTimestamp,
       whatsapp_recovery_reason: 'Sesión corrupta detectada por MessageCounterError (auto-cleanup)'
     }).catch(() => {});
 
-    // Notificar vía Socket.IO
+    // 1️⃣ Notificar vía Socket.IO (en tiempo real)
     if (ioInstance) {
       ioInstance.emit(`tenant_recovery_needed_${uid}`, {
         message: '⚠️ Tu sesión de WhatsApp fue reiniciada por desincronización. Por favor, escanea el QR nuevamente.',
         needsQr: true,
-        recoveredAt: new Date().toISOString(),
+        recoveredAt: recoveryTimestamp.toISOString(),
         severity: 'warning'
       });
       console.log(`[TM:${uid}] ✅ Notificación Socket.IO enviada`);
+    }
+
+    // 2️⃣ Notificar por EMAIL (si está configurado SMTP)
+    if (userEmail) {
+      try {
+        const emailSent = await sendSessionRecoveryEmail(uid, userEmail, {
+          reason: 'Sesión desincronizada (error criptográfico de Baileys)',
+          recoveredAt: recoveryTimestamp.toISOString(),
+          userName: userName
+        });
+        if (emailSent) {
+          console.log(`[TM:${uid}] ✅ Email de recuperación enviado a ${userEmail}`);
+        } else {
+          console.warn(`[TM:${uid}] ⚠️ SMTP no configurado. Email NO enviado (pero Socket.IO sí)`);
+        }
+      } catch (emailError) {
+        console.error(`[TM:${uid}] ❌ Error enviando email:`, emailError.message);
+      }
     }
 
     // Destruir tenant en memoria
@@ -102,7 +135,7 @@ async function cleanupCorruptedSession(uid, ioInstance) {
       tenants.delete(uid);
     }
 
-    console.log(`[TM:${uid}] ✅ Sesión limpiada exitosamente. Usuario debe reconectar.`);
+    console.log(`[TM:${uid}] ✅ Sesión limpiada. Notificaciones enviadas (Socket.IO + Email).`);
   } catch (e) {
     console.error(`[TM:${uid}] ❌ Error en cleanup:`, e.message);
   }
