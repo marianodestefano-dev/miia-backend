@@ -536,30 +536,21 @@ async function safeSendMessage(target, content, options = {}) {
       baileysContent = { text: String(content) };
     }
 
-    // 🔧 FIX SELF-CHAT: Baileys necesita quotedMessage para self-chat en Linked Device
+    // 🔧 FIX SELF-CHAT: Baileys necesita el MENSAJE COMPLETO para quoted en self-chat
     const ownerNumber = ownerSock?.user?.id?.split('@')[0]?.split(':')[0];
     const targetNumber = target.split('@')[0]?.split(':')[0];
     const isSelfChat = ownerNumber && targetNumber && ownerNumber === targetNumber;
 
-    console.log(`[SELF-CHAT-SEND-DEBUG]`, {
-      target,
-      ownerNumber,
-      targetNumber,
-      isSelfChat,
-      savedKeyExists: !!lastMessageKey[target],
-      savedKeyType: lastMessageKey[target] ? typeof lastMessageKey[target] : 'undefined'
-    });
-
     let sendOptions = {};
     if (isSelfChat) {
-      // Para self-chat, usar el último message.key guardado
-      const savedKey = lastMessageKey[target];
-      if (savedKey) {
-        sendOptions.quoted = { key: savedKey };
-        console.log(`[SELF-CHAT FIX] ✅ Usando quotedMessage para self-chat ${targetNumber}`);
-        console.log(`[SELF-CHAT FIX] Quoted key:`, JSON.stringify(savedKey).substring(0, 100));
+      // Para self-chat, usar el mensaje completo anterior como quoted
+      const savedMessage = lastMessageKey[target];
+      if (savedMessage && savedMessage.key) {
+        // Baileys espera: { quoted: messageObject }
+        sendOptions.quoted = savedMessage;
+        console.log(`[SELF-CHAT FIX] ✅ Usando quoted message (id: ${savedMessage.id?._serialized?.substring(0, 20)}...)`);
       } else {
-        console.log(`[SELF-CHAT FIX] ⚠️ No hay messageKey guardado para ${targetNumber}. Intentando sin quoted...`);
+        console.log(`[SELF-CHAT FIX] ⚠️ No hay mensaje anterior para quoted. Enviando sin quoted...`);
       }
     }
 
@@ -2188,22 +2179,13 @@ async function handleIncomingMessage(message) {
     }
     // ────────────────────────────────────────────────────────────────────
 
-    // 🔧 Guardar message.key para self-chat quotedMessage (DEBUG CRITICAL)
-    console.log(`[SELF-CHAT-DEBUG] message.key structure:`, {
-      hasKey: !!message.key,
-      keyType: typeof message.key,
-      keyKeys: message.key ? Object.keys(message.key) : 'N/A'
-    });
-
-    if (message.key) {
-      lastMessageKey[effectiveTarget] = message.key;
-      console.log(`[SELF-CHAT] ✅ Guardado messageKey para ${effectiveTarget}`);
-    } else if (message.id && message.id._serialized) {
-      // Fallback: usar message.id._serialized como key
-      lastMessageKey[effectiveTarget] = { id: message.id._serialized };
-      console.log(`[SELF-CHAT] ⚠️ Usando fallback message.id._serialized para ${effectiveTarget}`);
+    // 🔧 Guardar MENSAJE COMPLETO para self-chat quotedMessage
+    // Baileys necesita la estructura completa del mensaje, no solo una key
+    if (message) {
+      lastMessageKey[effectiveTarget] = message;
+      console.log(`[SELF-CHAT] ✅ Guardado mensaje completo para quoted (from: ${message.from?.split('@')[0]})`);
     } else {
-      console.log(`[SELF-CHAT] ❌ NO message.key ni message.id encontrado para ${effectiveTarget}`);
+      console.log(`[SELF-CHAT] ❌ No hay mensaje para guardar`);
     }
 
     // Emitir mensaje entrante al frontend
