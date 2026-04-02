@@ -99,15 +99,16 @@ const PRECIOS = {
     }
   },
 
+  // España (EUR) — PRECIOS ANUALES (×12 meses). Solo se vende modalidad anual.
   EUR: {
-    planes: { S: 70, M: 100, L: 120 },
-    adic1: { S: 10, M: 16, L: 20 },
-    adic2: { S: 10, M: 16, L: 20 },
-    adic3: { S: 10, M: 16, L: 20 },
+    planes: { S: 840, M: 1200, L: 1440 },
+    adic1: { S: 120, M: 192, L: 240 },
+    adic2: { S: 120, M: 192, L: 240 },
+    adic3: { S: 120, M: 192, L: 240 },
     bolsas: {
-      WA:      { S: 15, M:  33, L:  72, XL: 170 },
-      factura: { S: 10, M:  17, L:  35, XL:  60 },
-      firma:   { S: 25, M:  40, L:  70, XL: 170 }
+      WA:      { S: 180, M:  396, L:  864, XL: 2040 },
+      factura: { S: 120, M:  204, L:  420, XL:  720 },
+      firma:   { S: 300, M:  480, L:  840, XL: 2040 }
     },
     rangos: {
       WA:      { S: 150, M: 350, L: 800, XL: 2000 },
@@ -224,6 +225,9 @@ function calcularCotizacion(params) {
     incluirRecetaAR  = false,
     modalidad        = 'mensual'
   } = params;
+
+  // España (EUR) → SOLO modalidad anual
+  if (moneda === 'EUR') modalidad = 'anual';
 
   // Descuento: 30% mensual, 20% anual — igual para TODOS los países
   const descuento = modalidad === 'anual' ? 20 : 30;

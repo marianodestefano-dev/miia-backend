@@ -1889,8 +1889,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         } catch (e) {
           console.error('[COTIZ] Error PDF:', e.message);
         }
-        // Eliminar texto de Gemini antes/después del tag — el caption del PDF ya contiene el mensaje
-        // Solo conservar si el PDF falló para dar mensaje de error honesto
+        // Extraer texto que Gemini escribió ANTES del tag (ej: "Te envío la cotización...")
+        let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
         let textoExtra = '';
         if (!pdfOk) {
           textoExtra = 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
@@ -1904,6 +1904,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           conversationMetadata[phone].lastCotizacionSent = Date.now();
           conversationMetadata[phone].followUpState = 'pending';
           saveDB();
+          // Conservar texto que Gemini escribió antes del tag para que MIIA no quede muda
+          textoExtra = textoAntes;
         }
         aiMessage = textoExtra;
       }
