@@ -1,9 +1,32 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-01 ~22:00 PM (SESIÓN 7 — PDF async fix + Railway branch fix)
-**ESTADO**: P1 ⏳ FIXES APLICADOS, PENDIENTE TEST | P2 ✅ AUTO-CLEANUP FUNCIONANDO
-**URGENCIA**: MEDIA — Esperando Railway deploy de b893376 en rama `main-test` para verificar PDF
+**ÚLTIMA ACTUALIZACIÓN**: 2026-04-02 ~02:10 AM (SESIÓN 8 — PDF SELF-CHAT FUNCIONA)
+**ESTADO**: P1 ✅ PDF COTIZACIÓN FUNCIONANDO | P2 ✅ AUTO-CLEANUP FUNCIONANDO
+**URGENCIA**: BAJA — Sistema estable, PDF llega al self-chat de Mariano
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
+
+---
+
+## ⚡ SESIÓN 8 (Abril 2, ~01:00 AM — PDF SELF-CHAT RESUELTO DEFINITIVAMENTE)
+
+**PROBLEMA**: PDF se generaba correctamente (176KB) pero NUNCA llegaba al WhatsApp de Mariano.
+
+**CAUSA RAÍZ** (doble bug):
+1. **Bug en heurística**: `cotizacion_generator.js:766` tenía `!phoneBase.startsWith('1')` — device ID `136417472712832` empieza con '1' → `isSelfChatJid=false` → PDF iba a `@s.whatsapp.net` en vez de `@lid`
+2. **Bug en recálculo**: `ownerSock.user.id` = teléfono real (`573054169969`), pero `phone` = device ID (`136417472712832`). Son distintos → comparación SIEMPRE `false`
+
+**SOLUCIÓN** (commits ad1562b + d70649a):
+1. Eliminar heurística rota de `cotizacion_generator.js`
+2. Delegar envío de PDF a `safeSendMessage` (que ya maneja `@lid` correctamente)
+3. Usar `isSelfChat` existente en `processMiiaResponse` (viene de `fromMe=true`) — NO recalcular
+4. Agregar branch `content.document` en `safeSendMessage` para soportar PDFs
+5. Agregar guard `typeof content === 'string'` en línea 515 para no crashear con objetos
+
+**✅ CONFIRMADO FUNCIONANDO**: Mariano recibió PDF en su self-chat y lo pudo abrir.
+
+**Commits sesión 8:**
+- `ad1562b` — Rutar PDF por safeSendMessage + branch document + guard typeof
+- `d70649a` — Usar isSelfChat existente (no recalcular con ownerSock.user.id)
 
 ---
 
@@ -47,10 +70,19 @@
 - `6035cc5` — Fix Uint8Array + async PDF dispatch (primer commit)
 - `b893376` — Todos los fixes juntos en main-test
 
-**Status Railway:**
-- ⏳ Railway debería estar deployando b893376 de rama `main-test`
-- ✅ Una vez deployed: probar "cotización Colombia 1 usuario con 60 citas"
-- Esperado: PDF llega + no pide confirmaciones innecesarias
+**Commits sesión 7 (todos en main-test):**
+- `b893376` — Fix Uint8Array PDF + async await + MODO TEST prompt
+- `a4a5af9` — Auto-init query users (no baileys_sessions root) + prompt CONTEXTO ABSOLUTO + no double Gemini call
+- `41da3d7` — Auto-init query users en vez de baileys_sessions root collection
+- `0ac8cf5` — **FIX CRÍTICO**: auto-init owner onMessage + gemini_client 2.5-flash
+
+**✅ CONFIRMADO FUNCIONANDO (Sesión 7, commit 0ac8cf5):**
+- ✅ **AUTO-CONNECT después de deploy**: Railway deploya → MIIA conecta sola, sin clic manual
+- ✅ **MIIA responde como compinche**: ya no trata a Mariano como lead ni le pregunta cuántos usuarios necesita
+- ⏳ **PDF cotización**: pendiente confirmar envío
+
+**Causa raíz del auto-connect bug:**
+Auto-init conectaba Baileys pero sin `onMessage` → tenant_manager veía `isOwner=false` → todos los self-chat filtrados silenciosamente. Fix: auto-init ahora pasa el mismo `onMessage: handleIncomingMessage` que `/api/tenant/init`.
 
 ---
 
@@ -485,7 +517,7 @@ PAYPAL_ENV=production
 ## 📑 PLAN PENDIENTE (11 Tareas)
 
 ### 🔴 CRÍTICOS (P1-P4)
-- [⏳] **P1**: PDF cotización — fixes aplicados (Uint8Array+async+MODO TEST), pendiente verificar con Railway b893376
+- [✅] **P1**: PDF cotización — **FUNCIONANDO** (commits ad1562b + d70649a, sesión 8). PDF llega al self-chat vía safeSendMessage + @lid
 - [✅] **P2**: Auto-cleanup MessageCounterError — FUNCIONANDO (sesión 6+7, contadores y cleanup confirmados en logs)
 - [ ] **P3**: Endpoint documentos roto en admin-dashboard
 - [ ] **P4**: Exportar setTenantTrainingData en tenant_manager

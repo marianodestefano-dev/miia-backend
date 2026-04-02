@@ -107,6 +107,36 @@ Entregar reporte completo con logs antes y después.
 
 ---
 
+## ⛔ PROTECCIÓN PDF COTIZACIÓN (ZONA CRÍTICA — NO TOCAR)
+
+### Archivos involucrados
+| Archivo | Zona protegida |
+|---|---|
+| `server.js` línea ~1170 | `const isSelfChat = isAlreadySavedParam` — detección self-chat |
+| `server.js` línea ~515 | `typeof content === 'string' &&` guard en safeSendMessage |
+| `server.js` línea ~544 | Branch `content.document` en safeSendMessage |
+| `server.js` línea ~1854 | Caller de `enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChat)` |
+| `cotizacion_generator.js` línea ~741 | `enviarCotizacionWA(sendFn, phone, params, isSelfChat)` |
+
+### Lección aprendida (Fallo 9 — PDF no llegaba al self-chat)
+- **Qué pasó:** PDF se generaba OK (176KB, logs OK) pero nunca llegaba al WhatsApp de Mariano
+- **Por qué (bug 1):** Heurística `!phoneBase.startsWith('1')` excluía device ID `136417472712832` (empieza con '1')
+- **Por qué (bug 2):** `ownerSock.user.id` da el TELÉFONO (`573054169969`), pero `phone` tiene el DEVICE ID (`136417472712832`). Son diferentes — la comparación siempre daba `false`.
+- **Fix:** Usar `isSelfChat` que ya existía en `processMiiaResponse` (viene de `fromMe=true`), NO recalcular. Delegar envío a `safeSendMessage` que maneja `@lid` correctamente.
+- **Dato clave:** `ownerSock.user.id` = número de teléfono real. `phone` en self-chat = device ID. **NUNCA van a matchear.**
+- **Estado:** ✅ Resuelto (commits ad1562b + d70649a, 2026-04-02)
+- **Funcionó entre el 28-30 marzo** porque se usaba whatsapp-web.js (Chromium) que maneja self-chat nativamente.
+
+### ⚠️ REGLAS ABSOLUTAS PARA PDF EN SELF-CHAT
+1. **NUNCA** comparar `ownerSock.user.id` con `phone` para detectar self-chat — son IDs distintos
+2. **SIEMPRE** usar `isSelfChat` que viene de `isAlreadySavedParam` (que viene de `fromMe=true`)
+3. **NUNCA** usar heurísticas de longitud/prefijo de número para detectar device IDs
+4. **SIEMPRE** enviar documentos a través de `safeSendMessage` (que convierte `@s.whatsapp.net → @lid`)
+5. **NUNCA** llamar `sock.sendMessage()` directamente para documentos — usar `safeSendMessage`
+6. El backup está en `cotizacion_generator.js.backup`
+
+---
+
 ## ⚠️ PENDIENTE MONITOREAR
 
 - Railway sigue reiniciándose espontáneamente (posible OOM por ráfagas de mensajes)
