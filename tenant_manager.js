@@ -514,6 +514,13 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
     // ─── Incoming messages ───
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // LOG DETALLADO: para diagnosticar por qué el primer mensaje no se procesa
+      for (const msg of messages) {
+        const b = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+        const f = msg.key.remoteJid;
+        const fm = msg.key.fromMe;
+        console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} body="${b.substring(0,50)}" msgId=${msg.key.id}`);
+      }
       if (type !== 'notify') return; // Only process new messages, not history
 
       for (const msg of messages) {
@@ -545,7 +552,13 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           || msg.message?.videoMessage?.caption
           || '';
 
-        if (!body.trim()) continue;
+        // Detectar si tiene media (audio, imagen, video, documento)
+        const hasMedia = !!(msg.message?.audioMessage || msg.message?.imageMessage
+          || msg.message?.videoMessage || msg.message?.documentMessage
+          || msg.message?.stickerMessage);
+
+        // Si no hay texto NI media → ignorar
+        if (!body.trim() && !hasMedia) continue;
 
         console.log(`[TM:${uid}] 📨 Message from ${from}${isFromMe ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
 

@@ -2029,6 +2029,9 @@ async function processMediaMessage(message) {
 // ============================================
 
 async function handleIncomingMessage(message) {
+  // LOG DE DIAGNÓSTICO: cada mensaje que entra a handleIncomingMessage
+  console.log(`[HIM] 📩 from=${message.from} to=${message.to} fromMe=${message.fromMe} body="${(message.body||'').substring(0,50)}" hasMedia=${message.hasMedia} type=${message.type} id=${message.id?._serialized||'?'}`);
+
   // REGLA ABSOLUTA: MIIA nunca participa en grupos ni estados. Ni lee, ni responde, ni publica.
   const isBroadcast = message.from.includes('status@broadcast') ||
     (message.to && message.to.includes('status@broadcast')) ||
@@ -2086,7 +2089,7 @@ async function handleIncomingMessage(message) {
   const botBuffer = lastSentByBot[targetPhoneId] || [];
   const isBotSessionMessage = sentMessageIds.has(message.id._serialized) || botBuffer.includes(body);
   if (isBotSessionMessage) {
-    console.log(`[WA] BUCLE PREVENIDO: ${targetPhoneId}`);
+    console.log(`[WA] BUCLE PREVENIDO: ${targetPhoneId} | body="${(body||'').substring(0,50)}" | sentId=${sentMessageIds.has(message.id._serialized)} | botBuf=${botBuffer.includes(body)}`);
     return;
   }
 
@@ -2164,6 +2167,7 @@ async function handleIncomingMessage(message) {
 
   // Bucle por eco de IA
   if (fromMe && lastAiSentBody[targetPhone] && lastAiSentBody[targetPhone] === body) {
+    console.log(`[WA] ECO-IA PREVENIDO: ${targetPhone} | body="${(body||'').substring(0,50)}"`);
     delete lastAiSentBody[targetPhone];
     return;
   }
@@ -3657,7 +3661,7 @@ setInterval(async () => {
       } else {
         // Fallback: buscar primer usuario con role admin y consent_adn
         const snap = await admin.firestore().collection('users')
-          .where('role', 'in', ['admin', 'client'])
+          .where('role', 'in', ['admin', 'owner', 'client'])
           .where('consent_adn', '==', true)
           .limit(1).get();
         adnConsentOk = !snap.empty;
