@@ -423,22 +423,64 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
           }, 3000);
         } else {
-          // Logged out — clean up
-          console.log(`[TM:${uid}] 🔌 Logged out — cleaning session`);
+          // Logged out desde el teléfono — sock muerto, solo notificar
+          console.log(`[TM:${uid}] 🔌 Logged out desde teléfono — cleaning session`);
           tenant.isAuthenticated = false;
           tenant.sock = null;
           tenants.delete(uid);
           await deleteFirestoreSession(`tenant-${uid}`);
-          if (ioInstance) {
-            ioInstance.emit(`tenant_disconnected_${uid}`, { reason: 'logged_out' });
+
+          // Obtener datos del usuario para notificaciones
+          let userEmail = '';
+          let userName = 'Usuario MIIA';
+          try {
+            const userDoc = await admin.firestore().collection('users').doc(uid).get();
+            if (userDoc.exists) {
+              userEmail = userDoc.data()?.email || '';
+              userName = userDoc.data()?.name || 'Usuario MIIA';
+            }
+          } catch (e) {}
+
+          // Marcar en Firestore
+          await admin.firestore().collection('users').doc(uid).update({
+            whatsapp_needs_reconnect: true,
+            whatsapp_recovery_at: new Date(),
+            whatsapp_recovery_reason: 'Desvinculado desde el teléfono'
+          }).catch(() => {});
+
+          // Email de aviso
+          if (userEmail) {
+            sendSessionRecoveryEmail(uid, userEmail, {
+              reason: 'Tu WhatsApp fue desvinculado desde el teléfono',
+              recoveredAt: new Date().toISOString(),
+              userName
+            }).catch(e => console.warn(`[TM:${uid}] ⚠️ Email no enviado:`, e.message));
           }
+
+          // Notificar dashboard
+          if (ioInstance) {
+            ioInstance.emit(`tenant_disconnected_${uid}`, {
+              reason: 'logged_out_from_phone',
+              message: `${userName} desvinculó WhatsApp desde su teléfono`,
+              needsQr: true
+            });
+          }
+
+          console.log(`[TM:${uid}] ✅ Cleanup + notificaciones enviadas (logged out from phone)`);
         }
       }
 
       // ⚠️ DETECTAR ERRORES CRIPTOGRÁFICOS (MessageCounterError)
+      // GRACE PERIOD 60s: Después de cada deploy/restart, Baileys recibe mensajes pendientes
+      // que generan ráfagas de MessageCounterError normales — NO son sesión corrupta.
       if (update.error) {
         const errorMsg = update.error?.message || String(update.error);
         if (errorMsg.includes('MessageCounterError') || errorMsg.includes('Key used already')) {
+          const uptimeSec = process.uptime();
+          if (uptimeSec < 60) {
+            // Ignorar durante grace period post-startup
+            return;
+          }
           if (!tenantErrors.has(uid)) {
             tenantErrors.set(uid, { count: 0, windowStart: Date.now() });
           }
@@ -449,9 +491,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             errTracker.windowStart = now;
           }
           errTracker.count++;
-          console.warn(`[TM:${uid}] 🔐 MessageCounterError ${errTracker.count}/5: ${errorMsg.substring(0,60)}...`);
-          if (errTracker.count >= 5) {
-            console.error(`[TM:${uid}] 💥 SESIÓN CORRUPTA DETECTADA. Limpiando...`);
+          console.warn(`[TM:${uid}] 🔐 MessageCounterError ${errTracker.count}/10 (uptime=${Math.round(uptimeSec)}s): ${errorMsg.substring(0,60)}...`);
+          if (errTracker.count >= 10) {
+            console.error(`[TM:${uid}] 💥 SESIÓN CORRUPTA DETECTADA (post-grace). Limpiando...`);
             tenantErrors.delete(uid);
             await cleanupCorruptedSession(uid, ioInstance);
           }
@@ -693,12 +735,75 @@ async function destroyTenant(uid) {
   if (!t) return { success: true, message: 'Tenant not found (already destroyed)' };
 
   try {
+    // 1️⃣ Obtener nombre del usuario
+    let userName = 'Usuario';
+    let userEmail = '';
+    try {
+      const userDoc = await admin.firestore().collection('users').doc(uid).get();
+      if (userDoc.exists) {
+        userName = userDoc.data()?.name || 'Usuario';
+        userEmail = userDoc.data()?.email || '';
+      }
+    } catch (e) {
+      console.warn(`[TM:${uid}] ⚠️ No se pudo obtener datos del usuario:`, e.message);
+    }
+
+    // 2️⃣ Enviar mensaje de despedida en self-chat antes de desconectar
+    if (t.sock && t.isReady) {
+      try {
+        const selfJid = t.sock.user?.id?.replace(/:.*@/, '@') || null;
+        if (selfJid) {
+          const farewellMsg = `${userName}, me voy a dormir! 😴🔌\nTu WhatsApp se desvinculó, necesitás reconectar.`;
+          const sent = await t.sock.sendMessage(selfJid, { text: farewellMsg });
+          console.log(`[TM:${uid}] 💤 Mensaje de despedida enviado a self-chat`);
+          // Esperar brevemente para confirmar entrega
+          if (sent?.key?.id) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+      } catch (farewellErr) {
+        console.warn(`[TM:${uid}] ⚠️ No se pudo enviar despedida:`, farewellErr.message);
+      }
+    }
+
+    // 3️⃣ Logout y limpiar
     if (t.sock) {
       await t.sock.logout();
     }
     tenants.delete(uid);
     await deleteFirestoreSession(`tenant-${uid}`);
-    console.log(`[TM:${uid}] 🔌 Tenant destroyed`);
+
+    // 4️⃣ Marcar en Firestore que necesita reconectar
+    await admin.firestore().collection('users').doc(uid).update({
+      whatsapp_needs_reconnect: true,
+      whatsapp_recovery_at: new Date(),
+      whatsapp_recovery_reason: 'Desconexión manual (destroyTenant)'
+    }).catch(() => {});
+
+    // 5️⃣ Notificar por email
+    if (userEmail) {
+      try {
+        await sendSessionRecoveryEmail(uid, userEmail, {
+          reason: 'Tu WhatsApp fue desvinculado manualmente',
+          recoveredAt: new Date().toISOString(),
+          userName
+        });
+        console.log(`[TM:${uid}] ✅ Email de desconexión enviado a ${userEmail}`);
+      } catch (e) {
+        console.warn(`[TM:${uid}] ⚠️ Email no enviado:`, e.message);
+      }
+    }
+
+    // 6️⃣ Notificar admin dashboard
+    if (t.io) {
+      t.io.emit(`tenant_disconnected_${uid}`, {
+        reason: 'manual_disconnect',
+        message: `${userName} fue desconectado manualmente`,
+        needsQr: true
+      });
+    }
+
+    console.log(`[TM:${uid}] 🔌 Tenant destroyed (graceful disconnect completo)`);
     return { success: true };
   } catch (err) {
     console.error(`[TM:${uid}] Error destroying:`, err.message);
