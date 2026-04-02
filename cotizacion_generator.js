@@ -229,10 +229,16 @@ function calcularCotizacion(params) {
   // España (EUR) → SOLO modalidad anual
   const modalidad = (moneda === 'EUR') ? 'anual' : modalidadParam;
 
-  // Descuento: 30% mensual, 20% anual — igual para TODOS los países
-  const descuento = modalidad === 'anual' ? 20 : 30;
+  // Descuento por modalidad: mensual 30%, semestral 15%, anual 20%
+  const DESCUENTOS = { mensual: 30, semestral: 15, anual: 20 };
+  const descuento = DESCUENTOS[modalidad] || 30;
 
-  console.log(`[COTIZ-DEBUG] calcularCotizacion recibió: moneda=${moneda}, usuarios=${usuarios}, modalidad=${modalidad}, descuento=${descuento}`);
+  // Multiplicador de meses según modalidad
+  // EUR ya tiene precios anuales en PRECIOS, no multiplicar de nuevo
+  const MESES = { mensual: 1, semestral: 6, anual: 12 };
+  const multiplicador = (moneda === 'EUR') ? 1 : (MESES[modalidad] || 1);
+
+  console.log(`[COTIZ-DEBUG] calcularCotizacion recibió: moneda=${moneda}, usuarios=${usuarios}, modalidad=${modalidad}, descuento=${descuento}, multiplicador=${multiplicador}`);
   if (!PRECIOS[moneda]) throw new Error(`Moneda no soportada: ${moneda}`);
 
   const nAdic = Math.max(0, usuarios - 1);
@@ -249,12 +255,15 @@ function calcularCotizacion(params) {
   const bolsas  = {};
 
   for (const [key, label] of [['S','esencial'],['M','pro'],['L','titanium']]) {
-    const base     = PRECIOS[moneda].planes[key];
-    const precAdic = getPrecioAdic(key, usuarios, moneda);
+    const baseMensual     = PRECIOS[moneda].planes[key];
+    const precAdicMensual = getPrecioAdic(key, usuarios, moneda);
+    // Multiplicar por meses según modalidad
+    const base     = baseMensual * multiplicador;
+    const precAdic = precAdicMensual * multiplicador;
     const subtotal = base + precAdic * nAdic;
     const desc     = Math.round(subtotal * pct);
     const neto     = subtotal - desc;
-    const planData = { base, precAdic, subtotal, descuento: desc, neto };
+    const planData = { base, precAdic, subtotal, descuento: desc, neto, modalidad };
 
     // IVA México 16% — solo sobre plan (no módulos)
     if (moneda === 'MXN') {
@@ -269,8 +278,14 @@ function calcularCotizacion(params) {
   if (incluirFirma)   bolsas.firma   = getBolsa('firma',   enviosFirma,   moneda, bolsaFirma);
   if (incluirFactura) bolsas.factura = getBolsa('factura', enviosFactura, moneda, bolsaFactura);
 
-  const PRECIO_RECETA_AR = 3; // USD fijo
-  const bolsasTotal = Object.values(bolsas).reduce((s, b) => s + b.precio, 0) + (incluirRecetaAR ? PRECIO_RECETA_AR : 0);
+  // Multiplicar bolsas por meses según modalidad
+  for (const bKey of Object.keys(bolsas)) {
+    bolsas[bKey].precio = bolsas[bKey].precio * multiplicador;
+  }
+
+  const PRECIO_RECETA_AR = 3; // USD fijo por mes
+  const recetaTotal = incluirRecetaAR ? (PRECIO_RECETA_AR * multiplicador) : 0;
+  const bolsasTotal = Object.values(bolsas).reduce((s, b) => s + b.precio, 0) + recetaTotal;
   for (const lbl of ['esencial','pro','titanium']) {
     const ivaPromo    = planes[lbl].ivaPromo    || 0;
     const ivaSinPromo = planes[lbl].ivaSinPromo || 0;
@@ -278,7 +293,7 @@ function calcularCotizacion(params) {
     planes[lbl].totalSinPromo = planes[lbl].subtotal + bolsasTotal + ivaSinPromo;
   }
 
-  return { planes, bolsas, bolsasTotal, nAdic, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR: incluirRecetaAR ? PRECIO_RECETA_AR : 0, moneda };
+  return { planes, bolsas, bolsasTotal, nAdic, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR: recetaTotal, moneda, modalidad, multiplicador };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -675,7 +690,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
   <table class="pt">
     <thead>
       <tr>
-        <th style="width:44%">DETALLES / PLANES (${modalidad === 'anual' ? 'ANUAL' : 'MENSUAL'})</th>
+        <th style="width:44%">DETALLES / PLANES (${modalidad.toUpperCase()})</th>
         <th style="width:18.7%">ESENCIAL</th>
         <th style="width:18.7%">PRO</th>
         <th style="width:18.6%">TITANIUM</th>
@@ -696,7 +711,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
         <td class="td-price">${fmt(ti.precAdic * nAdic, moneda)}</td>
       </tr>` : ''}
       <tr class="row-disc">
-        <td class="td-desc">DESCUENTO PROMO ${modalidad === 'anual' ? 'ANUAL' : 'MENSUAL'} (Ahorro del &#8722;${descuento}%) <span class="bdg">&#8722;${descuento}%</span></td>
+        <td class="td-desc">DESCUENTO PROMO ${modalidad.toUpperCase()} (Ahorro del &#8722;${descuento}%) <span class="bdg">&#8722;${descuento}%</span></td>
         <td class="td-price">&#8722; ${fmt(es.descuento, moneda)}</td>
         <td class="td-price">&#8722; ${fmt(pro.descuento, moneda)}</td>
         <td class="td-price">&#8722; ${fmt(ti.descuento, moneda)}</td>
@@ -864,7 +879,8 @@ async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
 
   const promo        = getPromoVigencia();
   const modalidad    = (params.moneda === 'EUR') ? 'anual' : (params.modalidad || 'mensual');
-  const descPct      = modalidad === 'anual' ? 20 : 30;
+  const DESCUENTOS_CAPTION = { mensual: 30, semestral: 15, anual: 20 };
+  const descPct      = DESCUENTOS_CAPTION[modalidad] || 30;
 
   // Caption dinámico — Gemini genera el texto antes del tag y lo enviamos por separado
   // Aquí solo va el caption del documento (más corto y directo)
