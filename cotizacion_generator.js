@@ -223,11 +223,11 @@ function calcularCotizacion(params) {
     incluirFactura   = true,
     bolsaFactura     = null,
     incluirRecetaAR  = false,
-    modalidad        = 'mensual'
+    modalidad: modalidadParam = 'mensual'
   } = params;
 
   // España (EUR) → SOLO modalidad anual
-  if (moneda === 'EUR') modalidad = 'anual';
+  const modalidad = (moneda === 'EUR') ? 'anual' : modalidadParam;
 
   // Descuento: 30% mensual, 20% anual — igual para TODOS los países
   const descuento = modalidad === 'anual' ? 20 : 30;
@@ -377,12 +377,15 @@ function buildHTML(params) {
     incluirFirma     = true,
     incluirFactura   = true,
     incluirRecetaAR  = false,
-    modalidad        = 'mensual',
+    modalidad: modalidadParam2 = 'mensual',
     ownerName        = 'Asesor Medilink',
     ownerEmail       = '',
     ownerPhone       = '',
     fecha           = new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
   } = params;
+
+  // España (EUR) → SOLO modalidad anual
+  const modalidad = (moneda === 'EUR') ? 'anual' : modalidadParam2;
 
   // Vigencia y cupos dinámicos
   const promo = getPromoVigencia();
@@ -860,7 +863,7 @@ async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
   const nombreLimpio = nombreMostrar.replace(/[^a-zA-Z0-9]/g, '_');
 
   const promo        = getPromoVigencia();
-  const modalidad    = params.modalidad || 'mensual';
+  const modalidad    = (params.moneda === 'EUR') ? 'anual' : (params.modalidad || 'mensual');
   const descPct      = modalidad === 'anual' ? 20 : 30;
 
   // Caption dinámico — Gemini genera el texto antes del tag y lo enviamos por separado
