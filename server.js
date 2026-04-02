@@ -512,7 +512,7 @@ async function safeSendMessage(target, content, options = {}) {
 
   // BLINDAJE: Limitar largo de respuesta (máx 1200 chars — EXCEPTO si contiene tags especiales)
   // Los tags [GENERAR_COTIZACION_PDF:...] y [GUARDAR_APRENDIZAJE:...] NUNCA se cortan
-  const tieneTagEspecial = content.includes('[GENERAR_COTIZACION_PDF:') || content.includes('[GUARDAR_APRENDIZAJE:');
+  const tieneTagEspecial = typeof content === 'string' && (content.includes('[GENERAR_COTIZACION_PDF:') || content.includes('[GUARDAR_APRENDIZAJE:'));
 
   if (typeof content === 'string' && content.length > 1200 && !tieneTagEspecial) {
     let cutPoint = content.lastIndexOf('\n\n', 1200);
@@ -541,6 +541,14 @@ async function safeSendMessage(target, content, options = {}) {
       } else {
         baileysContent = { document: buffer, mimetype: content.mimetype, fileName: content.filename || 'file' };
       }
+    } else if (content && content.document) {
+      // Documento directo (ej: PDF de cotización)
+      baileysContent = {
+        document: content.document,
+        mimetype: content.mimetype || 'application/pdf',
+        fileName: content.fileName || 'document.pdf',
+        caption: content.caption || ''
+      };
     } else {
       baileysContent = { text: String(content) };
     }
@@ -1843,8 +1851,15 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           console.log(`[COTIZ] JSON detectado: ${jsonStr.substring(0, 300)}`);
           const cotizData = JSON.parse(jsonStr);
           console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios, citasMes: cotizData.citasMes });
+          // Calcular si es self-chat usando la misma lógica que safeSendMessage (no heurística)
+          const isSelfChatPDF = (() => {
+            const ownerNumber = getOwnerSock()?.user?.id?.split('@')[0]?.split(':')[0];
+            const targetNumber = phone.split('@')[0]?.split(':')[0];
+            return !!(ownerNumber && targetNumber && ownerNumber === targetNumber);
+          })();
+          console.log(`[COTIZ] isSelfChatPDF=${isSelfChatPDF}, phone=${phone}, ownerUser=${getOwnerSock()?.user?.id}`);
           // Esperar resultado del PDF antes de continuar
-          await cotizacionGenerator.enviarCotizacionWA(getOwnerSock(), phone, cotizData);
+          await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChatPDF);
           pdfOk = true;
           console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
         } catch (e) {

@@ -738,7 +738,7 @@ async function generarPDF(params) {
 // ENVIAR POR WHATSAPP
 // ─────────────────────────────────────────────────────────────────────
 
-async function enviarCotizacionWA(sock, phone, params) {
+async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
   const buffer       = await generarPDF(params);
   const nombreLimpio = (params.nombre || 'Lead').replace(/[^a-zA-Z0-9]/g, '_');
 
@@ -759,23 +759,15 @@ https://meetings.hubspot.com/marianodestefano/demomedilink
 
 Quedo atento.`;
 
-  // FIX: self-chat en Baileys requiere @lid, no @s.whatsapp.net
-  // Si el número no tiene dominio o tiene @s.whatsapp.net, detectar si es self-chat por longitud
-  // (los device IDs como 136417472712832 tienen >12 dígitos y no empiezan con código de país estándar)
-  const phoneBase = phone.split('@')[0];
-  const isSelfChatJid = phoneBase.length > 12 && !phoneBase.startsWith('57') && !phoneBase.startsWith('54') && !phoneBase.startsWith('1');
-  const sendTarget = isSelfChatJid ? `${phoneBase}@lid` : phone;
-  if (isSelfChatJid) {
-    console.log(`[COTIZ] Self-chat detectado, convirtiendo JID: ${phone} → ${sendTarget}`);
-  }
+  console.log(`[COTIZ] Enviando PDF a ${phone}, isSelfChat=${isSelfChat}, buffer=${buffer.length} bytes`);
 
-  // Baileys API: send document with caption
-  await sock.sendMessage(sendTarget, {
+  // Delegar envío a safeSendMessage (maneja conversión @lid para self-chat correctamente)
+  await sendFn(phone, {
     document: buffer,
     mimetype: 'application/pdf',
     fileName: `Cotizacion_Medilink_${nombreLimpio}.pdf`,
     caption
-  });
+  }, { isSelfChat });
 }
 
 // ─────────────────────────────────────────────────────────────────────
