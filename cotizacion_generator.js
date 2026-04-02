@@ -524,7 +524,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 .mv{font-size:10.5px;font-weight:700;color:#fff}
 
 /* ── SECTION ── */
-.sec{padding:8px 24px}
+.sec{padding:6px 24px}
 .sec-t{font-size:10px;font-weight:700;color:#007BA5;text-transform:uppercase;letter-spacing:.8px;border-left:4px solid #00AEEF;padding:2px 0 2px 8px;margin-bottom:7px}
 
 /* ── PRICING TABLE ── */
@@ -567,7 +567,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 .inc-b{color:#0090C3;font-weight:700}
 
 /* ── FOOTER ── */
-.ftr{padding:8px 24px 10px;border-top:2px solid #00AEEF;display:flex;align-items:center;justify-content:space-between;margin-top:4px}
+.ftr{padding:6px 24px 6px;border-top:2px solid #00AEEF;display:flex;align-items:center;justify-content:space-between;margin-top:2px;page-break-inside:avoid}
 .ftr-logo img{height:26px;width:auto;opacity:.75}
 .ftr-logo .logo-txt{font-size:16px;font-weight:900;color:#00AEEF}
 .ftr-cnt{text-align:center;font-size:9px;color:#9E9E9E}
@@ -575,7 +575,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 .ftr-note{font-size:8px;color:#BDBDBD;text-align:right;max-width:175px;line-height:1.4}
 
 /* ── NOTE ── */
-.note{font-size:8.5px;color:#9E9E9E;margin-top:7px;line-height:1.5;font-style:italic}
+.note{font-size:8.5px;color:#9E9E9E;margin-top:4px;line-height:1.4;font-style:italic}
+
+/* ── Evitar página vacía entre contenido y footer ── */
+.sec:last-of-type{page-break-after:avoid}
 
 /* ── PAGE 2 ── */
 .pg2{page-break-before:always}
