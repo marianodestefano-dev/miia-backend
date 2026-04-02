@@ -3,6 +3,14 @@ require('dotenv').config();
 // Fix: gRPC DNS resolver for Firebase Admin SDK on Railway/Docker (Node 18)
 process.env.GRPC_DNS_RESOLVER = 'native';
 
+// Silenciar logs de libsignal (SessionEntry dumps, "Closing session", "Decrypted message with closed session")
+// Estos llenan Railway logs a 500/sec sin aportar info útil
+const _origLog = console.log.bind(console);
+const _origErr = console.error.bind(console);
+const _signalFilter = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair|lastRemoteEphemeralKey|previousCounter|rootKey|indexInfo|baseKey:|baseKeyType|registrationId|currentRatchet|pubKey:|privKey:|remoteIdentityKey|Decrypted message with closed|Closing open session/;
+console.log = (...args) => { if (typeof args[0] === 'string' && _signalFilter.test(args[0])) return; _origLog(...args); };
+console.error = (...args) => { if (typeof args[0] === 'string' && _signalFilter.test(args[0])) return; _origErr(...args); };
+
 // Catch unhandled rejections
 process.on('unhandledRejection', (err) => {
   console.error('[UNHANDLED REJECTION]', err);
@@ -2184,10 +2192,10 @@ async function handleIncomingMessage(message) {
       return;
     }
 
-    // ── COMANDO RESET (solo números de testing) ──────────────────────────
-    if (!fromMe && body.trim().toUpperCase() === 'RESET') {
+    // ── COMANDO RESET (self-chat del owner + números de testing) ──────────────────────────
+    if (body.trim().toUpperCase() === 'RESET') {
       const baseNumReset = effectiveTarget.split('@')[0];
-      if (RESET_ALLOWED_PHONES.includes(baseNumReset)) {
+      if (isSelfChatMIIA || RESET_ALLOWED_PHONES.includes(baseNumReset)) {
         conversations[effectiveTarget] = [];
         saveDB();
         await safeSendMessage(effectiveTarget, '✅ Contexto de conversación limpiado. Próxima respuesta parte desde cero.');
