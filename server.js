@@ -1851,15 +1851,12 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           console.log(`[COTIZ] JSON detectado: ${jsonStr.substring(0, 300)}`);
           const cotizData = JSON.parse(jsonStr);
           console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios, citasMes: cotizData.citasMes });
-          // Calcular si es self-chat usando la misma lógica que safeSendMessage (no heurística)
-          const isSelfChatPDF = (() => {
-            const ownerNumber = getOwnerSock()?.user?.id?.split('@')[0]?.split(':')[0];
-            const targetNumber = phone.split('@')[0]?.split(':')[0];
-            return !!(ownerNumber && targetNumber && ownerNumber === targetNumber);
-          })();
-          console.log(`[COTIZ] isSelfChatPDF=${isSelfChatPDF}, phone=${phone}, ownerUser=${getOwnerSock()?.user?.id}`);
+          // isSelfChat ya existe en scope (línea 1170) — viene de isAlreadySavedParam (fromMe=true)
+          // NO recalcular con ownerSock.user.id porque ese da el TELÉFONO (573054169969)
+          // y phone tiene el DEVICE ID (136417472712832) — nunca van a matchear
+          console.log(`[COTIZ] isSelfChat=${isSelfChat}, phone=${phone}`);
           // Esperar resultado del PDF antes de continuar
-          await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChatPDF);
+          await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChat);
           pdfOk = true;
           console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
         } catch (e) {
