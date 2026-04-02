@@ -445,11 +445,12 @@ async function callGeminiAPI(messages, systemPrompt) {
 }
 
 // generateAIContent: versión fetch con retry automático para errores 503/429
-async function generateAIContent(prompt) {
+async function generateAIContent(prompt, { enableSearch = false } = {}) {
   const url = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
-  console.log(`[GEMINI] Llamando a la API con url: ${url}`);
+  console.log(`[GEMINI] Llamando a la API (search=${enableSearch}) con url: ${url}`);
   const payload = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }]
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    ...(enableSearch && { tools: [{ google_search: {} }] })
   };
   const MAX_RETRIES = 3;
   const RETRY_DELAYS = [8000, 20000, 45000]; // 8s, 20s, 45s
@@ -462,8 +463,15 @@ async function generateAIContent(prompt) {
     });
     if (response.ok) {
       const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      // Con google_search, Gemini puede devolver múltiples parts — concatenar solo las de texto
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const text = parts.filter(p => p.text).map(p => p.text).join('');
       if (!text) throw new Error('No text in Gemini response');
+      // Log grounding metadata si existe
+      const grounding = data.candidates?.[0]?.groundingMetadata;
+      if (grounding?.webSearchQueries?.length) {
+        console.log(`[GEMINI-SEARCH] 🔍 Búsquedas: ${grounding.webSearchQueries.join(' | ')}`);
+      }
       return text;
     }
     const isRetryable = response.status === 503 || response.status === 429;
@@ -1347,8 +1355,13 @@ ${history}
 
 MIIA, genera tu respuesta breve, estratégica y humana:`;
 
-    console.log(`[MIIA] Llamando a Gemini para ${basePhone} (isAdmin=${isAdmin}, isSelfChat=${isSelfChat}, apiKey=${GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE' ? 'OK' : 'NO CONFIGURADA'})...`);
-    let aiMessage = await generateAIContent(fullPrompt);
+    // Detectar comando BUSCALO para activar Google Search
+    const recentMsgs = (conversations[phone] || []).slice(-3).map(m => m.content || '').join(' ');
+    const searchTriggered = /\bbuscalo\b/i.test(recentMsgs);
+    if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Comando BUSCALO detectado — activando Google Search`);
+
+    console.log(`[MIIA] Llamando a Gemini para ${basePhone} (isAdmin=${isAdmin}, isSelfChat=${isSelfChat}, search=${searchTriggered}, apiKey=${GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE' ? 'OK' : 'NO CONFIGURADA'})...`);
+    let aiMessage = await generateAIContent(fullPrompt, { enableSearch: searchTriggered });
     console.log(`[MIIA] ✅ Respuesta Gemini recibida, longitud: ${aiMessage?.length || 0}`);
 
     // Procesar etiquetas especiales
