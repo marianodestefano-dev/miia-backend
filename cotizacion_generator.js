@@ -868,6 +868,8 @@ Promoción activa: *${descPct}% de descuento ${modalidad}* hasta el ${promo.vige
 
 Para agendar una demo: https://meetings.hubspot.com/marianodestefano/demomedilink`;
 
+  // Generar el PDF
+  const buffer = await generarPDF(params);
   console.log(`[COTIZ] Enviando PDF a ${phone}, isSelfChat=${isSelfChat}, buffer=${buffer.length} bytes`);
 
   // Delegar envío a safeSendMessage (maneja conversión @lid para self-chat correctamente)
