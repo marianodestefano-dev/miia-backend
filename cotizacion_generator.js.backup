@@ -156,37 +156,6 @@ function getBolsa(modulo, envios, moneda, tierForzado) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// VIGENCIA Y CUPOS DINÁMICOS DE PROMOCIÓN
-// ─────────────────────────────────────────────────────────────────────
-
-function getPromoVigencia() {
-  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
-  const day = now.getDate();
-  const month = now.getMonth();
-  const year = now.getFullYear();
-
-  const months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-
-  let vigencia, cupos;
-  if (day >= 1 && day < 15) {
-    vigencia = `15 de ${months[month]} de ${year}`;
-    cupos = 11;
-  } else if (day >= 15 && day < 22) {
-    vigencia = `25 de ${months[month]} de ${year}`;
-    cupos = 7;
-  } else if (day >= 22 && day < 27) {
-    vigencia = `30 de ${months[month]} de ${year}`;
-    cupos = 4;
-  } else {
-    const nextMonth = month === 11 ? 0 : month + 1;
-    const nextYear  = month === 11 ? year + 1 : year;
-    vigencia = `5 de ${months[nextMonth]} de ${nextYear}`;
-    cupos = 4;
-  }
-  return { vigencia, cupos };
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // CÁLCULO DE COTIZACIÓN
 // ─────────────────────────────────────────────────────────────────────
 
@@ -202,21 +171,16 @@ function calcularCotizacion(params) {
     incluirFactura   = true,
     bolsaFactura     = null,
     incluirRecetaAR  = false,
-    modalidad        = 'mensual'
+    descuento        = 30
   } = params;
 
-  // Descuento: 30% mensual, 20% anual — igual para TODOS los países
-  const descuento = modalidad === 'anual' ? 20 : 30;
-
-  console.log(`[COTIZ-DEBUG] calcularCotizacion recibió: moneda=${moneda}, usuarios=${usuarios}, modalidad=${modalidad}, descuento=${descuento}`);
+  console.log(`[COTIZ-DEBUG] calcularCotizacion recibió: moneda=${moneda}, usuarios=${usuarios}, citasMes=${citasMes}, descuento=${descuento}`);
   if (!PRECIOS[moneda]) throw new Error(`Moneda no soportada: ${moneda}`);
 
   const nAdic = Math.max(0, usuarios - 1);
   const pct   = descuento / 100;
-  // Fórmula por usuario (no por citas)
-  const enviosWA       = Math.ceil(usuarios * 1.33);
-  const enviosFactura  = usuarios;
-  const enviosFirma    = usuarios;
+  const enviosWA       = citasMes * 2;
+  const enviosFactFirm = citasMes;
 
   const planes  = {};
   const bolsas  = {};
@@ -226,32 +190,21 @@ function calcularCotizacion(params) {
     const precAdic = getPrecioAdic(key, usuarios, moneda);
     const subtotal = base + precAdic * nAdic;
     const desc     = Math.round(subtotal * pct);
-    const neto     = subtotal - desc;
-    const planData = { base, precAdic, subtotal, descuento: desc, neto };
-
-    // IVA México 16% — solo sobre plan (no módulos)
-    if (moneda === 'MXN') {
-      planData.ivaPromo    = Math.round(neto * 0.16 * 100) / 100;
-      planData.ivaSinPromo = Math.round(subtotal * 0.16 * 100) / 100;
-    }
-
-    planes[label] = planData;
+    planes[label]  = { base, precAdic, subtotal, descuento: desc, neto: subtotal - desc };
   }
 
-  if (incluirWA)      bolsas.wa      = getBolsa('WA',      enviosWA,      moneda, bolsaWA);
-  if (incluirFirma)   bolsas.firma   = getBolsa('firma',   enviosFirma,   moneda, bolsaFirma);
-  if (incluirFactura) bolsas.factura = getBolsa('factura', enviosFactura, moneda, bolsaFactura);
+  if (incluirWA)      bolsas.wa      = getBolsa('WA',      enviosWA,       moneda, bolsaWA);
+  if (incluirFirma)   bolsas.firma   = getBolsa('firma',   enviosFactFirm, moneda, bolsaFirma);
+  if (incluirFactura) bolsas.factura = getBolsa('factura', enviosFactFirm, moneda, bolsaFactura);
 
   const PRECIO_RECETA_AR = 3; // USD fijo
   const bolsasTotal = Object.values(bolsas).reduce((s, b) => s + b.precio, 0) + (incluirRecetaAR ? PRECIO_RECETA_AR : 0);
   for (const lbl of ['esencial','pro','titanium']) {
-    const ivaPromo    = planes[lbl].ivaPromo    || 0;
-    const ivaSinPromo = planes[lbl].ivaSinPromo || 0;
-    planes[lbl].totalPromo    = planes[lbl].neto     + bolsasTotal + ivaPromo;
-    planes[lbl].totalSinPromo = planes[lbl].subtotal + bolsasTotal + ivaSinPromo;
+    planes[lbl].totalPromo    = planes[lbl].neto    + bolsasTotal;
+    planes[lbl].totalSinPromo = planes[lbl].subtotal + bolsasTotal;
   }
 
-  return { planes, bolsas, bolsasTotal, nAdic, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR: incluirRecetaAR ? PRECIO_RECETA_AR : 0, moneda };
+  return { planes, bolsas, bolsasTotal, nAdic, enviosWA, enviosFactFirm, recetaAR: incluirRecetaAR ? PRECIO_RECETA_AR : 0 };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -337,21 +290,18 @@ function buildHTML(params) {
     incluirFirma     = true,
     incluirFactura   = true,
     incluirRecetaAR  = false,
-    modalidad        = 'mensual',
+    descuento        = 30,
+    vigencia         = 'Próximos 7 días — 3 cupos disponibles',
     fecha           = new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
   } = params;
 
-  // Vigencia y cupos dinámicos
-  const promo = getPromoVigencia();
-  const vigencia = `${promo.vigencia} — ${promo.cupos} cupos disponibles`;
-
-  console.log(`[COTIZ-DEBUG] buildHTML iniciado para ${nombre}, moneda=${moneda}, modalidad=${modalidad}`);
+  console.log(`[COTIZ-DEBUG] buildHTML iniciado para ${nombre}, moneda=${moneda}`);
   const logo  = getLogoBase64();
   console.log(`[COTIZ-DEBUG] Logo obtenido, llamando calcularCotizacion...`);
   const calc  = calcularCotizacion(params);
   console.log(`[COTIZ-DEBUG] calcularCotizacion completado`);
   console.log(`[COTIZ-DEBUG] calc.bolsas =`, calc.bolsas ? Object.keys(calc.bolsas) : 'undefined');
-  const { planes, bolsas, nAdic, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR } = calc;
+  const { planes, bolsas, nAdic, enviosWA, enviosFactFirm, recetaAR } = calc;
   const { esencial: es, pro, titanium: ti } = planes;
   const p     = PRECIOS[moneda];
   console.log(`[COTIZ-DEBUG] PRECIOS[${moneda}] =`, p ? 'OK' : 'UNDEFINED');
@@ -452,8 +402,8 @@ function buildHTML(params) {
   let bolsasRangos = '';
   try {
     if (incluirWA)      bolsasRangos += `<tr><td>WhatsApp — Recordatorios</td><td><b>${fmtNum(enviosWA)}</b></td><td>${rWA.S}</td><td>${rWA.M}</td><td>${fmtNum(rWA.L)}</td><td>${fmtNum(rWA.XL)}</td></tr>`;
-    if (incluirFactura) bolsasRangos += `<tr><td>Facturación Electrónica</td><td><b>${enviosFactura}</b></td><td>${rFac.S}</td><td>${rFac.M}</td><td>${rFac.L}</td><td>${rFac.XL}</td></tr>`;
-    if (incluirFirma)   bolsasRangos += `<tr><td>Firma Electrónica</td><td><b>${enviosFirma}</b></td><td>${rFir.S}</td><td>${rFir.M}</td><td>${rFir.L}</td><td>${rFir.XL}</td></tr>`;
+    if (incluirFactura) bolsasRangos += `<tr><td>Facturación Electrónica</td><td><b>${enviosFactFirm}</b></td><td>${rFac.S}</td><td>${rFac.M}</td><td>${rFac.L}</td><td>${rFac.XL}</td></tr>`;
+    if (incluirFirma)   bolsasRangos += `<tr><td>Firma Electrónica</td><td><b>${enviosFactFirm}</b></td><td>${rFir.S}</td><td>${rFir.M}</td><td>${rFir.L}</td><td>${rFir.XL}</td></tr>`;
     console.log(`[COTIZ-DEBUG] bolsasRangos construida exitosamente`);
   } catch(e) {
     console.error(`[COTIZ-ERROR-RANGOS] Error en tabla de rangos: ${e.message}`);
@@ -462,9 +412,9 @@ function buildHTML(params) {
   }
 
   let bolsasAsignadas = '';
-  if (incluirWA && bolsas.wa)         bolsasAsignadas += `<tr><td>WhatsApp — Recordatorios</td><td>&#215;1.33/usuario</td><td>${usuarios}</td><td>${fmtNum(enviosWA)} envíos</td><td><b>${bolsas.wa.tier}: hasta ${fmtNum(bolsas.wa.limiteEnvios)} envíos</b></td></tr>`;
-  if (incluirFactura && bolsas.factura) bolsasAsignadas += `<tr><td>Facturación Electrónica</td><td>&#215;1/usuario</td><td>${usuarios}</td><td>${enviosFactura} envíos</td><td><b>${bolsas.factura.tier}: hasta ${fmtNum(bolsas.factura.limiteEnvios)} envíos</b></td></tr>`;
-  if (incluirFirma && bolsas.firma)   bolsasAsignadas += `<tr><td>Firma Electrónica</td><td>&#215;1/usuario</td><td>${usuarios}</td><td>${enviosFirma} envíos</td><td><b>${bolsas.firma.tier}: hasta ${fmtNum(bolsas.firma.limiteEnvios)} envíos</b></td></tr>`;
+  if (incluirWA && bolsas.wa)         bolsasAsignadas += `<tr><td>WhatsApp — Recordatorios</td><td>&#215;2/cita</td><td>${citasMes}</td><td>${fmtNum(enviosWA)} envíos</td><td><b>${bolsas.wa.tier}: hasta ${fmtNum(bolsas.wa.limiteEnvios)} envíos</b></td></tr>`;
+  if (incluirFactura && bolsas.factura) bolsasAsignadas += `<tr><td>Facturación Electrónica</td><td>&#215;1/cita</td><td>${citasMes}</td><td>${enviosFactFirm} envíos</td><td><b>${bolsas.factura.tier}: hasta ${fmtNum(bolsas.factura.limiteEnvios)} envíos</b></td></tr>`;
+  if (incluirFirma && bolsas.firma)   bolsasAsignadas += `<tr><td>Firma Electrónica</td><td>&#215;1/cita</td><td>${citasMes}</td><td>${enviosFactFirm} envíos</td><td><b>${bolsas.firma.tier}: hasta ${fmtNum(bolsas.firma.limiteEnvios)} envíos</b></td></tr>`;
 
   // ── Comparativa ──────────────────────────────────────────────────
   // Build dynamic features: add Argentina-specific items if needed
@@ -626,7 +576,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
   <table class="pt">
     <thead>
       <tr>
-        <th style="width:44%">DETALLES / PLANES (${modalidad === 'anual' ? 'ANUAL' : 'MENSUAL'})</th>
+        <th style="width:44%">DETALLES / PLANES (MENSUAL)</th>
         <th style="width:18.7%">ESENCIAL</th>
         <th style="width:18.7%">PRO</th>
         <th style="width:18.6%">TITANIUM</th>
@@ -647,36 +597,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
         <td class="td-price">${fmt(ti.precAdic * nAdic, moneda)}</td>
       </tr>` : ''}
       <tr class="row-disc">
-        <td class="td-desc">DESCUENTO PROMO ${modalidad === 'anual' ? 'ANUAL' : 'MENSUAL'} (Ahorro del &#8722;${descuento}%) <span class="bdg">&#8722;${descuento}%</span></td>
+        <td class="td-desc">DESCUENTO PROMO (Ahorro del &#8722;${descuento}%) <span class="bdg">&#8722;${descuento}%</span></td>
         <td class="td-price">&#8722; ${fmt(es.descuento, moneda)}</td>
         <td class="td-price">&#8722; ${fmt(pro.descuento, moneda)}</td>
         <td class="td-price">&#8722; ${fmt(ti.descuento, moneda)}</td>
       </tr>
-      ${moneda === 'MXN' ? `
-      <tr class="row-odd">
-        <td class="td-desc">IVA 16% (CON PROMO)
-          <span class="td-sub">Sobre el neto del plan con descuento</span></td>
-        <td class="td-price">${fmt(es.ivaPromo, moneda)}</td>
-        <td class="td-price">${fmt(pro.ivaPromo, moneda)}</td>
-        <td class="td-price">${fmt(ti.ivaPromo, moneda)}</td>
-      </tr>` : ''}
       ${bolsasRows}
       <tr class="row-tp">
-        <td>TOTAL MES 1 AL 3 (CON PROMO)${moneda === 'MXN' ? ' <span style="font-size:8px;font-weight:400">IVA incluido</span>' : ''}</td>
+        <td>TOTAL MES 1 AL 3 (CON PROMO)</td>
         <td style="text-align:right">${fmt(es.totalPromo, moneda)}</td>
         <td style="text-align:right">${fmt(pro.totalPromo, moneda)}</td>
         <td style="text-align:right">${fmt(ti.totalPromo, moneda)}</td>
       </tr>
-      ${moneda === 'MXN' ? `
-      <tr class="row-odd">
-        <td class="td-desc">IVA 16% (SIN PROMO)
-          <span class="td-sub">Sobre el subtotal sin descuento — aplica desde mes 4</span></td>
-        <td class="td-price">${fmt(es.ivaSinPromo, moneda)}</td>
-        <td class="td-price">${fmt(pro.ivaSinPromo, moneda)}</td>
-        <td class="td-price">${fmt(ti.ivaSinPromo, moneda)}</td>
-      </tr>` : ''}
       <tr class="row-tn">
-        <td>TOTAL DESDE MES 4 (Sin Promo)${moneda === 'MXN' ? ' <span style="font-size:8px;font-weight:400">IVA incluido</span>' : ''}</td>
+        <td>TOTAL DESDE MES 4 (Sin Promo)</td>
         <td style="text-align:right">${fmt(es.totalSinPromo, moneda)}</td>
         <td style="text-align:right">${fmt(pro.totalSinPromo, moneda)}</td>
         <td style="text-align:right">${fmt(ti.totalSinPromo, moneda)}</td>
@@ -688,13 +622,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 
 <div class="sec" style="padding-top:4px">
   <div class="sec-t">Cómo se calculan las bolsas</div>
-  <p style="font-size:9px;color:#555;margin-bottom:8px;line-height:1.5">Las bolsas propuestas son según la cantidad de usuarios (${usuarios} profesional${usuarios > 1 ? 'es' : ''}). Cada módulo tiene su propia bolsa asignada independientemente:</p>
+  <p style="font-size:9px;color:#555;margin-bottom:8px;line-height:1.5">Las bolsas propuestas son según la cantidad de citas/mes de la clínica (${citasMes} citas con ${usuarios} profesional${usuarios > 1 ? 'es' : ''}). Cada módulo tiene su propia bolsa asignada independientemente:</p>
   <table class="ct">
     <thead><tr><th style="width:32%">Módulo</th><th>Envíos requeridos</th><th>S (hasta...)</th><th>M (hasta...)</th><th>L (hasta...)</th><th>XL (hasta...)</th></tr></thead>
     <tbody>${bolsasRangos}</tbody>
   </table>
   <table class="ct">
-    <thead><tr><th style="width:32%">Módulo</th><th>×/Usuario</th><th>Usuarios</th><th>Envíos requeridos</th><th>Bolsa asignada</th></tr></thead>
+    <thead><tr><th style="width:32%">Módulo</th><th>×/Cita</th><th>Citas/mes</th><th>Envíos requeridos</th><th>Bolsa asignada</th></tr></thead>
     <tbody>${bolsasAsignadas}</tbody>
   </table>
 </div>
@@ -804,38 +738,45 @@ async function generarPDF(params) {
 // ENVIAR POR WHATSAPP
 // ─────────────────────────────────────────────────────────────────────
 
-async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
+async function enviarCotizacionWA(sock, phone, params) {
   const buffer       = await generarPDF(params);
   const nombreLimpio = (params.nombre || 'Lead').replace(/[^a-zA-Z0-9]/g, '_');
 
   const primerNombre = (params.nombre || 'Doctor').split(' ')[0];
-  const promo        = getPromoVigencia();
+  const vigencia     = params.vigencia || '';
   const usuarios     = params.usuarios || 1;
-  const modalidad    = params.modalidad || 'mensual';
-  const descPct      = modalidad === 'anual' ? 20 : 30;
+  const citasMes     = params.citasMes || 0;
 
   const caption =
 `Perfecto, ${primerNombre}. Aquí va la cotización Medilink personalizada.
 
-Para tu operación con ${usuarios} profesional${usuarios !== 1 ? 'es' : ''}, el plan *Esencial* es el punto de partida ideal, con posibilidad de escalar cuando lo necesites.
+Para tu operación de ${citasMes} citas/mes con ${usuarios} profesional${usuarios !== 1 ? 'es' : ''}, el plan *Esencial* es el punto de partida ideal, con posibilidad de escalar cuando lo necesites.
 
-Con la promoción activa del *${descPct}% de descuento ${modalidad}* vigente hasta el ${promo.vigencia} (${promo.cupos} cupos), este es el mejor momento para arrancar.
+Con la promoción activa del *30% de descuento* vigente hasta el ${vigencia}, este es el mejor momento para arrancar.
 
 Si querés ver la plataforma en acción, agendá directamente aquí:
 https://meetings.hubspot.com/marianodestefano/demomedilink
 
 Quedo atento.`;
 
-  console.log(`[COTIZ] Enviando PDF a ${phone}, isSelfChat=${isSelfChat}, buffer=${buffer.length} bytes`);
+  // FIX: self-chat en Baileys requiere @lid, no @s.whatsapp.net
+  // Si el número no tiene dominio o tiene @s.whatsapp.net, detectar si es self-chat por longitud
+  // (los device IDs como 136417472712832 tienen >12 dígitos y no empiezan con código de país estándar)
+  const phoneBase = phone.split('@')[0];
+  const isSelfChatJid = phoneBase.length > 12 && !phoneBase.startsWith('57') && !phoneBase.startsWith('54') && !phoneBase.startsWith('1');
+  const sendTarget = isSelfChatJid ? `${phoneBase}@lid` : phone;
+  if (isSelfChatJid) {
+    console.log(`[COTIZ] Self-chat detectado, convirtiendo JID: ${phone} → ${sendTarget}`);
+  }
 
-  // Delegar envío a safeSendMessage (maneja conversión @lid para self-chat correctamente)
-  await sendFn(phone, {
+  // Baileys API: send document with caption
+  await sock.sendMessage(sendTarget, {
     document: buffer,
     mimetype: 'application/pdf',
     fileName: `Cotizacion_Medilink_${nombreLimpio}.pdf`,
     caption
-  }, { isSelfChat });
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────
-module.exports = { calcularCotizacion, generarPDF, enviarCotizacionWA, buildHTML, PRECIOS, fmt, getPromoVigencia };
+module.exports = { calcularCotizacion, generarPDF, enviarCotizacionWA, buildHTML, PRECIOS, fmt };

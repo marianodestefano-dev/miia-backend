@@ -180,7 +180,10 @@ const equipoMedilink = {
   '56989558306': { name: null, presented: false },
   '56994128069': { name: 'Vivi', presented: false },   // también JEFA en familyContacts
   '56974777648': { name: null, presented: false },
-  '573125027604': { name: null, presented: false }
+  '573125027604': { name: null, presented: false },
+  '573108447586': { name: 'Laura', presented: false },
+  '573175058386': { name: 'Gise', presented: false },
+  '573014259700': { name: 'Jesús', presented: false }
 };
 
 // Leads pre-registrados (MIIA los trata como potenciales clientes de Medilink)

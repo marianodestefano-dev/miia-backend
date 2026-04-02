@@ -1287,11 +1287,12 @@ Nuevo resumen actualizado:`;
     let countryContext = '';
     if (!familyInfo) {
       if (countryCode === '57') countryContext = '🌍 El lead es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el lead los trae; si tiene SIIGO + Titanium → facturador electrónico $0.';
-      else if (countryCode === '52') countryContext = '🌍 El lead es de MÉXICO (pais:"MEXICO", moneda:"MXN"). PROHIBIDO mencionar SIIGO o BOLD.';
+      else if (countryCode === '52') countryContext = '🌍 El lead es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD.';
       else if (countryCode === '56') countryContext = '🌍 El lead es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD.';
       else if (countryCode === '54') countryContext = '🌍 El lead es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el lead es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD.';
-      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO mencionar SIIGO o BOLD.';
-      else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD").';
+      else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD.';
+      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
+      else countryContext = '🌍 El lead es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
     }
 
     // Construcción del system prompt
@@ -1398,58 +1399,64 @@ REGLAS ABSOLUTAS en este chat:
 
 🌍 **REGLAS GENERALES DE COTIZACIÓN:**
 - **Cálculo de WhatsApp**: Multiplica usuarios (N) × 1.33 → determina bolsa (S, M, L, XL)
-- **Descuento Comercial**: Se aplica SOLO al Subtotal Básico (Plan Base + Usuarios Adicionales). Módulos se cobran a precio de lista SIN descuento.
-- **IVA**: Todos los precios son NETOS (0% IVA) a menos que se indique lo contrario.
-
-### 🇪🇸 ESPAÑA (EUR €) — REGLAS ESPECIALES
-- **Venta**: SOLO ANUAL (multiplicar todo mensual × 12)
-- **Descuento**: 20% OFF sobre la suscripción
-- **Factura Electrónica**: €15 mensuales por usuario (N × 15 × 12 anual) — Ilimitada
-- **RESTRICCIÓN**: NO disponible Firma Electrónica ni Receta Digital
-
-| Plan | Base (1 usuario) | Adicional (2+) | WA S | WA M | WA L | WA XL |
-|------|-----------------|----------------|------|------|------|-------|
-| ESENCIAL | €70 | €10 | €15 | €33 | €72 | €170 |
-| PRO | €100 | €16 | €15 | €33 | €72 | €170 |
-| TITANIUM | €120 | €20 | €15 | €33 | €72 | €170 |
+- **Cálculo de Factura/Firma**: 1 envío por usuario → determina bolsa
+- **Descuento Comercial**: 30% mensual / 20% anual. Se aplica SOLO al Subtotal Básico (Plan Base + Usuarios Adicionales). Módulos se cobran a precio de lista SIN descuento.
+- **Promoción**: 3 meses con descuento mensual (30%) o 12 meses con descuento anual (20%)
+- **IVA**: Todos los precios son NETOS (0% IVA) excepto México (16%)
 
 ### 🇨🇱 CHILE (CLP $)
-- **Descuento**: 25% OFF sobre suscripción
-- **Factura**: Bolsa S (50 envíos) $10.000 | Bolsa M (200 envíos) $20.000
-- **Disponibilidad**: PRO y TITANIUM solamente
 
-| Plan | Base (1 usuario) | Adicional (2+) | Firma S (50) | WA S (150) |
-|------|-----------------|----------------|--------------|-----------|
-| PRO | $51.340 | $15.540 | $20.833 | $17.780 |
-| TITANIUM | $75.140 | $23.140 | $20.833 | $17.780 |
+| Plan | Base (1 usuario) | Adic 2-5 | Adic 6-10 | Adic 11+ | Firma S (50) | WA S (150) | Factura S (50) |
+|------|-----------------|----------|-----------|----------|--------------|-----------|----------------|
+| ESENCIAL | $35.000 | $15.000 | $12.500 | $9.500 | $20.833 | $17.780 | $10.000 |
+| PRO | $55.000 | $16.000 | $13.500 | $10.500 | $20.833 | $17.780 | $10.000 |
+| TITANIUM | $85.000 | $18.000 | $15.500 | $12.000 | $20.833 | $17.780 | $10.000 |
 
 ### 🇨🇴 COLOMBIA (COP $)
-- **Descuento**: 30% OFF sobre suscripción
-- **Factura**: Bolsa S (50 envíos) $0 (Incluida en el plan)
-- **Receta Digital**: Incluida automáticamente en PRO y TITANIUM
 - **BENEFICIO SIIGO**: Si menciona SIIGO + Titanium → Facturador Electrónico $0 (SIIGO ya lo cubre)
 
-| Plan | Base (1 usuario) | Adicional (2+) | Firma S (50) | WA S (150) |
-|------|-----------------|----------------|--------------|-----------|
-| PRO | $170.000 | $35.000 | $15.000 | $11.000 |
-| TITANIUM | $250.000 | $45.000 | $15.000 | $11.000 |
+| Plan | Base (1 usuario) | Adicional (2+) | Firma S (50) | WA S (150) | Factura S (50) |
+|------|-----------------|----------------|--------------|-----------|----------------|
+| ESENCIAL | $125.000 | $35.000 | $15.000 | $11.000 | $32.000 |
+| PRO | $150.000 | $40.000 | $15.000 | $11.000 | $32.000 |
+| TITANIUM | $225.000 | $55.000 | $15.000 | $11.000 | $32.000 |
 
 ### 🇲🇽 MÉXICO (MXN $)
-- **Descuento**: 25% OFF sobre suscripción
+- **IVA**: 16% sobre plan base (se calcula automáticamente en el PDF)
 
-| Plan | Base (1 usuario) | Adicional (2+) | Factura S (50) | WA S (150) |
-|------|-----------------|----------------|----------------|-----------|
-| PRO | $1.150 | $250 | $160 | $210 |
-| TITANIUM | $1.750 | $350 | $160 | $210 |
+| Plan | Base (1 usuario) | Adicional (2+) | Factura S (50) | WA S (150) | Firma S (50) |
+|------|-----------------|----------------|----------------|-----------|--------------|
+| ESENCIAL | $842.80 | $250 | $160 | $210 | $450 |
+| PRO | $1.180 | $300 | $160 | $210 | $450 |
+| TITANIUM | $1.297 | $450 | $160 | $210 | $450 |
 
-### 🌎 LATAM / ARGENTINA / INTERNACIONAL (USD $)
-- **Descuento**: 20% OFF sobre suscripción
-- **Receta Digital (Solo Argentina)**: $3.00 USD por usuario/mes
+### 🇩🇴 REPÚBLICA DOMINICANA (USD $)
+- Factura electrónica DISPONIBLE
 
-| Plan | Base (1 usuario) | Adicional (2+) | Factura S (50) | WA S (150) |
-|------|-----------------|----------------|----------------|-----------|
-| PRO | $50 | $12 | $10 | $15 |
-| TITANIUM | $80 | $15 | $10 | $15 |
+| Plan | Base (1 usuario) | Adicional (2+) | Factura S (50) | WA S (150) | Firma S (50) |
+|------|-----------------|----------------|----------------|-----------|--------------|
+| ESENCIAL | $45 | $12 | $10 | $15 | $25 |
+| PRO | $65 | $13 | $10 | $15 | $25 |
+| TITANIUM | $85 | $14 | $10 | $15 | $25 |
+
+### 🇦🇷 ARGENTINA (USD $)
+- **Receta Digital**: $3.00 USD por usuario/mes (incluirRecetaAR=true)
+- **SIN factura electrónica** (incluirFactura=false)
+
+| Plan | Base (1 usuario) | Adicional (2+) | WA S (150) | Firma S (50) |
+|------|-----------------|----------------|-----------|--------------|
+| ESENCIAL | $45 | $12 | $15 | $25 |
+| PRO | $65 | $13 | $15 | $25 |
+| TITANIUM | $85 | $14 | $15 | $25 |
+
+### 🌎 OTROS / INTERNACIONAL (USD $)
+- **SIN factura electrónica** (incluirFactura=false)
+
+| Plan | Base (1 usuario) | Adicional (2+) | WA S (150) | Firma S (50) |
+|------|-----------------|----------------|-----------|--------------|
+| ESENCIAL | $45 | $12 | $15 | $25 |
+| PRO | $65 | $13 | $15 | $25 |
+| TITANIUM | $85 | $14 | $15 | $25 |
 
 ## 🚨 🚨 🚨 PROTOCOLO COTIZACIÓN — REGLA ABSOLUTUTA PRIORITARIA 🚨 🚨 🚨
 
@@ -1475,34 +1482,38 @@ REGLAS ABSOLUTAS en este chat:
 | Campo | Valor |
 |-------|-------|
 | nombre | Del cliente si se mencionó, sino "Cliente" |
-| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +34=ESPAÑA, otros=INTERNACIONAL |
-| moneda | Según país (COP, CLP, MXN, EUR, USD) |
+| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +1809/1829/1849=REPUBLICA_DOMINICANA, +54=ARGENTINA, otros=INTERNACIONAL |
+| moneda | Según país (COP, CLP, MXN, USD) |
 | usuarios | El número que mencionó el cliente |
 | citasMes | 70 (default) |
 | incluirWA | true |
 | bolsaWA | null (auto-calculate) |
-| incluirFirma | true (false en Argentina) |
+| incluirFirma | true |
 | bolsaFirma | null (auto-calculate) |
-| incluirFactura | true (false en Argentina) |
+| incluirFactura | true (false en Argentina, España e INTERNACIONAL) |
 | bolsaFactura | null (auto-calculate) |
 | incluirRecetaAR | true (SOLO Argentina), false (otros países) |
-| descuento | 30 (Colombia), 25 (Chile/México), 20 (España/otros) |
-| vigencia | "31 de diciembre de 2026" |
+| modalidad | "mensual" o "anual" (default: "mensual") |
+
+**DESCUENTO AUTOMÁTICO:** No envíes campo "descuento" — el sistema lo calcula: 30% mensual, 20% anual. Aplica igual para TODOS los países.
+
+**PROMOCIÓN:** 3 meses con descuento mensual (30%) o 12 meses con descuento anual (20%). La vigencia y cupos se calculan automáticamente.
 
 **PAÍS MAPPING (OBLIGATORIO):**
-- +57 Colombia → COLOMBIA / COP / descuento 30%
-- +56 Chile → CHILE / CLP / descuento 25%
-- +52 México → MEXICO / MXN / descuento 25%
-- +34 España → ESPAÑA / USD / descuento 20% (no usar EUR — no existe)
-- +54 Argentina → ARGENTINA / USD / descuento 20%, incluirFactura=false, incluirRecetaAR=true
-- Otros → INTERNACIONAL / USD / descuento 20%
+- +57 Colombia → COLOMBIA / COP
+- +56 Chile → CHILE / CLP
+- +52 México → MEXICO / MXN (IVA 16% se calcula automáticamente)
+- +1809/+1829/+1849 Rep. Dominicana → REPUBLICA_DOMINICANA / USD, incluirFactura=true
+- +54 Argentina → ARGENTINA / USD, incluirFactura=false, incluirRecetaAR=true
+- +34 España → INTERNACIONAL / USD, incluirFactura=false
+- Otros → INTERNACIONAL / USD, incluirFactura=false
 
 **EJEMPLO REAL:**
 Cliente dice: "Hola, necesito cotización para Colombia con 1 usuario"
 Tu respuesta DEBE ser EXACTAMENTE así:
 
 Te envío un PDF con todos los planes. Para mayor precisión, confirma: ¿cuántos usuarios y citas/mes exactas?
-[GENERAR_COTIZACION_PDF:{"nombre":"Cliente","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":70,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"incluirRecetaAR":false,"descuento":30,"vigencia":"31 de diciembre de 2026"}]
+[GENERAR_COTIZACION_PDF:{"nombre":"Cliente","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":70,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"incluirRecetaAR":false,"modalidad":"mensual"}]
 
 Nada más. No preguntes "¿qué plan?" Ese era el ERROR anterior. Ahora es correcto.
 
@@ -1615,34 +1626,38 @@ WA S:$15 M:$35 L:$70 XL:$170 | Factura S:$10 M:$17 L:$35 XL:$60 | Firma S:$25 M:
 | Campo | Valor |
 |-------|-------|
 | nombre | Del lead si se mencionó, sino "Cliente" |
-| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +34=ESPAÑA, otros=INTERNACIONAL |
-| moneda | Según país (COP, CLP, MXN, EUR, USD) |
+| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +1809/1829/1849=REPUBLICA_DOMINICANA, +54=ARGENTINA, otros=INTERNACIONAL |
+| moneda | Según país (COP, CLP, MXN, USD) |
 | usuarios | El número que mencionó el cliente |
 | citasMes | 70 (default) |
 | incluirWA | true |
 | bolsaWA | null (auto-calculate) |
-| incluirFirma | true (false en Argentina) |
+| incluirFirma | true |
 | bolsaFirma | null (auto-calculate) |
-| incluirFactura | true (false en Argentina) |
+| incluirFactura | true (false en Argentina, España e INTERNACIONAL) |
 | bolsaFactura | null (auto-calculate) |
 | incluirRecetaAR | true (SOLO Argentina), false (otros países) |
-| descuento | 30 (Colombia), 25 (Chile/México), 20 (España/otros) |
-| vigencia | "31 de diciembre de 2026" |
+| modalidad | "mensual" o "anual" (default: "mensual") |
+
+**DESCUENTO AUTOMÁTICO:** No envíes campo "descuento" — el sistema lo calcula: 30% mensual, 20% anual. Aplica igual para TODOS los países.
+
+**PROMOCIÓN:** 3 meses con descuento mensual (30%) o 12 meses con descuento anual (20%). La vigencia y cupos se calculan automáticamente.
 
 **PAÍS MAPPING (OBLIGATORIO):**
-- +57 Colombia → COLOMBIA / COP / descuento 30%
-- +56 Chile → CHILE / CLP / descuento 25%
-- +52 México → MEXICO / MXN / descuento 25%
-- +34 España → ESPAÑA / USD / descuento 20% (no usar EUR — no existe)
-- +54 Argentina → ARGENTINA / USD / descuento 20%, incluirFactura=false, incluirRecetaAR=true
-- Otros → INTERNACIONAL / USD / descuento 20%
+- +57 Colombia → COLOMBIA / COP
+- +56 Chile → CHILE / CLP
+- +52 México → MEXICO / MXN (IVA 16% se calcula automáticamente)
+- +1809/+1829/+1849 Rep. Dominicana → REPUBLICA_DOMINICANA / USD, incluirFactura=true
+- +54 Argentina → ARGENTINA / USD, incluirFactura=false, incluirRecetaAR=true
+- +34 España → INTERNACIONAL / USD, incluirFactura=false
+- Otros → INTERNACIONAL / USD, incluirFactura=false
 
 **EJEMPLO REAL:**
 Cliente dice: "Hola, necesito cotización para Colombia con 1 usuario"
 Tu respuesta DEBE ser EXACTAMENTE así:
 
 Te envío un PDF con todos los planes. Para mayor precisión, confirma: ¿cuántos usuarios y citas/mes exactas?
-[GENERAR_COTIZACION_PDF:{"nombre":"Cliente","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":70,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"incluirRecetaAR":false,"descuento":30,"vigencia":"31 de diciembre de 2026"}]
+[GENERAR_COTIZACION_PDF:{"nombre":"Cliente","pais":"COLOMBIA","moneda":"COP","usuarios":1,"citasMes":70,"incluirWA":true,"bolsaWA":null,"incluirFirma":true,"bolsaFirma":null,"incluirFactura":true,"bolsaFactura":null,"incluirRecetaAR":false,"modalidad":"mensual"}]
 
 Nada más. No preguntes "¿qué plan?" Ese era el ERROR anterior. Ahora es correcto.
 
@@ -1651,7 +1666,7 @@ Nada más. No preguntes "¿qué plan?" Ese era el ERROR anterior. Ahora es corre
 ---
 
 ## PROMOCIÓN ACTIVA
-Descuento: 30% sobre (plan base + adicionales). Vigencia: hasta el ${promoVigencia}. Cupos disponibles: ${promoCupos}.
+Descuento: 30% mensual / 20% anual sobre (plan base + adicionales). La vigencia y cupos se calculan automáticamente por el sistema.
 Siempre menciona la vigencia y los cupos para que el lead sepa que la oportunidad es limitada — con empatía y seguridad, nunca presionando.
 
 ## RECOMENDACIÓN DE PLAN (SOLO DESPUÉS que el PDF fue enviado)
