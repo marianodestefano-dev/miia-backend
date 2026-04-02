@@ -262,6 +262,208 @@ let lastInteractionTime = {};
 let selfChatLoopCounter = {};
 let isSystemPaused = false;
 const nightPendingLeads = new Set(); // leads que escribieron durante el silencio nocturno
+
+// Schedule config cache por UID — se refresca cada 5 min
+const _scheduleCache = {};
+async function getScheduleConfig(uid) {
+  const cached = _scheduleCache[uid];
+  if (cached && Date.now() - cached.ts < 300000) return cached.data;
+  try {
+    const doc = await admin.firestore().collection('users').doc(uid).collection('settings').doc('schedule').get();
+    const data = doc.exists ? doc.data() : null;
+    _scheduleCache[uid] = { data, ts: Date.now() };
+    return data;
+  } catch (e) {
+    return cached?.data || null;
+  }
+}
+
+function isWithinSchedule(scheduleConfig) {
+  if (!scheduleConfig) return true; // sin config → siempre activo
+  const tz = scheduleConfig.timezone || 'America/Bogota';
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+  const day = now.getDay(); // 0=dom, 1=lun...
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const currentTime = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
+
+  // Chequear día activo
+  if (scheduleConfig.activeDays && !scheduleConfig.activeDays.includes(day)) return false;
+
+  // Chequear horario
+  const start = scheduleConfig.startTime || '09:00';
+  const end = scheduleConfig.endTime || '21:00';
+  if (currentTime < start || currentTime >= end) return false;
+
+  return true;
+}
+
+// ═══ MOTOR DE SEGUIMIENTO AUTOMÁTICO DE LEADS ═══
+// Corre cada hora. Revisa leads sin respuesta y envía followup contextual.
+// REGLA: NUNCA enviar entre 22:00 y 10:00 hora local del owner.
+// REGLA: Respeta keywords cold, modo silencio, y max seguimientos.
+async function runFollowupEngine() {
+  if (!OWNER_UID) return;
+  const scheduleConfig = await getScheduleConfig(OWNER_UID);
+  if (!scheduleConfig || !scheduleConfig.followupDays) return;
+
+  // Ventana horaria segura: 10:00-22:00
+  const tz = scheduleConfig.timezone || 'America/Bogota';
+  const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+  const h = localNow.getHours();
+  if (h < 10 || h >= 22) {
+    console.log(`[FOLLOWUP] ⏸️ Ventana nocturna (${h}h ${tz}). Sin seguimientos.`);
+    return;
+  }
+
+  const followupDays = scheduleConfig.followupDays || 3;
+  const followupMax = scheduleConfig.followupMax || 3;
+  const followupMsg1 = scheduleConfig.followupMsg1 || 'Hola, ¿pudiste revisar la información? Quedo atento.';
+  const followupMsgLast = scheduleConfig.followupMsgLast || 'Solo quería saber si seguís interesado. Si no es el momento, no hay problema.';
+  const followupFinal = scheduleConfig.followupFinalAction || 'archive';
+  const coldKeywords = (scheduleConfig.coldKeywords || '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+  const thresholdMs = followupDays * 86400000;
+
+  let sent = 0;
+  for (const [phone, msgs] of Object.entries(conversations)) {
+    if (!msgs.length) continue;
+    // Solo leads externos (no owner, no family, no admin)
+    const baseNum = phone.split('@')[0];
+    if (OWNER_PHONE && phone.includes(OWNER_PHONE)) continue;
+    if (familyContacts && familyContacts[baseNum]) continue;
+    if (ADMIN_PHONES && ADMIN_PHONES.includes(baseNum)) continue;
+    if (contactTypes[phone] === 'familia' || contactTypes[phone] === 'equipo') continue;
+
+    const lastMsg = msgs[msgs.length - 1];
+    // Solo followup si el ÚLTIMO mensaje fue de MIIA (el lead no respondió)
+    if (lastMsg.role !== 'assistant') continue;
+    const timeSince = Date.now() - (lastMsg.timestamp || 0);
+    if (timeSince < thresholdMs) continue;
+
+    // Chequear si el lead dijo algo "cold" en sus últimos mensajes
+    const lastUserMsgs = msgs.filter(m => m.role === 'user').slice(-3).map(m => (m.content || '').toLowerCase()).join(' ');
+    const isCold = coldKeywords.some(kw => lastUserMsgs.includes(kw));
+    if (isCold) {
+      console.log(`[FOLLOWUP] ❄️ Lead ${baseNum} detectado como frío (keyword cold). Saltando.`);
+      continue;
+    }
+
+    // Leer estado de followup en Firestore
+    const followupRef = admin.firestore().collection('users').doc(OWNER_UID).collection('followups').doc(baseNum);
+    let fData = { count: 0, silenced: false };
+    try {
+      const fDoc = await followupRef.get();
+      if (fDoc.exists) fData = fDoc.data();
+    } catch (e) { continue; }
+
+    if (fData.silenced) continue;
+    if (fData.count >= followupMax) {
+      if (followupFinal === 'archive' && !fData.archived) {
+        await followupRef.set({ ...fData, archived: true, archivedAt: new Date().toISOString() }, { merge: true });
+        console.log(`[FOLLOWUP] 📦 Lead ${baseNum} archivado (${fData.count}/${followupMax}).`);
+      }
+      continue;
+    }
+
+    // Construir mensaje contextual usando historial
+    const isLast = (fData.count + 1) >= followupMax;
+    let msg;
+    // Leads tibios/calientes: mensaje con contexto de la conversación
+    const lastUserMsg = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
+    if (lastUserMsg.length > 10 && !isLast) {
+      // Hay contexto → mensaje personalizado
+      const leadName = leadNames[phone] || baseNum;
+      msg = `Hola${leadName !== baseNum ? ' ' + leadName.split(' ')[0] : ''}, retomando nuestra conversación. ${followupMsg1}`;
+    } else {
+      msg = isLast ? followupMsgLast : followupMsg1;
+    }
+
+    try {
+      await safeSendMessage(phone, msg);
+      await followupRef.set({
+        count: (fData.count || 0) + 1,
+        lastFollowup: new Date().toISOString(),
+        silenced: false
+      }, { merge: true });
+      sent++;
+      console.log(`[FOLLOWUP] 📤 Seguimiento ${fData.count + 1}/${followupMax} → ${baseNum}`);
+    } catch (e) {
+      console.error(`[FOLLOWUP] ❌ Error enviando a ${baseNum}:`, e.message);
+    }
+
+    // Pausa entre envíos para no saturar WhatsApp
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  if (sent > 0) console.log(`[FOLLOWUP] ✅ ${sent} seguimiento(s) enviado(s).`);
+}
+
+// Cada hora (3600000ms). Primera ejecución 2 min post-startup.
+setInterval(runFollowupEngine, 3600000);
+setTimeout(runFollowupEngine, 120000);
+
+// ═══ AGENDA INTELIGENTE (FAMILIA + OWNER) ═══
+// Eventos proactivos: cumpleaños, recordatorios, retomar contacto, deportes (futuro)
+// REGLA: NUNCA entre 22:00 y 10:00. NUNCA a leads/clientes. SOLO familia+owner.
+async function runAgendaEngine() {
+  if (!OWNER_UID) return;
+  const scheduleConfig = await getScheduleConfig(OWNER_UID);
+  const tz = scheduleConfig?.timezone || 'America/Bogota';
+  const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+  const h = localNow.getHours();
+  if (h < 10 || h >= 22) return;
+
+  try {
+    const now = new Date();
+    const pendingSnap = await admin.firestore()
+      .collection('users').doc(OWNER_UID).collection('miia_agenda')
+      .where('status', '==', 'pending')
+      .where('scheduledFor', '<=', now.toISOString())
+      .limit(10)
+      .get();
+
+    if (pendingSnap.empty) return;
+
+    for (const doc of pendingSnap.docs) {
+      const evt = doc.data();
+      const phone = evt.contactPhone === 'self'
+        ? `${OWNER_PHONE}@s.whatsapp.net`
+        : `${evt.contactPhone}@s.whatsapp.net`;
+
+      // Generar mensaje con Gemini usando contexto
+      const history = (conversations[phone] || []).slice(-10).map(m => `${m.role === 'user' ? 'Contacto' : 'MIIA'}: ${m.content}`).join('\n');
+      const prompt = `Sos MIIA. Tenés que escribirle a ${evt.contactName || 'este contacto'}.
+Razón: ${evt.reason}
+Guía: ${evt.promptHint || 'Sé natural y breve.'}
+Historial reciente:\n${history || '(sin historial)'}
+Escribí UN mensaje corto, natural, con tu personalidad. No expliques por qué escribís. Solo escribí como si fuera espontáneo.`;
+
+      let enableSearch = false;
+      if (evt.searchBefore) enableSearch = true;
+
+      try {
+        const response = await generateAIContent(prompt, { enableSearch });
+        if (response && response.length > 5) {
+          await safeSendMessage(phone, response);
+          await doc.ref.update({ status: 'sent', sentAt: now.toISOString() });
+          console.log(`[AGENDA] 📤 Evento enviado a ${evt.contactName}: "${response.substring(0, 60)}..."`);
+        }
+      } catch (e) {
+        console.error(`[AGENDA] ❌ Error procesando evento ${doc.id}:`, e.message);
+        await doc.ref.update({ status: 'error', error: e.message });
+      }
+
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  } catch (e) {
+    console.error(`[AGENDA] ❌ Error general:`, e.message);
+  }
+}
+
+// Cada 30 min. Primera ejecución 3 min post-startup.
+setInterval(runAgendaEngine, 1800000);
+setTimeout(runAgendaEngine, 180000);
+
 let morningWakeupDone   = '';        // evita repetir el despertar en el mismo día
 let morningBriefingDone = '';        // evita repetir el briefing en el mismo día
 let briefingPendingApproval = [];    // novedades regulatorias esperando aprobación de Mariano
@@ -1154,6 +1356,13 @@ Emoji: ${familyInfo.emoji || ''}`;
 
     if (!isAlreadySavedParam && userMessage !== null) {
       conversations[phone].push({ role: 'user', content: userMessage, timestamp: Date.now() });
+      // Reset followup counter cuando el lead responde
+      if (OWNER_UID && !isOwnerNumber && !isFamilyContact) {
+        const leadNum = phone.split('@')[0];
+        admin.firestore().collection('users').doc(OWNER_UID).collection('followups').doc(leadNum)
+          .set({ count: 0, silenced: false, lastResponse: new Date().toISOString() }, { merge: true })
+          .catch(() => {});
+      }
     }
 
     // Memoria sintética universal — actualiza cada 15 mensajes para TODOS los contactos
@@ -1209,16 +1418,21 @@ Nuevo resumen actualizado:`;
       }
     }
 
-    // Silencio nocturno: 9PM–6AM Bogotá + domingos completos
-    // EXCEPTO: owner y family contacts responden siempre
+    // Schedule dinámico: respeta horarios configurados por el owner en su dashboard
+    // EXCEPTO: owner, family y admin responden siempre (24/7)
     if (!isOwnerNumber && !isFamilyContact && !isAdmin) {
-      const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
-      const h = bogotaNow.getHours();
-      const day = bogotaNow.getDay(); // 0=domingo
-      if (h >= 21 || h < 6 || day === 0) {
+      const scheduleConfig = await getScheduleConfig(OWNER_UID);
+      if (!isWithinSchedule(scheduleConfig)) {
         const basePhone = phone.split('@')[0];
         nightPendingLeads.add(phone);
-        console.log(`[WA] Silencio para ${basePhone} (${h}h Bogotá, día=${day}). Pendiente registrado.`);
+        const tz = scheduleConfig?.timezone || 'America/Bogota';
+        const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+        console.log(`[WA] Fuera de horario para ${basePhone} (${localNow.getHours()}h ${tz}, día=${localNow.getDay()}). Pendiente registrado.`);
+        // Respuesta automática fuera de horario si está configurada
+        if (scheduleConfig?.autoReplyOffHours && scheduleConfig?.offHoursMessage) {
+          await safeSendMessage(phone, scheduleConfig.offHoursMessage);
+          console.log(`[WA] Auto-reply fuera de horario enviado a ${basePhone}`);
+        }
         return;
       }
     }
@@ -1520,6 +1734,35 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '').trim();
     }
     aiMessage = aiMessage.replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '').trim();
+
+    // Detectar tag [AGENDAR_EVENTO:contacto|fecha|razón|hint]
+    const agendarMatch = aiMessage.match(/\[AGENDAR_EVENTO:([^\]]+)\]/g);
+    if (agendarMatch) {
+      for (const tag of agendarMatch) {
+        const inner = tag.replace('[AGENDAR_EVENTO:', '').replace(']', '');
+        const parts = inner.split('|').map(p => p.trim());
+        if (parts.length >= 3) {
+          const [contacto, fecha, razon, hint] = parts;
+          try {
+            await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
+              contactPhone: contacto,
+              contactName: leadNames[`${contacto}@s.whatsapp.net`] || contacto,
+              scheduledFor: fecha,
+              reason: razon,
+              promptHint: hint || '',
+              status: 'pending',
+              searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
+              createdAt: new Date().toISOString(),
+              source: 'auto_detected'
+            });
+            console.log(`[AGENDA] 📅 Evento agendado: ${contacto} el ${fecha} — ${razon}`);
+          } catch (e) {
+            console.error(`[AGENDA] ❌ Error agendando:`, e.message);
+          }
+        }
+      }
+      aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').trim();
+    }
 
     // Detectar tag de intención de compra
     if (aiMessage.includes('[LEAD_QUIERE_COMPRAR]')) {
@@ -2754,7 +2997,18 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   // El usuario puede reconectar sin perder credenciales guardadas
 
   // geminiApiKey is optional now - users can test WhatsApp without it
-  const apiKeyToUse = geminiApiKey || '';
+  let apiKeyToUse = geminiApiKey || '';
+  // Caso excepcional: usuario con useOwnerApiKey hereda la key del admin
+  if (!apiKeyToUse) {
+    try {
+      const uDoc = await admin.firestore().collection('users').doc(uid).get();
+      if (uDoc.exists && uDoc.data()?.useOwnerApiKey && OWNER_UID) {
+        const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+        apiKeyToUse = ownerDoc.data()?.gemini_api_key || '';
+        if (apiKeyToUse) console.log(`[INIT] 🔑 ${uid.substring(0,12)}... usando API key del owner (useOwnerApiKey=true)`);
+      }
+    } catch (e) {}
+  }
 
   // TODOS los usuarios van por el mismo flujo: tenant_manager
   // Si es el OWNER, conectar handleIncomingMessage y cerebro_absoluto
@@ -4804,7 +5058,16 @@ server.listen(PORT, () => {
 
             const userData = userDoc.data();
             const savedNumber = userData.whatsapp_number || null;
-            const gKey = userData.gemini_api_key || process.env.GEMINI_API_KEY || '';
+            let gKey = userData.gemini_api_key || '';
+            // Caso excepcional: usuario con useOwnerApiKey usa la key del admin
+            if (!gKey && userData.useOwnerApiKey && OWNER_UID) {
+              try {
+                const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+                gKey = ownerDoc.data()?.gemini_api_key || '';
+                if (gKey) console.log(`[AUTO-INIT] 🔑 ${uid.substring(0,12)}... usando API key del owner`);
+              } catch (e) {}
+            }
+            gKey = gKey || process.env.GEMINI_API_KEY || '';
             const isOwner = (uid === OWNER_UID);
 
             console.log(`[AUTO-INIT] 🔄 Reconectando ${isOwner ? 'OWNER' : 'tenant'} ${uid.substring(0, 12)}... (WA: ${savedNumber || 'sin registro'})`);
