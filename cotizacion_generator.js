@@ -97,6 +97,23 @@ const PRECIOS = {
       factura: { S:  50, M: 100, L: 200, XL:  500 },
       firma:   { S:  50, M: 100, L: 200, XL:  500 }
     }
+  },
+
+  EUR: {
+    planes: { S: 70, M: 100, L: 120 },
+    adic1: { S: 10, M: 16, L: 20 },
+    adic2: { S: 10, M: 16, L: 20 },
+    adic3: { S: 10, M: 16, L: 20 },
+    bolsas: {
+      WA:      { S: 15, M:  33, L:  72, XL: 170 },
+      factura: { S: 10, M:  17, L:  35, XL:  60 },
+      firma:   { S: 25, M:  40, L:  70, XL: 170 }
+    },
+    rangos: {
+      WA:      { S: 150, M: 350, L: 800, XL: 2000 },
+      factura: { S:  50, M: 100, L: 200, XL:  500 },
+      firma:   { S:  50, M: 100, L: 200, XL:  500 }
+    }
   }
 };
 
@@ -108,6 +125,9 @@ const PRECIOS = {
 function fmt(value, moneda) {
   try {
     const n = Number(value);
+    if (moneda === 'EUR') {
+      return '€ ' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    }
     const sepMiles = (moneda === 'USD' || moneda === 'MXN') ? ',' : '.';
     if (moneda === 'MXN' && n % 1 !== 0) {
       const int = Math.floor(n);
@@ -213,10 +233,13 @@ function calcularCotizacion(params) {
 
   const nAdic = Math.max(0, usuarios - 1);
   const pct   = descuento / 100;
-  // Fórmula por usuario (no por citas)
-  const enviosWA       = Math.ceil(usuarios * 1.33);
-  const enviosFactura  = usuarios;
-  const enviosFirma    = usuarios;
+  // Fórmula: 1 usuario = 50 citas/mes
+  // WA: 1.33x → ceil(usuarios × 50 × 1.33)
+  // Factura y Firma: 1x → usuarios × 50
+  const CITAS_POR_USUARIO = 50;
+  const enviosWA       = Math.ceil(usuarios * CITAS_POR_USUARIO * 1.33);
+  const enviosFactura  = usuarios * CITAS_POR_USUARIO;
+  const enviosFirma    = usuarios * CITAS_POR_USUARIO;
 
   const planes  = {};
   const bolsas  = {};
@@ -326,6 +349,19 @@ function getLogoBase64() {
 // HTML TEMPLATE
 // ─────────────────────────────────────────────────────────────────────
 
+// Normativas legales por país para el PDF
+const NORMATIVAS = {
+  COLOMBIA:            'Res. 1995/1999 (HC), Res. 2654/2019 (Telemedicina), Ley 23/1981 (ética médica), Ley 1581/2012 (habeas data)',
+  CHILE:               'Ley 20.584 (derechos del paciente), Ley 19.628 (protección datos), DS 41/2012 (HC digitales), Ley 20.285 (transparencia)',
+  MEXICO:              'NOM-024-SSA3-2012 (HC electrónicas), NOM-035-SSA3-2012 (Telemedicina), Ley Federal de Protección de Datos Personales',
+  ARGENTINA:           'Ley 26.529 (derechos del paciente/HC), Ley 25.326 (protección datos), Res. 1-E/2017 (HC digital)',
+  REPUBLICA_DOMINICANA:'Ley 42-01 (Salud), Ley 172-13 (protección datos), Res. DGH-00014/2021 (HC electrónicas)',
+  INTERNACIONAL:       'Normativa local vigente en privacidad de datos clínicos y Telemedicina'
+};
+
+// Símbolo de moneda para mostrar en el PDF
+const SIMBOLO_MONEDA = { CLP: 'CLP $', COP: 'COP $', MXN: 'MXN $', USD: 'USD $', EUR: 'EUR €' };
+
 function buildHTML(params) {
   const {
     nombre          = 'Lead',
@@ -338,6 +374,9 @@ function buildHTML(params) {
     incluirFactura   = true,
     incluirRecetaAR  = false,
     modalidad        = 'mensual',
+    ownerName        = 'Asesor Medilink',
+    ownerEmail       = '',
+    ownerPhone       = '',
     fecha           = new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
   } = params;
 
@@ -619,7 +658,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 </div>
 
 <div class="meta">
-  <div class="mi"><div class="ml">País</div><div class="mv">${pais}</div></div>
+  <div class="mi"><div class="ml">País / Moneda</div><div class="mv">${pais.replace('_',' ')} · ${SIMBOLO_MONEDA[moneda] || moneda}</div></div>
   <div class="mi"><div class="ml">Usuarios</div><div class="mv">${usuariosStr}</div></div>
   <div class="mi"><div class="ml">Dirigido a</div><div class="mv">${nombre}</div></div>
   <div class="mi"><div class="ml">Vigencia</div><div class="mv">${vigencia}</div></div>
@@ -708,7 +747,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
     <li><span class="ckn">&#10003;</span> Historias Clínicas 100% personalizables por especialidad.</li>
     <li><span class="ckn">&#10003;</span> Agenda Online + link de auto-agendamiento para pacientes.</li>
     <li><span class="ckn">&#10003;</span> ${usuariosStr} médico${usuarios > 1 ? 's' : ''} + usuarios administrativos ilimitados, sin costo adicional.</li>
-    <li><span class="ckn">&#10003;</span> Normativa local: privacidad de fichas clínicas + Telemedicina legal.</li>
+    <li><span class="ckn">&#10003;</span> Normativa: ${NORMATIVAS[pais] || NORMATIVAS['INTERNACIONAL']}</li>
     <li><span class="ckn">&#10003;</span> Contact Center IA: 2 meses gratis (requiere WhatsApp Business con tarjeta META).</li>
     <li><span class="ckn">&#10003;</span> Telemedicina: videoconsultas ilimitadas sin costo adicional.</li>
     <li><span class="ckn">&#10003;</span> Certificado de validez legal firmado por Ingeniero en Sistemas.</li>
@@ -733,8 +772,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 
 <div class="ftr">
   <div class="ftr-logo">${logo ? `<img src="${logo}" alt="Medilink">` : '<span class="logo-txt">medilink</span>'}</div>
-  <div class="ftr-cnt"><strong>Asesor: MARIANO</strong><br>mariano.destefano@healthatom.com &nbsp;|&nbsp; WhatsApp: +56 9 2855 2569</div>
-  <div class="ftr-note">Documento confidencial. Valores sujetos a Tasa de Cambio del día de facturación. Cotización válida hasta: ${vigencia.split('—')[0].trim()}.</div>
+  <div class="ftr-cnt"><strong>Asesor: ${ownerName}</strong>${ownerEmail ? `<br>${ownerEmail}` : ''}${ownerPhone ? ` &nbsp;|&nbsp; WhatsApp: ${ownerPhone}` : ''}</div>
+  <div class="ftr-note">Documento confidencial. Cotización válida hasta: ${vigencia.split('—')[0].trim()}.</div>
 </div>
 
 
@@ -752,7 +791,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
   </div>
   <div class="ftr" style="margin-top:0">
     <div class="ftr-logo">${logo ? `<img src="${logo}" alt="Medilink">` : '<span class="logo-txt">medilink</span>'}</div>
-    <div class="ftr-cnt"><strong>Asesor: MARIANO</strong><br>mariano.destefano@healthatom.com &nbsp;|&nbsp; WhatsApp: +56 9 2855 2569</div>
+    <div class="ftr-cnt"><strong>Asesor: ${ownerName}</strong>${ownerEmail ? `<br>${ownerEmail}` : ''}${ownerPhone ? ` &nbsp;|&nbsp; WhatsApp: ${ownerPhone}` : ''}</div>
     <div class="ftr-note">Medilink se reserva el derecho de actualizar su catálogo de funcionalidades.</div>
   </div>
 </div>
@@ -808,26 +847,26 @@ async function generarPDF(params) {
 // ─────────────────────────────────────────────────────────────────────
 
 async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
-  const buffer       = await generarPDF(params);
-  const nombreLimpio = (params.nombre || 'Lead').replace(/[^a-zA-Z0-9]/g, '_');
+  // Nombre del lead: usar nombre si existe, si no el número de teléfono limpio
+  const phoneBase    = phone.replace(/[@\w.]+$/, '').replace('@', '') || phone;
+  const nombreMostrar = (params.nombre && params.nombre !== 'Cliente' && params.nombre !== 'Lead')
+    ? params.nombre
+    : phoneBase;
+  // Para el nombre del archivo siempre limpio
+  const nombreLimpio = nombreMostrar.replace(/[^a-zA-Z0-9]/g, '_');
 
-  const primerNombre = (params.nombre || 'Doctor').split(' ')[0];
   const promo        = getPromoVigencia();
-  const usuarios     = params.usuarios || 1;
   const modalidad    = params.modalidad || 'mensual';
   const descPct      = modalidad === 'anual' ? 20 : 30;
 
+  // Caption dinámico — Gemini genera el texto antes del tag y lo enviamos por separado
+  // Aquí solo va el caption del documento (más corto y directo)
   const caption =
-`Perfecto, ${primerNombre}. Aquí va la cotización Medilink personalizada.
+`Aquí va tu cotización Medilink personalizada.
 
-Para tu operación con ${usuarios} profesional${usuarios !== 1 ? 'es' : ''}, el plan *Esencial* es el punto de partida ideal, con posibilidad de escalar cuando lo necesites.
+Promoción activa: *${descPct}% de descuento ${modalidad}* hasta el ${promo.vigencia} (${promo.cupos} cupos disponibles).
 
-Con la promoción activa del *${descPct}% de descuento ${modalidad}* vigente hasta el ${promo.vigencia} (${promo.cupos} cupos), este es el mejor momento para arrancar.
-
-Si querés ver la plataforma en acción, agendá directamente aquí:
-https://meetings.hubspot.com/marianodestefano/demomedilink
-
-Quedo atento.`;
+Para agendar una demo: https://meetings.hubspot.com/marianodestefano/demomedilink`;
 
   console.log(`[COTIZ] Enviando PDF a ${phone}, isSelfChat=${isSelfChat}, buffer=${buffer.length} bytes`);
 

@@ -1291,7 +1291,7 @@ Nuevo resumen actualizado:`;
       else if (countryCode === '56') countryContext = '🌍 El lead es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD.';
       else if (countryCode === '54') countryContext = '🌍 El lead es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el lead es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD.';
       else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD.';
-      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
+      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
       else countryContext = '🌍 El lead es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
     }
 
@@ -1482,8 +1482,8 @@ REGLAS ABSOLUTAS en este chat:
 | Campo | Valor |
 |-------|-------|
 | nombre | Del cliente si se mencionó, sino "Cliente" |
-| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +1809/1829/1849=REPUBLICA_DOMINICANA, +54=ARGENTINA, otros=INTERNACIONAL |
-| moneda | Según país (COP, CLP, MXN, USD) |
+| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +1809/1829/1849=REPUBLICA_DOMINICANA, +54=ARGENTINA, +34=ESPAÑA, otros=INTERNACIONAL |
+| moneda | Según país (COP, CLP, MXN, EUR para España, USD para el resto) |
 | usuarios | El número que mencionó el cliente |
 | citasMes | 70 (default) |
 | incluirWA | true |
@@ -1505,7 +1505,7 @@ REGLAS ABSOLUTAS en este chat:
 - +52 México → MEXICO / MXN (IVA 16% se calcula automáticamente)
 - +1809/+1829/+1849 Rep. Dominicana → REPUBLICA_DOMINICANA / USD, incluirFactura=true
 - +54 Argentina → ARGENTINA / USD, incluirFactura=false, incluirRecetaAR=true
-- +34 España → INTERNACIONAL / USD, incluirFactura=false
+- +34 España → ESPAÑA / EUR, incluirFactura=false
 - Otros → INTERNACIONAL / USD, incluirFactura=false
 
 **EJEMPLO REAL:**
@@ -1626,8 +1626,8 @@ WA S:$15 M:$35 L:$70 XL:$170 | Factura S:$10 M:$17 L:$35 XL:$60 | Firma S:$25 M:
 | Campo | Valor |
 |-------|-------|
 | nombre | Del lead si se mencionó, sino "Cliente" |
-| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +1809/1829/1849=REPUBLICA_DOMINICANA, +54=ARGENTINA, otros=INTERNACIONAL |
-| moneda | Según país (COP, CLP, MXN, USD) |
+| pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +1809/1829/1849=REPUBLICA_DOMINICANA, +54=ARGENTINA, +34=ESPAÑA, otros=INTERNACIONAL |
+| moneda | Según país (COP, CLP, MXN, EUR para España, USD para el resto) |
 | usuarios | El número que mencionó el cliente |
 | citasMes | 70 (default) |
 | incluirWA | true |
@@ -1649,7 +1649,7 @@ WA S:$15 M:$35 L:$70 XL:$170 | Factura S:$10 M:$17 L:$35 XL:$60 | Firma S:$25 M:
 - +52 México → MEXICO / MXN (IVA 16% se calcula automáticamente)
 - +1809/+1829/+1849 Rep. Dominicana → REPUBLICA_DOMINICANA / USD, incluirFactura=true
 - +54 Argentina → ARGENTINA / USD, incluirFactura=false, incluirRecetaAR=true
-- +34 España → INTERNACIONAL / USD, incluirFactura=false
+- +34 España → ESPAÑA / EUR, incluirFactura=false
 - Otros → INTERNACIONAL / USD, incluirFactura=false
 
 **EJEMPLO REAL:**
@@ -1865,26 +1865,34 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           const jsonStr = aiMessage.substring(jsonStart, jsonEnd);
           console.log(`[COTIZ] JSON detectado: ${jsonStr.substring(0, 300)}`);
           const cotizData = JSON.parse(jsonStr);
-          console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios, citasMes: cotizData.citasMes });
-          // isSelfChat ya existe en scope (línea 1170) — viene de isAlreadySavedParam (fromMe=true)
-          // NO recalcular con ownerSock.user.id porque ese da el TELÉFONO (573054169969)
-          // y phone tiene el DEVICE ID (136417472712832) — nunca van a matchear
+          console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios });
+          // Inyectar datos del owner desde Firestore para el footer del PDF
+          try {
+            if (OWNER_UID) {
+              const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+              if (ownerDoc.exists) {
+                const od = ownerDoc.data();
+                cotizData.ownerName  = od.name  || od.displayName || 'Asesor Medilink';
+                cotizData.ownerEmail = od.email || '';
+                cotizData.ownerPhone = od.whatsapp || od.phone || '';
+              }
+            }
+          } catch(oe) { console.warn('[COTIZ] No se pudo leer owner para footer PDF:', oe.message); }
+          // Nombre del lead: si no tiene nombre, usar el teléfono base
+          if (!cotizData.nombre || cotizData.nombre === 'Cliente' || cotizData.nombre === 'Lead') {
+            cotizData.nombre = basePhone || cotizData.nombre;
+          }
           console.log(`[COTIZ] isSelfChat=${isSelfChat}, phone=${phone}`);
-          // Esperar resultado del PDF antes de continuar
           await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChat);
           pdfOk = true;
           console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
         } catch (e) {
           console.error('[COTIZ] Error PDF:', e.message);
         }
-        // Conservar texto breve antes/después del tag para enviarlo como mensaje acompañante
-        const textoBefore = aiMessage.substring(0, cotizTagIdx).trim();
-        const textoAfter  = aiMessage.substring(jsonEnd + 1).replace(/\]/, '').trim();
-        let textoExtra  = (textoBefore || textoAfter)
-          ? (textoBefore + (textoAfter ? ' ' + textoAfter : '')).trim().substring(0, 300)
-          : '';
+        // Eliminar texto de Gemini antes/después del tag — el caption del PDF ya contiene el mensaje
+        // Solo conservar si el PDF falló para dar mensaje de error honesto
+        let textoExtra = '';
         if (!pdfOk) {
-          // PDF falló — no decir "te envío PDF", dar mensaje honesto
           textoExtra = 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
         }
         if (pdfOk) {
