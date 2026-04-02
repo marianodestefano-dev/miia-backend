@@ -2134,9 +2134,10 @@ async function handleIncomingMessage(message) {
       }
       saveDB();
 
-      // Si ya hay una respuesta programada, el mensaje quedó guardado — no programar otra
+      // Si ya hay una respuesta programada, marcar para re-procesar al terminar
       if (isProcessing[effectiveTarget]) {
-        console.log(`[WA] Mensaje acumulado para ${effectiveTarget} (respuesta ya programada).`);
+        pendingResponses[effectiveTarget] = true;
+        console.log(`[WA] Mensaje acumulado para ${effectiveTarget} (respuesta ya programada, pendingResponse marcado).`);
         return;
       }
     } else {
