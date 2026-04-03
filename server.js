@@ -169,7 +169,11 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.json());
+app.use((req, res, next) => {
+  // Paddle webhook necesita req.body como Buffer crudo para verificar firma
+  if (req.path === '/api/paddle/webhook') return next();
+  express.json()(req, res, next);
+});
 
 // ============================================
 // CONFIGURACIÓN
@@ -801,7 +805,7 @@ function isPotentialBot(text) {
   return botKeywords.some(kw => lowerText.includes(kw));
 }
 
-function isWithinSchedule() {
+function isWithinAutoResponseSchedule() {
   if (!automationSettings.autoResponse) return false;
   const ownerTz = getTimezoneForCountry(getCountryFromPhone(OWNER_PHONE));
   const localDateString = new Date().toLocaleString('en-US', { timeZone: ownerTz });
@@ -2785,7 +2789,7 @@ async function handleIncomingMessage(message) {
     }
 
     // BLINDAJE: No responder fuera del horario configurado (leads solamente, familia/self-chat siempre pasan)
-    if (!isSelfChatMIIA && !isFamily && !isEquipo && !isWithinSchedule()) {
+    if (!isSelfChatMIIA && !isFamily && !isEquipo && !isWithinAutoResponseSchedule()) {
       console.log(`[WA] Fuera de horario para ${effectiveTarget}. Mensaje guardado, respuesta diferida.`);
       return;
     }
@@ -4479,7 +4483,7 @@ app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, r
 const promptRegistry = require('./prompt_registry');
 
 // Listar módulos
-app.get('/api/prompt-registry/modules', authenticateUser, async (req, res) => {
+app.get('/api/prompt-registry/modules', verifyAdminToken, async (req, res) => {
   try {
     const modules = await promptRegistry.listModules();
     res.json(modules);
@@ -4487,7 +4491,7 @@ app.get('/api/prompt-registry/modules', authenticateUser, async (req, res) => {
 });
 
 // Obtener un módulo
-app.get('/api/prompt-registry/modules/:id', authenticateUser, async (req, res) => {
+app.get('/api/prompt-registry/modules/:id', verifyAdminToken, async (req, res) => {
   try {
     const mod = await promptRegistry.getModule(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Module not found' });
@@ -4496,7 +4500,7 @@ app.get('/api/prompt-registry/modules/:id', authenticateUser, async (req, res) =
 });
 
 // Guardar/actualizar módulo
-app.post('/api/prompt-registry/modules/:id', authenticateUser, express.json(), async (req, res) => {
+app.post('/api/prompt-registry/modules/:id', verifyAdminToken, express.json(), async (req, res) => {
   try {
     const { content, description } = req.body;
     if (!content) return res.status(400).json({ error: 'content required' });
@@ -4508,7 +4512,7 @@ app.post('/api/prompt-registry/modules/:id', authenticateUser, express.json(), a
 });
 
 // Listar checkpoints
-app.get('/api/prompt-registry/checkpoints', authenticateUser, async (req, res) => {
+app.get('/api/prompt-registry/checkpoints', verifyAdminToken, async (req, res) => {
   try {
     const checkpoints = await promptRegistry.listCheckpoints();
     res.json(checkpoints);
@@ -4516,7 +4520,7 @@ app.get('/api/prompt-registry/checkpoints', authenticateUser, async (req, res) =
 });
 
 // Crear checkpoint
-app.post('/api/prompt-registry/checkpoints', authenticateUser, express.json(), async (req, res) => {
+app.post('/api/prompt-registry/checkpoints', verifyAdminToken, express.json(), async (req, res) => {
   try {
     const { name, note } = req.body;
     if (!name) return res.status(400).json({ error: 'name required' });
@@ -4526,7 +4530,7 @@ app.post('/api/prompt-registry/checkpoints', authenticateUser, express.json(), a
 });
 
 // Rollback a un checkpoint
-app.post('/api/prompt-registry/rollback', authenticateUser, express.json(), async (req, res) => {
+app.post('/api/prompt-registry/rollback', verifyAdminToken, express.json(), async (req, res) => {
   try {
     const { checkpointName } = req.body;
     if (!checkpointName) return res.status(400).json({ error: 'checkpointName required' });
@@ -4536,7 +4540,7 @@ app.post('/api/prompt-registry/rollback', authenticateUser, express.json(), asyn
 });
 
 // Diff actual vs checkpoint
-app.get('/api/prompt-registry/diff/:checkpointName', authenticateUser, async (req, res) => {
+app.get('/api/prompt-registry/diff/:checkpointName', verifyAdminToken, async (req, res) => {
   try {
     const diff = await promptRegistry.diffFromCheckpoint(req.params.checkpointName);
     res.json(diff);
@@ -4544,7 +4548,7 @@ app.get('/api/prompt-registry/diff/:checkpointName', authenticateUser, async (re
 });
 
 // Seed desde prompt_builder (run once)
-app.post('/api/prompt-registry/seed', authenticateUser, async (req, res) => {
+app.post('/api/prompt-registry/seed', verifyAdminToken, async (req, res) => {
   try {
     const promptBuilder = require('./prompt_builder');
     const result = await promptRegistry.seedFromPromptBuilder(promptBuilder);
