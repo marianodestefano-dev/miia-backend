@@ -160,6 +160,7 @@ async function loadTeamContacts(ownerUid) {
     console.error(`[TMH:${ownerUid}] ❌ Error cargando team contacts:`, e.message);
     return {};
   }
+}
 
 /**
  * Carga negocios del owner.
@@ -347,7 +348,6 @@ Responde SOLO con el nombre exacto del negocio que mejor corresponda, o "NINGUNO
 
   await saveContactIndex(ownerUid, basePhone, { type: 'pending', name: '' });
   return { type: 'lead', businessId: defaultBizId, businessName: businesses[0]?.name || 'Mi Negocio' };
-}
 }
 
 /**
