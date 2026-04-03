@@ -283,8 +283,8 @@ function calcularCotizacion(params) {
     bolsas[bKey].precio = bolsas[bKey].precio * multiplicador;
   }
 
-  const PRECIO_RECETA_AR = 3; // USD fijo por mes
-  const recetaTotal = incluirRecetaAR ? (PRECIO_RECETA_AR * multiplicador) : 0;
+  const PRECIO_RECETA_AR = 3; // USD por usuario/mes
+  const recetaTotal = incluirRecetaAR ? (PRECIO_RECETA_AR * usuarios * multiplicador) : 0;
   const bolsasTotal = Object.values(bolsas).reduce((s, b) => s + b.precio, 0) + recetaTotal;
   for (const lbl of ['esencial','pro','titanium']) {
     const ivaPromo    = planes[lbl].ivaPromo    || 0;
@@ -494,10 +494,10 @@ function buildHTML(params) {
     bolsasRows += `
       <tr class="row-odd">
         <td class="td-desc">RECETA DIGITAL AR
-          <span class="td-sub">Módulo exclusivo Argentina — prescripción médica digital</span></td>
-        <td class="td-price">${fmt(3, 'USD')}</td>
-        <td class="td-price">${fmt(3, 'USD')}</td>
-        <td class="td-price">${fmt(3, 'USD')}</td>
+          <span class="td-sub">Módulo exclusivo Argentina — prescripción médica digital (${fmt(3, 'USD')}/usuario × ${usuarios})</span></td>
+        <td class="td-price">${fmt(recetaAR, moneda)}</td>
+        <td class="td-price">${fmt(recetaAR, moneda)}</td>
+        <td class="td-price">${fmt(recetaAR, moneda)}</td>
       </tr>`;
   }
 

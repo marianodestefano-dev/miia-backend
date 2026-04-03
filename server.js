@@ -4474,6 +4474,84 @@ app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, r
   }
 });
 
+// ── Prompt Registry — Módulos versionados + checkpoints ─────────────────────
+
+const promptRegistry = require('./prompt_registry');
+
+// Listar módulos
+app.get('/api/prompt-registry/modules', authenticateUser, async (req, res) => {
+  try {
+    const modules = await promptRegistry.listModules();
+    res.json(modules);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Obtener un módulo
+app.get('/api/prompt-registry/modules/:id', authenticateUser, async (req, res) => {
+  try {
+    const mod = await promptRegistry.getModule(req.params.id);
+    if (!mod) return res.status(404).json({ error: 'Module not found' });
+    res.json(mod);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Guardar/actualizar módulo
+app.post('/api/prompt-registry/modules/:id', authenticateUser, express.json(), async (req, res) => {
+  try {
+    const { content, description } = req.body;
+    if (!content) return res.status(400).json({ error: 'content required' });
+    const result = await promptRegistry.saveModule(req.params.id, content, {
+      description, updatedBy: req.user?.uid || 'api'
+    });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Listar checkpoints
+app.get('/api/prompt-registry/checkpoints', authenticateUser, async (req, res) => {
+  try {
+    const checkpoints = await promptRegistry.listCheckpoints();
+    res.json(checkpoints);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Crear checkpoint
+app.post('/api/prompt-registry/checkpoints', authenticateUser, express.json(), async (req, res) => {
+  try {
+    const { name, note } = req.body;
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const result = await promptRegistry.createCheckpoint(name, note);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Rollback a un checkpoint
+app.post('/api/prompt-registry/rollback', authenticateUser, express.json(), async (req, res) => {
+  try {
+    const { checkpointName } = req.body;
+    if (!checkpointName) return res.status(400).json({ error: 'checkpointName required' });
+    const result = await promptRegistry.rollback(checkpointName);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Diff actual vs checkpoint
+app.get('/api/prompt-registry/diff/:checkpointName', authenticateUser, async (req, res) => {
+  try {
+    const diff = await promptRegistry.diffFromCheckpoint(req.params.checkpointName);
+    res.json(diff);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Seed desde prompt_builder (run once)
+app.post('/api/prompt-registry/seed', authenticateUser, async (req, res) => {
+  try {
+    const promptBuilder = require('./prompt_builder');
+    const result = await promptRegistry.seedFromPromptBuilder(promptBuilder);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Export/Import Backup MIIA ────────────────────────────────────────────────
 
 const BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'miia-backup-default-key-2026';

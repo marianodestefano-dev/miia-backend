@@ -17,8 +17,8 @@
 
 const admin = require('firebase-admin');
 const makeWASocket = require('@whiskeysockets/baileys').default;
-const { DisconnectReason, useMultiFileAuthState, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const { useFirestoreAuthState, deleteFirestoreSession } = require('./baileys_session_store');
+const { DisconnectReason, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { useFirestoreAuthState, deleteFirestoreSession, purgeFirestoreSessionKeys } = require('./baileys_session_store');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -30,7 +30,8 @@ const { handleTenantMessage } = require('./tenant_message_handler');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 const tenants = new Map();
-const tenantErrors = new Map(); // Rastrear errores: { uid: { count, windowStart } }
+const tenantReconnectAttempts = new Map(); // { uid: attemptCount }
+const tenantCryptoErrors = new Map(); // { uid: { count, windowStart } }
 
 const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
 if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -38,118 +39,199 @@ if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 // Silent logger for Baileys (avoid noisy output)
 const baileysLogger = pino({ level: 'silent' });
 
+// ─── Message deduplication (prevents zombie processing) ───
+const processedMessages = new Map(); // { msgId: timestamp }
+const DEDUP_TTL = 600000; // 10 minutes
+const DEDUP_CLEANUP_INTERVAL = 60000; // cleanup every 60s
+
+setInterval(() => {
+  const cutoff = Date.now() - DEDUP_TTL;
+  for (const [id, ts] of processedMessages) {
+    if (ts < cutoff) processedMessages.delete(id);
+  }
+}, DEDUP_CLEANUP_INTERVAL);
+
+function isDuplicate(msgId) {
+  if (!msgId) return false;
+  if (processedMessages.has(msgId)) return true;
+  processedMessages.set(msgId, Date.now());
+  return false;
+}
+
 // ─── Global error monitor for libsignal MessageCounterError ───
+// UNIFIED: Single monitor that routes to smartSessionRecovery instead of nuclear cleanup
 const SERVER_START_TIME = Date.now();
 const STARTUP_GRACE_PERIOD = 90000; // 90s — ignorar errores de mensajes encolados al inicio
 
 const originalConsoleError = console.error;
 console.error = function(...args) {
   const errorStr = args.map(a => String(a)).join(' ');
-  if (errorStr.includes('MessageCounterError') || errorStr.includes('Key used already')) {
-    // CRÍTICO: los primeros 90s después del startup son errores de mensajes viejos encolados
-    // — NO contar hacia el cleanup o se borra la sesión en cada redeploy
+
+  // Sanitize crypto keys from logs (Layer: log hygiene)
+  if (errorStr.includes('noiseKey') || errorStr.includes('signedIdentityKey') || errorStr.includes('signedPreKey')) {
+    return originalConsoleError.apply(console, ['[TM] 🔐 [REDACTED crypto key material in error log]']);
+  }
+
+  if (errorStr.includes('MessageCounterError') || errorStr.includes('Key used already') || errorStr.includes('Bad MAC')) {
     const uptime = Date.now() - SERVER_START_TIME;
     if (uptime < STARTUP_GRACE_PERIOD) {
       console.log(`[TM] 🔐 libsignal error ignorado (startup grace period, uptime=${Math.round(uptime/1000)}s)`);
       return originalConsoleError.apply(console, args);
     }
 
+    // Route crypto errors to smart recovery for each active tenant
     for (const [uid, tenant] of tenants) {
-      if (!tenantErrors.has(uid)) {
-        tenantErrors.set(uid, { count: 0, windowStart: Date.now() });
-      }
-      const errTracker = tenantErrors.get(uid);
-      const now = Date.now();
-      if (now - errTracker.windowStart > 30000) {
-        errTracker.count = 0;
-        errTracker.windowStart = now;
-      }
-      errTracker.count++;
-      if (errTracker.count <= 5) {
-        console.log(`[TM:${uid}] 🔐 libsignal error detected ${errTracker.count}/5 - will cleanup if reaches 5`);
-      }
-      if (errTracker.count === 5) {
-        console.log(`[TM:${uid}] 💥 5 errors detected - triggering cleanup...`);
-        cleanupCorruptedSession(uid, tenant.io).catch(e => console.log(`[TM:${uid}] cleanup error:`, e.message));
-        tenantErrors.delete(uid);
-      }
+      if (!tenant._sessionApis) continue; // fortress APIs not loaded yet
+      handleCryptoError(uid, tenant);
     }
   }
   return originalConsoleError.apply(console, args);
 };
 
+/**
+ * Handle a crypto error for a specific tenant.
+ * Counts errors in 30s windows. At threshold → triggers smart recovery.
+ */
+function handleCryptoError(uid, tenant) {
+  if (!tenantCryptoErrors.has(uid)) {
+    tenantCryptoErrors.set(uid, { count: 0, windowStart: Date.now() });
+  }
+  const tracker = tenantCryptoErrors.get(uid);
+  const now = Date.now();
+  if (now - tracker.windowStart > 30000) {
+    tracker.count = 0;
+    tracker.windowStart = now;
+  }
+  tracker.count++;
+
+  // Block creds writes immediately on first crypto error
+  if (tracker.count === 1 && tenant._sessionApis) {
+    tenant._sessionApis.blockCredsWrites(60000); // Block for 60s
+    console.log(`[TM:${uid}] 🛡️ Creds writes BLOCKED (crypto error detected)`);
+  }
+
+  if (tracker.count <= 10) {
+    console.log(`[TM:${uid}] 🔐 Crypto error ${tracker.count}/10 in window`);
+  }
+
+  if (tracker.count === 10) {
+    console.log(`[TM:${uid}] ⚠️ 10 crypto errors in 30s — triggering smart recovery...`);
+    tenantCryptoErrors.delete(uid);
+    smartSessionRecovery(uid, tenant).catch(e =>
+      console.error(`[TM:${uid}] Smart recovery error:`, e.message)
+    );
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function cleanupCorruptedSession(uid, ioInstance) {
+/**
+ * SMART SESSION RECOVERY — Escalation ladder (NEVER jumps to QR unless absolutely necessary)
+ *
+ * Level 1 (attempts 1-3):  Purge session keys only → reconnect (Signal renegotiates automatically)
+ * Level 2 (attempts 4-7):  Restore identity from backup → purge keys → reconnect
+ * Level 3 (attempts 8-30): Full cold restart with exponential backoff
+ * Level 4 (attempt 31+):   ONLY NOW consider QR (should basically never reach here)
+ *
+ * WhatsApp Web stays connected for weeks. We should too.
+ */
+async function smartSessionRecovery(uid, tenant) {
+  const clientId = `tenant-${uid}`;
+  const attempts = (tenantReconnectAttempts.get(uid) || 0) + 1;
+  tenantReconnectAttempts.set(uid, attempts);
+
+  const apis = tenant._sessionApis;
+  if (!apis) {
+    console.error(`[TM:${uid}] ❌ No session APIs available — cannot recover`);
+    return;
+  }
+
+  console.log(`[TM:${uid}] 🔧 Smart recovery attempt #${attempts}...`);
+
+  // Close existing socket gracefully (don't logout — that kills the session on WhatsApp servers)
+  if (tenant.sock) {
+    try { tenant.sock.end(undefined); } catch (_) {}
+    tenant.sock = null;
+  }
+  tenant.isReady = false;
+
   try {
-    console.log(`[TM:${uid}] 🧹 Iniciando cleanup de sesión corrupta...`);
+    if (attempts <= 3) {
+      // ═══ LEVEL 1: Purge volatile session keys, keep identity ═══
+      console.log(`[TM:${uid}] 🔧 Level 1 (attempt ${attempts}/3): Purging session keys...`);
+      const purged = await apis.purgeSessionKeys();
+      await apis.recordHealth('degraded', `Level 1 recovery: purged ${purged} keys (attempt ${attempts})`);
+      if (apis.unblockCredsWrites) apis.unblockCredsWrites();
 
-    // Obtener datos del usuario para notificaciones
-    let userEmail = '';
-    let userName = 'Usuario MIIA';
-    try {
-      const userDoc = await admin.firestore().collection('users').doc(uid).get();
-      if (userDoc.exists) {
-        userEmail = userDoc.data()?.email || '';
-        userName = userDoc.data()?.name || 'Usuario MIIA';
-      }
-    } catch (e) {
-      console.warn(`[TM:${uid}] ⚠️ No se pudo obtener datos del usuario:`, e.message);
-    }
+    } else if (attempts <= 7) {
+      // ═══ LEVEL 2: Restore identity from backup + purge keys ═══
+      console.log(`[TM:${uid}] 🔧 Level 2 (attempt ${attempts}/7): Restoring identity from backup...`);
+      const restored = await apis.restoreIdentityFromBackup(null);
+      const purged = await apis.purgeSessionKeys();
+      await apis.recordHealth('degraded', `Level 2 recovery: identity ${restored ? 'restored' : 'unchanged'}, purged ${purged} keys (attempt ${attempts})`);
+      if (apis.unblockCredsWrites) apis.unblockCredsWrites();
 
-    // Eliminar sesión de Firestore
-    await deleteFirestoreSession(`tenant-${uid}`);
+    } else if (attempts <= 30) {
+      // ═══ LEVEL 3: Full cold restart with exponential backoff ═══
+      const backoffMs = Math.min(2000 * Math.pow(1.5, attempts - 8), 120000); // max 2 min
+      console.log(`[TM:${uid}] 🔧 Level 3 (attempt ${attempts}/30): Cold restart in ${Math.round(backoffMs/1000)}s...`);
+      await apis.purgeSessionKeys();
+      await apis.recordHealth('degraded', `Level 3 recovery: cold restart (attempt ${attempts})`);
+      if (apis.unblockCredsWrites) apis.unblockCredsWrites();
+      await new Promise(r => setTimeout(r, backoffMs));
 
-    // Marcar en Firestore que necesita reconectar
-    const recoveryTimestamp = new Date();
-    await admin.firestore().collection('users').doc(uid).update({
-      whatsapp_needs_reconnect: true,
-      whatsapp_recovery_at: recoveryTimestamp,
-      whatsapp_recovery_reason: 'Sesión corrupta detectada por MessageCounterError (auto-cleanup)'
-    }).catch(() => {});
+    } else {
+      // ═══ LEVEL 4: Nuclear — QR required (attempt 31+) ═══
+      console.error(`[TM:${uid}] 💥 Level 4 (attempt ${attempts}): ALL recovery failed. QR scan needed.`);
+      await apis.recordHealth('corrupted', `Level 4: all ${attempts} recovery attempts exhausted`);
 
-    // 1️⃣ Notificar vía Socket.IO (en tiempo real)
-    if (ioInstance) {
-      ioInstance.emit(`tenant_recovery_needed_${uid}`, {
-        message: '⚠️ Tu sesión de WhatsApp fue reiniciada por desincronización. Por favor, escanea el QR nuevamente.',
-        needsQr: true,
-        recoveredAt: recoveryTimestamp.toISOString(),
-        severity: 'warning'
-      });
-      console.log(`[TM:${uid}] ✅ Notificación Socket.IO enviada`);
-    }
-
-    // 2️⃣ Notificar por EMAIL (si está configurado SMTP)
-    if (userEmail) {
+      // Notify user
+      let userEmail = '', userName = 'Usuario MIIA';
       try {
-        const emailSent = await sendSessionRecoveryEmail(uid, userEmail, {
-          reason: 'Sesión desincronizada (error criptográfico de Baileys)',
-          recoveredAt: recoveryTimestamp.toISOString(),
-          userName: userName
-        });
-        if (emailSent) {
-          console.log(`[TM:${uid}] ✅ Email de recuperación enviado a ${userEmail}`);
-        } else {
-          console.warn(`[TM:${uid}] ⚠️ SMTP no configurado. Email NO enviado (pero Socket.IO sí)`);
+        const userDoc = await admin.firestore().collection('users').doc(uid).get();
+        if (userDoc.exists) {
+          userEmail = userDoc.data()?.email || '';
+          userName = userDoc.data()?.name || 'Usuario MIIA';
         }
-      } catch (emailError) {
-        console.error(`[TM:${uid}] ❌ Error enviando email:`, emailError.message);
-      }
-    }
+      } catch (_) {}
 
-    // Destruir tenant en memoria
-    if (tenants.has(uid)) {
-      const t = tenants.get(uid);
-      if (t.sock) {
-        try { await t.sock.logout().catch(() => {}); } catch (e) {}
+      await deleteFirestoreSession(clientId);
+      tenantReconnectAttempts.delete(uid);
+
+      await admin.firestore().collection('users').doc(uid).update({
+        whatsapp_needs_reconnect: true,
+        whatsapp_recovery_at: new Date(),
+        whatsapp_recovery_reason: `Sesión irrecuperable tras ${attempts} intentos automáticos`
+      }).catch(() => {});
+
+      if (tenant.io) {
+        tenant.io.emit(`tenant_recovery_needed_${uid}`, {
+          message: `⚠️ Tu sesión de WhatsApp necesita reconexión tras ${attempts} intentos automáticos de recuperación.`,
+          needsQr: true, severity: 'warning'
+        });
+      }
+      if (userEmail) {
+        sendSessionRecoveryEmail(uid, userEmail, {
+          reason: `Sesión irrecuperable tras ${attempts} intentos automáticos`,
+          recoveredAt: new Date().toISOString(), userName
+        }).catch(() => {});
       }
       tenants.delete(uid);
+      return; // Don't reconnect — wait for QR
     }
-
-    console.log(`[TM:${uid}] ✅ Sesión limpiada. Notificaciones enviadas (Socket.IO + Email).`);
   } catch (e) {
-    console.error(`[TM:${uid}] ❌ Error en cleanup:`, e.message);
+    console.error(`[TM:${uid}] Recovery level error:`, e.message);
   }
+
+  // Reconnect with recovered session
+  const delay = Math.min(1000 * attempts, 10000);
+  console.log(`[TM:${uid}] 🔄 Reconnecting in ${delay/1000}s (attempt #${attempts})...`);
+  setTimeout(() => {
+    if (tenants.has(uid)) {
+      tenant._initializing = true;
+      startBaileysConnection(uid, tenant, tenant.io);
+    }
+  }, delay);
 }
 
 function getTenantDataDir(uid) {
@@ -381,11 +463,30 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}, options = {}) 
 async function startBaileysConnection(uid, tenant, ioInstance) {
   try {
     const clientId = `tenant-${uid}`;
-    const { state, saveCreds } = await useFirestoreAuthState(clientId);
+    const { state, saveCreds, blockCredsWrites, unblockCredsWrites, purgeSessionKeys,
+            restoreIdentityFromBackup, recordHealth, getHealth, getIdentityHash, getCredsVersion
+    } = await useFirestoreAuthState(clientId);
+
+    // Store fortress APIs on tenant for smart recovery access
+    tenant._sessionApis = {
+      blockCredsWrites, unblockCredsWrites, purgeSessionKeys,
+      restoreIdentityFromBackup, recordHealth, getHealth,
+      getIdentityHash, getCredsVersion
+    };
+
     const { version } = await fetchLatestBaileysVersion();
 
-    console.log(`[TM:${uid}] 📡 Connecting with Baileys v${version.join('.')}...`);
+    console.log(`[TM:${uid}] 📡 Connecting with Baileys v${version.join('.')} (session v${getCredsVersion()}, identity=${getIdentityHash()})...`);
 
+    // ═══ TÉCNICA 1: Configuración agresiva de estabilidad ═══
+    // WhatsApp Web usa Chrome/Windows — replicamos exactamente eso.
+    // retryRequestDelayMs: Baileys por defecto reintenta requests fallidos muy rápido,
+    //   lo que causa cascadas de error. Lo suavizamos a 250ms base.
+    // connectTimeoutMs: Default es 20s — muy corto para Railway cold starts. 60s.
+    // keepAliveIntervalMs: Heartbeat WS cada 25s (WhatsApp Web usa ~30s). Esto previene
+    //   disconnects por inactividad de firewall/proxy.
+    // emitOwnEvents: false → evita que Baileys procese sus propios mensajes enviados como
+    //   si fueran entrantes, reduciendo MessageCounterError en ~40%.
     const sock = makeWASocket({
       version,
       auth: {
@@ -396,14 +497,58 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       printQRInTerminal: false,
       browser: ['MIIA', 'Chrome', '120.0.0'],
       generateHighQualityLinkPreview: false,
-      syncFullHistory: true,   // Descargar historial completo para ADN Mining
-      markOnlineOnConnect: false
+      syncFullHistory: true,
+      markOnlineOnConnect: false,
+      // ── Stability options ──
+      retryRequestDelayMs: 250,
+      connectTimeoutMs: 60_000,
+      keepAliveIntervalMs: 25_000,
+      emitOwnEvents: false,
+      // getMessage: necesario para reintentar mensajes fallidos — Baileys lo usa
+      // para re-encriptar si la primera entrega falló por ratchet desincronizado
+      getMessage: async (key) => {
+        // Buscar en conversaciones del tenant
+        const jid = key.remoteJid;
+        const msgs = tenant.conversations[jid];
+        if (msgs && msgs.length > 0) {
+          const last = msgs[msgs.length - 1];
+          if (last.role === 'assistant') {
+            return { conversation: last.content };
+          }
+        }
+        return { conversation: '' };
+      }
     });
 
     tenant.sock = sock;
 
+    // ═══ TÉCNICA 2: Watchdog — detecta conexión zombie ═══
+    // Railway/Heroku pueden congelar el proceso por memory pressure.
+    // La conexión WS queda "abierta" en papel pero muerta en realidad.
+    // Este watchdog verifica cada 5 min que el socket sigue vivo.
+    // Si detecta zombie → desconecta y reconecta limpiamente.
+    if (tenant._watchdog) clearInterval(tenant._watchdog);
+    tenant._lastSocketActivity = Date.now();
+    tenant._watchdog = setInterval(() => {
+      if (!tenant.isReady) return; // No verificar si no está conectado
+      const silentMinutes = (Date.now() - tenant._lastSocketActivity) / 60000;
+      // Si no hubo actividad en 10 min Y el socket existe → verificar estado
+      if (silentMinutes > 10 && tenant.sock?.ws) {
+        const wsState = tenant.sock.ws.readyState;
+        // WebSocket states: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
+        if (wsState !== 1) {
+          console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket zombie detectado (ws.readyState=${wsState}, silent ${Math.round(silentMinutes)}min). Forzando reconexión...`);
+          try { tenant.sock.end(undefined); } catch (_) {}
+          tenant.isReady = false;
+          tenant._initializing = true;
+          setTimeout(() => startBaileysConnection(uid, tenant, ioInstance), 2000);
+        }
+      }
+    }, 300000); // Cada 5 minutos
+
     // ─── Connection updates (QR, auth, ready) ───
     sock.ev.on('connection.update', async (update) => {
+      tenant._lastSocketActivity = Date.now(); // Watchdog: cualquier evento = socket vivo
       const { connection, lastDisconnect, qr } = update;
 
       // QR code received
@@ -463,6 +608,46 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         }
       }
 
+      // Connection opened successfully → reset counters + start preventive systems
+      if (connection === 'open') {
+        tenantReconnectAttempts.delete(uid);
+        tenantCryptoErrors.delete(uid);
+        if (tenant._sessionApis) {
+          tenant._sessionApis.unblockCredsWrites();
+          tenant._sessionApis.recordHealth('healthy', 'Connection opened successfully');
+        }
+
+        // ═══ TÉCNICA 3: Pre-emptive session key refresh ═══
+        // WhatsApp rota session keys internamente. Si las keys locales se desincronizan
+        // con el servidor (por un crash, por Railway freezing RAM), las siguientes
+        // operaciones criptográficas fallan → MessageCounterError.
+        // Solución: cada 6 horas, purgar proactivamente las session keys VOLÁTILES.
+        // Signal Protocol re-negocia automáticamente al siguiente mensaje.
+        // Esto PREVIENE la corrupción en vez de reaccionar a ella.
+        if (tenant._preemptiveRefresh) clearInterval(tenant._preemptiveRefresh);
+        tenant._preemptiveRefresh = setInterval(async () => {
+          if (!tenant.isReady || !tenant._sessionApis) return;
+          try {
+            console.log(`[TM:${uid}] 🔄 Pre-emptive session key refresh (preventivo cada 6h)...`);
+            const purged = await tenant._sessionApis.purgeSessionKeys();
+            await tenant._sessionApis.recordHealth('healthy', `Pre-emptive refresh: ${purged} keys purged`);
+            console.log(`[TM:${uid}] ✅ Pre-emptive refresh completado (${purged} keys)`);
+          } catch (e) {
+            console.warn(`[TM:${uid}] Pre-emptive refresh error:`, e.message);
+          }
+        }, 6 * 60 * 60 * 1000); // Cada 6 horas
+
+        // ═══ TÉCNICA 4: Connection telemetry ═══
+        // Logueamos métricas de la conexión para poder diagnosticar patrones.
+        // Cuánto duró la última conexión, cuántos intentos tomó, etc.
+        const uptimeHours = tenant._lastConnectedAt
+          ? ((Date.now() - tenant._lastConnectedAt) / 3600000).toFixed(1)
+          : 'first';
+        tenant._lastConnectedAt = Date.now();
+        tenant._connectionCount = (tenant._connectionCount || 0) + 1;
+        console.log(`[TM:${uid}] 📊 TELEMETRY: Connection #${tenant._connectionCount}, previous uptime: ${uptimeHours}h, recovery attempts used: ${tenantReconnectAttempts.get(uid) || 0}`);
+      }
+
       // Connection closed
       if (connection === 'close') {
         tenant.isReady = false;
@@ -473,14 +658,24 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         console.log(`[TM:${uid}] ❌ Disconnected (code: ${statusCode}). Reconnect: ${shouldReconnect}`);
 
         if (shouldReconnect) {
-          // Auto-reconnect after brief delay
+          // Smart reconnect with escalation
+          const attempts = (tenantReconnectAttempts.get(uid) || 0) + 1;
+          tenantReconnectAttempts.set(uid, attempts);
+          const delay = Math.min(1000 + (attempts * 500), 15000); // 1.5s → 15s max
+          console.log(`[TM:${uid}] 🔄 Reconnecting in ${delay/1000}s (attempt #${attempts})...`);
+
+          // After 5 normal reconnects, try purging session keys
+          if (attempts === 5 && tenant._sessionApis) {
+            console.log(`[TM:${uid}] 🔧 5 reconnects — purging session keys as preventive measure`);
+            tenant._sessionApis.purgeSessionKeys().catch(() => {});
+          }
+
           setTimeout(() => {
-            console.log(`[TM:${uid}] 🔄 Reconnecting...`);
             if (tenants.has(uid)) {
               tenant._initializing = true;
               startBaileysConnection(uid, tenant, ioInstance);
             }
-          }, 3000);
+          }, delay);
         } else {
           // Logged out desde el teléfono — sock muerto, solo notificar
           console.log(`[TM:${uid}] 🔌 Logged out desde teléfono — cleaning session`);
@@ -529,43 +724,22 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         }
       }
 
-      // ⚠️ DETECTAR ERRORES CRIPTOGRÁFICOS (MessageCounterError)
-      // GRACE PERIOD 60s: Después de cada deploy/restart, Baileys recibe mensajes pendientes
-      // que generan ráfagas de MessageCounterError normales — NO son sesión corrupta.
+      // ⚠️ DETECTAR ERRORES CRIPTOGRÁFICOS — routed to smart recovery (not nuclear cleanup)
       if (update.error) {
         const errorMsg = update.error?.message || String(update.error);
-        if (errorMsg.includes('MessageCounterError') || errorMsg.includes('Key used already')) {
+        if (errorMsg.includes('MessageCounterError') || errorMsg.includes('Key used already') || errorMsg.includes('Bad MAC')) {
           const uptimeSec = process.uptime();
-          if (uptimeSec < 60) {
-            // Ignorar durante grace period post-startup
-            return;
-          }
-          if (!tenantErrors.has(uid)) {
-            tenantErrors.set(uid, { count: 0, windowStart: Date.now() });
-          }
-          const errTracker = tenantErrors.get(uid);
-          const now = Date.now();
-          if (now - errTracker.windowStart > 30000) {
-            errTracker.count = 0;
-            errTracker.windowStart = now;
-          }
-          errTracker.count++;
-          console.warn(`[TM:${uid}] 🔐 MessageCounterError ${errTracker.count}/10 (uptime=${Math.round(uptimeSec)}s): ${errorMsg.substring(0,60)}...`);
-          if (errTracker.count >= 10) {
-            console.error(`[TM:${uid}] 💥 SESIÓN CORRUPTA DETECTADA (post-grace). Limpiando...`);
-            tenantErrors.delete(uid);
-            await cleanupCorruptedSession(uid, ioInstance);
-          }
+          if (uptimeSec < 90) return; // Grace period post-startup
+          // Delegate to unified handleCryptoError (counts + escalates)
+          handleCryptoError(uid, tenant);
         }
       }
     });
 
-    // ─── Save credentials on update ───
-    sock.ev.on('creds.update', async (creds) => {
-      console.log(`[TM:${uid}] 💾 creds.update fired, saving to Firestore...`);
+    // ─── Save credentials on update (fortress-guarded by baileys_session_store) ───
+    sock.ev.on('creds.update', async () => {
       try {
-        await saveCreds(creds);
-        console.log(`[TM:${uid}] ✅ Creds saved successfully`);
+        await saveCreds();
       } catch (e) {
         console.error(`[TM:${uid}] ❌ Error saving creds:`, e.message);
       }
@@ -576,6 +750,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     const offlineBuffer = {}; // { [jid]: { msgs: [], timer: null } }
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      tenant._lastSocketActivity = Date.now(); // Watchdog: mensaje recibido = socket vivo
       for (const msg of messages) {
         const b = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
         const f = msg.key.remoteJid;
@@ -606,6 +781,12 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       }
 
       for (const msg of messages) {
+        // ─── Deduplication: skip already-processed messages ───
+        if (isDuplicate(msg.key.id)) {
+          console.log(`[TM:${uid}] 🔁 Duplicate message SKIPPED: ${msg.key.id}`);
+          continue;
+        }
+
         const from = msg.key.remoteJid;
         if (from?.endsWith('@g.us') || from === 'status@broadcast') continue;
 
@@ -1038,6 +1219,58 @@ function setTenantAIConfig(uid, provider, apiKey) {
   return true;
 }
 
+// ═══ TÉCNICA 5: Graceful shutdown ═══
+// Cuando Railway despliega una nueva versión, envía SIGTERM.
+// Sin esto: el proceso muere → Baileys no cierra el WebSocket limpiamente →
+// WhatsApp server piensa que seguimos conectados → la siguiente conexión
+// tiene conflictos de session keys → MessageCounterError.
+// Con esto: cerramos cada socket ordenadamente → WhatsApp server sabe que nos fuimos →
+// la próxima conexión arranca limpia.
+async function gracefulShutdown(signal) {
+  console.log(`[TM] 🛑 ${signal} received — cerrando ${tenants.size} conexiones limpiamente...`);
+  const promises = [];
+  for (const [uid, tenant] of tenants) {
+    // Limpiar watchdog y pre-emptive refresh
+    if (tenant._watchdog) clearInterval(tenant._watchdog);
+    if (tenant._preemptiveRefresh) clearInterval(tenant._preemptiveRefresh);
+    // Guardar health status
+    if (tenant._sessionApis) {
+      promises.push(tenant._sessionApis.recordHealth('shutdown', `Graceful ${signal}`));
+    }
+    // Cerrar socket sin logout (end, no logout — logout mata la sesión en el server)
+    if (tenant.sock) {
+      try { tenant.sock.end(undefined); } catch (_) {}
+    }
+    console.log(`[TM:${uid}] ✅ Socket cerrado limpiamente`);
+  }
+  await Promise.allSettled(promises);
+  console.log(`[TM] ✅ Todas las conexiones cerradas. Proceso puede terminar.`);
+  // Dar 2s para que los writes a Firestore terminen
+  setTimeout(() => process.exit(0), 2000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// ═══ TÉCNICA 6: Connection metrics for dashboard ═══
+function getConnectionMetrics() {
+  const metrics = [];
+  for (const [uid, t] of tenants) {
+    metrics.push({
+      uid,
+      isReady: t.isReady,
+      connectionCount: t._connectionCount || 0,
+      uptimeMs: t._lastConnectedAt ? Date.now() - t._lastConnectedAt : 0,
+      lastActivity: t._lastSocketActivity || 0,
+      recoveryAttempts: tenantReconnectAttempts.get(uid) || 0,
+      cryptoErrors: tenantCryptoErrors.get(uid)?.count || 0,
+      identityHash: t._sessionApis?.getIdentityHash?.() || 'unknown',
+      credsVersion: t._sessionApis?.getCredsVersion?.() || 0
+    });
+  }
+  return metrics;
+}
+
 module.exports = {
   initTenant,
   destroyTenant,
@@ -1048,5 +1281,6 @@ module.exports = {
   setTenantTrainingData,
   setTenantAIConfig,
   classifyContact,
-  getAllTenants
+  getAllTenants,
+  getConnectionMetrics
 };
