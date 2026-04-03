@@ -1198,7 +1198,7 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
             if (fPhone === OWNER_PHONE) continue;
             const targetSerialized = fPhone.includes('@') ? fPhone : `${fPhone}@s.whatsapp.net`;
             try {
-              const promptFamilia = `Sos MIIA, asistente de Mariano. Le vas a escribir un mensaje a ${fInfo.name} (${fInfo.relation} de Mariano). Su personalidad: ${fInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle esto: "${familyMsg}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. Usá el emoji de esta persona: ${fInfo.emoji || ''}.`;
+              const promptFamilia = `Sos MIIA. Escribile a ${fInfo.name} (${fInfo.relation} de Mariano). Personalidad: ${fInfo.personality || 'Amistosa'}. Tema: "${familyMsg}". PROHIBIDO decir "soy asistente de Mariano" o "Mariano me pidió". Hablás como MIIA con tu propia voz. Máx 3 renglones, natural y cálido. Emoji: ${fInfo.emoji || ''}.`;
               const msg = await generateAIContent(promptFamilia);
               if (msg) {
                 await safeSendMessage(targetSerialized, msg.trim() + MIIA_CIERRE);
@@ -1244,7 +1244,17 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
           const [familyPhone, familyInfo] = foundFamily;
           const targetSerialized = familyPhone.includes('@') ? familyPhone : `${familyPhone}@s.whatsapp.net`;
           try {
-            const promptFamiliar = `Sos MIIA, asistente de Mariano. Le vas a escribir un mensaje a ${familyInfo.name} (${familyInfo.relation} de Mariano). Su personalidad y tu relación con él/ella: ${familyInfo.personality || 'Amistosa y natural'}. Mariano quiere transmitirle: "${realMessage || 'un saludo'}". Generá un mensaje corto (máx 4 renglones), natural, cálido y humano, en primera persona como MIIA. NO menciones que Mariano te lo pidió. NO repitas sus palabras literalmente. Usá el emoji: ${familyInfo.emoji || ''}. ${!familyInfo.isHandshakeDone ? 'Es el primer contacto — presentate brevemente.' : ''}`;
+            const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de Mariano).
+Personalidad de ${familyInfo.name}: ${familyInfo.personality || 'Amistosa y natural'}.
+Tema a transmitir: "${realMessage || 'un saludo'}".
+
+REGLAS ABSOLUTAS:
+- PROHIBIDO decir "soy la asistente de Mariano", "Mariano me pidió", "de parte de Mariano" o similar
+- Hablás como MIIA con tu propia personalidad, como si el mensaje naciera de vos
+- Máximo 3 renglones, natural, cálido, humano
+- NO repitas las palabras del tema literalmente, reinterpretalo con tu estilo
+- Emoji: ${familyInfo.emoji || ''}
+${!familyInfo.isHandshakeDone ? '- Es el PRIMER contacto: presentate brevemente como MIIA (sin decir "asistente de nadie")' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
             if (miiaMsg) {
               const cleanMsg = miiaMsg.trim();
@@ -1255,15 +1265,8 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
               let finalMsg = cleanMsg;
               if (isFirstContact) {
                 // Primer mensaje: generar handshake creativo
-                const promptHandshake = `Sos MIIA, asistente de Mariano. Acabas de escribir un mensaje inicial a ${familyInfo.name} (${familyInfo.relation} de Mariano).
-Ahora necesitás generar el handshake — la instrucción creativa y natural para que ${familyInfo.name} sepa cómo activar la conversación contigo.
-Tu tono: ${familyInfo.personality || 'Amistosa y natural'}.
-
-Generá un handshake CREATIVO (máx 2 renglones) que le diga a ${familyInfo.name}:
-- Que responda HOLA MIIA (mayúsculas) para continuar hablando contigo
-- De forma natural, acorde a su personalidad, NO como una instrucción rígida
-- Ejemplo tono (NO literal): "Dale, cuando quieras seguir hablando conmigo, escribí HOLA MIIA y acá estaré"
-- Usá el emoji: ${familyInfo.emoji || '💕'}`;
+                const promptHandshake = `Generá UNA sola línea corta y natural diciéndole a ${familyInfo.name} que si quiere seguir charlando, escriba HOLA MIIA.
+Tono: ${familyInfo.personality || 'Amistosa'}. Máximo 1 renglón. No seas robótica ni formal. ${familyInfo.emoji || '💕'}`;
 
                 try {
                   const handshakeMsg = await generateAIContent(promptHandshake);
@@ -1277,13 +1280,7 @@ Generá un handshake CREATIVO (máx 2 renglones) que le diga a ${familyInfo.name
               } else {
                 // Mensajes posteriores: recordar ocasionalmente de forma creativa (20%)
                 if (Math.random() < 0.2) {
-                  const promptRecordatorio = `Sos MIIA, asistente de Mariano. Estás hablando con ${familyInfo.name} (${familyInfo.relation}).
-Generá un recordatorio NATURAL Y BREVE (1 renglón máx) sobre cómo terminar la conversación:
-- Si quiere seguir: nada que hacer (sigue escribiendo)
-- Si quiere terminar: escriba CHAU MIIA (con dos ii)
-- Recuérdalo de forma creativa y acorde a su personalidad, NO como instrucción rígida
-Tono: ${familyInfo.personality || 'Amistosa'}.
-Emoji: ${familyInfo.emoji || ''}`;
+                  const promptRecordatorio = `Una línea corta y natural recordándole a ${familyInfo.name} que si quiere cortar la charla escriba CHAU MIIA. Tono: ${familyInfo.personality || 'Amistosa'}. ${familyInfo.emoji || ''}`;
 
                   try {
                     const recordatorioMsg = await generateAIContent(promptRecordatorio);
