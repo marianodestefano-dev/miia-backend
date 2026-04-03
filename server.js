@@ -16,6 +16,13 @@ process.on('unhandledRejection', (err) => {
   console.error('[UNHANDLED REJECTION]', err);
 });
 
+// Graceful shutdown: flush affinity a Firestore antes de cerrar
+process.on('SIGTERM', async () => {
+  console.log('[SHUTDOWN] SIGTERM recibido — guardando affinity en Firestore...');
+  try { await saveAffinityToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error:', e.message); }
+  process.exit(0);
+});
+
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
@@ -597,7 +604,8 @@ const ensureConversation = (p) => { if (!conversations[p]) conversations[p] = []
 // SISTEMA DE STAGES — Escalamiento progresivo de afinidad con MIIA
 // Solo cuentan mensajes del CONTACTO (+1). MIIA no suma.
 // Decay: -1/día sin respuesta, pero nunca baja del piso del stage alcanzado.
-// ══════════════════════════════════════���════════════════════════════════════
+// Persistencia: Firestore users/{OWNER_UID}/affinity_data/all (se carga al startup, se guarda debounced)
+// ══════════════════════════════════════════════════════════════════════════
 const AFFINITY_STAGES = [
   { stage: 0, name: 'Desconocido',  min: 0,
     toneGrupo: 'Formal, respetuosa. Presentate como MIIA, asistente de {owner}. NO uses datos personales — no conocés a esta persona todavía.',
@@ -645,7 +653,12 @@ function addAffinityPoint(phone) {
   if (stage.stage > (meta.highestStage || 0)) {
     meta.highestStage = stage.stage;
     console.log(`[AFFINITY] 🎉 ${phone} subió a STAGE ${stage.stage}: ${stage.name} (${meta.affinity} pts)`);
+    // Stage change → guardar inmediato a Firestore
+    saveAffinityToFirestore();
+    return;
   }
+  // +1 normal → guardar debounced (cada 30s)
+  scheduleAffinitySave();
 }
 
 function getAffinityToneForPrompt(phone, ownerName, isLead = false) {
@@ -672,6 +685,76 @@ function isChauMiia(msg) {
   return /^(chau|chao|adiós|adios|bye)\s+(miia|mia|ia|mi{1,3}a)$/i.test(m);
 }
 
+// ── PERSISTENCIA AFFINITY EN FIRESTORE ──────────────────────────────────
+// Guarda solo los campos de affinity de conversationMetadata (no todo el objeto)
+let _affinitySavePending = false;
+let _affinitySaveTimer = null;
+
+function scheduleAffinitySave() {
+  _affinitySavePending = true;
+  if (_affinitySaveTimer) return; // ya hay un timer pendiente
+  _affinitySaveTimer = setTimeout(() => {
+    _affinitySaveTimer = null;
+    _affinitySavePending = false;
+    saveAffinityToFirestore();
+  }, 30000); // debounce 30s
+}
+
+async function saveAffinityToFirestore() {
+  if (!OWNER_UID) return;
+  try {
+    const affinityData = {};
+    for (const [phone, meta] of Object.entries(conversationMetadata)) {
+      if (meta.affinity || meta.highestStage || meta.lastContactMessageDate) {
+        affinityData[phone.replace(/\./g, '_')] = {
+          affinity: meta.affinity || 0,
+          highestStage: meta.highestStage || 0,
+          lastContactMessageDate: meta.lastContactMessageDate || null
+        };
+      }
+    }
+    await admin.firestore().collection('users').doc(OWNER_UID)
+      .collection('affinity_data').doc('all').set(affinityData, { merge: true });
+    console.log(`[AFFINITY-FS] ✅ Guardado en Firestore (${Object.keys(affinityData).length} contactos)`);
+  } catch (e) {
+    console.error(`[AFFINITY-FS] ❌ Error guardando:`, e.message);
+  }
+}
+
+async function loadAffinityFromFirestore() {
+  if (!OWNER_UID) return;
+  try {
+    const doc = await admin.firestore().collection('users').doc(OWNER_UID)
+      .collection('affinity_data').doc('all').get();
+    if (!doc.exists) {
+      console.log('[AFFINITY-FS] No hay datos de affinity en Firestore (primera vez)');
+      return;
+    }
+    const data = doc.data();
+    let loaded = 0;
+    for (const [key, val] of Object.entries(data)) {
+      const phone = key.replace(/_/g, '.'); // revertir escape de puntos
+      if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+      // Solo sobreescribir affinity si Firestore tiene más puntos (no pisar datos frescos de RAM)
+      const ramAffinity = conversationMetadata[phone].affinity || 0;
+      const fsAffinity = val.affinity || 0;
+      if (fsAffinity >= ramAffinity) {
+        conversationMetadata[phone].affinity = fsAffinity;
+        conversationMetadata[phone].highestStage = Math.max(
+          conversationMetadata[phone].highestStage || 0,
+          val.highestStage || 0
+        );
+        conversationMetadata[phone].lastContactMessageDate =
+          val.lastContactMessageDate || conversationMetadata[phone].lastContactMessageDate;
+        loaded++;
+      }
+    }
+    console.log(`[AFFINITY-FS] ✅ Cargados ${loaded} contactos desde Firestore`);
+  } catch (e) {
+    console.error(`[AFFINITY-FS] ❌ Error cargando:`, e.message);
+  }
+}
+
 // Cron de decay: ejecutar una vez al día (se llama desde el cron existente)
 function processAffinityDecay() {
   const today = new Date().toISOString().split('T')[0];
@@ -692,8 +775,9 @@ function processAffinityDecay() {
     }
   }
   if (decayed > 0) {
-    console.log(`[AFFINITY-DECAY] 📉 ${decayed} contacto(s) perdieron 1 trustPoint por inactividad`);
+    console.log(`[AFFINITY-DECAY] 📉 ${decayed} contacto(s) perdieron 1 punto por inactividad`);
     saveDB();
+    saveAffinityToFirestore(); // Persistir decay en Firestore
   }
 }
 
@@ -1468,6 +1552,7 @@ ${stage.stage >= 1 ? '- PROHIBIDO decir "soy asistente de Mariano" — ya se con
           conversationMetadata[targetPhone].affinity = newAffinity;
           conversationMetadata[targetPhone].highestStage = newStage;
           console.log(`[AFFINITY] 🔄 RESET ${targetName} → Stage ${newStage} (${newAffinity} pts) por comando admin`);
+          saveAffinityToFirestore(); // Persistir reset en Firestore
           await safeSendMessage(phone, `🔄 Affinity de *${targetName}* reseteado a Stage ${newStage} (${newAffinity} pts).`);
         } else {
           await safeSendMessage(phone, `❌ No encontré a "${target}" en mis contactos.`);
@@ -1834,6 +1919,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         conversationMetadata[phone].highestStage = 0;
       }
       console.log(`[AFFINITY] 📛 HARTAZGO confirmado: ${hartazgoName} (${phone}) → affinity=0, silencio`);
+      saveAffinityToFirestore(); // Persistir hartazgo en Firestore
       // Notificar al owner en self-chat
       const ownerJid = getOwnerSock()?.user?.id;
       if (ownerJid) {
@@ -5448,6 +5534,9 @@ server.listen(PORT, () => {
         } else {
           console.log(`[AUTO-INIT] OWNER_UID desde env: ${OWNER_UID}`);
         }
+
+        // 1.5. Cargar affinity desde Firestore (ANTES de conectar WhatsApp)
+        await loadAffinityFromFirestore();
 
         // 2. Buscar usuarios que tengan whatsapp_number guardado (indica que conectaron antes)
         // FIX: NO usar .get() en baileys_sessions porque el doc padre no existe (solo subcollecciones)
