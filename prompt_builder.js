@@ -571,6 +571,35 @@ Si dicen "CHAU MIIA" → despedite con cariño y tu estilo propio.`;
 }
 
 
+/**
+ * Prompt para GRUPOS DINÁMICOS del owner.
+ * Los grupos tienen tono configurable, autoRespond y proactiveEnabled.
+ *
+ * @param {object} groupConfig - { name, icon, tone, autoRespond, proactiveEnabled }
+ * @param {string} contactName - Nombre del contacto
+ * @param {object} [ownerProfile] - Perfil del owner
+ * @returns {string} System prompt
+ */
+function buildGroupPrompt(groupConfig, contactName, ownerProfile) {
+  const p = resolveProfile(ownerProfile);
+  const g = groupConfig || {};
+
+  return `Eres MIIA, asistente personal de ${p.fullName || p.name}.
+Estás hablando con ${contactName || 'un contacto'}, que pertenece al grupo "${g.name || 'General'}".
+
+TONO CONFIGURADO POR EL USUARIO PARA ESTE GRUPO:
+${g.tone || 'Sé amable y natural.'}
+
+REGLAS:
+- Habla como si fueras ${p.shortName}, no como un bot.
+- Sé breve y natural, como en WhatsApp.
+- NO ofrezcas productos ni servicios a este contacto.
+- Si te preguntan algo que no sabes, dilo honestamente.
+- Si dicen "CHAU MIIA" → despedite con cariño y tu estilo propio.
+- NUNCA reveles que eres una IA. Si preguntan, respondé con humor humano.`;
+}
+
+
 // ─── Tenant mode: SaaS client prompt (sin cambios) ────────────────
 
 function buildTenantPrompt(contactName, trainingData, conversationHistory) {
@@ -665,6 +694,8 @@ function buildPrompt(opts) {
       return buildOwnerLeadPrompt(opts.contactName, opts.trainingData, opts.countryContext, opts.ownerProfile);
     case 'owner_equipo':
       return buildEquipoPrompt(opts.contactName, opts.ownerProfile);
+    case 'owner_group':
+      return buildGroupPrompt(opts.groupConfig, opts.contactName, opts.ownerProfile);
     case 'tenant':
       return buildTenantPrompt(opts.contactName, opts.trainingData, opts.conversationHistory);
     case 'test':
@@ -699,5 +730,6 @@ module.exports = {
   buildOwnerLeadPrompt,
   buildEquipoPrompt,
   buildTenantPrompt,
-  buildTestPrompt
+  buildTestPrompt,
+  buildGroupPrompt
 };

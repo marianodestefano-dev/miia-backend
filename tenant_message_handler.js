@@ -38,7 +38,7 @@ const {
 
 const {
   buildOwnerSelfChatPrompt, buildOwnerFamilyPrompt,
-  buildOwnerLeadPrompt, buildEquipoPrompt,
+  buildOwnerLeadPrompt, buildEquipoPrompt, buildGroupPrompt,
   buildADN, buildVademecum, resolveProfile, DEFAULT_OWNER_PROFILE
 } = require('./prompt_builder');
 
@@ -484,6 +484,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
       businessCerebro,
       personalBrain,
       subscriptionState: {},
+      miiaActive: {},  // phone → boolean — "Hola MIIA" activa, "Chau MIIA" desactiva
       scheduleConfig,
       businesses,
       contactGroups,
@@ -610,6 +611,44 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     ctx.contactTypes[phone] = contactType;
   }
 
+  // ── PASO 7b: Trigger "Hola MIIA" / "Chau MIIA" para grupos ──
+  const msgNorm = normalizeText(messageBody);
+  const isHolaMiia = msgNorm.includes('hola miia');
+  const isChauMiia = msgNorm.includes('chau miia');
+
+  if (isHolaMiia) {
+    ctx.miiaActive[phone] = true;
+    console.log(`${logPrefix} 🟢 MIIA activada para ${basePhone} (trigger "Hola MIIA")`);
+  }
+
+  if (isChauMiia) {
+    ctx.miiaActive[phone] = false;
+    console.log(`${logPrefix} 🔴 MIIA desactivada para ${basePhone} (trigger "Chau MIIA")`);
+    // Enviar despedida cálida y salir
+    const farewell = `¡Fue un gusto charlar! Cuando quieras hablar de nuevo, escribime *Hola MIIA* 😊`;
+    ctx.conversations[phone].push({ role: 'assistant', content: farewell, timestamp: Date.now() });
+    await sendTenantMessage(tenantState, phone, farewell);
+    return;
+  }
+
+  // Gate: Si es grupo con autoRespond=false y MIIA no está activa → silencio
+  if (contactType === 'group' && classification?.groupData && !classification.groupData.autoRespond) {
+    if (!ctx.miiaActive[phone]) {
+      console.log(`${logPrefix} 🤫 Grupo "${classification.groupData.name}" sin autoRespond y MIIA no activa para ${basePhone}. Silencio.`);
+      return;
+    }
+  }
+
+  // Gate: familia y equipo también requieren trigger (decisión #3 del plan)
+  if ((contactType === 'familia' || contactType === 'equipo') && !isSelfChat) {
+    if (!ctx.miiaActive[phone] && !isHolaMiia) {
+      // Primera vez: no está activa y no dijo "Hola MIIA" → silencio
+      console.log(`${logPrefix} 🤫 ${contactType} ${basePhone} sin trigger "Hola MIIA". Silencio.`);
+      return;
+    }
+    // Si es la primera interacción ("Hola MIIA"), ya se activó arriba
+  }
+
   // ── PASO 8: Detectar negatividad (solo leads, no familia/equipo/self-chat) ──
   if (contactType === 'lead' && !isSelfChat) {
     const sentiment = detectNegativeSentiment(messageBody);
@@ -643,21 +682,14 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   if (isSelfChat) {
     activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
+    // Inyectar lista de negocios si tiene más de 1
+    if (ctx.businesses && ctx.businesses.length > 1) {
+      const bizList = ctx.businesses.map((b, i) => `${i + 1}. ${b.name}${b.description ? ' — ' + b.description.substring(0, 60) : ''}`).join('\n');
+      activeSystemPrompt += `\n\n## TUS NEGOCIOS\nTenés ${ctx.businesses.length} negocios registrados:\n${bizList}\nCuando un contacto nuevo escriba, MIIA te consultará a qué negocio asignarlo.`;
+    }
   } else if (contactType === 'group' && classification?.groupData) {
-    // Grupo dinámico: usar tono configurado del grupo
-    const g = classification.groupData;
     const contactName = classification.name || ctx.leadNames[phone] || basePhone;
-    activeSystemPrompt = `Eres MIIA, asistente personal de ${profile.fullName}.
-Estás hablando con ${contactName}, que pertenece al grupo "${g.name}".
-
-TONO CONFIGURADO POR EL USUARIO PARA ESTE GRUPO:
-${g.tone || 'Sé amable y natural.'}
-
-REGLAS:
-- Habla como si fueras ${profile.shortName}, no como un bot.
-- Sé breve y natural, como en WhatsApp.
-- NO ofrezcas productos ni servicios a este contacto.
-- Si te preguntan algo que no sabes, dilo honestamente.`;
+    activeSystemPrompt = buildGroupPrompt(classification.groupData, contactName, ctx.ownerProfile);
   } else if (isFamilyContact) {
     activeSystemPrompt = buildOwnerFamilyPrompt(isFamilyContact.name, isFamilyContact, ctx.ownerProfile);
   } else if (isTeamMember) {
