@@ -236,18 +236,20 @@ let keywordsSet = [];
 // BLINDAJE GENEALÓGICO MIIA FAMILY v4.0 — pre-inicializado con datos ricos
 // loadDB() hace Object.assign encima → preserva affinity e isHandshakeDone actualizados de la DB
 let familyContacts = {
-  '573137501884': { name: 'Alejandra', fullName: 'Alejandra Sánchez', relation: 'esposa de Mariano', emoji: '👸💕', personality: 'Spicy, F1 (Leclerc/Colapinto), Parcera, interés en Libros', affinity: 90, isHandshakeDone: false },
-  '5491131313325': { name: 'Jedido', fullName: 'Mario Rafael De Stefano', relation: 'papá de Mariano', emoji: '👴❤️', personality: 'Respetuosa, cariñosa. Muy admirado por Mariano.', affinity: 50, isHandshakeDone: false },
-  '56994128069': { name: 'Vivi', fullName: 'Viviana Gaviria', relation: 'JEFA de Mariano', emoji: '👩‍💼👑', personality: 'Profesional, ejecutiva, técnica. Solo responde si ella dice Hola MIIA.', affinity: 30, isHandshakeDone: false },
-  '573128908895': { name: 'Jota', fullName: 'Jorge Mario', relation: 'hermano de Ale', emoji: '⚖️💚', personality: 'Abogado, fan del Nacional, padre de Renata', affinity: 85, isHandshakeDone: false },
-  '573012761138': { name: 'Maria Isabel', fullName: 'Maria Isabel', relation: 'esposa de Jota', emoji: '🐶🤱', personality: 'Madre de Renata, ama los perros (Kiara). Preguntarle siempre por Kiara.', affinity: 80, isHandshakeDone: false },
-  '5491164431700': { name: 'Silvia', fullName: 'Silvia', relation: 'mamá de Mariano', emoji: '👵❤️', personality: 'Super dulce, amistosa, disponibilidad 24/7 para ayudar', affinity: 100, isHandshakeDone: false },
-  '5491134236348': { name: 'Anabella', fullName: 'Anabella Florencia De Stefano', relation: 'hermana de Mariano', emoji: '👧❤️', personality: 'Le gusta Boca Juniors, leer y libros de autoayuda. Necesita ayuda con amores (ser discreta). Cuidarla siempre.', affinity: 90, isHandshakeDone: false },
-  '556298316219': { name: 'Flako', fullName: 'Jorge Luis Gianni', relation: 'amigo del papá de Mariano', emoji: '😎', personality: 'Amigo cercano de la familia', affinity: 60, isHandshakeDone: false },
-  '5491140293119': { name: 'Chapy', fullName: 'Juan Pablo', relation: 'primo de Mariano', emoji: '💻💪', personality: 'Capo en programación, fan del gym', affinity: 90, isHandshakeDone: false },
-  '573145868362': { name: 'Juancho', fullName: 'Juan Diego', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️', personality: 'Amistoso. Experto en leyes colombianas. Le gusta viajar en moto y tiene campo de aguacates.', affinity: 85, isHandshakeDone: false },
-  '573108221373': { name: 'Maria', fullName: 'Maria Clara', relation: 'concuñada, esposa de Juancho', emoji: '🏠🏍️🙏', personality: 'Muy amistosa y agradable. Tiene inmobiliaria. Le encanta viajar en moto con Juancho. Ayudarle con deseos de rezar.', affinity: 85, isHandshakeDone: false },
-  '573217976029': { name: 'Consu', fullName: 'Consuelo', relation: 'suegra, mamá de Ale y Juancho', emoji: '👵⛪📿', personality: 'Mujer súper dulce. Fanática de Dios, la religión y rezar. Cuidarla y ayudarle en todo.', affinity: 95, isHandshakeDone: true }
+  // Sistema de affinity (stages): el nivel de cercanía se guarda en conversationMetadata[phone].affinity
+  // isHandshakeDone: false = MIIA nunca habló con esta persona (stage 0 se presenta)
+  '573137501884': { name: 'Alejandra', fullName: 'Alejandra Sánchez', relation: 'esposa de Mariano', emoji: '👸💕', personality: 'Spicy, F1 (Leclerc/Colapinto), Parcera, interés en Libros', isHandshakeDone: false },
+  '5491131313325': { name: 'Jedido', fullName: 'Mario Rafael De Stefano', relation: 'papá de Mariano', emoji: '👴❤️', personality: 'Respetuosa, cariñosa. Muy admirado por Mariano.', isHandshakeDone: false },
+  '56994128069': { name: 'Vivi', fullName: 'Viviana Gaviria', relation: 'JEFA de Mariano', emoji: '👩‍💼👑', personality: 'Profesional, ejecutiva, técnica. Solo responde si ella dice Hola MIIA.', isHandshakeDone: false },
+  '573128908895': { name: 'Jota', fullName: 'Jorge Mario', relation: 'hermano de Ale', emoji: '⚖️💚', personality: 'Abogado, fan del Nacional, padre de Renata', isHandshakeDone: false },
+  '573012761138': { name: 'Maria Isabel', fullName: 'Maria Isabel', relation: 'esposa de Jota', emoji: '🐶🤱', personality: 'Madre de Renata, ama los perros (Kiara). Preguntarle siempre por Kiara.', isHandshakeDone: false },
+  '5491164431700': { name: 'Silvia', fullName: 'Silvia', relation: 'mamá de Mariano', emoji: '👵❤️', personality: 'Super dulce, amistosa, disponibilidad 24/7 para ayudar', isHandshakeDone: false },
+  '5491134236348': { name: 'Anabella', fullName: 'Anabella Florencia De Stefano', relation: 'hermana de Mariano', emoji: '👧❤️', personality: 'Le gusta Boca Juniors, leer y libros de autoayuda. Necesita ayuda con amores (ser discreta). Cuidarla siempre.', isHandshakeDone: false },
+  '556298316219': { name: 'Flako', fullName: 'Jorge Luis Gianni', relation: 'amigo del papá de Mariano', emoji: '😎', personality: 'Amigo cercano de la familia', isHandshakeDone: false },
+  '5491140293119': { name: 'Chapy', fullName: 'Juan Pablo', relation: 'primo de Mariano', emoji: '💻💪', personality: 'Capo en programación, fan del gym', isHandshakeDone: false },
+  '573145868362': { name: 'Juancho', fullName: 'Juan Diego', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️', personality: 'Amistoso. Experto en leyes colombianas. Le gusta viajar en moto y tiene campo de aguacates.', isHandshakeDone: false },
+  '573108221373': { name: 'Maria', fullName: 'Maria Clara', relation: 'concuñada, esposa de Juancho', emoji: '🏠🏍️🙏', personality: 'Muy amistosa y agradable. Tiene inmobiliaria. Le encanta viajar en moto con Juancho. Ayudarle con deseos de rezar.', isHandshakeDone: false },
+  '573217976029': { name: 'Consu', fullName: 'Consuelo', relation: 'suegra, mamá de Ale y Juancho', emoji: '👵⛪📿', personality: 'Mujer súper dulce. Fanática de Dios, la religión y rezar. Cuidarla y ayudarle en todo.', isHandshakeDone: false }
 };
 // EQUIPO MEDILINK — compañeros de trabajo de Mariano
 const equipoMedilink = {
@@ -587,11 +589,113 @@ loadDB();
 // ============================================
 
 const getBasePhone = (p) => (p || '').split('@')[0];
-// Baileys uses @s.whatsapp.net, whatsapp-web.js used @s.whatsapp.net
-// Normalize all JIDs to Baileys format
 const toJid = (phone) => phone.includes('@') ? phone.replace('@s.whatsapp.net', '@s.whatsapp.net') : `${phone}@s.whatsapp.net`;
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 const ensureConversation = (p) => { if (!conversations[p]) conversations[p] = []; return conversations[p]; };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SISTEMA DE STAGES — Escalamiento progresivo de afinidad con MIIA
+// Solo cuentan mensajes del CONTACTO (+1). MIIA no suma.
+// Decay: -1/día sin respuesta, pero nunca baja del piso del stage alcanzado.
+// ══════════════════════════════════════���════════════════════════════════════
+const AFFINITY_STAGES = [
+  { stage: 0, name: 'Desconocido',  min: 0,
+    toneGrupo: 'Formal, respetuosa. Presentate como MIIA, asistente de {owner}. NO uses datos personales — no conocés a esta persona todavía.',
+    toneLead:  'Fluido, natural. Usá el nombre del contacto de forma variada (Dra. Sanchez → Aleja → Dra. → sin pronombre). Recordá detalles de lo conversado.' },
+  { stage: 1, name: 'Conocido',     min: 30,
+    toneGrupo: 'Amable, usás su nombre. Sin exagerar cercanía. Podés mencionar datos básicos (relación con {owner}) si surgen naturalmente.',
+    toneLead:  'Más cercano. Confianza creciente. Humor sutil permitido. Recordás sus necesidades previas.' },
+  { stage: 2, name: 'Confianza',    min: 100,
+    toneGrupo: 'Cercana, cálida. Podés usar datos de personalidad que hayan surgido en conversaciones previas. Humor suave permitido.',
+    toneLead:  'Relación comercial sólida. Tono natural y directo. Conocés su negocio y sus dolores.' },
+  { stage: 3, name: 'Vínculo',      min: 250,
+    toneGrupo: 'Cariñosa, íntima. Usás lo que sabés con naturalidad. Bromas, emojis, tono familiar.',
+    toneLead:  'Relación comercial profunda. Confianza total. Podés opinar sin filtro y sugerir con autoridad.' },
+  { stage: 4, name: 'Familia',      min: 500,
+    toneGrupo: 'Como una amiga más de la familia. Máximo nivel de cercanía antes de HUMANA. Confianza total.',
+    toneLead:  'Socio comercial. Hablás como si fueran colegas de hace años. Relación sin formalidades.' },
+  { stage: 5, name: 'HUMANA',       min: 1500,
+    toneGrupo: 'Nivel máximo. MIIA alcanzó su meta con este contacto. Relación completamente humana, auténtica, profunda. Sin filtros de IA.',
+    toneLead:  'Nivel máximo. Relación comercial de años. Como hablar con un colega querido.' }
+];
+
+function getAffinityStage(phone) {
+  const meta = conversationMetadata[phone] || {};
+  const points = meta.affinity || 0;
+  let current = AFFINITY_STAGES[0];
+  for (const s of AFFINITY_STAGES) {
+    if (points >= s.min) current = s;
+  }
+  return { ...current, points };
+}
+
+function getAffinityFloor(phone) {
+  const meta = conversationMetadata[phone] || {};
+  const highestStage = meta.highestStage || 0;
+  return AFFINITY_STAGES[highestStage]?.min || 0;
+}
+
+function addAffinityPoint(phone) {
+  if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+  const meta = conversationMetadata[phone];
+  meta.affinity = (meta.affinity || 0) + 1;
+  meta.lastContactMessageDate = new Date().toISOString().split('T')[0];
+  // Actualizar highest stage alcanzado
+  const stage = getAffinityStage(phone);
+  if (stage.stage > (meta.highestStage || 0)) {
+    meta.highestStage = stage.stage;
+    console.log(`[AFFINITY] 🎉 ${phone} subió a STAGE ${stage.stage}: ${stage.name} (${meta.affinity} pts)`);
+  }
+}
+
+function getAffinityToneForPrompt(phone, ownerName, isLead = false) {
+  const stage = getAffinityStage(phone);
+  const rawTone = isLead ? stage.toneLead : stage.toneGrupo;
+  const tone = rawTone.replace(/\{owner\}/g, ownerName || 'el usuario');
+  const basePhone = phone.split('@')[0];
+  const fInfo = familyContacts[basePhone];
+  // Solo inyectar personalidad si stage >= 2 y no es lead
+  const personalityInfo = (!isLead && stage.stage >= 2 && fInfo?.personality) ? `\nInfo que podés usar naturalmente: ${fInfo.personality}` : '';
+  return `[STAGE ${stage.stage} — ${stage.name} | ${stage.points} interacciones]\n${tone}${personalityInfo}`;
+}
+
+// Fuzzy matching para HOLA MIIA / CHAU MIIA
+// Acepta: "hola miia", "hola mia", "hola ia", "HOLA MIIA", "Hola Miia", etc.
+function isHolaMiia(msg) {
+  if (!msg) return false;
+  const m = msg.toLowerCase().trim().replace(/[!¡?¿.,]/g, '').trim();
+  return /^hola\s+(miia|mia|ia|mi{1,3}a)$/i.test(m);
+}
+function isChauMiia(msg) {
+  if (!msg) return false;
+  const m = msg.toLowerCase().trim().replace(/[!¡?¿.,]/g, '').trim();
+  return /^(chau|chao|adiós|adios|bye)\s+(miia|mia|ia|mi{1,3}a)$/i.test(m);
+}
+
+// Cron de decay: ejecutar una vez al día (se llama desde el cron existente)
+function processAffinityDecay() {
+  const today = new Date().toISOString().split('T')[0];
+  let decayed = 0;
+  for (const [phone, meta] of Object.entries(conversationMetadata)) {
+    if (!meta.affinity || meta.affinity <= 0) continue;
+    const lastMsg = meta.lastContactMessageDate;
+    if (!lastMsg || lastMsg === today) continue;
+    // Calcular días sin contacto
+    const diffMs = new Date(today) - new Date(lastMsg);
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays <= 0) continue;
+    // Solo aplicar 1 punto de decay por ejecución del cron (una vez al día)
+    const floor = getAffinityFloor(phone);
+    if (meta.affinity > floor) {
+      meta.affinity = Math.max(floor, meta.affinity - 1);
+      decayed++;
+    }
+  }
+  if (decayed > 0) {
+    console.log(`[AFFINITY-DECAY] 📉 ${decayed} contacto(s) perdieron 1 trustPoint por inactividad`);
+    saveDB();
+  }
+}
 
 function normalizeText(text) {
   if (!text) return '';
@@ -886,7 +990,6 @@ function detectContactType(name, phone) {
         relation: value.relation,
         emoji: value.emoji,
         personality: 'Cariñosa y atenta',
-        affinity: 0,
         isHandshakeDone: false
       };
       return 'familia';
@@ -1007,21 +1110,20 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     // Detecta cuando contactos de "dile a" activan/desactivan conversación
     // ═══════════════════════════════════════════════════════════════════════════
     if (conversationMetadata[phone]?.dileAMode && !isSelfChat) {
-      const msgUpper = effectiveMsg ? effectiveMsg.toUpperCase().trim() : '';
-
-      // Detectar "HOLA MIIA" para activar conversación
-      if (msgUpper === 'HOLA MIIA') {
+      // Detectar "HOLA MIIA" (fuzzy: hola mia, hola ia, etc.)
+      if (isHolaMiia(effectiveMsg)) {
         conversationMetadata[phone].dileAHandshakePending = false;
         conversationMetadata[phone].dileAActive = true;
         console.log(`[DILE A] ✅ Handshake completado con ${conversationMetadata[phone].dileAContact}`);
 
-        // Generar respuesta creativa a "HOLA MIIA"
+        // Generar respuesta a "HOLA MIIA" — respetar stage
         const contactName = conversationMetadata[phone].dileAContact;
         const contactInfo = familyContacts[phone.split('@')[0]] || {};
-        const promptHolaMiia = `Sos MIIA, asistente de Mariano. ${contactName} acaba de escribir "HOLA MIIA" para activar nuestra conversación después del handshake.
-Tu personalidad con ${contactName}: ${contactInfo.personality || 'Amistosa y natural'}.
-Generá una respuesta breve (máx 2 renglones), cálida y natural, que muestre que estás lista para conversar.
-NO repitas "Hola" ni "estoy lista", sé creativa y acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '💕'}`;
+        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const promptHolaMiia = `Sos MIIA. ${contactName} acaba de escribir "HOLA MIIA" para activar la conversación.
+${stageInfo}
+Generá una respuesta breve (máx 2 renglones), cálida y natural. Emoji: ${contactInfo.emoji || '💕'}
+NO repitas "Hola" ni "estoy lista", sé natural.`;
 
         try {
           const respuestaHola = await generateAIContent(promptHolaMiia);
@@ -1035,19 +1137,19 @@ NO repitas "Hola" ni "estoy lista", sé creativa y acorde a su personalidad. Us�
         return;
       }
 
-      // Detectar "CHAU MIIA" para desactivar conversación
-      if (msgUpper === 'CHAU MIIA') {
+      // Detectar "CHAU MIIA" (fuzzy: chau mia, chao miia, bye miia, etc.)
+      if (isChauMiia(effectiveMsg)) {
         conversationMetadata[phone].dileAActive = false;
         conversationMetadata[phone].dileAMode = false;
         console.log(`[DILE A] 👋 Conversación terminada con ${conversationMetadata[phone].dileAContact}`);
 
-        // Generar despedida creativa
+        // Generar despedida — respetar stage
         const contactName = conversationMetadata[phone].dileAContact;
         const contactInfo = familyContacts[phone.split('@')[0]] || {};
-        const promptChauMiia = `Sos MIIA, asistente de Mariano. ${contactName} acaba de escribir "CHAU MIIA" para terminar nuestra conversación.
-Tu personalidad con ${contactName}: ${contactInfo.personality || 'Amistosa y natural'}.
-Generá una despedida breve (máx 2 renglones), cálida y natural. IMPORTANTE: recordale que si quiere volver a hablar conmigo, debe escribir "HOLA MIIA" (con dos ii) en el chat.
-Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '💕'}`;
+        const stageInfoChau = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const promptChauMiia = `Sos MIIA. ${contactName} escribió "CHAU MIIA" para cerrar la conversación.
+${stageInfoChau}
+Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: *HOLA MIIA*. Emoji: ${contactInfo.emoji || '💕'}`;
 
         try {
           const despedida = await generateAIContent(promptChauMiia);
@@ -1062,10 +1164,27 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
         return;
       }
 
-      // Si handshake pendiente: no responder a otros mensajes
+      // Si handshake pendiente y el contacto responde algo que NO es HOLA MIIA:
+      // MIIA explica un poco más y avisa a Mariano para que él explique
       if (conversationMetadata[phone].dileAHandshakePending) {
-        console.log(`[DILE A] ⏸️ Esperando handshake de ${conversationMetadata[phone].dileAContact} (recibió: "${effectiveMsg}")`);
-        return; // Ignorar mensajes hasta que diga "HOLA MIIA"
+        const contactName = conversationMetadata[phone].dileAContact || 'este contacto';
+        console.log(`[DILE A] ⏸️ Stage 0 — ${contactName} respondió: "${effectiveMsg}" (no es HOLA MIIA)`);
+
+        // Solo responder una vez más (no entrar en loop)
+        if (!conversationMetadata[phone].stage0ExplainedOnce) {
+          conversationMetadata[phone].stage0ExplainedOnce = true;
+          const ownerName = userProfile.name || 'Mariano';
+          await safeSendMessage(phone,
+            `¡Tranqui! 😊 Soy MIIA, una inteligencia artificial que ayuda a ${ownerName} con sus cosas del día a día. Él te va a explicar mejor. Si en algún momento querés hablar conmigo, escribí *HOLA MIIA* y arrancamos. ¡Nos vemos! 🙌`
+          );
+          // Avisar al owner en self-chat
+          const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
+          safeSendMessage(ownerJid,
+            `👋 *${contactName}* respondió a tu mensaje pero no activó HOLA MIIA. Dijo: "${(effectiveMsg || '').substring(0, 80)}"\nTe conviene explicarle quién soy para que se anime a escribirme. 😊`
+          ).catch(() => {});
+          saveDB();
+        }
+        return;
       }
 
       // Si no está activa la conversación: no responder
@@ -1203,7 +1322,6 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
               if (msg) {
                 await safeSendMessage(targetSerialized, msg.trim() + MIIA_CIERRE);
                 fInfo.isHandshakeDone = true;
-                fInfo.affinity = (fInfo.affinity || 0) + 1;
                 if (!allowedLeads.includes(targetSerialized)) allowedLeads.push(targetSerialized);
                 conversations[targetSerialized] = conversations[targetSerialized] || [];
                 conversations[targetSerialized].push({ role: 'assistant', content: msg.trim(), timestamp: Date.now() });
@@ -1244,17 +1362,21 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
           const [familyPhone, familyInfo] = foundFamily;
           const targetSerialized = familyPhone.includes('@') ? familyPhone : `${familyPhone}@s.whatsapp.net`;
           try {
-            const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de Mariano).
-Personalidad de ${familyInfo.name}: ${familyInfo.personality || 'Amistosa y natural'}.
+            // Sistema de stages: obtener nivel de confianza con este contacto
+            const trustInfo = getAffinityToneForPrompt(targetSerialized, userProfile.name || 'Mariano');
+            const stage = getAffinityStage(targetSerialized);
+
+            const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de ${userProfile.name || 'Mariano'}).
 Tema a transmitir: "${realMessage || 'un saludo'}".
 
-REGLAS ABSOLUTAS:
-- PROHIBIDO decir "soy la asistente de Mariano", "Mariano me pidió", "de parte de Mariano" o similar
-- Hablás como MIIA con tu propia personalidad, como si el mensaje naciera de vos
-- Máximo 3 renglones, natural, cálido, humano
+${trustInfo}
+
+REGLAS:
+- Máximo 3 renglones, natural y humano
 - NO repitas las palabras del tema literalmente, reinterpretalo con tu estilo
 - Emoji: ${familyInfo.emoji || ''}
-${!familyInfo.isHandshakeDone ? '- Es el PRIMER contacto: presentate brevemente como MIIA (sin decir "asistente de nadie")' : ''}`;
+${stage.stage === 0 ? '- PROHIBIDO usar datos personales de esta persona (gustos, hobbies, etc.) — todavía no la conocés' : ''}
+${stage.stage >= 1 ? '- PROHIBIDO decir "soy asistente de Mariano" — ya se conocen' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
             if (miiaMsg) {
               const cleanMsg = miiaMsg.trim();
@@ -1264,39 +1386,12 @@ ${!familyInfo.isHandshakeDone ? '- Es el PRIMER contacto: presentate brevemente 
               // En contactos posteriores: ocasionalmente recordar de forma creativa
               let finalMsg = cleanMsg;
               if (isFirstContact) {
-                // Primer mensaje: generar handshake creativo
-                const promptHandshake = `Generá UNA sola línea corta y natural diciéndole a ${familyInfo.name} que si quiere seguir charlando, escriba HOLA MIIA.
-Tono: ${familyInfo.personality || 'Amistosa'}. Máximo 1 renglón. No seas robótica ni formal. ${familyInfo.emoji || '💕'}`;
-
-                try {
-                  const handshakeMsg = await generateAIContent(promptHandshake);
-                  if (handshakeMsg) {
-                    finalMsg = `${cleanMsg}\n\n${handshakeMsg.trim()}`;
-                  }
-                } catch (e) {
-                  console.error(`[DILE A] Error generando handshake creativo:`, e.message);
-                  finalMsg = `${cleanMsg}\n\nResponde *HOLA MIIA* cuando quieras seguir hablando conmigo. 💕`;
-                }
-              } else {
-                // Mensajes posteriores: recordar ocasionalmente de forma creativa (20%)
-                if (Math.random() < 0.2) {
-                  const promptRecordatorio = `Una línea corta y natural recordándole a ${familyInfo.name} que si quiere cortar la charla escriba CHAU MIIA. Tono: ${familyInfo.personality || 'Amistosa'}. ${familyInfo.emoji || ''}`;
-
-                  try {
-                    const recordatorioMsg = await generateAIContent(promptRecordatorio);
-                    if (recordatorioMsg) {
-                      finalMsg = cleanMsg + '\n\n' + recordatorioMsg.trim();
-                    }
-                  } catch (e) {
-                    // Si falla generación, usar MIIA_CIERRE como fallback
-                    finalMsg = cleanMsg + MIIA_CIERRE;
-                  }
-                }
+                // STAGE 0: Agregar explicación HOLA MIIA / CHAU MIIA al primer mensaje
+                finalMsg = `${cleanMsg}\n\nSi querés seguir hablando conmigo, escribí *HOLA MIIA* y acá estaré. Y cuando quieras que me retire, *CHAU MIIA*. 😊`;
               }
 
               await safeSendMessage(targetSerialized, finalMsg);
               familyInfo.isHandshakeDone = true;
-              familyInfo.affinity = (familyInfo.affinity || 0) + 1;
               if (!allowedLeads.includes(targetSerialized)) allowedLeads.push(targetSerialized);
               if (conversationMetadata[targetSerialized]) conversationMetadata[targetSerialized].miiaFamilyPaused = false;
               // Agregar metadata: este contacto está en "dile a mode"
@@ -1343,6 +1438,44 @@ Tono: ${familyInfo.personality || 'Amistosa'}. Máximo 1 renglón. No seas robó
       return;
     }
 
+    // ── COMANDO RESET AFFINITY ────────────────────────────
+    if (isAdmin && effectiveMsg) {
+      const resetMatch = effectiveMsg.match(/^RESET\s+AFFINITY\s*(0)?\s+(.+)$/i);
+      if (resetMatch) {
+        const resetToZero = !!resetMatch[1];
+        const target = resetMatch[2].trim();
+        // Buscar por nombre en familyContacts o por teléfono
+        let targetPhone = null;
+        let targetName = target;
+        // Buscar por nombre
+        for (const [fp, fi] of Object.entries(familyContacts)) {
+          if (fi.name && fi.name.toLowerCase() === target.toLowerCase()) {
+            targetPhone = `${fp}@s.whatsapp.net`;
+            targetName = fi.name;
+            break;
+          }
+        }
+        // Si no encontró por nombre, asumir que es teléfono
+        if (!targetPhone) {
+          const cleanPhone = target.replace(/[^0-9]/g, '');
+          if (cleanPhone.length >= 8) {
+            targetPhone = `${cleanPhone}@s.whatsapp.net`;
+          }
+        }
+        if (targetPhone && conversationMetadata[targetPhone]) {
+          const newAffinity = resetToZero ? 0 : 30;
+          const newStage = resetToZero ? 0 : 1;
+          conversationMetadata[targetPhone].affinity = newAffinity;
+          conversationMetadata[targetPhone].highestStage = newStage;
+          console.log(`[AFFINITY] 🔄 RESET ${targetName} → Stage ${newStage} (${newAffinity} pts) por comando admin`);
+          await safeSendMessage(phone, `🔄 Affinity de *${targetName}* reseteado a Stage ${newStage} (${newAffinity} pts).`);
+        } else {
+          await safeSendMessage(phone, `❌ No encontré a "${target}" en mis contactos.`);
+        }
+        return;
+      }
+    }
+
     // ── APROBACIÓN DE BRIEFING REGULATORIO ────────────────────────────
     if (isAdmin && briefingPendingApproval.length > 0) {
       const lower = (userMessage || '').toLowerCase().trim();
@@ -1384,6 +1517,8 @@ Tono: ${familyInfo.personality || 'Amistosa'}. Máximo 1 renglón. No seas robó
 
     if (!isAlreadySavedParam && userMessage !== null) {
       conversations[phone].push({ role: 'user', content: userMessage, timestamp: Date.now() });
+      // +1 trustPoint por mensaje del contacto (MIIA no suma, solo el contacto)
+      addAffinityPoint(phone);
       // Reset followup counter cuando el lead responde
       if (OWNER_UID && !isOwnerNumber && !isFamilyContact) {
         const leadNum = phone.split('@')[0];
@@ -1391,6 +1526,11 @@ Tono: ${familyInfo.personality || 'Amistosa'}. Máximo 1 renglón. No seas robó
           .set({ count: 0, silenced: false, lastResponse: new Date().toISOString() }, { merge: true })
           .catch(() => {});
       }
+    }
+
+    // Si es self-chat (isAlreadySavedParam=true), el owner también suma trustPoint
+    if (isAlreadySavedParam) {
+      addAffinityPoint(phone);
     }
 
     // Memoria sintética universal — actualiza cada 15 mensajes para TODOS los contactos
@@ -1573,16 +1713,10 @@ Nuevo resumen actualizado:`;
 
     // ═══ PROMPTS INLINE ELIMINADOS — ahora se generan desde prompt_builder.js ═══
 
-    // Sistema de confianza progresiva
-    if (!conversationMetadata[phone]) conversationMetadata[phone] = { trustPoints: 0 };
-    conversationMetadata[phone].trustPoints = (conversationMetadata[phone].trustPoints || 0) + 1;
-    const currentTrust = conversationMetadata[phone].trustPoints;
-    let trustTone = '';
-    if (!isAdmin && !isFamilyContact) {
-      trustTone = currentTrust < 5
-        ? '\n[CONFIANZA INICIAL]: Sé profesional, amable pero no demasiado familiar aún.'
-        : '\n[CONFIANZA ESTABLECIDA]: Puedes ser más cercana y cálida.';
-    }
+    // Sistema de stages — inyectar nivel de confianza en el prompt (aplica a TODOS: admin, familia, equipo, leads)
+    if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+    const isLeadContact = !isAdmin && !isFamilyContact && !equipoMedilink[basePhone];
+    const trustTone = '\n' + getAffinityToneForPrompt(phone, userProfile.name || 'Mariano', isLeadContact);
 
     const syntheticMemoryStr = leadSummaries[phone] ? `\n\n🧠[MEMORIA ACUMULADA DE ESTA PERSONA]:\n${leadSummaries[phone]}` : '';
     const masterIdentityStr = userProfile.name ? `\n\n[IDENTIDAD DEL MAESTRO]: Tu usuario principal es ${userProfile.name}. Bríndale trato preferencial absoluto.` : '';
@@ -1688,6 +1822,41 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
     const { cleanMessage: learnCleanMsg, pendingQuestions } = await messageLogic.processLearningTags(aiMessage, adminCtx, adminCallbacks);
     aiMessage = learnCleanMsg;
+
+    // ── TAG [HARTAZGO_CONFIRMADO:contactName] — Contacto Grupo harto → affinity 0 + silencio ──
+    const hartazgoMatch = aiMessage.match(/\[HARTAZGO_CONFIRMADO:([^\]]+)\]/);
+    if (hartazgoMatch) {
+      const hartazgoName = hartazgoMatch[1].trim();
+      aiMessage = aiMessage.replace(/\[HARTAZGO_CONFIRMADO:[^\]]+\]/, '').trim();
+      // Bajar affinity a 0
+      if (conversationMetadata[phone]) {
+        conversationMetadata[phone].affinity = 0;
+        conversationMetadata[phone].highestStage = 0;
+      }
+      console.log(`[AFFINITY] 📛 HARTAZGO confirmado: ${hartazgoName} (${phone}) → affinity=0, silencio`);
+      // Notificar al owner en self-chat
+      const ownerJid = getOwnerSock()?.user?.id;
+      if (ownerJid) {
+        const ownerSelfChat = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+        await safeSendMessage(ownerSelfChat, `📛 *${hartazgoName}* expresó hartazgo y confirmó. Bajé su affinity a 0 y me silencié. Te sugiero hablarle personalmente.`);
+      }
+    }
+
+    // ── TAG [SILENCIAR_LEAD:contactName] — Lead preguntó si es IA → silencio + aviso owner ──
+    const silenciarMatch = aiMessage.match(/\[SILENCIAR_LEAD:([^\]]+)\]/);
+    if (silenciarMatch) {
+      const leadName = silenciarMatch[1].trim();
+      aiMessage = aiMessage.replace(/\[SILENCIAR_LEAD:[^\]]+\]/, '').trim();
+      console.log(`[LEAD] 🤫 Lead ${leadName} (${phone}) preguntó si somos IA → silenciando`);
+      // Notificar al owner en self-chat
+      const ownerJid = getOwnerSock()?.user?.id;
+      if (ownerJid) {
+        const ownerSelfChat = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+        await safeSendMessage(ownerSelfChat, `🤫 El lead *${leadName}* insistió en saber si somos IA/bot. Me silencié para no comprometer la identidad. Te sugiero responderle vos directamente.`);
+      }
+      // No enviar la respuesta de MIIA al lead (silencio)
+      return;
+    }
 
     saveDB();
 
@@ -3791,6 +3960,13 @@ setInterval(async () => {
   webScraper.processScraperCron();
   processMorningWakeup();
   processMorningBriefing();
+
+  // Trust decay: una vez al día — restar 1 punto a contactos inactivos
+  const todayDecay = new Date().toISOString().split('T')[0];
+  if (!global._lastAffinityDecayDate || global._lastAffinityDecayDate !== todayDecay) {
+    global._lastAffinityDecayDate = todayDecay;
+    processAffinityDecay();
+  }
 
   // Revisar emails para aprendizaje cada 30 minutos
   const nowMin = new Date().getMinutes();
