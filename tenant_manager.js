@@ -584,7 +584,26 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
         console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} body="${b.substring(0,50)}" msgId=${msg.key.id} ts=${msgTs}`);
       }
-      if (type !== 'notify') return;
+      // type=notify son mensajes nuevos en tiempo real
+      // type=append puede incluir self-chat reciente que Baileys clasifica mal
+      // Permitir append SOLO si hay al menos 1 mensaje reciente (< 90s)
+      if (type !== 'notify') {
+        if (type === 'append') {
+          const now = Math.floor(Date.now() / 1000);
+          const hasRecentMsg = messages.some(msg => {
+            const ts = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
+              : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
+            return (now - ts) < 90;
+          });
+          if (hasRecentMsg) {
+            console.log(`[TM:${uid}] ⚡ type=append con ${messages.length} msg(s) reciente(s) — procesando como notify`);
+          } else {
+            return;
+          }
+        } else {
+          return;
+        }
+      }
 
       for (const msg of messages) {
         const from = msg.key.remoteJid;

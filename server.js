@@ -615,8 +615,9 @@ function isPotentialBot(text) {
 
 function isWithinSchedule() {
   if (!automationSettings.autoResponse) return false;
-  const bogotaDateString = new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' });
-  const bogotaDate = new Date(bogotaDateString);
+  const ownerTz = getTimezoneForCountry(getCountryFromPhone(OWNER_PHONE));
+  const localDateString = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+  const bogotaDate = new Date(localDateString);
   const day = bogotaDate.getDay() === 0 ? 7 : bogotaDate.getDay();
   if (!automationSettings.schedule.days.includes(day)) return false;
   const time = `${bogotaDate.getHours().toString().padStart(2, '0')}:${bogotaDate.getMinutes().toString().padStart(2, '0')}`;
@@ -988,6 +989,15 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     const isFamilyContact = !!familyInfo;
     let isAdmin = ADMIN_PHONES.includes(basePhone);  // ← CAMBIO: const → let (para poder reasignar en self-chat)
 
+    // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin (sin verificar número)
+    // Baileys usa Device ID en self-chat (ej: 136417472712832) que NO coincide con ADMIN_PHONES
+    // DEBE estar ANTES de los comandos (dile a, STOP, etc.) para que isAdmin=true los active
+    const isSelfChat = isAlreadySavedParam;
+    if (isSelfChat && !isAdmin) {
+      isAdmin = true;
+      console.log(`[ADMIN-FIX] 🔧 Self-chat: isAdmin=true (LID=${basePhone} no matchea ADMIN_PHONES)`);
+    }
+
     // Recuperar mensaje real del historial cuando fue llamado con userMessage=null
     const effectiveMsg = userMessage ||
       (conversations[phone] || []).slice().reverse().find(m => m.role === 'user')?.content || null;
@@ -1160,7 +1170,8 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
           console.error(`[EQUIPO] Error enviando a ${num}:`, e.message);
         }
       }
-      await safeSendMessage(phone, `✅ Mensaje enviado al equipo Medilink (${enviados}/${phones.length} contactos).`);
+      console.log(`[EQUIPO] ✅ Mensaje enviado al equipo (${enviados}/${phones.length})`);
+      // No enviar confirmación al self-chat
       return;
     }
 
@@ -1204,7 +1215,8 @@ Sé creativa, acorde a su personalidad. Usá el emoji: ${contactInfo.emoji || '�
             }
           }
           saveDB();
-          await safeSendMessage(phone, `✅ Mensaje enviado a toda la familia (${enviados}/${familyEntries.length} contactos).`);
+          console.log(`[DILE A] ✅ Mensaje enviado a toda la familia (${enviados}/${familyEntries.length})`);
+          // No enviar confirmación al self-chat
           return;
         }
 
@@ -1298,9 +1310,10 @@ Emoji: ${familyInfo.emoji || ''}`;
               conversations[targetSerialized] = conversations[targetSerialized] || [];
               conversations[targetSerialized].push({ role: 'assistant', content: cleanMsg, timestamp: Date.now() });
               saveDB();
-              await safeSendMessage(phone, `✅ Mensaje enviado.`);
+              // No enviar confirmación al self-chat — el owner ya sabe que mandó el comando
+              console.log(`[DILE A] ✅ Mensaje enviado a ${familyInfo.name} (sin confirmación al self-chat)`);
             } else {
-              await safeSendMessage(phone, `❌ No pude generar el mensaje para ${familyInfo.name}. Intentá de nuevo.`);
+              await safeSendMessage(phone, `No pude generar el mensaje para ${familyInfo.name}. Intentá de nuevo.`);
             }
           } catch (e) {
             console.error(`[DILE A] Error enviando a ${familyInfo.name}:`, e.message);
@@ -1410,7 +1423,7 @@ Nuevo resumen actualizado:`;
     // 1. Self-chat: isAlreadySavedParam=true → es un mensaje del owner en su self-chat
     // 2. Número coincide: basePhone === whatsapp_owner_number (para otros casos)
     let isOwnerNumber = false;
-    const isSelfChat = isAlreadySavedParam; // Self-chat es cuando fromMe=true (isAlreadySavedParam indica esto)
+    // isSelfChat ya definido arriba (línea ~995)
 
     if (isSelfChat) {
       // En self-chat, el owner SIEMPRE responde (sin importar la hora)
@@ -1547,12 +1560,7 @@ Nuevo resumen actualizado:`;
     const leadName = leadNames[phone] || '';
     let activeSystemPrompt = '';
 
-    // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin (sin verificar número)
-    // Baileys usa Device ID en self-chat (ej: 136417472712832) que NO coincide con ADMIN_PHONES
-    if (isSelfChat && !isAdmin) {
-      isAdmin = true;
-      console.log(`[ADMIN-FIX] 🔧 Self-chat detectado: reasignando isAdmin=true (numero=${basePhone} no matched ADMIN_PHONES, pero isSelfChat=true)`);
-    }
+    // isAdmin ya fue reasignado para self-chat al inicio de processMiiaResponse (línea ~995)
 
     if (isAdmin) {
       activeSystemPrompt = buildOwnerSelfChatPrompt();
@@ -1581,7 +1589,11 @@ Nuevo resumen actualizado:`;
 
     const syntheticMemoryStr = leadSummaries[phone] ? `\n\n🧠[MEMORIA ACUMULADA DE ESTA PERSONA]:\n${leadSummaries[phone]}` : '';
     const masterIdentityStr = userProfile.name ? `\n\n[IDENTIDAD DEL MAESTRO]: Tu usuario principal es ${userProfile.name}. Bríndale trato preferencial absoluto.` : '';
-    const systemDateStr = `[FECHA DEL SISTEMA: ${new Date().toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}]`;
+    // Fecha y hora local del owner (según código de país de su teléfono)
+    const ownerCountryCode = getCountryFromPhone(OWNER_PHONE);
+    const ownerTimezone = getTimezoneForCountry(ownerCountryCode);
+    const localNowStr = new Date().toLocaleString('es-ES', { timeZone: ownerTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const systemDateStr = `[FECHA Y HORA LOCAL DEL USUARIO: ${localNowStr} (${ownerTimezone})]`;
 
     const adnStr = cerebroAbsoluto.getTrainingData();
     const fullPrompt = `${activeSystemPrompt}
@@ -1769,14 +1781,21 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           // 1. Intentar crear evento en Google Calendar
           try {
             const parsedDate = new Date(fecha);
+            // Timezone del owner según su teléfono
+            const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+            const ownerTz = getTimezoneForCountry(ownerCountry);
             if (!isNaN(parsedDate)) {
+              // Extraer hora en timezone local (si viene en el string fecha)
+              const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
+              const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
               await createCalendarEvent({
                 summary: razon || 'Evento MIIA',
                 dateStr: fecha.split('T')[0],
-                startHour: parsedDate.getHours() || 10,
-                endHour: (parsedDate.getHours() || 10) + 1,
+                startHour: startH,
+                endHour: startH + 1,
                 description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
-                uid: OWNER_UID
+                uid: OWNER_UID,
+                timezone: ownerTz
               });
               calendarOk = true;
               console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName}`);
@@ -5749,20 +5768,31 @@ async function checkCalendarAvailability(dateStr, uid) {
   return { date: targetDate.toLocaleDateString('es-ES'), busySlots: busySlots.length, freeSlots };
 }
 
-async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description, uid }) {
+async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description, uid, timezone }) {
   const { cal, calId } = await getCalendarClient(uid);
 
+  // Determinar timezone: parámetro explícito > scheduleConfig del user > default Bogotá
+  let tz = timezone;
+  if (!tz) {
+    try {
+      const schedCfg = await getScheduleConfig(uid);
+      tz = schedCfg?.timezone || 'America/Bogota';
+    } catch { tz = 'America/Bogota'; }
+  }
+
+  // Construir fecha/hora en timezone local del usuario
   const targetDate = new Date(dateStr);
-  const start = new Date(targetDate);
-  start.setHours(startHour || 10, 0, 0, 0);
-  const end = new Date(targetDate);
-  end.setHours(endHour || (startHour || 10) + 1, 0, 0, 0);
+  const year = targetDate.getUTCFullYear() || new Date().getFullYear();
+  const month = String((targetDate.getUTCMonth() || new Date().getMonth()) + 1).padStart(2, '0');
+  const day = String(targetDate.getUTCDate() || new Date().getDate()).padStart(2, '0');
+  const sH = String(startHour || 10).padStart(2, '0');
+  const eH = String(endHour || (startHour || 10) + 1).padStart(2, '0');
 
   const event = {
     summary: summary || 'Reunión con MIIA',
     description: description || 'Agendado automáticamente por MIIA',
-    start: { dateTime: start.toISOString(), timeZone: 'America/Bogota' },
-    end: { dateTime: end.toISOString(), timeZone: 'America/Bogota' },
+    start: { dateTime: `${year}-${month}-${day}T${sH}:00:00`, timeZone: tz },
+    end: { dateTime: `${year}-${month}-${day}T${eH}:00:00`, timeZone: tz },
     attendees: attendeeEmail ? [{ email: attendeeEmail }] : []
   };
 
