@@ -609,17 +609,21 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
         const isOffline = tenant.connectedAt && msgTs > 0 && msgTs < tenant.connectedAt - 5;
 
-        // Self-chat offline → ignorar completamente
         const myNumber = tenant.sock?.user?.id?.split(':')[0];
         const fromNumber = from?.split('@')[0]?.split(':')[0];
         const isSelfChat = isFromMe && myNumber && fromNumber && myNumber === fromNumber;
-        if (isOffline && isSelfChat) {
-          console.log(`[TM:${uid}] ⏭️ Self-chat offline ignorado (ts=${msgTs}) body="${body.substring(0,30)}"`);
-          continue;
+
+        // Mensaje offline → acumular en buffer (self-chat, leads, todos)
+        // Solo ignorar si es MUY viejo (>10 min) y es self-chat
+        if (isOffline) {
+          const ageSec = tenant.connectedAt - msgTs;
+          if (isSelfChat && ageSec > 600) {
+            console.log(`[TM:${uid}] ⏭️ Self-chat offline MUY viejo ignorado (${Math.round(ageSec/60)}min) body="${body.substring(0,30)}"`);
+            continue;
+          }
         }
 
-        // Mensaje offline de lead/cliente → acumular en buffer con debounce
-        if (isOffline && !isFromMe) {
+        if (isOffline) {
           const ageSec = tenant.connectedAt - msgTs;
           console.log(`[TM:${uid}] 📦 Mensaje offline de ${from} (hace ${ageSec}s): "${body.substring(0,40)}" → buffer`);
           if (!offlineBuffer[from]) offlineBuffer[from] = { msgs: [], timer: null };

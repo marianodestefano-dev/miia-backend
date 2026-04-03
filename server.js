@@ -1595,13 +1595,10 @@ ${history}
 
 MIIA, genera tu respuesta breve, estratégica y humana:`;
 
-    // Google Search: activar automáticamente para owner, familia, equipo (círculo cercano)
-    // Para leads: solo con comando explícito "BUSCALO"
-    const recentMsgs = (conversations[phone] || []).slice(-3).map(m => m.content || '').join(' ');
+    // Google Search: siempre activo para owner y círculo cercano (familia, equipo)
     const isCirculoCercano = isSelfChat || isAdmin || isFamilyContact || contactTypes[phone] === 'equipo';
-    const buscaloExplicito = /\bbuscalo\b/i.test(recentMsgs);
-    const searchTriggered = isCirculoCercano || buscaloExplicito;
-    if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Search activado — ${buscaloExplicito ? 'BUSCALO explícito' : 'círculo cercano (' + (isSelfChat ? 'self-chat' : isFamilyContact ? 'familia' : 'equipo') + ')'}`);
+    const searchTriggered = isCirculoCercano;
+    if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Search activo — ${isSelfChat ? 'self-chat' : isFamilyContact ? 'familia' : isAdmin ? 'admin' : 'equipo'}`);
 
     console.log(`[MIIA] Llamando a Gemini para ${basePhone} (isAdmin=${isAdmin}, isSelfChat=${isSelfChat}, search=${searchTriggered}, apiKey=${GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE' ? 'OK' : 'NO CONFIGURADA'})...`);
     let aiMessage = await generateAIContent(fullPrompt, { enableSearch: searchTriggered });
@@ -2088,27 +2085,30 @@ async function handleIncomingMessage(message) {
   // LOG DE DIAGNÓSTICO: cada mensaje que entra a handleIncomingMessage
   console.log(`[HIM] 📩 from=${message.from} to=${message.to} fromMe=${message.fromMe} body="${(message.body||'').substring(0,50)}" hasMedia=${message.hasMedia} type=${message.type} id=${message.id?._serialized||'?'}`);
 
-  // ANTI-RÁFAGA INTELIGENTE: Mensajes offline de leads se procesan con contexto
-  // Self-chat offline → ignorar. Leads offline → el buffer en tenant_manager ya los maneja.
-  // Aquí solo filtramos self-chat offline del owner (ya procesado por tenant_manager)
+  // ANTI-RÁFAGA INTELIGENTE: Mensajes offline se procesan con contexto
+  // El buffer en tenant_manager acumula y envía solo el último por contacto
+  // Aquí solo filtramos self-chat MUY viejo (>10 min) del owner
   const msgAge = ownerConnectedAt && message.timestamp > 0 ? ownerConnectedAt - message.timestamp : 0;
   const isOfflineMsg = msgAge > 5;
   if (isOfflineMsg) {
-    // Detectar self-chat
     const ownerNum = (getOwnerSock() && getOwnerSock().user) ? getOwnerSock().user.id.split('@')[0].split(':')[0] : OWNER_PHONE;
     const fromNum = message.from.split('@')[0].split(':')[0];
-    if (message.fromMe || fromNum === ownerNum) {
-      console.log(`[HIM] ⏭️ Self-chat offline ignorado (age=${msgAge}s) body="${(message.body||'').substring(0,30)}"`);
+    const isSelfChatMsg = message.fromMe || fromNum === ownerNum;
+
+    // Self-chat MUY viejo (>10 min) → ignorar
+    if (isSelfChatMsg && msgAge > 600) {
+      console.log(`[HIM] ⏭️ Self-chat offline MUY viejo ignorado (${Math.round(msgAge/60)}min) body="${(message.body||'').substring(0,30)}"`);
       return;
     }
-    // Lead/cliente offline → inyectar contexto de delay en el body
+
+    // Inyectar contexto offline (viene del buffer de tenant_manager)
     const offlineCtx = message._baileysMsg?._offlineContext;
     if (offlineCtx) {
       const prefix = offlineCtx.totalMessages > 1
-        ? `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: El contacto envió ${offlineCtx.totalMessages} mensajes mientras estabas offline (hace ${offlineCtx.ageLabel}). Mensajes: ${offlineCtx.allBodies.map(b => `"${b.substring(0,60)}"`).join(', ')}. Responde SOLO al último considerando TODO el contexto. Sé conciso, natural, termina con una pregunta relevante.]\n`
-        : `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: Mensaje de hace ${offlineCtx.ageLabel}. Responde naturalmente, conciso, termina con pregunta relevante.]\n`;
+        ? `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: ${isSelfChatMsg ? 'Escribiste' : 'El contacto envió'} ${offlineCtx.totalMessages} mensajes mientras estabas offline (hace ${offlineCtx.ageLabel}). Mensajes: ${offlineCtx.allBodies.map(b => `"${b.substring(0,60)}"`).join(', ')}. Responde SOLO al último considerando TODO el contexto. Sé conciso y natural.]\n`
+        : `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: Mensaje de hace ${offlineCtx.ageLabel}. Responde naturalmente y conciso.]\n`;
       message.body = prefix + message.body;
-      console.log(`[HIM] 🔄 Mensaje offline de lead procesado con contexto (${offlineCtx.totalMessages} msgs, hace ${offlineCtx.ageLabel})`);
+      console.log(`[HIM] 🔄 Mensaje offline procesado con contexto (${offlineCtx.totalMessages} msgs, hace ${offlineCtx.ageLabel}, ${isSelfChatMsg ? 'self-chat' : 'contacto'})`);
     }
   }
 
