@@ -449,17 +449,24 @@ async function runAgendaEngine() {
 
     for (const doc of pendingSnap.docs) {
       const evt = doc.data();
-      const phone = evt.contactPhone === 'self' || evt.contactPhone === OWNER_PHONE
+      // Resolver destinatario: 'self' = recordatorio al owner
+      const isOwnerReminder = evt.contactPhone === 'self' || evt.contactPhone === OWNER_PHONE;
+      const phone = isOwnerReminder
         ? `${OWNER_PHONE}@s.whatsapp.net`
         : (evt.contactPhone.includes('@') ? evt.contactPhone : `${evt.contactPhone}@s.whatsapp.net`);
 
-      // Generar mensaje con Gemini usando contexto
-      const history = (conversations[phone] || []).slice(-10).map(m => `${m.role === 'user' ? 'Contacto' : 'MIIA'}: ${m.content}`).join('\n');
-      const prompt = `Sos MIIA. Tenés que escribirle a ${evt.contactName || 'este contacto'}.
-Razón del recordatorio: ${evt.reason}
-Guía: ${evt.promptHint || 'Sé natural y breve.'}
-Historial reciente:\n${history || '(sin historial)'}
-Escribí UN mensaje corto, natural, cálido, con tu personalidad. Recordale el evento naturalmente, como si fuera espontáneo. Máximo 3 líneas.`;
+      // ═══ SEGURIDAD: Si remindContact=false y NO es para el owner, NO enviar ═══
+      if (!isOwnerReminder && !evt.remindContact) {
+        console.log(`[AGENDA] ⏭️ Evento ${doc.id} no tiene permiso para contactar a ${evt.contactName}. Solo owner.`);
+        await doc.ref.update({ status: 'skipped_no_contact_permission' });
+        continue;
+      }
+
+      // Generar mensaje contextualizado
+      const mentioned = evt.mentionedContact || '';
+      const prompt = isOwnerReminder
+        ? `Sos MIIA. Recordale a tu owner (${evt.contactName}) este evento de su agenda: "${evt.reason}"${mentioned ? ` (con ${mentioned})` : ''}. Mensaje breve en self-chat, máximo 2 líneas. Sin decorados.`
+        : `Sos MIIA. Tenés que recordarle a ${evt.contactName || 'este contacto'} sobre: "${evt.reason}". Mensaje breve, natural, máximo 2 líneas. Sin decorados.`;
 
       let enableSearch = evt.searchBefore || false;
 
@@ -529,7 +536,7 @@ const MSG_SUSCRIPCION =
 El resto ya lo tengo del plan que conversamos. El link tiene una validez de 24 horas desde que te lo envío, así que cuando lo recibas conviene completar el proceso ese mismo día para no perder el descuento. 😊`;
 let helpCenterData = '';
 let userProfile = {
-  name: 'MIIA Owner', phone: '573054169969', email: '', goal: 1500,
+  name: 'Mariano', phone: '573054169969', email: '', goal: 1500,
   // Email SMTP (envío)
   smtpHost: '', smtpPort: 587, smtpUser: '', smtpPass: '',
   // Email IMAP (lectura/aprendizaje)
@@ -1808,7 +1815,12 @@ Nuevo resumen actualizado:`;
     const trustTone = '\n' + getAffinityToneForPrompt(phone, userProfile.name || 'Mariano', isLeadContact);
 
     const syntheticMemoryStr = leadSummaries[phone] ? `\n\n🧠[MEMORIA ACUMULADA DE ESTA PERSONA]:\n${leadSummaries[phone]}` : '';
-    const masterIdentityStr = userProfile.name ? `\n\n[IDENTIDAD DEL MAESTRO]: Tu usuario principal es ${userProfile.name}. Bríndale trato preferencial absoluto.` : '';
+    // IDENTIDAD DEL MAESTRO: solo visible en self-chat (isAdmin).
+    // NUNCA incluir en conversaciones con leads — Gemini confunde "tu usuario principal"
+    // con "la persona que te habla" y firma como "MIIA Owner" o "Mariano".
+    const masterIdentityStr = isAdmin
+      ? `\n\n[IDENTIDAD DEL MAESTRO]: Estás en self-chat con tu creador ${userProfile.name || 'Mariano'}. Bríndale trato preferencial absoluto.`
+      : '';
     // Fecha y hora local del owner (según código de país de su teléfono)
     const ownerCountryCode = getCountryFromPhone(OWNER_PHONE);
     const ownerTimezone = getTimezoneForCountry(ownerCountryCode);
@@ -2060,19 +2072,21 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
             console.warn(`[AGENDA] ⚠️ Google Calendar no disponible: ${calErr.message}. Guardando en Firestore.`);
           }
 
-          // 2. Siempre guardar en Firestore (como respaldo y para recordatorios)
+          // 2. Guardar en Firestore
+          // ═══ SEGURIDAD: Desde self-chat el recordatorio es para el owner ═══
+          // NUNCA enviar a terceros sin confirmación. Bloque G lo implementará.
           try {
-            const isFromCircle = isSelfChat || isFamilyContact || contactTypes[phone] === 'equipo';
             await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
-              contactPhone: contacto,
-              contactName,
+              contactPhone: isSelfChat ? 'self' : contacto,
+              contactName: isSelfChat ? (userProfile.name || 'Mariano') : contactName,
+              mentionedContact: contacto,
               scheduledFor: fecha,
               reason: razon,
               promptHint: hint || '',
               status: 'pending',
               calendarSynced: calendarOk,
-              remindContact: isFromCircle, // MIIA recuerda al contacto el día del evento
-              requestedBy: phone, // quién pidió agendar
+              remindContact: false,
+              requestedBy: phone,
               searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
               createdAt: new Date().toISOString(),
               source: isSelfChat ? 'owner_selfchat' : 'contact_request'

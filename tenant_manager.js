@@ -300,6 +300,13 @@ async function processOfflineBuffer(uid, jid, bufferedMsgs, tenant, isOwner) {
 
   console.log(`[TM:${uid}] 🔄 Procesando ${totalMsgs} msg(s) offline de ${jid} (último hace ${ageLabel}): "${last.body.substring(0, 50)}"`);
 
+  // Actualizar último timestamp procesado (anti-repetición post-reconexión)
+  const lastTs = typeof last.msg.messageTimestamp === 'number' ? last.msg.messageTimestamp
+    : (last.msg.messageTimestamp?.low || parseInt(last.msg.messageTimestamp) || 0);
+  if (lastTs > (tenant._lastProcessedTs || 0)) {
+    tenant._lastProcessedTs = lastTs;
+  }
+
   // Si es owner con onMessage (admin/Mariano) → delegar al handler con flag offline
   if (isOwner && tenant.onMessage) {
     // Solo enviar el último mensaje, con metadata de offline
@@ -861,6 +868,15 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
         if (isOffline) {
           const ageSec = tenant.connectedAt - msgTs;
+          // ═══ ANTI-REPETICIÓN: Ignorar mensajes offline ya procesados ═══
+          // Tras reconexión, WhatsApp re-entrega mensajes viejos. Si el msgTs
+          // es anterior al último mensaje que ya procesamos, es una repetición.
+          // Esto complementa el dedup en memoria (TTL 10min) para casos donde
+          // la reconexión ocurre después de que el TTL expiró.
+          if (tenant._lastProcessedTs && msgTs <= tenant._lastProcessedTs) {
+            console.log(`[TM:${uid}] ⏭️ Mensaje offline ya procesado (ts=${msgTs} <= lastProcessed=${tenant._lastProcessedTs}): "${body.substring(0,30)}"`);
+            continue;
+          }
           console.log(`[TM:${uid}] 📦 Mensaje offline de ${from} (hace ${ageSec}s): "${body.substring(0,40)}" → buffer`);
           if (!offlineBuffer[from]) offlineBuffer[from] = { msgs: [], timer: null };
           offlineBuffer[from].msgs.push({ msg, from, body, hasMedia, ageSec });
@@ -871,6 +887,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             delete offlineBuffer[from];
           }, 5000);
           continue;
+        }
+
+        // Actualizar último timestamp procesado (anti-repetición post-reconexión)
+        if (msgTs > (tenant._lastProcessedTs || 0)) {
+          tenant._lastProcessedTs = msgTs;
         }
 
         // Mensaje en tiempo real → procesar normalmente

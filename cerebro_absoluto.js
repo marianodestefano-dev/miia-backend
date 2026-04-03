@@ -229,7 +229,7 @@ async function extractDNAChronological() {
     if (batchContext.length > 0 && _generateAIContent) {
       console.log(`[CEREBRO ABSOLUTO] Enviando ${extractedCount} chats a Gemini para analisis ADN...`);
 
-      const prompt = `Eres MIIA, la asistente de ventas de Medilink creada por MIIA Owner.
+      const prompt = `Eres MIIA, la asistente de ventas de Medilink creada por Mariano.
 Analiza este lote de conversaciones reales de WhatsApp con leads medicos, clasificadas por tipo:
   VENTA = lead se convirtio en cliente
   DEBATE = conversacion larga con muchas objeciones
