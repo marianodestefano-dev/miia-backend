@@ -4315,11 +4315,14 @@ app.post('/api/tenant/:uid/ai-test', express.json(), async (req, res) => {
     });
   } catch (err) {
     console.error('[AI-TEST] Error:', err.message);
-    const msg = err.message.includes('401') || err.message.includes('403')
-      ? 'API key inválida o sin permisos'
-      : err.message.includes('404')
-        ? 'Modelo no disponible con esta key'
-        : `Error de conexión: ${err.message.substring(0, 100)}`;
+    const em = err.message;
+    const msg = em.includes('credit') || em.includes('balance')
+      ? 'Sin créditos. Cargá saldo en console.anthropic.com → Billing'
+      : em.includes('401') || em.includes('403') || em.includes('credentials')
+        ? 'API key inválida o sin permisos'
+        : em.includes('404')
+          ? 'Modelo no disponible con esta key'
+          : `Error de conexión: ${em.substring(0, 150)}`;
     res.status(400).json({ error: msg });
   }
 });

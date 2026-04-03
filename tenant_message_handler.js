@@ -790,6 +790,16 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     aiMessage = await callAI(aiProvider, aiApiKey, fullPrompt);
   } catch (e) {
     console.error(`${logPrefix} ❌ Error llamando a ${aiProvider} para ${basePhone}:`, e.message);
+    // Notificar al usuario si es un error de créditos/billing
+    const em = e.message.toLowerCase();
+    if (em.includes('credit') || em.includes('balance') || em.includes('billing') || em.includes('quota')) {
+      const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${aiProvider}) no tiene créditos o saldo disponible.\n\nSolución: Cargá saldo en la cuenta de ${aiProvider === 'claude' ? 'console.anthropic.com' : aiProvider === 'openai' ? 'platform.openai.com' : 'aistudio.google.com'} → Billing.\n\nMientras tanto, podés cambiar a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
+      try {
+        if (ctx.sock && ctx.selfJid) {
+          await ctx.sock.sendMessage(ctx.selfJid, { text: alertMsg });
+        }
+      } catch (_) {}
+    }
     return;
   }
 

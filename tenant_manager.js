@@ -258,6 +258,16 @@ async function processTenantMessage(uid, phone, messageBody) {
     }
   } catch (error) {
     console.error(`[TM:${uid}] Error processing message from ${jid}:`, error.message);
+    // Notificar al usuario si es un error de créditos/billing
+    const em = error.message.toLowerCase();
+    if (em.includes('credit') || em.includes('balance') || em.includes('billing') || em.includes('quota')) {
+      const provider = t.aiProvider || 'gemini';
+      const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${provider}) no tiene créditos o saldo disponible.\n\nCargá saldo en la cuenta del proveedor o cambiá a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
+      try {
+        const selfJid = t.sock?.user?.id?.replace(/:.*@/, '@');
+        if (t.sock && selfJid) await t.sock.sendMessage(selfJid, { text: alertMsg });
+      } catch (_) {}
+    }
   }
 }
 
