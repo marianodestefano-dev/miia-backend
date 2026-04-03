@@ -4171,7 +4171,7 @@ app.put('/api/tenant/:uid/ai-config', express.json(), async (req, res) => {
       return res.status(400).json({ error: 'API key inválida' });
     }
 
-    await db.collection('users').doc(uid).update({
+    await admin.firestore().collection('users').doc(uid).update({
       ai_provider: provider,
       ai_api_key: apiKey.trim(),
       ai_updated_at: admin.firestore.FieldValue.serverTimestamp()
@@ -4231,7 +4231,7 @@ app.post('/api/tenant/:uid/ai-test', express.json(), async (req, res) => {
 app.delete('/api/tenant/:uid/ai-config', async (req, res) => {
   try {
     const { uid } = req.params;
-    await db.collection('users').doc(uid).update({
+    await admin.firestore().collection('users').doc(uid).update({
       ai_provider: admin.firestore.FieldValue.delete(),
       ai_api_key: admin.firestore.FieldValue.delete(),
       ai_updated_at: admin.firestore.FieldValue.delete()
