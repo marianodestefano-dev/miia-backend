@@ -588,6 +588,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         tenant._initializing = false;
         tenant._reconnecting = false; // Liberar lock anti-cascada
         tenant.connectedAt = Math.floor(Date.now() / 1000); // Unix timestamp en segundos
+        // Anti-repetición post-deploy: ignorar mensajes anteriores al boot
+        if (!tenant._lastProcessedTs) {
+          tenant._lastProcessedTs = tenant.connectedAt;
+        }
 
         // 🔑 Extraer y guardar número real del usuario en Firestore
         try {
