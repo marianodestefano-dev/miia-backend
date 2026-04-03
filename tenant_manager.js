@@ -537,11 +537,17 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const wsState = tenant.sock.ws.readyState;
         // WebSocket states: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
         if (wsState !== 1) {
+          if (tenant._reconnecting) return; // Anti-cascada
           console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket zombie detectado (ws.readyState=${wsState}, silent ${Math.round(silentMinutes)}min). Forzando reconexión...`);
+          tenant._reconnecting = true;
           try { tenant.sock.end(undefined); } catch (_) {}
+          tenant.sock = null;
           tenant.isReady = false;
           tenant._initializing = true;
-          setTimeout(() => startBaileysConnection(uid, tenant, ioInstance), 2000);
+          setTimeout(() => {
+            tenant._reconnecting = false;
+            startBaileysConnection(uid, tenant, ioInstance);
+          }, 5000); // 5s para que WhatsApp libere la conexión
         }
       }
     }, 300000); // Cada 5 minutos
@@ -573,6 +579,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         tenant.isAuthenticated = true;
         tenant.qrCode = null;
         tenant._initializing = false;
+        tenant._reconnecting = false; // Liberar lock anti-cascada
         tenant.connectedAt = Math.floor(Date.now() / 1000); // Unix timestamp en segundos
 
         // 🔑 Extraer y guardar número real del usuario en Firestore
@@ -658,11 +665,34 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         console.log(`[TM:${uid}] ❌ Disconnected (code: ${statusCode}). Reconnect: ${shouldReconnect}`);
 
         if (shouldReconnect) {
-          // Smart reconnect with escalation
+          // ═══ ANTI-CASCADA: Lock de reconexión ═══
+          // Sin este lock, múltiples eventos 'close' simultáneos disparan
+          // múltiples startBaileysConnection() → conexiones paralelas →
+          // WhatsApp las mata con code 440 → cascada infinita.
+          if (tenant._reconnecting) {
+            console.log(`[TM:${uid}] ⏸️ Reconnect ya en curso — ignorando disconnect duplicado`);
+            return;
+          }
+          tenant._reconnecting = true;
+
+          // Destruir socket anterior COMPLETAMENTE antes de reconectar
+          try { sock.end(undefined); } catch (_) {}
+          tenant.sock = null;
+
           const attempts = (tenantReconnectAttempts.get(uid) || 0) + 1;
           tenantReconnectAttempts.set(uid, attempts);
-          const delay = Math.min(1000 + (attempts * 500), 15000); // 1.5s → 15s max
-          console.log(`[TM:${uid}] 🔄 Reconnecting in ${delay/1000}s (attempt #${attempts})...`);
+
+          // Code 440 = "Connection Replaced" → hay sockets duplicados.
+          // Backoff agresivo para dar tiempo a que WhatsApp libere la sesión.
+          const isConnectionReplaced = statusCode === 440;
+          const baseDelay = isConnectionReplaced
+            ? Math.min(5000 + (attempts * 3000), 30000)   // 440: 8s → 30s
+            : Math.min(1500 + (attempts * 500), 15000);    // otros: 2s → 15s
+          // Jitter aleatorio para evitar reconexiones sincronizadas
+          const jitter = Math.floor(Math.random() * 2000);
+          const delay = baseDelay + jitter;
+
+          console.log(`[TM:${uid}] 🔄 Reconnecting in ${(delay/1000).toFixed(1)}s (attempt #${attempts}, code: ${statusCode})...`);
 
           // After 5 normal reconnects, try purging session keys
           if (attempts === 5 && tenant._sessionApis) {
@@ -671,6 +701,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           }
 
           setTimeout(() => {
+            tenant._reconnecting = false; // Liberar lock
             if (tenants.has(uid)) {
               tenant._initializing = true;
               startBaileysConnection(uid, tenant, ioInstance);
