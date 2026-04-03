@@ -1015,6 +1015,20 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       }
     });
 
+    // ── Supresores de eventos Baileys no manejados ──────────────────────
+    // Sin estos handlers, Baileys propaga metadata (chats, presencia, receipts)
+    // por el protocolo de dispositivo vinculado → WhatsApp primario interpreta
+    // como actividad nueva → notificación fantasma sin mensaje visible.
+    sock.ev.on('chats.upsert', () => {});
+    sock.ev.on('chats.update', () => {});
+    sock.ev.on('chats.delete', () => {});
+    sock.ev.on('presence.update', () => {});
+    sock.ev.on('contacts.upsert', () => {});
+    sock.ev.on('contacts.update', () => {});
+    sock.ev.on('message-receipt.update', () => {});
+    sock.ev.on('groups.upsert', () => {});
+    sock.ev.on('groups.update', () => {});
+
   } catch (err) {
     console.error(`[TM:${uid}] ❌ Error starting Baileys:`, err.message);
     tenant._initializing = false;
