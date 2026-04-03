@@ -1,9 +1,66 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-02 ~02:10 AM (SESIÓN 8 — PDF SELF-CHAT FUNCIONA)
-**ESTADO**: P1 ✅ PDF COTIZACIÓN FUNCIONANDO | P2 ✅ AUTO-CLEANUP FUNCIONANDO
-**URGENCIA**: BAJA — Sistema estable, PDF llega al self-chat de Mariano
+**ÚLTIMA ACTUALIZACIÓN**: 2026-04-03 (SESIÓN 9 — SISTEMA AFFINITY + DISEÑO INTELIGENCIA)
+**ESTADO**: AFFINITY ✅ | IDENTIDAD ✅ | RESET/HARTAZGO ✅ | FIRESTORE PERSIST ✅
+**URGENCIA**: BAJA — Sistema estable, affinity funcionando, planes completos para Bloques B-E
 **STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
+
+---
+
+## ⚡ SESIÓN 9 (Abril 3 — SISTEMA AFFINITY + INTELIGENCIA + PLANES BLOQUES B-E)
+
+**LO QUE SE HIZO:**
+
+### 1. Sistema AFFINITY completo (commit 6f4bf62)
+- 6 stages (0-5) con **dual tones**: `toneGrupo` (MIIA como asistente) y `toneLead` (MIIA como owner)
+- `getAffinityToneForPrompt(phone, ownerName, isLead)` inyecta tono correcto
+- Detección automática: `isLeadContact = !isAdmin && !isFamilyContact && !equipoMedilink[basePhone]`
+
+### 2. Identidad + Hartazgo + Reset (commit 6f4bf62)
+- Identidad: Grupo → honesta ("soy MIIA, asistente de X"), Lead → "soy X" (nunca revela IA)
+- `[HARTAZGO_CONFIRMADO:name]` → affinity=0, highestStage=0, silencio inmediato
+- `[SILENCIAR_LEAD:name]` → notifica owner, NO responde al lead
+- `RESET AFFINITY [name/phone]` y `RESET AFFINITY 0 [name/phone]` via WhatsApp
+
+### 3. Persistencia Affinity en Firestore (commit 98f414c)
+- `saveAffinityToFirestore()` → `users/{OWNER_UID}/affinity_data/all`
+- Debounce 30s para writes normales, inmediato en stage change/reset/hartazgo
+- `loadAffinityFromFirestore()` al startup (no sobreescribe si RAM tiene más)
+- SIGTERM handler flushes affinity
+
+### 4. Documentos de diseño
+- `DISENO_SISTEMA_INTELIGENCIA_MIIA.md` — Sistema proactivo, aprendizaje 3 capas, motor de patrones, reportes
+- `TAREA_PENDIENTE_VOZ_MIIA.md` — TTS/voice cloning para fase futura
+
+### 5. Planes de bloques futuros (commits b44e684 + a832db7)
+- `PLAN_BLOQUE_B_MIIA_CONTACTO_PROPIO.md` — MIIA como contacto WhatsApp separado, dual mode
+- `PLAN_BLOQUE_C_AUDIO_INTELIGENTE.md` — Audio clips guardados + TTS
+- `PLAN_BLOQUE_D_LIMPIEZA_TECNICA.md` — P3-P7, archivos obsoletos
+- `PLAN_BLOQUE_E_REDISENO_VISUAL.md` — QA dark/light mode
+
+**Commits sesión 9:**
+- `6f4bf62` — Sistema AFFINITY completo + identidad + reset + hartazgo + docs
+- `98f414c` — A1: Persistir affinity en Firestore
+- `41d3354` — Fix prompts "dile a"
+- `5c3e74f` — Fix timezone + confirmaciones
+- `4c6e464` — Remove BUSCALO + self-chat offline buffer
+- `b44e684` — Plan Bloque B (MIIA contacto propio)
+- `a832db7` — Planes Bloques C, D, E
+
+**BLOQUES PENDIENTES (por orden de prioridad):**
+```
+Bloque A (restante): A2 (auto-reconnect), A3 (documents endpoint), A4 (export setTenantTrainingData)
+Bloque B: MIIA como contacto propio WhatsApp (planificado, no implementado)
+Bloque C: Audio inteligente (planificado, no implementado)
+Bloque D: Limpieza técnica P3-P7 (planificado, no implementado)
+Bloque E: Rediseño visual QA (planificado, no implementado)
+Bloque F: Multi-negocio + grupos CRUD
+Bloque G: Sistema Inteligencia Fase 1 (APRENDIZAJE_CONTACTO, proactivo, cascada)
+Bloque H: Sistema Inteligencia Fase 2 (motor patrones, ADN vendedor)
+Bloque I: Reportes (email quincenal)
+Bloque J: Features independientes (P8-P11, config IA)
+Bloque K: Fase futura (voz MIIA, mini app, verticales)
+```
 
 ---
 
