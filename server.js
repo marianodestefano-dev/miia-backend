@@ -4149,17 +4149,45 @@ function decryptBackup(payload, masterKeyOnly) {
 // AI PROVIDER CONFIGURATION
 // ============================================
 
-// GET /api/tenant/:uid/ai-config — Get current AI provider config
+// ── AI Config — Multi-provider support ──
+// Stores ai_configs: [{provider, apiKey, active, addedAt}] on user doc
+// Backward compat: also writes ai_provider/ai_api_key for active config
+
+function maskApiKey(key) {
+  if (!key || key.length < 8) return '****';
+  return key.substring(0, 6) + '...' + key.substring(key.length - 4);
+}
+
+// GET /api/tenant/:uid/ai-config — Get all configured AI providers
 app.get('/api/tenant/:uid/ai-config', async (req, res) => {
   try {
     const { uid } = req.params;
     const doc = await admin.firestore().collection('users').doc(uid).get();
     if (!doc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
     const data = doc.data();
+
+    // Migrate old format to new if needed
+    let configs = data.ai_configs || [];
+    if (configs.length === 0 && data.ai_provider && data.ai_api_key) {
+      configs = [{ provider: data.ai_provider, apiKey: data.ai_api_key, active: true, addedAt: Date.now() }];
+    }
+
+    // Return configs with masked keys
+    const masked = configs.map(c => ({
+      provider: c.provider,
+      providerLabel: PROVIDER_LABELS[c.provider] || c.provider,
+      keyPreview: maskApiKey(c.apiKey),
+      active: !!c.active,
+      addedAt: c.addedAt
+    }));
+
+    // Also return active provider for backward compat
+    const active = configs.find(c => c.active);
     res.json({
-      provider: data.ai_provider || 'gemini',
-      hasCustomKey: !!(data.ai_api_key),
-      providerLabel: PROVIDER_LABELS[data.ai_provider || 'gemini'] || 'Google Gemini'
+      configs: masked,
+      provider: active ? active.provider : 'gemini',
+      hasCustomKey: !!(active && active.apiKey),
+      providerLabel: PROVIDER_LABELS[(active && active.provider) || 'gemini'] || 'Google Gemini'
     });
   } catch (err) {
     console.error('[AI-CONFIG] Error:', err.message);
@@ -4167,7 +4195,7 @@ app.get('/api/tenant/:uid/ai-config', async (req, res) => {
   }
 });
 
-// PUT /api/tenant/:uid/ai-config — Save AI provider + API key
+// PUT /api/tenant/:uid/ai-config — Add or update an AI provider config
 app.put('/api/tenant/:uid/ai-config', express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
@@ -4177,22 +4205,82 @@ app.put('/api/tenant/:uid/ai-config', express.json(), async (req, res) => {
       return res.status(400).json({ error: `Proveedor inválido. Válidos: ${validProviders.join(', ')}` });
     }
     if (!apiKey || apiKey.trim().length < 10) {
-      return res.status(400).json({ error: 'API key inválida' });
+      return res.status(400).json({ error: 'API key inválida (mínimo 10 caracteres)' });
     }
 
-    await admin.firestore().collection('users').doc(uid).update({
-      ai_provider: provider,
-      ai_api_key: apiKey.trim(),
-      ai_updated_at: admin.firestore.FieldValue.serverTimestamp()
-    });
+    const doc = await admin.firestore().collection('users').doc(uid).get();
+    const data = doc.exists ? doc.data() : {};
+    let configs = data.ai_configs || [];
 
-    // Update running tenant if active
-    tenantManager.setTenantAIConfig(uid, provider, apiKey.trim());
+    // Migrate old format
+    if (configs.length === 0 && data.ai_provider && data.ai_api_key) {
+      configs = [{ provider: data.ai_provider, apiKey: data.ai_api_key, active: true, addedAt: Date.now() }];
+    }
+
+    // Check if provider already exists → update key
+    const idx = configs.findIndex(c => c.provider === provider);
+    if (idx >= 0) {
+      configs[idx].apiKey = apiKey.trim();
+    } else {
+      // New provider — if first one, make active; otherwise inactive
+      configs.push({ provider, apiKey: apiKey.trim(), active: configs.length === 0, addedAt: Date.now() });
+    }
+
+    // Update Firestore
+    const activeConfig = configs.find(c => c.active);
+    const update = {
+      ai_configs: configs,
+      ai_updated_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+    // Backward compat fields
+    if (activeConfig) {
+      update.ai_provider = activeConfig.provider;
+      update.ai_api_key = activeConfig.apiKey;
+    }
+    await admin.firestore().collection('users').doc(uid).update(update);
+
+    // Update running tenant with active config
+    if (activeConfig) {
+      tenantManager.setTenantAIConfig(uid, activeConfig.provider, activeConfig.apiKey);
+    }
 
     res.json({ success: true, provider, providerLabel: PROVIDER_LABELS[provider] });
   } catch (err) {
     console.error('[AI-CONFIG] Error saving:', err.message);
     res.status(500).json({ error: 'Error al guardar configuración de IA' });
+  }
+});
+
+// POST /api/tenant/:uid/ai-config/activate — Activate a specific provider (deactivate others)
+app.post('/api/tenant/:uid/ai-config/activate', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { provider } = req.body;
+
+    const doc = await admin.firestore().collection('users').doc(uid).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const data = doc.data();
+    let configs = data.ai_configs || [];
+
+    const target = configs.find(c => c.provider === provider);
+    if (!target) return res.status(404).json({ error: 'Proveedor no configurado. Agregá la API key primero.' });
+
+    // Deactivate all, activate target
+    configs = configs.map(c => ({ ...c, active: c.provider === provider }));
+
+    await admin.firestore().collection('users').doc(uid).update({
+      ai_configs: configs,
+      ai_provider: provider,
+      ai_api_key: target.apiKey,
+      ai_updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    tenantManager.setTenantAIConfig(uid, provider, target.apiKey);
+
+    res.json({ success: true, provider, providerLabel: PROVIDER_LABELS[provider] });
+  } catch (err) {
+    console.error('[AI-CONFIG] Error activating:', err.message);
+    res.status(500).json({ error: 'Error al activar proveedor' });
   }
 });
 
@@ -4236,17 +4324,52 @@ app.post('/api/tenant/:uid/ai-test', express.json(), async (req, res) => {
   }
 });
 
-// DELETE /api/tenant/:uid/ai-config — Reset to default (Gemini with global key)
+// DELETE /api/tenant/:uid/ai-config/:provider — Remove a specific provider config
+app.delete('/api/tenant/:uid/ai-config/:provider', async (req, res) => {
+  try {
+    const { uid, provider } = req.params;
+    const doc = await admin.firestore().collection('users').doc(uid).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const data = doc.data();
+    let configs = data.ai_configs || [];
+
+    const wasActive = configs.find(c => c.provider === provider && c.active);
+    configs = configs.filter(c => c.provider !== provider);
+
+    // If we removed the active one, activate the first remaining or clear
+    const update = { ai_configs: configs, ai_updated_at: admin.firestore.FieldValue.serverTimestamp() };
+    if (wasActive && configs.length > 0) {
+      configs[0].active = true;
+      update.ai_configs = configs;
+      update.ai_provider = configs[0].provider;
+      update.ai_api_key = configs[0].apiKey;
+      tenantManager.setTenantAIConfig(uid, configs[0].provider, configs[0].apiKey);
+    } else if (configs.length === 0) {
+      update.ai_provider = admin.firestore.FieldValue.delete();
+      update.ai_api_key = admin.firestore.FieldValue.delete();
+      const globalKey = process.env.GEMINI_API_KEY;
+      tenantManager.setTenantAIConfig(uid, 'gemini', globalKey);
+    }
+
+    await admin.firestore().collection('users').doc(uid).update(update);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[AI-CONFIG] Error deleting:', err.message);
+    res.status(500).json({ error: 'Error al eliminar proveedor' });
+  }
+});
+
+// DELETE /api/tenant/:uid/ai-config — Reset all AI config to default
 app.delete('/api/tenant/:uid/ai-config', async (req, res) => {
   try {
     const { uid } = req.params;
     await admin.firestore().collection('users').doc(uid).update({
+      ai_configs: [],
       ai_provider: admin.firestore.FieldValue.delete(),
       ai_api_key: admin.firestore.FieldValue.delete(),
       ai_updated_at: admin.firestore.FieldValue.delete()
     });
 
-    // Reset running tenant to global Gemini
     const globalKey = process.env.GEMINI_API_KEY;
     tenantManager.setTenantAIConfig(uid, 'gemini', globalKey);
 
