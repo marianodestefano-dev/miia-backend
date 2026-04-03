@@ -51,6 +51,9 @@ const tenantMessageHandler = require('./tenant_message_handler');
 // MESSAGE LOGIC — funciones puras compartidas (normalizeText, tags, geo, etc.)
 const messageLogic = require('./message_logic');
 
+// BUSINESSES & CONTACT GROUPS ROUTES
+const businessesRouter = require('./routes/businesses');
+
 // UNIFIED MODULES — extracted from duplicated code
 const { callGemini, callGeminiChat } = require('./gemini_client');
 const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
@@ -3865,7 +3868,13 @@ Segunda línea: si es UTIL escribe una versión mejorada y concisa del conocimie
 });
 
 // ============================================
+// BUSINESSES & CONTACT GROUPS (new multi-business routes)
+// ============================================
+app.use('/api/tenant/:uid', businessesRouter);
+
+// ============================================
 // TRAINING ENDPOINTS — Products, Contact Rules, Sessions, Test
+// (Legacy — redirigen al defaultBusinessId para backward compat)
 // ============================================
 
 // ── Training Products (grilla) ──────────────────────────────────────────────

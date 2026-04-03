@@ -59,7 +59,9 @@ const tenantContexts = new Map();
 // FIRESTORE HELPERS — Cada función loguea TODO (éxito y error)
 // ═══════════════════════════════════════════════════════════════
 
-const db = admin.firestore();
+// Lazy init — admin.firestore() no está disponible hasta que server.js llame initializeApp()
+let _db;
+function db() { if (!_db) _db = admin.firestore(); return _db; }
 
 /**
  * Carga el perfil del owner desde Firestore.
@@ -69,7 +71,7 @@ const db = admin.firestore();
  */
 async function loadOwnerProfile(ownerUid) {
   try {
-    const doc = await db.collection('users').doc(ownerUid).get();
+    const doc = await db().collection('users').doc(ownerUid).get();
     if (!doc.exists) {
       console.warn(`[TMH:${ownerUid}] ⚠️ Owner no encontrado en Firestore — usando defaults`);
       return { ...DEFAULT_OWNER_PROFILE };
@@ -100,7 +102,7 @@ async function loadOwnerProfile(ownerUid) {
  */
 async function loadBusinessCerebro(ownerUid) {
   try {
-    const doc = await db.collection('users').doc(ownerUid).collection('brain').doc('business_cerebro').get();
+    const doc = await db().collection('users').doc(ownerUid).collection('brain').doc('business_cerebro').get();
     const content = doc.exists ? (doc.data().content || '') : '';
     console.log(`[TMH:${ownerUid}] 🧠 Business cerebro: ${content.length} chars`);
     return content;
@@ -116,7 +118,7 @@ async function loadBusinessCerebro(ownerUid) {
  */
 async function loadPersonalBrain(uid) {
   try {
-    const doc = await db.collection('users').doc(uid).collection('personal').doc('personal_brain').get();
+    const doc = await db().collection('users').doc(uid).collection('personal').doc('personal_brain').get();
     const content = doc.exists ? (doc.data().content || '') : '';
     console.log(`[TMH:${uid}] 🔒 Personal brain: ${content.length} chars`);
     return content;
@@ -132,7 +134,7 @@ async function loadPersonalBrain(uid) {
  */
 async function loadFamilyContacts(ownerUid) {
   try {
-    const snap = await db.collection('users').doc(ownerUid).collection('familyContacts').get();
+    const snap = await db().collection('users').doc(ownerUid).collection('familyContacts').get();
     const contacts = {};
     snap.forEach(doc => { contacts[doc.id] = doc.data(); });
     console.log(`[TMH:${ownerUid}] 👨‍👩‍👧 Family contacts: ${Object.keys(contacts).length}`);
@@ -149,7 +151,7 @@ async function loadFamilyContacts(ownerUid) {
  */
 async function loadTeamContacts(ownerUid) {
   try {
-    const snap = await db.collection('users').doc(ownerUid).collection('teamContacts').get();
+    const snap = await db().collection('users').doc(ownerUid).collection('teamContacts').get();
     const contacts = {};
     snap.forEach(doc => { contacts[doc.id] = doc.data(); });
     console.log(`[TMH:${ownerUid}] 👥 Team contacts: ${Object.keys(contacts).length}`);
@@ -166,7 +168,7 @@ async function loadTeamContacts(ownerUid) {
  */
 async function loadScheduleConfig(ownerUid) {
   try {
-    const doc = await db.collection('users').doc(ownerUid).collection('settings').doc('schedule').get();
+    const doc = await db().collection('users').doc(ownerUid).collection('settings').doc('schedule').get();
     return doc.exists ? doc.data() : null;
   } catch (e) {
     console.error(`[TMH:${ownerUid}] ❌ Error cargando schedule:`, e.message);
@@ -179,7 +181,7 @@ async function loadScheduleConfig(ownerUid) {
  * Agents y owners escriben al MISMO cerebro del owner.
  */
 async function saveBusinessLearning(ownerUid, text, source) {
-  const ref = db.collection('users').doc(ownerUid).collection('brain').doc('business_cerebro');
+  const ref = db().collection('users').doc(ownerUid).collection('brain').doc('business_cerebro');
   try {
     const doc = await ref.get();
     const current = doc.exists ? (doc.data().content || '') : '';
@@ -197,7 +199,7 @@ async function saveBusinessLearning(ownerUid, text, source) {
  * Cada persona escribe SOLO en su propio brain.
  */
 async function savePersonalLearning(uid, text, source) {
-  const ref = db.collection('users').doc(uid).collection('personal').doc('personal_brain');
+  const ref = db().collection('users').doc(uid).collection('personal').doc('personal_brain');
   try {
     const doc = await ref.get();
     const current = doc.exists ? (doc.data().content || '') : '';
@@ -216,7 +218,7 @@ async function savePersonalLearning(uid, text, source) {
  */
 async function queueDubiousLearning(ownerUid, sourceUid, text) {
   try {
-    await db.collection('users').doc(ownerUid).collection('pending_learnings').add({
+    await db().collection('users').doc(ownerUid).collection('pending_learnings').add({
       text,
       sourceUid,
       status: 'pending',
@@ -235,7 +237,7 @@ async function queueDubiousLearning(ownerUid, sourceUid, text) {
  */
 async function saveAgendaEvent(ownerUid, eventData) {
   try {
-    await db.collection('users').doc(ownerUid).collection('miia_agenda').add(eventData);
+    await db().collection('users').doc(ownerUid).collection('miia_agenda').add(eventData);
     console.log(`[TMH:${ownerUid}] 📅 Evento guardado: ${eventData.reason}`);
   } catch (e) {
     console.error(`[TMH:${ownerUid}] ❌ Error guardando evento:`, e.message);
@@ -476,7 +478,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   let pendingStr = '';
   if (isSelfChat && role === 'owner') {
     try {
-      const pendingSnap = await db.collection('users').doc(ownerUid).collection('pending_learnings')
+      const pendingSnap = await db().collection('users').doc(ownerUid).collection('pending_learnings')
         .where('status', '==', 'pending').limit(5).get();
       if (!pendingSnap.empty) {
         const items = [];
