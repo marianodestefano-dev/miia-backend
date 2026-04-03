@@ -100,6 +100,30 @@ En sesiones anteriores se modificaron estas zonas sin cuidado y se rompió la co
 
 ---
 
+## 🗄️ COPIA DE SEGURIDAD
+
+**Ruta**: `C:\Users\usuario\DOCUMENTOS\NEGOCIOS\Miia-App\COPIA SEGURIDAD MIIA\`
+**Última actualización**: 2026-04-02 — Sesión 9
+**Frecuencia**: Actualizar CADA 5 SESIONES (ver número de sesión en RESUMEN_EJECUTIVO_MIIA.md línea 3)
+
+### Archivos respaldados (producción actual):
+- `server.js`, `tenant_manager.js`, `prompt_builder.js`, `cerebro_absoluto.js`
+- `cotizacion_generator.js`, `ai_client.js`, `confidence_engine.js`, `estadisticas.js`, `package.json`
+- `adapters/` (gemini_adapter.js, openai_adapter.js, claude_adapter.js)
+- `frontend/` (admin-dashboard.html, owner-dashboard.html, agent-dashboard.html, index.html)
+
+### Archivos legacy/referencia (NO son producción):
+- `PRUEBAcerebro_medilink_backup.js` — Server.js antiguo con whatsapp-web.js. Contiene datos hardcodeados de familia/equipo de Mariano como referencia histórica.
+- `PRUEBAprompt_builder.js` — Versión anterior del prompt_builder (sin BUSCALO ni AGENDAR).
+- `baileys_session_store.js`, `cerebro_medilink_backup.js` — Obsoletos.
+- `prompt_maestro.md`, `vademecum_full.md` — Referencia histórica.
+
+### Regla obligatoria:
+> Antes de refactorizar archivos críticos (server.js, tenant_manager.js), ACTUALIZAR esta copia de seguridad.
+> Cada 5 sesiones (según RESUMEN_EJECUTIVO), copiar TODOS los archivos de producción a esta carpeta.
+
+---
+
 ## 📋 PLAN PENDIENTE — Tareas ordenadas por criticidad
 
 > **REGLA**: Cada tarea se trabaja en orden. Después de hacer commit, pedir aprobación a Mariano. Si aprueba → marcar ✅ y eliminar del plan. Si rechaza → revertir y discutir.

@@ -45,6 +45,12 @@ const estadisticas = require('./estadisticas');
 // TENANT MANAGER — multi-tenant WhatsApp isolation
 const tenantManager = require('./tenant_manager');
 
+// TENANT MESSAGE HANDLER — orquestador completo para owners/agents (Option D Fase 2)
+const tenantMessageHandler = require('./tenant_message_handler');
+
+// MESSAGE LOGIC — funciones puras compartidas (normalizeText, tags, geo, etc.)
+const messageLogic = require('./message_logic');
+
 // UNIFIED MODULES — extracted from duplicated code
 const { callGemini, callGeminiChat } = require('./gemini_client');
 const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
@@ -1617,56 +1623,58 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         }
       } catch (e) { console.error('[COBROS] Error enviando QR:', e.message); }
     }
-    // Tag de aprendizaje universal — MIIA guarda conocimiento desde cualquier canal
-    // Ahora con evaluación de confianza inteligente (save/ask/ignore)
-    const learnTagRegex = /\[GUARDAR_APRENDIZAJE:([^\]]+)\]/g;
-    let learnMatch;
-    const pendingQuestions = [];
-
-    while ((learnMatch = learnTagRegex.exec(aiMessage)) !== null) {
-      const textToLearn = learnMatch[1];
-
-      if (isAdmin) {
-        // Para el admin (Mariano), evaluar importancia con confidence engine
-        try {
-          const importance = await confidenceEngine.evaluateImportance(textToLearn, callGemini);
-          const { action, confidence, reason } = confidenceEngine.decideAction(importance, textToLearn);
-
-          console.log(`[CONFIDENCE] ${reason} (${confidence}%)`);
-
-          if (action === 'save') {
-            // Auto-save si confianza alta (>=85%)
-            cerebroAbsoluto.appendLearning(textToLearn, 'MIIA_AUTO');
-            console.log(`[LEARNING] ✅ Guardado automáticamente: "${textToLearn.substring(0, 80)}..."`);
-          } else if (action === 'ask') {
-            // Preguntar a Mariano si duda (70-84%)
-            pendingQuestions.push({
-              text: textToLearn,
-              importance,
-              confidence
-            });
-            console.log(`[LEARNING] ❓ Preguntando a Mariano sobre: "${textToLearn.substring(0, 80)}..."`);
+    // ── TAGS DE APRENDIZAJE (3 nuevos + 1 legacy) ──────────────────────────────
+    // [APRENDIZAJE_NEGOCIO:texto]  → cerebro_absoluto (negocio, compartido)
+    // [APRENDIZAJE_PERSONAL:texto] → datos personales privados de Mariano
+    // [APRENDIZAJE_DUDOSO:texto]   → encola para aprobación en self-chat
+    // [GUARDAR_APRENDIZAJE:texto]  → legacy, se trata como NEGOCIO
+    const adminCtx = { uid: OWNER_UID || 'admin', ownerUid: OWNER_UID || 'admin', role: 'admin', isOwner: true };
+    const adminCallbacks = {
+      saveBusinessLearning: async (ownerUid, text, source) => {
+        if (isAdmin) {
+          // Admin: usar confidence engine para evaluar antes de guardar
+          try {
+            const importance = await confidenceEngine.evaluateImportance(text, callGemini);
+            const { action, confidence, reason } = confidenceEngine.decideAction(importance, text);
+            console.log(`[CONFIDENCE] ${reason} (${confidence}%)`);
+            if (action === 'save') {
+              cerebroAbsoluto.appendLearning(text, source);
+              console.log(`[LEARNING:NEGOCIO] ✅ Auto-guardado (${confidence}%): "${text.substring(0, 80)}..."`);
+            } else if (action === 'ask') {
+              adminPendingQuestions.push({ text, importance, confidence });
+              console.log(`[LEARNING:NEGOCIO] ❓ Preguntando a Mariano (${confidence}%): "${text.substring(0, 80)}..."`);
+            }
+            // action === 'ignore': no hacer nada
+          } catch (e) {
+            console.error(`[CONFIDENCE] Error evaluando:`, e.message);
+            cerebroAbsoluto.appendLearning(text, source); // Fallback: guardar
           }
-          // Si action === 'ignore' (<70%): no hacer nada
-        } catch (e) {
-          console.error(`[CONFIDENCE] Error evaluando importancia:`, e.message);
-          // Fallback: guardar igualmente ante error
-          cerebroAbsoluto.appendLearning(textToLearn, 'MIIA_AUTO');
+        } else {
+          cerebroAbsoluto.appendLearning(text, source);
         }
-      } else {
-        // No-admin: solo guardar (no preguntar a leads)
-        cerebroAbsoluto.appendLearning(textToLearn, 'MIIA_AUTO');
+      },
+      savePersonalLearning: async (uid, text, source) => {
+        // Admin personal: guardar en cerebro_absoluto con tag PERSONAL
+        cerebroAbsoluto.appendLearning(`[PERSONAL] ${text}`, source);
+        console.log(`[LEARNING:PERSONAL] ✅ Guardado: "${text.substring(0, 80)}..."`);
+      },
+      queueDubiousLearning: async (ownerUid, sourceUid, text) => {
+        adminPendingQuestions.push({ text, source: sourceUid });
+        console.log(`[LEARNING:DUDOSO] ❓ Encolado para aprobación: "${text.substring(0, 80)}..."`);
       }
-    }
+    };
+    const adminPendingQuestions = [];
+
+    const { cleanMessage: learnCleanMsg, pendingQuestions } = await messageLogic.processLearningTags(aiMessage, adminCtx, adminCallbacks);
+    aiMessage = learnCleanMsg;
 
     saveDB();
-    // Remover todos los tags de la respuesta final
-    aiMessage = aiMessage.replace(/\[GUARDAR_APRENDIZAJE:[^\]]+\]/g, '').trim();
 
-    // Si hay preguntas pendientes para Mariano, guardarlas en metadata para procesarlas después
-    if (pendingQuestions.length > 0) {
+    // Si hay preguntas pendientes para Mariano (de confidence engine o tags DUDOSO)
+    const allPending = [...adminPendingQuestions, ...pendingQuestions];
+    if (allPending.length > 0) {
       if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
-      conversationMetadata[phone].pendingLearningQuestions = pendingQuestions;
+      conversationMetadata[phone].pendingLearningQuestions = allPending;
       conversationMetadata[phone].pendingLearningAskedAt = Date.now();
     }
     // Detectar y procesar tag de cotización PDF

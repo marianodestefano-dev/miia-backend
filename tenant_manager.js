@@ -26,6 +26,7 @@ const pino = require('pino');
 const { callAI } = require('./ai_client');
 const { buildTenantPrompt, buildOwnerLeadPrompt } = require('./prompt_builder');
 const { sendSessionRecoveryEmail } = require('./mail_service');
+const { handleTenantMessage } = require('./tenant_message_handler');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 const tenants = new Map();
@@ -305,8 +306,10 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}, options = {}) 
     dataDir,
     io: ioInstance,
     _initializing: true,
-    onMessage: options.onMessage || null,  // Custom message handler (used by owner)
-    onReady: options.onReady || null       // Callback when connection is ready
+    onMessage: options.onMessage || null,  // Custom message handler (used by admin/Mariano)
+    onReady: options.onReady || null,      // Callback when connection is ready
+    ownerUid: options.ownerUid || uid,     // UID del owner (agents apuntan al owner)
+    role: options.role || 'owner'          // 'owner' | 'agent'
   };
 
   tenants.set(uid, tenant);
@@ -562,11 +565,17 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
         console.log(`[TM:${uid}] 📨 Message from ${from}${isFromMe ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
 
-        // If custom onMessage handler is set (owner), delegate to it
+        // If custom onMessage handler is set (admin/Mariano), delegate to server.js
         if (tenant.onMessage) {
           try { tenant.onMessage(msg, from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
         } else {
-          processTenantMessage(uid, from, body);
+          // Tenants (owners y agents): usar handler completo con todas las features
+          // Detectar self-chat real: fromMe=true Y el chat es consigo mismo
+          const realSelfChat = isFromMe && (from === `${tenant.sock?.user?.id?.split(':')[0]}@s.whatsapp.net` || from === tenant.sock?.user?.id);
+          const ownerUid = tenant.ownerUid || uid; // agents tienen ownerUid, owners no
+          const role = tenant.role || 'owner';
+          handleTenantMessage(uid, ownerUid, role, from, body, realSelfChat, isFromMe, tenant)
+            .catch(e => console.error(`[TM:${uid}] handleTenantMessage error:`, e.message));
         }
       }
     });
