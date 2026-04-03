@@ -436,27 +436,35 @@ async function runAgendaEngine() {
 
     for (const doc of pendingSnap.docs) {
       const evt = doc.data();
-      const phone = evt.contactPhone === 'self'
+      const phone = evt.contactPhone === 'self' || evt.contactPhone === OWNER_PHONE
         ? `${OWNER_PHONE}@s.whatsapp.net`
-        : `${evt.contactPhone}@s.whatsapp.net`;
+        : (evt.contactPhone.includes('@') ? evt.contactPhone : `${evt.contactPhone}@s.whatsapp.net`);
 
       // Generar mensaje con Gemini usando contexto
       const history = (conversations[phone] || []).slice(-10).map(m => `${m.role === 'user' ? 'Contacto' : 'MIIA'}: ${m.content}`).join('\n');
       const prompt = `Sos MIIA. Tenés que escribirle a ${evt.contactName || 'este contacto'}.
-Razón: ${evt.reason}
+Razón del recordatorio: ${evt.reason}
 Guía: ${evt.promptHint || 'Sé natural y breve.'}
 Historial reciente:\n${history || '(sin historial)'}
-Escribí UN mensaje corto, natural, con tu personalidad. No expliques por qué escribís. Solo escribí como si fuera espontáneo.`;
+Escribí UN mensaje corto, natural, cálido, con tu personalidad. Recordale el evento naturalmente, como si fuera espontáneo. Máximo 3 líneas.`;
 
-      let enableSearch = false;
-      if (evt.searchBefore) enableSearch = true;
+      let enableSearch = evt.searchBefore || false;
 
       try {
         const response = await generateAIContent(prompt, { enableSearch });
         if (response && response.length > 5) {
+          // Enviar recordatorio al contacto destinatario
           await safeSendMessage(phone, response);
+          console.log(`[AGENDA] 📤 Recordatorio enviado a ${evt.contactName}: "${response.substring(0, 60)}..."`);
+
+          // Si lo pidió alguien del círculo (no el owner en self-chat), informar al owner también
+          if (evt.requestedBy && evt.requestedBy !== `${OWNER_PHONE}@s.whatsapp.net` && evt.source !== 'owner_selfchat') {
+            safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+              `📅 MIIA acaba de recordarle a *${evt.contactName}*: "${evt.reason}"`
+            ).catch(() => {});
+          }
+
           await doc.ref.update({ status: 'sent', sentAt: now.toISOString() });
-          console.log(`[AGENDA] 📤 Evento enviado a ${evt.contactName}: "${response.substring(0, 60)}..."`);
         }
       } catch (e) {
         console.error(`[AGENDA] ❌ Error procesando evento ${doc.id}:`, e.message);
@@ -1587,10 +1595,13 @@ ${history}
 
 MIIA, genera tu respuesta breve, estratégica y humana:`;
 
-    // Detectar comando BUSCALO para activar Google Search
+    // Google Search: activar automáticamente para owner, familia, equipo (círculo cercano)
+    // Para leads: solo con comando explícito "BUSCALO"
     const recentMsgs = (conversations[phone] || []).slice(-3).map(m => m.content || '').join(' ');
-    const searchTriggered = /\bbuscalo\b/i.test(recentMsgs);
-    if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Comando BUSCALO detectado — activando Google Search`);
+    const isCirculoCercano = isSelfChat || isAdmin || isFamilyContact || contactTypes[phone] === 'equipo';
+    const buscaloExplicito = /\bbuscalo\b/i.test(recentMsgs);
+    const searchTriggered = isCirculoCercano || buscaloExplicito;
+    if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Search activado — ${buscaloExplicito ? 'BUSCALO explícito' : 'círculo cercano (' + (isSelfChat ? 'self-chat' : isFamilyContact ? 'familia' : 'equipo') + ')'}`);
 
     console.log(`[MIIA] Llamando a Gemini para ${basePhone} (isAdmin=${isAdmin}, isSelfChat=${isSelfChat}, search=${searchTriggered}, apiKey=${GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE' ? 'OK' : 'NO CONFIGURADA'})...`);
     let aiMessage = await generateAIContent(fullPrompt, { enableSearch: searchTriggered });
@@ -1755,21 +1766,54 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         const parts = inner.split('|').map(p => p.trim());
         if (parts.length >= 3) {
           const [contacto, fecha, razon, hint] = parts;
+          const contactName = leadNames[`${contacto}@s.whatsapp.net`] || contacto;
+          let calendarOk = false;
+
+          // 1. Intentar crear evento en Google Calendar
           try {
+            const parsedDate = new Date(fecha);
+            if (!isNaN(parsedDate)) {
+              await createCalendarEvent({
+                summary: razon || 'Evento MIIA',
+                dateStr: fecha.split('T')[0],
+                startHour: parsedDate.getHours() || 10,
+                endHour: (parsedDate.getHours() || 10) + 1,
+                description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
+                uid: OWNER_UID
+              });
+              calendarOk = true;
+              console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName}`);
+            }
+          } catch (calErr) {
+            console.warn(`[AGENDA] ⚠️ Google Calendar no disponible: ${calErr.message}. Guardando en Firestore.`);
+          }
+
+          // 2. Siempre guardar en Firestore (como respaldo y para recordatorios)
+          try {
+            const isFromCircle = isSelfChat || isFamilyContact || contactTypes[phone] === 'equipo';
             await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
               contactPhone: contacto,
-              contactName: leadNames[`${contacto}@s.whatsapp.net`] || contacto,
+              contactName,
               scheduledFor: fecha,
               reason: razon,
               promptHint: hint || '',
               status: 'pending',
+              calendarSynced: calendarOk,
+              remindContact: isFromCircle, // MIIA recuerda al contacto el día del evento
+              requestedBy: phone, // quién pidió agendar
               searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
               createdAt: new Date().toISOString(),
-              source: 'auto_detected'
+              source: isSelfChat ? 'owner_selfchat' : 'contact_request'
             });
-            console.log(`[AGENDA] 📅 Evento agendado: ${contacto} el ${fecha} — ${razon}`);
           } catch (e) {
-            console.error(`[AGENDA] ❌ Error agendando:`, e.message);
+            console.error(`[AGENDA] ❌ Error guardando en Firestore:`, e.message);
+          }
+
+          // 3. Si Calendar no está conectado, avisar al owner
+          if (!calendarOk && !isSelfChat) {
+            safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+              `📅 *Evento agendado internamente* (Calendar no conectado)\n${contactName} pidió: "${razon}" para el ${fecha}\nMIIA lo recordará, pero no está en tu Google Calendar.\n\n💡 Conectá Calendar desde tu dashboard → Conexiones.`
+            ).catch(() => {});
           }
         }
       }
@@ -2044,10 +2088,28 @@ async function handleIncomingMessage(message) {
   // LOG DE DIAGNÓSTICO: cada mensaje que entra a handleIncomingMessage
   console.log(`[HIM] 📩 from=${message.from} to=${message.to} fromMe=${message.fromMe} body="${(message.body||'').substring(0,50)}" hasMedia=${message.hasMedia} type=${message.type} id=${message.id?._serialized||'?'}`);
 
-  // ANTI-RÁFAGA: Ignorar mensajes anteriores a la conexión (offline queue de WhatsApp)
-  if (ownerConnectedAt && message.timestamp > 0 && message.timestamp < ownerConnectedAt - 5) {
-    console.log(`[HIM] ⏭️ MENSAJE VIEJO ignorado (ts=${message.timestamp}, connectedAt=${ownerConnectedAt}, diff=${ownerConnectedAt - message.timestamp}s) from=${message.from}`);
-    return;
+  // ANTI-RÁFAGA INTELIGENTE: Mensajes offline de leads se procesan con contexto
+  // Self-chat offline → ignorar. Leads offline → el buffer en tenant_manager ya los maneja.
+  // Aquí solo filtramos self-chat offline del owner (ya procesado por tenant_manager)
+  const msgAge = ownerConnectedAt && message.timestamp > 0 ? ownerConnectedAt - message.timestamp : 0;
+  const isOfflineMsg = msgAge > 5;
+  if (isOfflineMsg) {
+    // Detectar self-chat
+    const ownerNum = (getOwnerSock() && getOwnerSock().user) ? getOwnerSock().user.id.split('@')[0].split(':')[0] : OWNER_PHONE;
+    const fromNum = message.from.split('@')[0].split(':')[0];
+    if (message.fromMe || fromNum === ownerNum) {
+      console.log(`[HIM] ⏭️ Self-chat offline ignorado (age=${msgAge}s) body="${(message.body||'').substring(0,30)}"`);
+      return;
+    }
+    // Lead/cliente offline → inyectar contexto de delay en el body
+    const offlineCtx = message._baileysMsg?._offlineContext;
+    if (offlineCtx) {
+      const prefix = offlineCtx.totalMessages > 1
+        ? `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: El contacto envió ${offlineCtx.totalMessages} mensajes mientras estabas offline (hace ${offlineCtx.ageLabel}). Mensajes: ${offlineCtx.allBodies.map(b => `"${b.substring(0,60)}"`).join(', ')}. Responde SOLO al último considerando TODO el contexto. Sé conciso, natural, termina con una pregunta relevante.]\n`
+        : `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: Mensaje de hace ${offlineCtx.ageLabel}. Responde naturalmente, conciso, termina con pregunta relevante.]\n`;
+      message.body = prefix + message.body;
+      console.log(`[HIM] 🔄 Mensaje offline de lead procesado con contexto (${offlineCtx.totalMessages} msgs, hace ${offlineCtx.ageLabel})`);
+    }
   }
 
   // REGLA ABSOLUTA: MIIA nunca participa en grupos ni estados. Ni lee, ni responde, ni publica.

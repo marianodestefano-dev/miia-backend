@@ -202,6 +202,51 @@ function buildSystemPrompt(tenant, contactName) {
   );
 }
 
+// ─── Procesar buffer de mensajes offline (post-reconnect) ────────────────────
+// Toma todos los mensajes acumulados de un contacto, selecciona solo el último,
+// y genera una respuesta contextual que reconoce el delay naturalmente.
+async function processOfflineBuffer(uid, jid, bufferedMsgs, tenant, isOwner) {
+  if (!bufferedMsgs || bufferedMsgs.length === 0) return;
+
+  const last = bufferedMsgs[bufferedMsgs.length - 1];
+  const totalMsgs = bufferedMsgs.length;
+  const oldestAge = bufferedMsgs[0].ageSec;
+
+  // Formatear tiempo legible
+  const ageMin = Math.round(oldestAge / 60);
+  const ageLabel = ageMin < 60 ? `${ageMin} min` : `${Math.round(ageMin / 60)}h`;
+
+  console.log(`[TM:${uid}] 🔄 Procesando ${totalMsgs} msg(s) offline de ${jid} (último hace ${ageLabel}): "${last.body.substring(0, 50)}"`);
+
+  // Si es owner con onMessage (admin/Mariano) → delegar al handler con flag offline
+  if (isOwner && tenant.onMessage) {
+    // Solo enviar el último mensaje, con metadata de offline
+    last.msg._offlineContext = {
+      totalMessages: totalMsgs,
+      oldestAgeSec: oldestAge,
+      ageLabel,
+      allBodies: bufferedMsgs.map(m => m.body).filter(b => b.trim())
+    };
+    try { tenant.onMessage(last.msg, last.from, last.body); } catch (e) {
+      console.error(`[TM:${uid}] onMessage offline error:`, e.message);
+    }
+    return;
+  }
+
+  // Para tenants: procesar solo el último mensaje con contexto de delay
+  const ownerUid = tenant.ownerUid || uid;
+  const role = tenant.role || 'owner';
+  const realSelfChat = false; // offline de lead, no self-chat
+
+  // Inyectar contexto offline en el body para que el prompt lo considere
+  const contextPrefix = totalMsgs > 1
+    ? `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: El contacto envió ${totalMsgs} mensajes mientras estabas offline (hace ${ageLabel}). Mensajes anteriores: ${bufferedMsgs.slice(0, -1).map(m => `"${m.body.substring(0, 60)}"`).join(', ')}. Responde SOLO al último mensaje pero teniendo en cuenta TODO el contexto. Sé conciso, natural, y termina con una pregunta relevante al tema.]\n`
+    : `[CONTEXTO INTERNO - NO MENCIONAR TEXTUALMENTE: Este mensaje llegó hace ${ageLabel} mientras estabas offline. Responde naturalmente sin disculparte excesivamente. Sé conciso y termina con una pregunta relevante.]\n`;
+
+  handleTenantMessage(uid, ownerUid, role, jid, contextPrefix + last.body, realSelfChat, false, tenant)
+    .catch(e => console.error(`[TM:${uid}] handleTenantMessage offline error:`, e.message));
+}
+
 // ─── Core: process incoming message for a tenant ──────────────────────────────
 async function processTenantMessage(uid, phone, messageBody) {
   const t = tenants.get(uid);
@@ -527,73 +572,74 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     });
 
     // ─── Incoming messages ───
+    // Buffer para mensajes offline: acumula por contacto, debounce 5s, procesa solo el último
+    const offlineBuffer = {}; // { [jid]: { msgs: [], timer: null } }
+
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      // LOG DETALLADO: para diagnosticar por qué el primer mensaje no se procesa
       for (const msg of messages) {
         const b = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
         const f = msg.key.remoteJid;
         const fm = msg.key.fromMe;
-        console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} body="${b.substring(0,50)}" msgId=${msg.key.id} ts=${msg.messageTimestamp}`);
+        const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
+          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
+        console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} body="${b.substring(0,50)}" msgId=${msg.key.id} ts=${msgTs}`);
       }
-      if (type !== 'notify') return; // Only process new messages, not history
+      if (type !== 'notify') return;
 
       for (const msg of messages) {
         const from = msg.key.remoteJid;
-        const isGroup = from?.endsWith('@g.us');
-        const isStatus = from === 'status@broadcast';
+        if (from?.endsWith('@g.us') || from === 'status@broadcast') continue;
+
         const isFromMe = msg.key.fromMe;
-
-        // ANTI-RÁFAGA: Ignorar mensajes con timestamp anterior a la conexión
-        // Cuando Baileys reconecta, WhatsApp envía mensajes offline pendientes como 'notify'
-        // Estos mensajes son viejos y no deben procesarse (evita ráfagas de respuestas)
-        const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
-          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
-        if (tenant.connectedAt && msgTs > 0 && msgTs < tenant.connectedAt - 5) {
-          console.log(`[TM:${uid}] ⏭️ MENSAJE VIEJO ignorado (ts=${msgTs}, connectedAt=${tenant.connectedAt}, diff=${tenant.connectedAt - msgTs}s) from=${from} body="${(msg.message?.conversation||'').substring(0,30)}"`);
-          continue;
-        }
-
-        // Skip group messages
-        if (isGroup) continue;
-        // Skip status broadcasts
-        if (isStatus) continue;
-
-        // For owner with onMessage: allow self-chat (fromMe + from === from)
-        // For regular tenants: skip fromMe messages
-        const isSelfChat = isFromMe && from === from; // Always true for self-chat
-
-        // FIX: Si es owner (tenant.onMessage existe), procesar TODO (entrantes + self-chat)
-        // Si es cliente normal, solo procesar entrantes (!isFromMe)
         const isOwner = !!tenant.onMessage;
-        const shouldProcess = isOwner ? true : !isFromMe;
+        if (!isOwner && isFromMe) continue;
 
-        if (!shouldProcess) continue;
-
-        // Extract text body
         const body = msg.message?.conversation
           || msg.message?.extendedTextMessage?.text
           || msg.message?.imageMessage?.caption
           || msg.message?.videoMessage?.caption
           || '';
-
-        // Detectar si tiene media (audio, imagen, video, documento)
         const hasMedia = !!(msg.message?.audioMessage || msg.message?.imageMessage
           || msg.message?.videoMessage || msg.message?.documentMessage
           || msg.message?.stickerMessage);
-
-        // Si no hay texto NI media → ignorar
         if (!body.trim() && !hasMedia) continue;
 
-        console.log(`[TM:${uid}] 📨 Message from ${from}${isFromMe ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
+        // Detectar si es mensaje offline (anterior a la conexión)
+        const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
+          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
+        const isOffline = tenant.connectedAt && msgTs > 0 && msgTs < tenant.connectedAt - 5;
 
-        // If custom onMessage handler is set (admin/Mariano), delegate to server.js
+        // Self-chat offline → ignorar completamente
+        const myNumber = tenant.sock?.user?.id?.split(':')[0];
+        const fromNumber = from?.split('@')[0]?.split(':')[0];
+        const isSelfChat = isFromMe && myNumber && fromNumber && myNumber === fromNumber;
+        if (isOffline && isSelfChat) {
+          console.log(`[TM:${uid}] ⏭️ Self-chat offline ignorado (ts=${msgTs}) body="${body.substring(0,30)}"`);
+          continue;
+        }
+
+        // Mensaje offline de lead/cliente → acumular en buffer con debounce
+        if (isOffline && !isFromMe) {
+          const ageSec = tenant.connectedAt - msgTs;
+          console.log(`[TM:${uid}] 📦 Mensaje offline de ${from} (hace ${ageSec}s): "${body.substring(0,40)}" → buffer`);
+          if (!offlineBuffer[from]) offlineBuffer[from] = { msgs: [], timer: null };
+          offlineBuffer[from].msgs.push({ msg, from, body, hasMedia, ageSec });
+          // Debounce: esperar 5s sin nuevos mensajes del mismo contacto
+          if (offlineBuffer[from].timer) clearTimeout(offlineBuffer[from].timer);
+          offlineBuffer[from].timer = setTimeout(() => {
+            processOfflineBuffer(uid, from, offlineBuffer[from].msgs, tenant, isOwner);
+            delete offlineBuffer[from];
+          }, 5000);
+          continue;
+        }
+
+        // Mensaje en tiempo real → procesar normalmente
+        console.log(`[TM:${uid}] 📨 Message from ${from}${isFromMe ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
         if (tenant.onMessage) {
           try { tenant.onMessage(msg, from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
         } else {
-          // Tenants (owners y agents): usar handler completo con todas las features
-          // Detectar self-chat real: fromMe=true Y el chat es consigo mismo
-          const realSelfChat = isFromMe && (from === `${tenant.sock?.user?.id?.split(':')[0]}@s.whatsapp.net` || from === tenant.sock?.user?.id);
-          const ownerUid = tenant.ownerUid || uid; // agents tienen ownerUid, owners no
+          const realSelfChat = isFromMe && (from === `${myNumber}@s.whatsapp.net` || from === tenant.sock?.user?.id);
+          const ownerUid = tenant.ownerUid || uid;
           const role = tenant.role || 'owner';
           handleTenantMessage(uid, ownerUid, role, from, body, realSelfChat, isFromMe, tenant)
             .catch(e => console.error(`[TM:${uid}] handleTenantMessage error:`, e.message));
