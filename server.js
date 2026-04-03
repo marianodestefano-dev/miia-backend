@@ -2764,7 +2764,16 @@ app.get('/health', (req, res) => {
     status: 'ok',
     whatsapp: isReady,
     conversations: Object.keys(conversations).length,
-    activeContacts: Object.keys(contactTypes).length
+    conversationCount: Object.keys(conversations).length,
+    activeContacts: Object.keys(contactTypes).length,
+    env: {
+      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+      STRIPE_SECRET_KEY: !!process.env.STRIPE_SECRET_KEY,
+      STRIPE_WEBHOOK_SECRET: !!process.env.STRIPE_WEBHOOK_SECRET,
+      FRONTEND_URL: !!process.env.FRONTEND_URL,
+      ADMIN_API_KEY: !!process.env.ADMIN_API_KEY,
+      SKIP_WA_INIT: process.env.SKIP_WA_INIT || null
+    }
   });
 });
 
