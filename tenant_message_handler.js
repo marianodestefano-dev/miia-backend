@@ -160,6 +160,194 @@ async function loadTeamContacts(ownerUid) {
     console.error(`[TMH:${ownerUid}] ❌ Error cargando team contacts:`, e.message);
     return {};
   }
+
+/**
+ * Carga negocios del owner.
+ * Ruta: users/{ownerUid}/businesses/
+ */
+async function loadBusinesses(ownerUid) {
+  try {
+    const snap = await db().collection('users').doc(ownerUid).collection('businesses').get();
+    const businesses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    console.log(`[TMH:${ownerUid}] 🏢 Businesses: ${businesses.length}`);
+    return businesses;
+  } catch (e) {
+    console.error(`[TMH:${ownerUid}] ❌ Error cargando businesses:`, e.message);
+    return [];
+  }
+}
+
+/**
+ * Carga grupos de contacto con sus contactos (para clasificación rápida).
+ * Ruta: users/{ownerUid}/contact_groups/
+ * Retorna: { groupId: { ...groupData, contacts: { phone: contactData } } }
+ */
+async function loadContactGroups(ownerUid) {
+  try {
+    const snap = await db().collection('users').doc(ownerUid).collection('contact_groups').get();
+    const groups = {};
+    for (const doc of snap.docs) {
+      const data = { id: doc.id, ...doc.data(), contacts: {} };
+      const contactsSnap = await db().collection('users').doc(ownerUid)
+        .collection('contact_groups').doc(doc.id).collection('contacts').get();
+      contactsSnap.forEach(c => { data.contacts[c.id] = c.data(); });
+      groups[doc.id] = data;
+    }
+    const totalContacts = Object.values(groups).reduce((sum, g) => sum + Object.keys(g.contacts).length, 0);
+    console.log(`[TMH:${ownerUid}] 👥 Contact groups: ${Object.keys(groups).length} groups, ${totalContacts} contacts`);
+    return groups;
+  } catch (e) {
+    console.error(`[TMH:${ownerUid}] ❌ Error cargando contact groups:`, e.message);
+    return {};
+  }
+}
+
+/**
+ * Busca un teléfono en contact_index para clasificación O(1).
+ * Ruta: users/{ownerUid}/contact_index/{phone}
+ */
+async function lookupContactIndex(ownerUid, phone) {
+  try {
+    const doc = await db().collection('users').doc(ownerUid).collection('contact_index').doc(phone).get();
+    return doc.exists ? doc.data() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Guarda clasificación en contact_index.
+ */
+async function saveContactIndex(ownerUid, phone, data) {
+  try {
+    await db().collection('users').doc(ownerUid).collection('contact_index').doc(phone).set({
+      ...data,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+  } catch (e) {
+    console.error(`[TMH:${ownerUid}] ❌ Error guardando contact_index:`, e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CASCADA DE CLASIFICACIÓN DE CONTACTOS
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Clasifica un contacto según la cascada:
+ *   PASO 0: contact_index existe? → ya clasificado
+ *   PASO 1: Está en algún contact_group? → usar tono del grupo
+ *   PASO 2: Solo 1 negocio? → asignar directo
+ *   PASO 3: whatsapp_number de algún business matchea? → lead de ese negocio
+ *   PASO 4: IA detecta match con descripción de negocio? → asignar
+ *   PASO 5: MIIA saluda natural + consulta al owner en self-chat
+ *   (Pasos 3-5 solo si 2+ negocios)
+ *
+ * @returns {{ type: string, groupId?: string, groupData?: Object, businessId?: string, businessName?: string }}
+ */
+async function classifyContact(ctx, basePhone, messageBody, tenantState) {
+  const ownerUid = ctx.ownerUid;
+  const logPrefix = `[TMH:${ctx.uid}]`;
+
+  // PASO 0: contact_index
+  const cached = await lookupContactIndex(ownerUid, basePhone);
+  if (cached) {
+    console.log(`${logPrefix} 📇 PASO 0: contact_index hit → type=${cached.type}, group=${cached.groupId || '-'}, biz=${cached.businessId || '-'}`);
+    if (cached.type === 'group' && cached.groupId && ctx.contactGroups[cached.groupId]) {
+      return { type: 'group', groupId: cached.groupId, groupData: ctx.contactGroups[cached.groupId], name: cached.name };
+    }
+    if (cached.type === 'lead' && cached.businessId) {
+      return { type: 'lead', businessId: cached.businessId, name: cached.name };
+    }
+    return { type: cached.type || 'lead', name: cached.name };
+  }
+
+  // PASO 1: Buscar en contact_groups (también legacy familyContacts/teamContacts)
+  for (const [gid, group] of Object.entries(ctx.contactGroups || {})) {
+    if (group.contacts && group.contacts[basePhone]) {
+      const contactData = group.contacts[basePhone];
+      console.log(`${logPrefix} 📇 PASO 1: Encontrado en grupo "${group.name}" (${gid})`);
+      await saveContactIndex(ownerUid, basePhone, { type: 'group', groupId: gid, groupName: group.name, name: contactData.name });
+      return { type: 'group', groupId: gid, groupData: group, name: contactData.name };
+    }
+  }
+
+  // Legacy: familia/equipo hardcodeados
+  if (ctx.familyContacts[basePhone]) {
+    console.log(`${logPrefix} 📇 PASO 1 (legacy): familia → ${ctx.familyContacts[basePhone].name}`);
+    return { type: 'familia', name: ctx.familyContacts[basePhone].name };
+  }
+  if (ctx.teamContacts[basePhone]) {
+    console.log(`${logPrefix} 📇 PASO 1 (legacy): equipo → ${ctx.teamContacts[basePhone].name}`);
+    return { type: 'equipo', name: ctx.teamContacts[basePhone].name };
+  }
+
+  const businesses = ctx.businesses || [];
+
+  // PASO 2: Solo 1 negocio → asignar directo
+  if (businesses.length <= 1) {
+    const bizId = businesses[0]?.id || null;
+    const bizName = businesses[0]?.name || 'Mi Negocio';
+    console.log(`${logPrefix} 📇 PASO 2: 1 negocio → asignar directo a "${bizName}"`);
+    if (bizId) await saveContactIndex(ownerUid, basePhone, { type: 'lead', businessId: bizId, name: '' });
+    return { type: 'lead', businessId: bizId, businessName: bizName };
+  }
+
+  // PASO 3: whatsapp_number match (solo si 2+ negocios)
+  for (const biz of businesses) {
+    if (biz.whatsapp_number && basePhone.includes(biz.whatsapp_number.replace(/\D/g, ''))) {
+      console.log(`${logPrefix} 📇 PASO 3: WhatsApp number match → "${biz.name}"`);
+      await saveContactIndex(ownerUid, basePhone, { type: 'lead', businessId: biz.id, name: '' });
+      return { type: 'lead', businessId: biz.id, businessName: biz.name };
+    }
+  }
+
+  // PASO 4: IA detecta match con descripción de negocio
+  try {
+    const aiProvider = ctx.ownerProfile.aiProvider || 'gemini';
+    const aiApiKey = ctx.ownerProfile.aiApiKey || process.env.GEMINI_API_KEY;
+    if (aiApiKey && businesses.length >= 2) {
+      const bizDescriptions = businesses.map(b => `- "${b.name}": ${b.description || 'sin descripción'}`).join('\n');
+      const classifyPrompt = `Analiza este mensaje de un contacto nuevo y determina a cuál negocio corresponde.
+
+Negocios disponibles:
+${bizDescriptions}
+
+Mensaje del contacto: "${messageBody.substring(0, 500)}"
+
+Responde SOLO con el nombre exacto del negocio que mejor corresponda, o "NINGUNO" si no es claro.`;
+
+      const aiResult = await callAI(aiProvider, aiApiKey, classifyPrompt, []);
+      const matchedBiz = businesses.find(b => aiResult && aiResult.toLowerCase().includes(b.name.toLowerCase()));
+      if (matchedBiz) {
+        console.log(`${logPrefix} 📇 PASO 4: IA match → "${matchedBiz.name}"`);
+        await saveContactIndex(ownerUid, basePhone, { type: 'lead', businessId: matchedBiz.id, name: '' });
+        return { type: 'lead', businessId: matchedBiz.id, businessName: matchedBiz.name };
+      }
+    }
+  } catch (e) {
+    console.error(`${logPrefix} ⚠️ PASO 4: Error en clasificación IA:`, e.message);
+  }
+
+  // PASO 5: No se pudo clasificar → asignar a default y notificar al owner
+  const defaultBizId = businesses[0]?.id || null;
+  console.log(`${logPrefix} 📇 PASO 5: Sin match → default biz, notificar al owner`);
+
+  // Notificar al owner en self-chat
+  const ownerJid = tenantState.sock?.user?.id;
+  if (ownerJid) {
+    const bizList = businesses.map(b => `• ${b.name}`).join('\n');
+    const alertMsg = `📱 *Nuevo contacto sin clasificar*\n\nNúmero: +${basePhone}\nMensaje: "${messageBody.substring(0, 200)}"\n\n¿A qué negocio pertenece?\n${bizList}\n\nRespondé con el nombre del negocio, o "amigo"/"familia" para agregarlo a un grupo.`;
+    try {
+      await sendTenantMessage(tenantState, ownerJid, alertMsg);
+    } catch (e) {
+      console.error(`${logPrefix} ❌ Error notificando al owner:`, e.message);
+    }
+  }
+
+  await saveContactIndex(ownerUid, basePhone, { type: 'pending', name: '' });
+  return { type: 'lead', businessId: defaultBizId, businessName: businesses[0]?.name || 'Mi Negocio' };
+}
 }
 
 /**
@@ -268,14 +456,16 @@ async function getOrCreateContext(uid, ownerUid, role) {
   console.log(`[TMH:${uid}] 🔄 ${ctx ? 'Refrescando' : 'Inicializando'} contexto (role=${role}, ownerUid=${ownerUid})...`);
 
   // Cargar todo en paralelo para eficiencia
-  const [ownerProfile, businessCerebro, personalBrain, familyContacts, teamContacts, scheduleConfig] = await Promise.all([
+  const [ownerProfile, businessCerebro, personalBrain, familyContacts, teamContacts, scheduleConfig, businesses, contactGroups] = await Promise.all([
     loadOwnerProfile(ownerUid),
     loadBusinessCerebro(ownerUid),
     loadPersonalBrain(uid),
     // Familia y equipo: solo para owners (agents NO ven familia ajena)
     role === 'owner' ? loadFamilyContacts(ownerUid) : Promise.resolve({}),
     role === 'owner' ? loadTeamContacts(ownerUid) : Promise.resolve({}),
-    loadScheduleConfig(ownerUid)
+    loadScheduleConfig(ownerUid),
+    loadBusinesses(ownerUid),
+    role === 'owner' ? loadContactGroups(ownerUid) : Promise.resolve({})
   ]);
 
   if (!ctx) {
@@ -295,6 +485,8 @@ async function getOrCreateContext(uid, ownerUid, role) {
       personalBrain,
       subscriptionState: {},
       scheduleConfig,
+      businesses,
+      contactGroups,
       lastProfileLoad: now
     };
     tenantContexts.set(uid, ctx);
@@ -306,6 +498,8 @@ async function getOrCreateContext(uid, ownerUid, role) {
     ctx.familyContacts = familyContacts;
     ctx.teamContacts = teamContacts;
     ctx.scheduleConfig = scheduleConfig;
+    ctx.businesses = businesses;
+    ctx.contactGroups = contactGroups;
     ctx.lastProfileLoad = now;
   }
 
@@ -386,22 +580,32 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     return;
   }
 
-  // ── PASO 7: Clasificar contacto ──
-  const isFamilyContact = ctx.familyContacts[basePhone] || false;
-  const isTeamMember = ctx.teamContacts[basePhone] || false;
-
+  // ── PASO 7: Clasificar contacto (cascada multi-negocio) ──
   let contactType = ctx.contactTypes[phone];
+  let classification = null;
+  let isFamilyContact = ctx.familyContacts[basePhone] || false;
+  let isTeamMember = ctx.teamContacts[basePhone] || false;
+
   if (!contactType) {
     if (isSelfChat) {
       contactType = 'owner';
-    } else if (isFamilyContact) {
-      contactType = 'familia';
-      ctx.leadNames[phone] = isFamilyContact.name || ctx.leadNames[phone] || basePhone;
-    } else if (isTeamMember) {
-      contactType = 'equipo';
-      ctx.leadNames[phone] = isTeamMember.name || ctx.leadNames[phone] || basePhone;
     } else {
-      contactType = 'lead';
+      // Cascada de clasificación
+      classification = await classifyContact(ctx, basePhone, messageBody, tenantState);
+      contactType = classification.type;
+
+      // Map group/legacy types
+      if (contactType === 'familia') {
+        isFamilyContact = ctx.familyContacts[basePhone] || { name: classification.name };
+      } else if (contactType === 'equipo') {
+        isTeamMember = ctx.teamContacts[basePhone] || { name: classification.name };
+      } else if (contactType === 'group') {
+        // Grupo dinámico — se maneja en PASO 9
+      }
+
+      if (classification.name) {
+        ctx.leadNames[phone] = classification.name;
+      }
     }
     ctx.contactTypes[phone] = contactType;
   }
@@ -439,12 +643,39 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   if (isSelfChat) {
     activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
+  } else if (contactType === 'group' && classification?.groupData) {
+    // Grupo dinámico: usar tono configurado del grupo
+    const g = classification.groupData;
+    const contactName = classification.name || ctx.leadNames[phone] || basePhone;
+    activeSystemPrompt = `Eres MIIA, asistente personal de ${profile.fullName}.
+Estás hablando con ${contactName}, que pertenece al grupo "${g.name}".
+
+TONO CONFIGURADO POR EL USUARIO PARA ESTE GRUPO:
+${g.tone || 'Sé amable y natural.'}
+
+REGLAS:
+- Habla como si fueras ${profile.shortName}, no como un bot.
+- Sé breve y natural, como en WhatsApp.
+- NO ofrezcas productos ni servicios a este contacto.
+- Si te preguntan algo que no sabes, dilo honestamente.`;
   } else if (isFamilyContact) {
     activeSystemPrompt = buildOwnerFamilyPrompt(isFamilyContact.name, isFamilyContact, ctx.ownerProfile);
   } else if (isTeamMember) {
     activeSystemPrompt = buildEquipoPrompt(isTeamMember.name || ctx.leadNames[phone], ctx.ownerProfile);
   } else {
-    activeSystemPrompt = buildOwnerLeadPrompt(ctx.leadNames[phone] || '', ctx.businessCerebro, countryContext, ctx.ownerProfile);
+    // Lead — usar cerebro del negocio específico si hay clasificación con businessId
+    let leadCerebro = ctx.businessCerebro;
+    if (classification?.businessId) {
+      try {
+        const bizBrainDoc = await db().collection('users').doc(ctx.ownerUid)
+          .collection('businesses').doc(classification.businessId)
+          .collection('brain').doc('business_cerebro').get();
+        if (bizBrainDoc.exists && bizBrainDoc.data().content) {
+          leadCerebro = bizBrainDoc.data().content;
+        }
+      } catch (_) {}
+    }
+    activeSystemPrompt = buildOwnerLeadPrompt(ctx.leadNames[phone] || '', leadCerebro, countryContext, ctx.ownerProfile);
   }
 
   // Sistema de confianza progresiva (solo para leads)
@@ -687,6 +918,9 @@ module.exports = {
   loadOwnerProfile,
   loadBusinessCerebro,
   loadPersonalBrain,
+  loadBusinesses,
+  loadContactGroups,
+  classifyContact,
   saveBusinessLearning,
   savePersonalLearning,
   queueDubiousLearning,
