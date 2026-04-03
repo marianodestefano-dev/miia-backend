@@ -812,12 +812,6 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       }
 
       for (const msg of messages) {
-        // ─── Deduplication: skip already-processed messages ───
-        if (isDuplicate(msg.key.id)) {
-          console.log(`[TM:${uid}] 🔁 Duplicate message SKIPPED: ${msg.key.id}`);
-          continue;
-        }
-
         const from = msg.key.remoteJid;
         if (from?.endsWith('@g.us') || from === 'status@broadcast') continue;
 
@@ -833,7 +827,18 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const hasMedia = !!(msg.message?.audioMessage || msg.message?.imageMessage
           || msg.message?.videoMessage || msg.message?.documentMessage
           || msg.message?.stickerMessage);
+        // ═══ CRÍTICO: Verificar contenido ANTES de dedup ═══
+        // WhatsApp envía el mismo msgId primero con body="" (notification/receipt)
+        // y luego con el body real. Si registramos el vacío como "visto",
+        // el mensaje real se descarta como duplicado y MIIA nunca lo procesa.
         if (!body.trim() && !hasMedia) continue;
+
+        // ─── Deduplication: skip already-processed messages ───
+        // DESPUÉS de verificar que tiene contenido real
+        if (isDuplicate(msg.key.id)) {
+          console.log(`[TM:${uid}] 🔁 Duplicate message SKIPPED: ${msg.key.id}`);
+          continue;
+        }
 
         // Detectar si es mensaje offline (anterior a la conexión)
         const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
