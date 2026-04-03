@@ -383,6 +383,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         tenant.isAuthenticated = true;
         tenant.qrCode = null;
         tenant._initializing = false;
+        tenant.connectedAt = Math.floor(Date.now() / 1000); // Unix timestamp en segundos
 
         // 🔑 Extraer y guardar número real del usuario en Firestore
         try {
@@ -532,7 +533,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const b = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
         const f = msg.key.remoteJid;
         const fm = msg.key.fromMe;
-        console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} body="${b.substring(0,50)}" msgId=${msg.key.id}`);
+        console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} body="${b.substring(0,50)}" msgId=${msg.key.id} ts=${msg.messageTimestamp}`);
       }
       if (type !== 'notify') return; // Only process new messages, not history
 
@@ -541,6 +542,16 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const isGroup = from?.endsWith('@g.us');
         const isStatus = from === 'status@broadcast';
         const isFromMe = msg.key.fromMe;
+
+        // ANTI-RÁFAGA: Ignorar mensajes con timestamp anterior a la conexión
+        // Cuando Baileys reconecta, WhatsApp envía mensajes offline pendientes como 'notify'
+        // Estos mensajes son viejos y no deben procesarse (evita ráfagas de respuestas)
+        const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
+          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
+        if (tenant.connectedAt && msgTs > 0 && msgTs < tenant.connectedAt - 5) {
+          console.log(`[TM:${uid}] ⏭️ MENSAJE VIEJO ignorado (ts=${msgTs}, connectedAt=${tenant.connectedAt}, diff=${tenant.connectedAt - msgTs}s) from=${from} body="${(msg.message?.conversation||'').substring(0,30)}"`);
+          continue;
+        }
 
         // Skip group messages
         if (isGroup) continue;

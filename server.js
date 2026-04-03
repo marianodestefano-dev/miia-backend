@@ -214,6 +214,7 @@ function getOwnerStatus() {
 Object.defineProperty(global, '_ownerReady', { get: () => getOwnerStatus().isReady, configurable: true });
 let qrCode = null; // Legacy — tenant_manager maneja QR ahora
 let isReady = false; // Se actualiza desde tenant events
+let ownerConnectedAt = 0; // Unix timestamp (seconds) — para filtrar mensajes offline post-reconnect
 let conversations = {}; // { phone: [{ role, content, timestamp }] }
 let contactTypes = { '573163937365@s.whatsapp.net': 'lead' }; // { phone: 'familia' | 'lead' | 'cliente' }
 let leadNames = { '573163937365@s.whatsapp.net': 'Dr. Mariano' }; // { phone: 'nombre' }
@@ -2043,6 +2044,12 @@ async function handleIncomingMessage(message) {
   // LOG DE DIAGNÓSTICO: cada mensaje que entra a handleIncomingMessage
   console.log(`[HIM] 📩 from=${message.from} to=${message.to} fromMe=${message.fromMe} body="${(message.body||'').substring(0,50)}" hasMedia=${message.hasMedia} type=${message.type} id=${message.id?._serialized||'?'}`);
 
+  // ANTI-RÁFAGA: Ignorar mensajes anteriores a la conexión (offline queue de WhatsApp)
+  if (ownerConnectedAt && message.timestamp > 0 && message.timestamp < ownerConnectedAt - 5) {
+    console.log(`[HIM] ⏭️ MENSAJE VIEJO ignorado (ts=${message.timestamp}, connectedAt=${ownerConnectedAt}, diff=${ownerConnectedAt - message.timestamp}s) from=${message.from}`);
+    return;
+  }
+
   // REGLA ABSOLUTA: MIIA nunca participa en grupos ni estados. Ni lee, ni responde, ni publica.
   const isBroadcast = message.from.includes('status@broadcast') ||
     (message.to && message.to.includes('status@broadcast')) ||
@@ -3060,6 +3067,7 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
     onReady: (sock) => {
       console.log(`[WA] ✅ Owner connected via Baileys`);
       isReady = true;
+      ownerConnectedAt = Math.floor(Date.now() / 1000);
       io.emit('whatsapp_ready', { status: 'connected' });
 
       // Guardar número de WhatsApp en Firestore (para detección de owner)
