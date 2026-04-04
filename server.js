@@ -135,7 +135,12 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'https://miia-frontend-one.verc
 const originalLog = console.log;
 const originalError = console.error;
 
+// Filtro de ruido libsignal: suprimir dumps de SessionEntry, Buffer, chains, etc.
+const _libsignalNoise = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair:|pubKey:|privKey:|lastRemoteEphemeralKey:|previousCounter:|rootKey:|indexInfo:|baseKey:|baseKeyType:|closed:|remoteIdentityKey:|registrationId:|currentRatchet:|pendingPreKey:|signedKeyId:|preKeyId:|<Buffer /;
+
 console.log = function(...args) {
+  const first = args[0];
+  if (typeof first === 'string' && _libsignalNoise.test(first)) return; // Suprimir ruido libsignal
   originalLog.apply(console, args);
   if (process.stdout.write) {
     process.stdout.write(''); // Force flush
@@ -143,6 +148,8 @@ console.log = function(...args) {
 };
 
 console.error = function(...args) {
+  const first = args[0];
+  if (typeof first === 'string' && _libsignalNoise.test(first)) return; // Suprimir ruido libsignal
   originalError.apply(console, args);
   if (process.stderr.write) {
     process.stderr.write(''); // Force flush
@@ -230,6 +237,28 @@ let ownerConnectedAt = 0; // Unix timestamp (seconds) — para filtrar mensajes 
 let conversations = {}; // { phone: [{ role, content, timestamp }] }
 let contactTypes = { '573163937365@s.whatsapp.net': 'lead' }; // { phone: 'familia' | 'lead' | 'cliente' }
 let leadNames = { '573163937365@s.whatsapp.net': 'Dr. Mariano' }; // { phone: 'nombre' }
+
+// --- Mapeo LID ↔ Phone (Baileys linked devices) ---
+// LID es un ID interno de WhatsApp que no contiene el número real del contacto
+// Este mapeo se llena automáticamente y permite resolver LIDs a números reales
+const lidToPhone = {}; // { '46510318301398': '573137501884@s.whatsapp.net' }
+const phoneToLid = {}; // inverso
+
+function registerLidMapping(lid, phone) {
+  if (!lid || !phone || phone.includes('@lid')) return;
+  const lidBase = lid.split('@')[0].split(':')[0];
+  const phoneFull = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
+  if (lidToPhone[lidBase] && lidToPhone[lidBase] === phoneFull) return; // ya existe
+  lidToPhone[lidBase] = phoneFull;
+  phoneToLid[phoneFull] = lidBase;
+  console.log(`[LID-MAP] 🔗 ${lidBase} → ${phoneFull}`);
+}
+
+function resolveLid(jid) {
+  if (!jid || !jid.includes('@lid')) return jid;
+  const lidBase = jid.split('@')[0].split(':')[0];
+  return lidToPhone[lidBase] || jid; // retorna el phone o el LID original si no hay mapeo
+}
 
 // --- Variables MIIA (portadas desde index.js) ---
 let lastSentByBot = {};
@@ -1059,6 +1088,11 @@ async function safeSendMessage(target, content, options = {}) {
 
     const result = await ownerSock.sendMessage(sendTarget, baileysContent, sendOptions);
 
+    // Registrar mapeo LID↔Phone si el resultado tiene un remoteJid @lid
+    if (result?.key?.remoteJid?.includes('@lid') && target.includes('@s.whatsapp.net')) {
+      registerLidMapping(result.key.remoteJid, target);
+    }
+
     console.log(`[SEND-DEBUG] Resultado de sendMessage:`, result);
     if (result?.error) {
       console.error(`[SEND-ERROR] ❌ Error enviando:`, result.error);
@@ -1500,6 +1534,7 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
             const trustInfo = getAffinityToneForPrompt(targetSerialized, userProfile.name || 'Mariano');
             const stage = getAffinityStage(targetSerialized);
 
+            const hasHistoryForPrompt = conversations[targetSerialized] && conversations[targetSerialized].length > 0;
             const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de ${userProfile.name || 'Mariano'}).
 Tema a transmitir: "${realMessage || 'un saludo'}".
 
@@ -1507,20 +1542,22 @@ ${trustInfo}
 
 REGLAS:
 - Máximo 3 renglones, natural y humano
+- Tono CASUAL y cálido. Tratala de VOS. PROHIBIDO: "Estimada", "usted", "su", "le". Es FAMILIA, no un lead.
 - NO repitas las palabras del tema literalmente, reinterpretalo con tu estilo
 - Emoji: ${familyInfo.emoji || ''}
-${stage.stage === 0 ? '- PROHIBIDO usar datos personales de esta persona (gustos, hobbies, etc.) — todavía no la conocés' : ''}
-${stage.stage >= 1 ? '- PROHIBIDO decir "soy asistente de Mariano" — ya se conocen' : ''}`;
+${stage.stage === 0 && !hasHistoryForPrompt ? '- Es tu PRIMER contacto con esta persona. Presentate brevemente ("Hola, soy MIIA 👋") y transmití el tema.' : ''}
+${stage.stage === 0 && hasHistoryForPrompt ? '- Ya hablaste antes con esta persona (hay historial). NO te presentes de nuevo. Ve directo al tema con confianza.' : ''}
+${stage.stage >= 1 ? '- Ya se conocen. PROHIBIDO decir "soy MIIA" o "soy asistente de Mariano". Ve directo al tema como si fueran amigas.' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
             if (miiaMsg) {
               const cleanMsg = miiaMsg.trim();
-              const isFirstContact = !familyInfo.isHandshakeDone;
+              // Primera vez: si no hay historial previo en conversations Y no tiene handshake done
+              const hasHistory = conversations[targetSerialized] && conversations[targetSerialized].length > 0;
+              const isFirstContact = !familyInfo.isHandshakeDone && !hasHistory;
 
-              // En primer contacto: generar handshake CREATIVO de autoría de MIIA
-              // En contactos posteriores: ocasionalmente recordar de forma creativa
               let finalMsg = cleanMsg;
               if (isFirstContact) {
-                // STAGE 0: Agregar explicación HOLA MIIA / CHAU MIIA al primer mensaje
+                // Solo en el VERDADERO primer contacto: explicar HOLA MIIA / CHAU MIIA
                 finalMsg = `${cleanMsg}\n\nSi querés seguir hablando conmigo, escribí *HOLA MIIA* y acá estaré. Y cuando quieras que me retire, *CHAU MIIA*. 😊`;
               }
 
@@ -2482,9 +2519,13 @@ async function handleIncomingMessage(message) {
   const isGroup = message.from.endsWith('@g.us') || (message.to && message.to.endsWith('@g.us'));
   if (isBroadcast || isGroup) return;
 
-  // Eco de linked device: from === to y NO es fromMe → rebote del propio mensaje, ignorar
-  // fromMe+from===to es el self-chat legítimo del owner → dejar pasar
-  if (message.from && message.to && message.from === message.to && !message.fromMe) return;
+  // Eco de linked device: SOLO del owner (from === to, no fromMe, y es el número del owner)
+  // Baileys con LID: contactos externos también llegan con from===to (su propio LID), eso NO es eco
+  if (message.from && message.to && message.from === message.to && !message.fromMe) {
+    const ownerNum = (getOwnerSock() && getOwnerSock().user) ? getOwnerSock().user.id.split('@')[0].split(':')[0] : OWNER_PHONE;
+    const fromNum = message.from.split('@')[0].split(':')[0];
+    if (fromNum === ownerNum) return; // Solo descartar si es eco del owner
+  }
 
   const fromMe = message.fromMe;
   let body = (message.body || '').trim();
@@ -2634,15 +2675,26 @@ async function handleIncomingMessage(message) {
       if (contact && contact.id) phone = contact.id._serialized;
     } catch (e) {}
 
-    // Fix @lid para mensajes ENTRANTES: el chat real tiene el número @s.whatsapp.net correcto
+    // Fix @lid para mensajes ENTRANTES: resolver LID a número real
     if (!fromMe && phone.includes('@lid')) {
-      try {
-        const chat = await message.getChat();
-        if (chat && chat.id && chat.id._serialized && !chat.id._serialized.includes('@lid')) {
-          console.log(`[WA] @lid resuelto: ${phone} → ${chat.id._serialized}`);
-          phone = chat.id._serialized;
+      const resolved = resolveLid(phone);
+      if (resolved !== phone) {
+        console.log(`[LID-MAP] ✅ Resuelto entrante: ${phone} → ${resolved}`);
+        phone = resolved;
+      } else {
+        // Fallback: intentar vía getChat (wwebjs legacy)
+        try {
+          const chat = await message.getChat();
+          if (chat && chat.id && chat.id._serialized && !chat.id._serialized.includes('@lid')) {
+            console.log(`[WA] @lid resuelto via getChat: ${phone} → ${chat.id._serialized}`);
+            registerLidMapping(phone, chat.id._serialized);
+            phone = chat.id._serialized;
+          }
+        } catch (e) {}
+        if (phone.includes('@lid')) {
+          console.log(`[LID-MAP] ⚠️ No se pudo resolver LID: ${phone} — procesando con LID`);
         }
-      } catch (e) { console.log(`[WA] No se pudo resolver @lid: ${e.message}`); }
+      }
     }
 
     let effectiveTarget = phone;
@@ -3477,10 +3529,13 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   const isOwner = (OWNER_UID && uid === OWNER_UID);
   const tenantOptions = isOwner ? {
     onMessage: (baileysMsg, from, body) => {
+      // Resolver LID a número real si tenemos mapeo
+      const resolvedFrom = resolveLid(from);
+      const resolvedTo = resolveLid(baileysMsg.key.remoteJid);
       // Adapter: convert Baileys message to whatsapp-web.js-like format for handleIncomingMessage
       const adapted = {
-        from,
-        to: baileysMsg.key.remoteJid,
+        from: resolvedFrom,
+        to: resolvedTo,
         fromMe: !!baileysMsg.key.fromMe,
         body,
         id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
@@ -5771,9 +5826,11 @@ server.listen(PORT, () => {
             // tenant_manager no filtre self-chat. Sin onMessage, isOwner=false → self-chat bloqueado.
             const options = isOwner ? {
               onMessage: (baileysMsg, from, body) => {
+                const resolvedFrom = resolveLid(from);
+                const resolvedTo = resolveLid(baileysMsg.key.remoteJid);
                 const adapted = {
-                  from,
-                  to: baileysMsg.key.remoteJid,
+                  from: resolvedFrom,
+                  to: resolvedTo,
                   fromMe: !!baileysMsg.key.fromMe,
                   body,
                   id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
