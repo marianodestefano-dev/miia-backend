@@ -252,6 +252,8 @@ function registerLidMapping(lid, phone) {
   lidToPhone[lidBase] = phoneFull;
   phoneToLid[phoneFull] = lidBase;
   console.log(`[LID-MAP] 🔗 ${lidBase} → ${phoneFull}`);
+  // Persistir para sobrevivir reinicios (debounced via saveDB)
+  try { saveDB(); } catch (e) {}
 }
 
 function resolveLid(jid) {
@@ -599,7 +601,7 @@ function saveDB() {
       conversations, leadNames, contactTypes, familyContacts,
       allowedLeads, leadSummaries, conversationMetadata,
       keywordsSet, automationSettings, userProfile, flaggedBots,
-      equipoMedilink,
+      equipoMedilink, lidToPhone, phoneToLid,
       trainingData: cerebroAbsoluto.getTrainingData()
     };
     fs.writeFileSync(path.join(DATA_DIR, 'db.json'), JSON.stringify(data, null, 2));
@@ -627,6 +629,8 @@ function loadDB() {
     if (data.userProfile) Object.assign(userProfile, data.userProfile);
     if (data.flaggedBots) Object.assign(flaggedBots, data.flaggedBots);
     if (data.equipoMedilink) Object.assign(equipoMedilink, data.equipoMedilink);
+    if (data.lidToPhone) Object.assign(lidToPhone, data.lidToPhone);
+    if (data.phoneToLid) Object.assign(phoneToLid, data.phoneToLid);
     if (data.trainingData) cerebroAbsoluto.setTrainingData(data.trainingData);
     console.log('[DB] Base de datos cargada correctamente.');
   } catch (e) { console.error('[DB] Error cargando:', e.message); }
@@ -1348,7 +1352,8 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
           // Avisar al owner en self-chat
           const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
           safeSendMessage(ownerJid,
-            `👋 *${contactName}* respondió a tu mensaje pero no activó HOLA MIIA. Dijo: "${(effectiveMsg || '').substring(0, 80)}"\nTe conviene explicarle quién soy para que se anime a escribirme. 😊`
+            `👋 *${contactName}* respondió a tu mensaje pero no activó HOLA MIIA. Dijo: "${(effectiveMsg || '').substring(0, 80)}"\nTe conviene explicarle quién soy para que se anime a escribirme. 😊`,
+            { isSelfChat: true }
           ).catch(() => {});
           saveDB();
         }
@@ -2691,6 +2696,30 @@ async function handleIncomingMessage(message) {
             phone = chat.id._serialized;
           }
         } catch (e) {}
+        // Fallback 2: buscar si hay un contacto con dileAMode activo que fue contactado recientemente
+        if (phone.includes('@lid')) {
+          for (const [cPhone, meta] of Object.entries(conversationMetadata)) {
+            if (meta.dileAMode && cPhone.includes('@s.whatsapp.net')) {
+              console.log(`[LID-MAP] 🔗 Matched LID via dileA: ${phone} → ${cPhone} (contact: ${meta.dileAContact})`);
+              registerLidMapping(phone, cPhone);
+              phone = cPhone;
+              break;
+            }
+          }
+        }
+        // Fallback 3: buscar si hay un familiar registrado que no tiene LID asignado
+        if (phone.includes('@lid')) {
+          for (const [fPhone, fInfo] of Object.entries(familyContacts || {})) {
+            const fullPhone = fPhone.includes('@') ? fPhone : `${fPhone}@s.whatsapp.net`;
+            if (!phoneToLid[fullPhone]) {
+              // Este familiar nunca fue mapeado — posible match
+              console.log(`[LID-MAP] 🔗 Matched LID via family (first unmapped): ${phone} → ${fullPhone} (${fInfo.name})`);
+              registerLidMapping(phone, fullPhone);
+              phone = fullPhone;
+              break;
+            }
+          }
+        }
         if (phone.includes('@lid')) {
           console.log(`[LID-MAP] ⚠️ No se pudo resolver LID: ${phone} — procesando con LID`);
         }
@@ -3529,6 +3558,16 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   const isOwner = (OWNER_UID && uid === OWNER_UID);
   const tenantOptions = isOwner ? {
     onMessage: (baileysMsg, from, body) => {
+      // Capturar participant como fuente de LID mapping
+      // En linked devices, participant puede tener el phone real cuando remoteJid es LID (o viceversa)
+      const participant = baileysMsg.key.participant;
+      if (participant && from) {
+        if (from.includes('@lid') && participant.includes('@s.whatsapp.net')) {
+          registerLidMapping(from, participant);
+        } else if (participant.includes('@lid') && from.includes('@s.whatsapp.net')) {
+          registerLidMapping(participant, from);
+        }
+      }
       // Resolver LID a número real si tenemos mapeo
       const resolvedFrom = resolveLid(from);
       const resolvedTo = resolveLid(baileysMsg.key.remoteJid);
@@ -3546,6 +3585,14 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
         _baileysMsg: baileysMsg  // Para que processMediaMessage pueda descargar media
       };
       handleIncomingMessage(adapted);
+    },
+    onContacts: (contacts) => {
+      // Capturar LID ↔ Phone de los contactos sincronizados por WhatsApp
+      for (const c of contacts) {
+        if (c.id && c.lid) {
+          registerLidMapping(c.lid, c.id);
+        }
+      }
     },
     onReady: (sock) => {
       console.log(`[WA] ✅ Owner connected via Baileys`);
@@ -5825,7 +5872,21 @@ server.listen(PORT, () => {
             // CRÍTICO: el owner necesita onMessage (igual que /api/tenant/init) para que
             // tenant_manager no filtre self-chat. Sin onMessage, isOwner=false → self-chat bloqueado.
             const options = isOwner ? {
+              onContacts: (contacts) => {
+                for (const c of contacts) {
+                  if (c.id && c.lid) registerLidMapping(c.lid, c.id);
+                }
+              },
               onMessage: (baileysMsg, from, body) => {
+                // Capturar participant como fuente de LID mapping
+                const participant = baileysMsg.key.participant;
+                if (participant && from) {
+                  if (from.includes('@lid') && participant.includes('@s.whatsapp.net')) {
+                    registerLidMapping(from, participant);
+                  } else if (participant.includes('@lid') && from.includes('@s.whatsapp.net')) {
+                    registerLidMapping(participant, from);
+                  }
+                }
                 const resolvedFrom = resolveLid(from);
                 const resolvedTo = resolveLid(baileysMsg.key.remoteJid);
                 const adapted = {

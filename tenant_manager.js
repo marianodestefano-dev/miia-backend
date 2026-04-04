@@ -471,6 +471,7 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}, options = {}) 
     _initializing: true,
     onMessage: options.onMessage || null,  // Custom message handler (used by admin/Mariano)
     onReady: options.onReady || null,      // Callback when connection is ready
+    onContacts: options.onContacts || null, // Callback for contacts sync (LID mapping)
     ownerUid: options.ownerUid || uid,     // UID del owner (agents apuntan al owner)
     role: options.role || 'owner'          // 'owner' | 'agent'
   };
@@ -1116,8 +1117,26 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     sock.ev.on('chats.update', () => {});
     sock.ev.on('chats.delete', () => {});
     sock.ev.on('presence.update', () => {});
-    sock.ev.on('contacts.upsert', () => {});
-    sock.ev.on('contacts.update', () => {});
+    sock.ev.on('contacts.upsert', (contacts) => {
+      // Capturar mapeos LID ↔ Phone de los contactos de WhatsApp
+      if (tenant.onContacts) {
+        try { tenant.onContacts(contacts); } catch (e) {
+          console.error(`[TM:${uid}] onContacts error:`, e.message);
+        }
+      }
+      for (const c of contacts) {
+        if (c.id && c.lid) {
+          console.log(`[TM:${uid}] 📇 Contact: ${c.name || '?'} | id=${c.id} | lid=${c.lid}`);
+        }
+      }
+    });
+    sock.ev.on('contacts.update', (contacts) => {
+      if (tenant.onContacts) {
+        try { tenant.onContacts(contacts); } catch (e) {
+          console.error(`[TM:${uid}] onContacts update error:`, e.message);
+        }
+      }
+    });
     sock.ev.on('message-receipt.update', () => {});
     sock.ev.on('groups.upsert', () => {});
     sock.ev.on('groups.update', () => {});
