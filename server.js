@@ -127,7 +127,7 @@ const paddle = new Paddle(process.env.PADDLE_API_KEY || 'placeholder', {
   environment: process.env.PADDLE_ENV === 'sandbox' ? Environment.sandbox : Environment.production
 });
 const PADDLE_WEBHOOK_SECRET = process.env.PADDLE_WEBHOOK_SECRET || '';
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://miia-frontend-one.vercel.app';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.miia-app.com';
 
 // ============================================
 // FORCE FLUSH PARA LOGS EN RAILWAY
@@ -6132,7 +6132,7 @@ function getOAuth2Client() {
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI || 'https://miia-backend-production.up.railway.app/api/auth/google/callback'
+    process.env.GOOGLE_REDIRECT_URI || 'https://api.miia-app.com/api/auth/google/callback'
   );
 }
 
