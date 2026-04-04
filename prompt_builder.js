@@ -22,7 +22,7 @@
 const DEFAULT_OWNER_PROFILE = {
   name: 'Mariano De Stefano',
   shortName: 'Mariano',
-  nicknames: ['Marian', 'jefe', 'lindo'],
+  nicknames: ['jefe', 'lindo'],
   businessName: 'Medilink',
   businessDescription: 'software de gestión para clínicas y consultorios médicos',
   businessProduct: 'Software de gestión clínica: agenda online, historia clínica digital, facturación electrónica, firmas digitales y WhatsApp automatizado con IA.',
