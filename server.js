@@ -1013,8 +1013,8 @@ async function safeSendMessage(target, content, options = {}) {
         try {
           let sendJid = target;
           if (options.isSelfChat) {
-            const tNum = target.split('@')[0]?.split(':')[0];
-            sendJid = `${tNum}@lid`;
+            const ownerSockMM = getOwnerSock();
+            sendJid = ownerSockMM?.user?.id || target;
           }
           await getOwnerSock().sendMessage(sendJid, { text: chunkContent });
           hourlySendLog.count++;
@@ -1076,13 +1076,18 @@ async function safeSendMessage(target, content, options = {}) {
     let sendOptions = {};
 
     if (isSelfChat) {
-      // Para self-chat, convertir JID a @lid (no @s.whatsapp.net)
-      // Baileys recibe self-chat como {number}@lid, así que enviar igual
-      const targetNumber = target.split('@')[0]?.split(':')[0];
-      sendTarget = `${targetNumber}@lid`;
-      console.log(`[SELF-CHAT] 🔧 Convertido JID: ${target} → ${sendTarget}`);
-      // Nota: No usar quoted message por ahora, enviar solo a @lid
-      // Baileys debería entregar en self-chat con el JID @lid correcto
+      // Para self-chat: usar sock.user.id completo (incluye :device@)
+      // Baileys necesita el JID exacto del usuario conectado para que llegue al self-chat real
+      const ownerSockSC = getOwnerSock();
+      if (ownerSockSC?.user?.id) {
+        sendTarget = ownerSockSC.user.id;
+        console.log(`[SELF-CHAT] 🔧 Usando sock.user.id: ${sendTarget}`);
+      } else {
+        // Fallback: usar número + @s.whatsapp.net
+        const targetNumber = target.split('@')[0]?.split(':')[0];
+        sendTarget = `${targetNumber}@s.whatsapp.net`;
+        console.log(`[SELF-CHAT] 🔧 Fallback JID: ${sendTarget}`);
+      }
     }
 
     console.log(`[SEND-DEBUG] Intentando enviar a: ${sendTarget}`);
