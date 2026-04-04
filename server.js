@@ -1269,13 +1269,14 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     const isFamilyContact = !!familyInfo;
     let isAdmin = ADMIN_PHONES.includes(basePhone);  // ← CAMBIO: const → let (para poder reasignar en self-chat)
 
-    // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin (sin verificar número)
-    // Baileys usa Device ID en self-chat (ej: 136417472712832) que NO coincide con ADMIN_PHONES
-    // DEBE estar ANTES de los comandos (dile a, STOP, etc.) para que isAdmin=true los active
-    const isSelfChat = isAlreadySavedParam;
+    // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin
+    // Detectar self-chat comparando basePhone con el número real del owner (no con isAlreadySavedParam)
+    const ownerSockPMR = getOwnerSock();
+    const ownerPhonePMR = ownerSockPMR?.user?.id?.split('@')[0]?.split(':')[0] || OWNER_PHONE;
+    const isSelfChat = basePhone === ownerPhonePMR || basePhone === OWNER_PHONE || ADMIN_PHONES.includes(basePhone);
     if (isSelfChat && !isAdmin) {
       isAdmin = true;
-      console.log(`[ADMIN-FIX] 🔧 Self-chat: isAdmin=true (LID=${basePhone} no matchea ADMIN_PHONES)`);
+      console.log(`[ADMIN-FIX] 🔧 Self-chat: isAdmin=true (${basePhone} = owner ${ownerPhonePMR})`);
     }
 
     // Recuperar mensaje real del historial cuando fue llamado con userMessage=null
