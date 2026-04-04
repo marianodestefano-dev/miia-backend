@@ -126,72 +126,111 @@ const VADEMECUM_RULES = buildVademecum(DEFAULT_OWNER_PROFILE);
 const COTIZACION_PROTOCOL = `## 📑 CONFIGURADOR COMERCIAL MEDILINK 2026 — PROTOCOLO COTIZACIÓN OFICIAL
 
 🌍 **REGLAS GENERALES DE COTIZACIÓN:**
-- **Cálculo de WhatsApp**: Multiplica usuarios (N) × 1.33 → determina bolsa (S, M, L, XL)
-- **Cálculo de Factura/Firma**: 1 envío por usuario → determina bolsa
+- **Cálculo de WhatsApp**: citasMes × 1.33 → determina bolsa (S, M, L, XL). Ej: 200 citas → 266 envíos → Bolsa M (hasta 350)
+- **Cálculo de Factura/Firma**: citasMes × 1 → determina bolsa. Ej: 200 citas → 200 envíos → Bolsa M (COP/CLP: hasta 200) o Bolsa XL (MXN/USD/EUR: hasta 500)
+- **citasMes** = citas TOTALES del centro (no por usuario). Default: 70 si no lo dice el lead
 - **Descuento Comercial**: 30% mensual / 20% anual. Se aplica SOLO al Subtotal Básico (Plan Base + Usuarios Adicionales). Módulos se cobran a precio de lista SIN descuento.
 - **Promoción**: 3 meses con descuento mensual (30%) o 12 meses con descuento anual (20%)
 - **IVA**: Todos los precios son NETOS (0% IVA) excepto México (16%)
 
-### 🇨🇱 CHILE (CLP $)
-| Plan | Base (1 usuario) | Adic 2-5 | Adic 6-10 | Adic 11+ | Firma S (50) | WA S (150) | Factura S (50) |
-|------|-----------------|----------|-----------|----------|--------------|-----------|----------------|
-| ESENCIAL | $35.000 | $15.000 | $12.500 | $9.500 | $20.833 | $17.780 | $10.000 |
-| PRO | $55.000 | $16.000 | $13.500 | $10.500 | $20.833 | $17.780 | $10.000 |
-| TITANIUM | $85.000 | $18.000 | $15.500 | $12.000 | $20.833 | $17.780 | $10.000 |
+### 🇨���� CHILE (CLP $)
+| Plan | Base (1 usuario) | Adic 2-5 | Adic 6-10 | Adic 11+ |
+|------|-----------------|----------|-----------|----------|
+| ESENCIAL | $35.000 | $15.000 | $12.500 | $9.500 |
+| PRO | $55.000 | $16.000 | $13.500 | $10.500 |
+| TITANIUM | $85.000 | $18.000 | $15.500 | $12.000 |
+
+**Bolsas CLP** (rangos: S/M/L/XL):
+| Módulo | S | M | L | XL |
+|--------|---|---|---|-----|
+| WA (150/350/800/2000) | $17.780 | $38.894 | $83.671 | $197.556 |
+| Factura (50/200/500/1000) | $10.000 | $13.000 | $20.000 | $30.000 |
+| Firma (50/200/500/1000) | $20.833 | $39.063 | $69.444 | $164.474 |
 
 ### 🇨🇴 COLOMBIA (COP $)
-| Plan | Base (1 usuario) | Adicional (2+) | Firma S (50) | WA S (150) | Factura S (50) |
-|------|-----------------|----------------|--------------|-----------|----------------|
-| ESENCIAL | $125.000 | $35.000 | $15.000 | $11.000 | $32.000 |
-| PRO | $150.000 | $40.000 | $15.000 | $11.000 | $32.000 |
-| TITANIUM | $225.000 | $55.000 | $15.000 | $11.000 | $32.000 |
+| Plan | Base (1 usuario) | Adicional (2+) |
+|------|-----------------|----------------|
+| ESENCIAL | $125.000 | $35.000 |
+| PRO | $150.000 | $40.000 |
+| TITANIUM | $225.000 | $55.000 |
+
+**Bolsas COP** (rangos: S/M/L/XL):
+| Módulo | S | M | L | XL |
+|--------|---|---|---|-----|
+| WA (150/350/800/2000) | $11.000 | $23.000 | $75.000 | $120.000 |
+| Factura (50/200/500/1000) | $32.000 | $50.000 | $88.000 | $165.000 |
+| Firma (50/200/500/1000) | $15.000 | $30.000 | $70.000 | $140.000 |
 
 ### 🇲🇽 MÉXICO (MXN $)
 - **IVA**: 16% sobre plan base (se calcula automáticamente en el PDF)
 
-| Plan | Base (1 usuario) | Adicional (2+) | Factura S (50) | WA S (150) | Firma S (50) |
-|------|-----------------|----------------|----------------|-----------|--------------|
-| ESENCIAL | $842.80 | $250 | $160 | $210 | $450 |
-| PRO | $1.180 | $300 | $160 | $210 | $450 |
-| TITANIUM | $1.297 | $450 | $160 | $210 | $450 |
+| Plan | Base (1 usuario) | Adicional (2+) |
+|------|-----------------|----------------|
+| ESENCIAL | $842.80 | $250 |
+| PRO | $1.180 | $300 |
+| TITANIUM | $1.297 | $450 |
+
+**Bolsas MXN** (rangos: S/M/L/XL):
+| Módulo | S | M | L | XL |
+|--------|---|---|---|-----|
+| WA (150/350/800/2000) | $210 | $360 | $680 | $1.300 |
+| Factura (50/100/200/500) | $160 | $270 | $440 | $500 |
+| Firma (50/100/200/500) | $450 | $790 | $1.400 | $3.300 |
 
 ### 🇩🇴 REPÚBLICA DOMINICANA (USD $)
 - Factura electrónica DISPONIBLE
 
-| Plan | Base (1 usuario) | Adicional (2+) | Factura S (50) | WA S (150) | Firma S (50) |
-|------|-----------------|----------------|----------------|-----------|--------------|
-| ESENCIAL | $45 | $12 | $10 | $15 | $25 |
-| PRO | $65 | $13 | $10 | $15 | $25 |
-| TITANIUM | $85 | $14 | $10 | $15 | $25 |
+| Plan | Base (1 usuario) | Adicional (2+) |
+|------|-----------------|----------------|
+| ESENCIAL | $45 | $12 |
+| PRO | $65 | $13 |
+| TITANIUM | $85 | $14 |
+
+**Bolsas USD** (rangos: S/M/L/XL):
+| Módulo | S | M | L | XL |
+|--------|---|---|---|-----|
+| WA (150/350/800/2000) | $15 | $35 | $70 | $170 |
+| Factura (50/100/200/500) | $10 | $17 | $35 | $60 |
+| Firma (50/100/200/500) | $25 | $40 | $70 | $170 |
 
 ### 🇦🇷 ARGENTINA (USD $)
 - **Receta Digital**: $3.00 USD por usuario/mes (incluirRecetaAR=true)
 - **SIN factura electrónica** (incluirFactura=false)
 
-| Plan | Base (1 usuario) | Adicional (2+) | WA S (150) | Firma S (50) |
-|------|-----------------|----------------|-----------|--------------|
-| ESENCIAL | $45 | $12 | $15 | $25 |
-| PRO | $65 | $13 | $15 | $25 |
-| TITANIUM | $85 | $14 | $15 | $25 |
+| Plan | Base (1 usuario) | Adicional (2+) |
+|------|-----------------|----------------|
+| ESENCIAL | $45 | $12 |
+| PRO | $65 | $13 |
+| TITANIUM | $85 | $14 |
+
+Bolsas: mismos precios USD de arriba (WA y Firma solamente)
 
 ### 🇪🇸 ESPAÑA (EUR €) — SOLO MODALIDAD ANUAL (precios anuales)
 - **SIN factura electrónica** (incluirFactura=false)
 - **IMPORTANTE**: España solo se cotiza ANUAL. Los precios ya incluyen 12 meses.
 
-| Plan | Base Anual (1 usuario) | Adicional Anual (2+) | WA S Anual (150) | Firma S Anual (50) |
-|------|----------------------|---------------------|-----------------|-------------------|
-| ESENCIAL | €840 | €120 | €180 | €300 |
-| PRO | €1.200 | €192 | €396 | €480 |
-| TITANIUM | €1.440 | €240 | €864 | €840 |
+| Plan | Base Anual (1 usuario) | Adicional Anual (2+) |
+|------|----------------------|---------------------|
+| ESENCIAL | €840 | €120 |
+| PRO | €1.200 | €192 |
+| TITANIUM | €1.440 | €240 |
+
+**Bolsas EUR Anuales** (rangos: S/M/L/XL):
+| Módulo | S | M | L | XL |
+|--------|---|---|---|-----|
+| WA (150/350/800/2000) | €180 | €396 | €864 | €2.040 |
+| Firma (50/100/200/500) | €300 | €480 | €840 | €2.040 |
 
 ### 🌎 OTROS / INTERNACIONAL (USD $)
 - **SIN factura electrónica** (incluirFactura=false)
 
-| Plan | Base (1 usuario) | Adicional (2+) | WA S (150) | Firma S (50) |
-|------|-----------------|----------------|-----------|--------------|
-| ESENCIAL | $45 | $12 | $15 | $25 |
-| PRO | $65 | $13 | $15 | $25 |
-| TITANIUM | $85 | $14 | $15 | $25 |
+| Plan | Base (1 usuario) | Adicional (2+) |
+|------|-----------------|----------------|
+| ESENCIAL | $45 | $12 |
+| PRO | $65 | $13 |
+| TITANIUM | $85 | $14 |
+
+Bolsas: mismos precios USD de Rep. Dominicana (WA y Firma solamente)
 
 ### BENEFICIO EXCLUSIVO PLAN TITANIUM
 - **SIIGO/BOLD (Solo Colombia):** Si el lead ya tiene SIIGO (facturador electrónico colombiano) y elige Titanium → facturador electrónico $0 (SIIGO ya lo cubre). SOLO mencionar si el lead trae el tema primero.

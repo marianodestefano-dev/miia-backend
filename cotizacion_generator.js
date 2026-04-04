@@ -243,13 +243,12 @@ function calcularCotizacion(params) {
 
   const nAdic = Math.max(0, usuarios - 1);
   const pct   = descuento / 100;
-  // Fórmula: 1 usuario = 50 citas/mes
-  // WA: 1.33x → ceil(usuarios × 50 × 1.33)
-  // Factura y Firma: 1x → usuarios × 50
-  const CITAS_POR_USUARIO = 50;
-  const enviosWA       = Math.ceil(usuarios * CITAS_POR_USUARIO * 1.33);
-  const enviosFactura  = usuarios * CITAS_POR_USUARIO;
-  const enviosFirma    = usuarios * CITAS_POR_USUARIO;
+  // Fórmula: citasMes = citas TOTALES del lead (no por usuario)
+  // WA: citasMes × 1.33 (recordatorios + confirmaciones)
+  // Factura y Firma: citasMes × 1
+  const enviosWA       = Math.ceil(citasMes * 1.33);
+  const enviosFactura  = citasMes;
+  const enviosFirma    = citasMes;
 
   const planes  = {};
   const bolsas  = {};
