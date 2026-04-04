@@ -63,6 +63,20 @@ function isDuplicate(msgId) {
 const SERVER_START_TIME = Date.now();
 const STARTUP_GRACE_PERIOD = 90000; // 90s — ignorar errores de mensajes encolados al inicio
 
+// Acumulador de errores crypto durante startup — log limpio
+const _startupCryptoErrors = { badMAC: 0, counterError: 0, failedDecrypt: 0, total: 0 };
+let _startupCryptoSummaryLogged = false;
+
+function _logStartupCryptoSummary() {
+  if (_startupCryptoSummaryLogged || _startupCryptoErrors.total === 0) return;
+  _startupCryptoSummaryLogged = true;
+  const e = _startupCryptoErrors;
+  console.log(`[TM] 🔐 STARTUP CRYPTO: ${e.total} errores de descifrado (${e.badMAC}× Bad MAC, ${e.counterError}× MessageCounter, ${e.failedDecrypt}× Failed decrypt) — normal post-reconexión, claves re-negociadas OK`);
+}
+
+// Programar resumen al final del grace period
+setTimeout(_logStartupCryptoSummary, STARTUP_GRACE_PERIOD + 1000);
+
 const originalConsoleError = console.error;
 console.error = function(...args) {
   const errorStr = args.map(a => String(a)).join(' ');
@@ -72,16 +86,21 @@ console.error = function(...args) {
     return originalConsoleError.apply(console, ['[TM] 🔐 [REDACTED crypto key material in error log]']);
   }
 
-  if (errorStr.includes('MessageCounterError') || errorStr.includes('Key used already') || errorStr.includes('Bad MAC')) {
+  // Errores de cifrado Signal (libsignal)
+  if (errorStr.includes('MessageCounterError') || errorStr.includes('Key used already') || errorStr.includes('Bad MAC') || errorStr.includes('Failed to decrypt')) {
     const uptime = Date.now() - SERVER_START_TIME;
     if (uptime < STARTUP_GRACE_PERIOD) {
-      console.log(`[TM] 🔐 libsignal error ignorado (startup grace period, uptime=${Math.round(uptime/1000)}s)`);
-      return originalConsoleError.apply(console, args);
+      // Acumular silenciosamente — resumen al final del grace period
+      _startupCryptoErrors.total++;
+      if (errorStr.includes('Bad MAC')) _startupCryptoErrors.badMAC++;
+      else if (errorStr.includes('MessageCounterError') || errorStr.includes('Key used already')) _startupCryptoErrors.counterError++;
+      else if (errorStr.includes('Failed to decrypt')) _startupCryptoErrors.failedDecrypt++;
+      return; // NO imprimir — silencio total durante startup
     }
 
-    // Route crypto errors to smart recovery for each active tenant
+    // Post-startup: route crypto errors to smart recovery
     for (const [uid, tenant] of tenants) {
-      if (!tenant._sessionApis) continue; // fortress APIs not loaded yet
+      if (!tenant._sessionApis) continue;
       handleCryptoError(uid, tenant);
     }
   }

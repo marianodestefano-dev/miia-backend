@@ -947,16 +947,53 @@ async function safeSendMessage(target, content, options = {}) {
   }
   hourlySendLog.count++;
 
-  // BLINDAJE: Limitar largo de respuesta (máx 1200 chars — EXCEPTO si contiene tags especiales)
-  // Los tags [GENERAR_COTIZACION_PDF:...] y [GUARDAR_APRENDIZAJE:...] NUNCA se cortan
-  const tieneTagEspecial = typeof content === 'string' && (content.includes('[GENERAR_COTIZACION_PDF:') || content.includes('[GUARDAR_APRENDIZAJE:'));
+  // MULTI-MENSAJE: Si el contenido es largo, partirlo en chunks con "..." al final
+  // Tags especiales NUNCA se parten ni cortan
+  const tieneTagEspecial = typeof content === 'string' && /\[(GENERAR_COTIZACION_PDF|GUARDAR_APRENDIZAJE|GUARDAR_NOTA|APRENDIZAJE_NEGOCIO|APRENDIZAJE_PERSONAL|APRENDIZAJE_DUDOSO):/.test(content);
+  const MAX_CHUNK = options.isSelfChat ? 1800 : 1200; // Self-chat permite más largo por chunk
+  const MAX_CHUNKS = 5; // Máximo 5 mensajes por respuesta
 
-  if (typeof content === 'string' && content.length > 1200 && !tieneTagEspecial && !options.isSelfChat) {
-    let cutPoint = content.lastIndexOf('\n\n', 1200);
-    if (cutPoint < 400) cutPoint = content.lastIndexOf('\n', 1200);
-    if (cutPoint < 400) cutPoint = 1200;
-    content = content.substring(0, cutPoint).trim();
-    console.log(`[BLINDAJE] Respuesta recortada a ${content.length} chars para ${target}`);
+  if (typeof content === 'string' && content.length > MAX_CHUNK && !tieneTagEspecial) {
+    // Partir en chunks lógicos (por doble salto de línea o salto simple)
+    const chunks = [];
+    let remaining = content;
+    while (remaining.length > MAX_CHUNK && chunks.length < MAX_CHUNKS - 1) {
+      let cutPoint = remaining.lastIndexOf('\n\n', MAX_CHUNK);
+      if (cutPoint < 300) cutPoint = remaining.lastIndexOf('\n', MAX_CHUNK);
+      if (cutPoint < 300) cutPoint = MAX_CHUNK;
+      chunks.push(remaining.substring(0, cutPoint).trim());
+      remaining = remaining.substring(cutPoint).trim();
+    }
+    chunks.push(remaining.trim()); // Último chunk (puede ser más largo que MAX_CHUNK)
+
+    if (chunks.length > 1) {
+      console.log(`[MULTI-MSG] Respuesta de ${content.length} chars partida en ${chunks.length} mensajes para ${target}`);
+      // Enviar cada chunk con "..." excepto el último
+      for (let i = 0; i < chunks.length; i++) {
+        const isLast = i === chunks.length - 1;
+        const chunkContent = isLast ? chunks[i] : chunks[i] + '\n...';
+        const delay = i === 0
+          ? (options.noDelay ? 0 : Math.floor(Math.random() * 1500) + 1500)
+          : Math.floor(Math.random() * 2000) + 2000; // 2-4s entre chunks (humano)
+        if (delay > 0) await new Promise(r => setTimeout(r, delay));
+        try {
+          let sendJid = target;
+          if (options.isSelfChat) {
+            const tNum = target.split('@')[0]?.split(':')[0];
+            sendJid = `${tNum}@lid`;
+          }
+          await getOwnerSock().sendMessage(sendJid, { text: chunkContent });
+          hourlySendLog.count++;
+          console.log(`[MULTI-MSG] Chunk ${i + 1}/${chunks.length} enviado (${chunkContent.length} chars)`);
+        } catch (e) {
+          console.error(`[MULTI-MSG] Error enviando chunk ${i + 1}:`, e.message);
+          break;
+        }
+      }
+      return { status: 'multi', chunks: chunks.length };
+    }
+    // Si solo quedó 1 chunk, continuar con envío normal
+    content = chunks[0];
   }
 
   if (!options.noDelay) {

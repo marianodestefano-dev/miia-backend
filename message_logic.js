@@ -356,6 +356,20 @@ async function processLearningTags(aiMessage, ctx, callbacks) {
   }
   cleanMsg = cleanMsg.replace(/\[APRENDIZAJE_DUDOSO:[^\]]+\]/g, '');
 
+  // --- Tag GUARDAR_NOTA (referencia, no cambia comportamiento) ---
+  const notaRegex = /\[GUARDAR_NOTA:([^\]]+)\]/g;
+  while ((match = notaRegex.exec(aiMessage)) !== null) {
+    const text = match[1].trim();
+    const targetUid = ctx.role === 'agent' ? ctx.ownerUid : ctx.uid;
+    try {
+      await callbacks.saveBusinessLearning(targetUid, `[NOTA] ${text}`, `MIIA_NOTA_${ctx.role}`);
+      console.log(`[LEARNING:NOTA] 📌 Guardado para owner=${targetUid}: "${text.substring(0, 80)}..."`);
+    } catch (e) {
+      console.error(`[LEARNING:NOTA] ❌ Error guardando:`, e.message);
+    }
+  }
+  cleanMsg = cleanMsg.replace(/\[GUARDAR_NOTA:[^\]]+\]/g, '');
+
   // --- Tag legacy [APRENDIZAJE_PENDIENTE:...] (del prompt_builder v2) ---
   cleanMsg = cleanMsg.replace(/\[APRENDIZAJE_PENDIENTE:[^\]]+\]/g, '');
 
