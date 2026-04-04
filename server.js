@@ -64,7 +64,8 @@ const businessesRouter = require('./routes/businesses');
 // UNIFIED MODULES — extracted from duplicated code
 const { callGemini, callGeminiChat } = require('./gemini_client');
 const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
-const { buildPrompt, buildTenantBrainString, buildOwnerSelfChatPrompt, buildOwnerFamilyPrompt, buildOwnerLeadPrompt, buildEquipoPrompt } = require('./prompt_builder');
+const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt } = require('./prompt_builder');
+const { assemblePrompt } = require('./prompt_modules');
 
 // NUEVAS FUNCIONALIDADES
 const multer = require('multer');
@@ -1795,16 +1796,44 @@ Nuevo resumen actualizado:`;
 
     // isAdmin ya fue reasignado para self-chat al inicio de processMiiaResponse (línea ~995)
 
+    // ═══ SISTEMA MODULAR DE PROMPTS v1.0 ═══
+    // Clasificador detecta intención → ensamblador carga solo módulos relevantes
+    let promptMeta = null;
     if (isAdmin) {
-      activeSystemPrompt = buildOwnerSelfChatPrompt();
+      const result = assemblePrompt({
+        chatType: 'selfchat',
+        messageBody: body,
+        ownerProfile: null, // usa default (Mariano)
+        context: {
+          contactName: userProfile.name || 'Mariano',
+          affinityStage: conversationMetadata[phone]?.affinityStage,
+          affinityCount: conversationMetadata[phone]?.messageCount,
+        }
+      });
+      activeSystemPrompt = result.prompt;
+      promptMeta = result.meta;
     } else if (isFamilyContact) {
+      // Familia sigue usando builder dedicado (tiene lógica de familyData específica)
       activeSystemPrompt = buildOwnerFamilyPrompt(familyInfo.name, familyInfo);
     } else if (equipoMedilink[basePhone]) {
       const miembroData = equipoMedilink[basePhone];
       const nombreConocido = miembroData.name || leadNames[phone] || null;
       activeSystemPrompt = buildEquipoPrompt(nombreConocido);
     } else {
-      activeSystemPrompt = buildOwnerLeadPrompt(leadNames[phone] || '', cerebroAbsoluto.getTrainingData(), countryContext);
+      const result = assemblePrompt({
+        chatType: 'lead',
+        messageBody: body,
+        ownerProfile: null,
+        context: {
+          contactName: leadNames[phone] || '',
+          trainingData: cerebroAbsoluto.getTrainingData(),
+          countryContext,
+          affinityStage: conversationMetadata[phone]?.affinityStage,
+          affinityCount: conversationMetadata[phone]?.messageCount,
+        }
+      });
+      activeSystemPrompt = result.prompt;
+      promptMeta = result.meta;
     }
 
     // ═══ PROMPTS INLINE ELIMINADOS — ahora se generan desde prompt_builder.js ═══
@@ -1826,6 +1855,11 @@ Nuevo resumen actualizado:`;
     const ownerTimezone = getTimezoneForCountry(ownerCountryCode);
     const localNowStr = new Date().toLocaleString('es-ES', { timeZone: ownerTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const systemDateStr = `[FECHA Y HORA LOCAL DEL USUARIO: ${localNowStr} (${ownerTimezone})]`;
+
+    // Log modular: qué módulos se cargaron y por qué
+    if (promptMeta) {
+      console.log(`[PROMPT_MODULAR] ${phone} → ${promptMeta.chatType} | intents=[${promptMeta.intents}] | modules=[${promptMeta.modulesLoaded}] | ~${promptMeta.tokenEstimate}tok`);
+    }
 
     const adnStr = cerebroAbsoluto.getTrainingData();
     const fullPrompt = `${activeSystemPrompt}
