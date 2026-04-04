@@ -1537,9 +1537,24 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
           try {
             // Sistema de stages: obtener nivel de confianza con este contacto
             const trustInfo = getAffinityToneForPrompt(targetSerialized, userProfile.name || 'Mariano');
-
+            const stage = getAffinityStage(targetSerialized);
             const hasHistoryForPrompt = conversations[targetSerialized] && conversations[targetSerialized].length > 0;
             const yaConoce = hasHistoryForPrompt || familyInfo.isHandshakeDone;
+
+            // Tono según affinity stage
+            let toneRule = '';
+            if (stage.stage === 0 && !yaConoce) {
+              toneRule = '- Es tu PRIMER contacto con esta persona. Presentate brevemente ("Hola, soy MIIA 👋") y transmití el tema.';
+            } else if (stage.stage === 0 && yaConoce) {
+              toneRule = '- Ya hablaste antes pero todavía no se conocen bien. Sé amable y cálida, no te presentes de nuevo, ve al tema.';
+            } else if (stage.stage === 1) {
+              toneRule = '- Ya se van conociendo. Tono amigable, sin presentarte. Ve directo al tema con naturalidad.';
+            } else if (stage.stage === 2) {
+              toneRule = '- Ya tienen confianza. Tono cercano, como amiga. Nada de formalidades.';
+            } else if (stage.stage >= 3) {
+              toneRule = '- Son íntimas/muy cercanas. Hablale como su mejor amiga, con toda la confianza del mundo. Podés ser graciosa, directa, usar jerga.';
+            }
+
             const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de ${userProfile.name || 'Mariano'}).
 Tema a transmitir: "${realMessage || 'un saludo'}".
 
@@ -1547,11 +1562,11 @@ ${trustInfo}
 
 REGLAS:
 - Máximo 3 renglones, natural y humano
-- Tono CASUAL y cálido. Tratala de VOS. PROHIBIDO: "Estimada", "usted", "su", "le", "Hola Alejandra". Es FAMILIA, no un lead.
+- Tratala de VOS. PROHIBIDO: "Estimada", "usted", "su", "le". Es FAMILIA.
 - NO repitas las palabras del tema literalmente, reinterpretalo con tu estilo
 - Emoji: ${familyInfo.emoji || ''}
-${!yaConoce ? '- Es tu PRIMER contacto con esta persona. Presentate brevemente ("Hola, soy MIIA 👋") y transmití el tema.' : ''}
-${yaConoce ? '- Esta persona YA TE CONOCE. PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asistente de Mariano", "me pidió que te diga". Ve DIRECTO al tema como amiga cercana.' : ''}`;
+${toneRule}
+${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asistente de Mariano", "me pidió que te diga".' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
             if (miiaMsg) {
               const cleanMsg = miiaMsg.trim();
