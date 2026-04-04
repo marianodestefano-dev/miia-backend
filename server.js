@@ -3587,13 +3587,19 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
         }
       }
       // Resolver LID a número real si tenemos mapeo
-      const resolvedFrom = resolveLid(from);
-      const resolvedTo = resolveLid(baileysMsg.key.remoteJid);
+      const resolvedRemote = resolveLid(from);
+      // En Baileys, remoteJid = el OTRO. Para incoming: from=contacto, to=owner. Para outgoing: from=owner, to=contacto.
+      const ownerSock = getOwnerSock();
+      const ownerNum = ownerSock?.user?.id?.split('@')[0]?.split(':')[0] || OWNER_PHONE;
+      const ownerJid = `${ownerNum}@s.whatsapp.net`;
+      const isFromMe = !!baileysMsg.key.fromMe;
+      const adaptedFrom = isFromMe ? ownerJid : resolvedRemote;
+      const adaptedTo = isFromMe ? resolvedRemote : ownerJid;
       // Adapter: convert Baileys message to whatsapp-web.js-like format for handleIncomingMessage
       const adapted = {
-        from: resolvedFrom,
-        to: resolvedTo,
-        fromMe: !!baileysMsg.key.fromMe,
+        from: adaptedFrom,
+        to: adaptedTo,
+        fromMe: isFromMe,
         body,
         id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
         hasMedia: !!(baileysMsg.message?.imageMessage || baileysMsg.message?.audioMessage || baileysMsg.message?.videoMessage || baileysMsg.message?.documentMessage || baileysMsg.message?.stickerMessage),
@@ -5905,12 +5911,15 @@ server.listen(PORT, () => {
                     registerLidMapping(participant, from);
                   }
                 }
-                const resolvedFrom = resolveLid(from);
-                const resolvedTo = resolveLid(baileysMsg.key.remoteJid);
+                const resolvedRemote = resolveLid(from);
+                const ownerSock2 = getOwnerSock();
+                const ownerNum2 = ownerSock2?.user?.id?.split('@')[0]?.split(':')[0] || OWNER_PHONE;
+                const ownerJid2 = `${ownerNum2}@s.whatsapp.net`;
+                const isFromMe2 = !!baileysMsg.key.fromMe;
                 const adapted = {
-                  from: resolvedFrom,
-                  to: resolvedTo,
-                  fromMe: !!baileysMsg.key.fromMe,
+                  from: isFromMe2 ? ownerJid2 : resolvedRemote,
+                  to: isFromMe2 ? resolvedRemote : ownerJid2,
+                  fromMe: isFromMe2,
                   body,
                   id: baileysMsg.key.id ? { _serialized: baileysMsg.key.id } : {},
                   hasMedia: !!(baileysMsg.message?.imageMessage || baileysMsg.message?.audioMessage || baileysMsg.message?.videoMessage || baileysMsg.message?.documentMessage || baileysMsg.message?.stickerMessage),
