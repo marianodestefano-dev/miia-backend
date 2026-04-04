@@ -326,9 +326,19 @@ async function processOfflineBuffer(uid, jid, bufferedMsgs, tenant, isOwner) {
     tenant._lastProcessedTs = lastTs;
   }
 
-  // Si es owner con onMessage (admin/Mariano) → delegar al handler con flag offline
+  // Si es owner con onMessage (admin/Mariano) → procesar TODOS silenciosamente, responder solo al último
   if (isOwner && tenant.onMessage) {
-    // Solo enviar el último mensaje, con metadata de offline
+    // Primero: digest silencioso de todos los mensajes EXCEPTO el último
+    // Esto extrae datos (contactos, LIDs, leads) sin generar respuestas
+    for (let i = 0; i < bufferedMsgs.length - 1; i++) {
+      const m = bufferedMsgs[i];
+      m.msg._silentDigest = true; // Flag: extraer datos sin responder
+      m.msg._offlineContext = { totalMessages: totalMsgs, oldestAgeSec: oldestAge, ageLabel, allBodies: [] };
+      try { tenant.onMessage(m.msg, m.from, m.body); } catch (e) {
+        console.error(`[TM:${uid}] onMessage silent digest error:`, e.message);
+      }
+    }
+    // Último mensaje: responder normalmente con contexto completo
     last.msg._offlineContext = {
       totalMessages: totalMsgs,
       oldestAgeSec: oldestAge,

@@ -2957,7 +2957,41 @@ async function handleIncomingMessage(message) {
     }
 
     if (!isAllowed && !existsInCRM && !fromMe) {
-      console.log(`[WA] IA BLOQUEADA para ${effectiveTarget}. Sin keywords de negocio ni historial.`);
+      // Silent digest: aún así registrar el contacto como pendiente
+      if (message._baileysMsg?._silentDigest) {
+        console.log(`[SILENT-DIGEST] 📋 Contacto no-allowed registrado: ${effectiveTarget} body="${(body||'').substring(0,40)}"`);
+      } else {
+        console.log(`[WA] IA BLOQUEADA para ${effectiveTarget}. Sin keywords de negocio ni historial.`);
+      }
+      return;
+    }
+
+    // ── SILENT DIGEST: extraer datos sin responder ──────────────────────
+    // Mensajes offline procesados silenciosamente: registrar LIDs, contactos,
+    // conversaciones, pero NO generar respuesta IA ni enviar nada.
+    if (message._baileysMsg?._silentDigest) {
+      // Guardar en historial de conversación para contexto futuro
+      if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
+      conversations[effectiveTarget].push({
+        role: fromMe ? 'assistant' : 'user',
+        content: body,
+        timestamp: Date.now()
+      });
+      // Detectar tipo de contacto si es nuevo
+      if (!fromMe && !contactTypes[effectiveTarget]) {
+        detectContactType(null, effectiveTarget);
+      }
+      // Registrar lead name si tiene contacto
+      if (!fromMe && !leadNames[effectiveTarget]) {
+        try {
+          const ct = await message.getContact();
+          if (ct && (ct.name || ct.pushname)) {
+            leadNames[effectiveTarget] = ct.name || ct.pushname;
+          }
+        } catch (e) {}
+      }
+      console.log(`[SILENT-DIGEST] 📋 ${effectiveTarget} body="${(body||'').substring(0,50)}" → datos guardados, sin respuesta`);
+      saveDB();
       return;
     }
 
