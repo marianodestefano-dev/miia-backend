@@ -951,7 +951,7 @@ async function safeSendMessage(target, content, options = {}) {
   // Los tags [GENERAR_COTIZACION_PDF:...] y [GUARDAR_APRENDIZAJE:...] NUNCA se cortan
   const tieneTagEspecial = typeof content === 'string' && (content.includes('[GENERAR_COTIZACION_PDF:') || content.includes('[GUARDAR_APRENDIZAJE:'));
 
-  if (typeof content === 'string' && content.length > 1200 && !tieneTagEspecial) {
+  if (typeof content === 'string' && content.length > 1200 && !tieneTagEspecial && !options.isSelfChat) {
     let cutPoint = content.lastIndexOf('\n\n', 1200);
     if (cutPoint < 400) cutPoint = content.lastIndexOf('\n', 1200);
     if (cutPoint < 400) cutPoint = 1200;
@@ -1802,7 +1802,7 @@ Nuevo resumen actualizado:`;
     if (isAdmin) {
       const result = assemblePrompt({
         chatType: 'selfchat',
-        messageBody: body,
+        messageBody: userMessage,
         ownerProfile: null, // usa default (Mariano)
         context: {
           contactName: userProfile.name || 'Mariano',
@@ -1822,7 +1822,7 @@ Nuevo resumen actualizado:`;
     } else {
       const result = assemblePrompt({
         chatType: 'lead',
-        messageBody: body,
+        messageBody: userMessage,
         ownerProfile: null,
         context: {
           contactName: leadNames[phone] || '',
@@ -4090,9 +4090,12 @@ setInterval(async () => {
   if (adnConsentOk) {
     cerebroAbsoluto.processADNMinerCron();
   } else {
-    // Solo logear si estamos en la hora del cron (3AM) para no llenar logs
-    const h = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' })).getHours();
-    if (h === 3) console.log('[CRON ADN] Sin consentimiento registrado. Minado cancelado.');
+    // Solo logear UNA VEZ al día para no llenar logs
+    const todayAdn = new Date().toISOString().split('T')[0];
+    if (!global._lastAdnNoConsentLog || global._lastAdnNoConsentLog !== todayAdn) {
+      global._lastAdnNoConsentLog = todayAdn;
+      console.log('[CRON ADN] Sin consentimiento registrado. Minado cancelado (log diario).');
+    }
   }
 
   webScraper.processScraperCron();

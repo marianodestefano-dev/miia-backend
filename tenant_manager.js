@@ -529,21 +529,34 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
     tenant.sock = sock;
 
-    // ═══ TÉCNICA 2: Watchdog — detecta conexión zombie ═══
-    // Railway/Heroku pueden congelar el proceso por memory pressure.
-    // La conexión WS queda "abierta" en papel pero muerta en realidad.
-    // Este watchdog verifica cada 5 min que el socket sigue vivo.
-    // Si detecta zombie → desconecta y reconecta limpiamente.
+    // ═══ TÉCNICA 2: Heartbeat + Watchdog ═══
+    // Railway proxy mata WS inactivas (~10-15 min). keepAliveIntervalMs de Baileys
+    // envía pings WS de bajo nivel que el proxy L7 puede ignorar.
+    // Solución: heartbeat a nivel aplicación cada 3 min que genera tráfico WS real.
     if (tenant._watchdog) clearInterval(tenant._watchdog);
+    if (tenant._heartbeat) clearInterval(tenant._heartbeat);
     tenant._lastSocketActivity = Date.now();
+
+    // Heartbeat: mantiene el socket vivo para Railway con tráfico WS real
+    tenant._heartbeat = setInterval(async () => {
+      if (!tenant.isReady || !tenant.sock) return;
+      try {
+        // sendPresenceUpdate genera tráfico WS real visible al proxy
+        await tenant.sock.sendPresenceUpdate('available');
+        tenant._lastSocketActivity = Date.now();
+      } catch (e) {
+        // Si falla, el watchdog lo detectará
+      }
+    }, 180000); // Cada 3 minutos
+
+    // Watchdog: detecta zombie y reconecta
     tenant._watchdog = setInterval(() => {
-      if (!tenant.isReady) return; // No verificar si no está conectado
+      if (!tenant.isReady) return;
       const silentMinutes = (Date.now() - tenant._lastSocketActivity) / 60000;
-      // Si no hubo actividad en 10 min Y el socket existe → verificar estado
-      if (silentMinutes > 10 && tenant.sock?.ws) {
+      if (silentMinutes > 7 && tenant.sock?.ws) {
         const wsState = tenant.sock.ws.readyState;
         // WebSocket states: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
-        if (wsState !== 1) {
+        if (wsState !== 1 || wsState === undefined) {
           if (tenant._reconnecting) return; // Anti-cascada
           console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket zombie detectado (ws.readyState=${wsState}, silent ${Math.round(silentMinutes)}min). Forzando reconexión...`);
           tenant._reconnecting = true;
@@ -554,10 +567,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           setTimeout(() => {
             tenant._reconnecting = false;
             startBaileysConnection(uid, tenant, ioInstance);
-          }, 5000); // 5s para que WhatsApp libere la conexión
+          }, 5000);
         }
       }
-    }, 300000); // Cada 5 minutos
+    }, 180000); // Cada 3 minutos (intercalado con heartbeat)
 
     // ─── Connection updates (QR, auth, ready) ───
     sock.ev.on('connection.update', async (update) => {
@@ -1307,6 +1320,7 @@ async function gracefulShutdown(signal) {
   for (const [uid, tenant] of tenants) {
     // Limpiar watchdog y pre-emptive refresh
     if (tenant._watchdog) clearInterval(tenant._watchdog);
+    if (tenant._heartbeat) clearInterval(tenant._heartbeat);
     if (tenant._preemptiveRefresh) clearInterval(tenant._preemptiveRefresh);
     // Guardar health status
     if (tenant._sessionApis) {
