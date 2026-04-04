@@ -1924,7 +1924,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         if (isAdmin) {
           // Admin: usar confidence engine para evaluar antes de guardar
           try {
-            const importance = await confidenceEngine.evaluateImportance(text, callGemini);
+            const importance = await confidenceEngine.evaluateImportance(text, (prompt) => callGemini(process.env.GEMINI_API_KEY, prompt));
             const { action, confidence, reason } = confidenceEngine.decideAction(importance, text);
             console.log(`[CONFIDENCE] ${reason} (${confidence}%)`);
             if (action === 'save') {
