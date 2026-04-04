@@ -322,18 +322,31 @@ Ejemplo: "Te envío la cotización con todos los planes."
  * @param {object} [ownerProfile] - Perfil del owner desde Firestore
  * @returns {string} System prompt completo
  */
-function buildOwnerSelfChatPrompt(ownerProfile) {
+function buildOwnerSelfChatPrompt(ownerProfile, messageBody) {
   const p = resolveProfile(ownerProfile);
   const adn = buildADN(p);
   const vademecum = buildVademecum(p);
   const nicknames = p.nicknames?.length ? ` Le dice ${p.nicknames.map(n => `"${n}"`).join(', ')}.` : '';
 
-  // Solo Medilink tiene el protocolo de cotización completo con precios
-  // Otros owners usan su training data para precios
-  const cotizBlock = p.hasCustomPricing ? COTIZACION_PROTOCOL : `## 📑 PROTOCOLO COTIZACIÓN
+  // COTIZACION_PROTOCOL CONDICIONAL: solo cargar tabla completa (~2100 tokens) si el mensaje
+  // menciona precios, cotizaciones o usuarios. Ahorra ~2100 tokens en 80% de mensajes.
+  const cotizKeywords = /\b(\d+\s*(usuario|cita|paciente|médico|medico)|precio|cotizaci[oó]n|plan[ea]?s?\b|cuanto|cu[aá]nto|cuesta|tarifa|bolsa|factura|mensual|anual|descuento|promo)/i;
+  const needsCotiz = messageBody && cotizKeywords.test(messageBody);
+
+  let cotizBlock;
+  if (!p.hasCustomPricing) {
+    cotizBlock = `## 📑 PROTOCOLO COTIZACIÓN
 Si el lead menciona un número de usuarios, emití el tag:
 [GENERAR_COTIZACION_PDF:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, ...}]
 Los precios se toman del entrenamiento del negocio (cerebro). Si no hay precios configurados, preguntá al owner.`;
+  } else if (needsCotiz) {
+    cotizBlock = COTIZACION_PROTOCOL;
+  } else {
+    cotizBlock = `## 📑 PROTOCOLO COTIZACIÓN (resumen)
+Tenés acceso al configurador comercial Medilink. Si alguien pregunta por precios, planes, cotizaciones o número de usuarios, emití:
+[GENERAR_COTIZACION_PDF:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, "modalidad":"mensual|anual", "incluirFactura":true|false, "incluirFirma":true|false, "incluirWhatsapp":true|false}]
+Países soportados: Chile/CLP, Colombia/COP, México/MXN, RD/USD, Argentina/USD, España/EUR(solo anual), Internacional/USD.`;
+  }
 
   return `
 # 🧠 PROMPT MAESTRO: MIIA — ASISTENTE IA v6.0 🧬🚀
@@ -536,17 +549,24 @@ WA S:$11k M:$23k L:$75k XL:$120k | Factura S:$32k M:$50k L:$88k XL:$165k | Firma
 ES $842.80/$250 adic | PRO $1180/$300 | TI $1297/$450
 WA S:$210 M:$360 L:$680 XL:$1300 | Factura S:$160 M:$270 L:$440 XL:$500 | Firma S:$450 M:$790 L:$1.4k XL:$3.3k
 
-### INTERNACIONAL / ARGENTINA / RD (USD)
+### REPÚBLICA DOMINICANA (USD) — con factura
 ES $45/$12 adic | PRO $65/$13 | TI $85/$14
 WA S:$15 M:$35 L:$70 XL:$170 | Factura S:$10 M:$17 L:$35 XL:$60 | Firma S:$25 M:$40 L:$70 XL:$170
+
+### ARGENTINA / INTERNACIONAL (USD) — sin factura
+ES $45/$12 adic | PRO $65/$13 | TI $85/$14
+WA S:$15 M:$35 L:$70 XL:$170 | Firma S:$25 M:$40 L:$70 XL:$170
 
 ### ESPAÑA (EUR) — SOLO ANUAL (precios ×12 meses)
 ES €840/€120 adic | PRO €1200/€192 | TI €1440/€240
 WA S:€180 M:€396 L:€864 XL:€2040 | Firma S:€300 M:€480 L:€840 XL:€2040
 
-### BENEFICIO EXCLUSIVO PLAN TITANIUM
-SIIGO/BOLD (Colombia): Si el lead ya tiene SIIGO + elige Titanium → facturador electrónico $0.
-Solo mencionarlo si el lead trae el tema primero.
+### DIFERENCIADORES POR PLAN
+- **Tokens IA mensuales**: ESENCIAL 80 | PRO 250 | TITANIUM 400
+- **Ficha estética facial**: Adicional en ESENCIAL y PRO | INCLUIDA en TITANIUM
+- **Inventario, Pagos, Remuneraciones**: Solo PRO y TITANIUM
+- **Laboratorios y exámenes**: Solo TITANIUM
+- **SIIGO/BOLD (Colombia)**: Si el lead ya tiene SIIGO + elige Titanium → facturador electrónico $0. Solo mencionarlo si el lead trae el tema primero.
 
 ## 🚨 PROTOCOLO COTIZACIÓN — REGLA ABSOLUTA PRIORITARIA 🚨
 

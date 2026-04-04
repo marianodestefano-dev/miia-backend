@@ -610,7 +610,7 @@ function saveDB() {
   } catch (e) { console.error('[DB] Error guardando:', e.message); }
   // Debounced sync a Firestore (30s después del último saveDB)
   if (_firestoreSyncTimer) clearTimeout(_firestoreSyncTimer);
-  _firestoreSyncTimer = setTimeout(() => { saveToFirestore().catch(() => {}); }, 30000);
+  _firestoreSyncTimer = setTimeout(() => { saveToFirestore().catch(() => {}); }, 5000);
 }
 
 function loadDB() {
@@ -2246,6 +2246,11 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           console.log(`[COTIZ] JSON detectado: ${jsonStr.substring(0, 300)}`);
           const cotizData = JSON.parse(jsonStr);
           console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios });
+          // VALIDACIÓN: España/EUR → SOLO modalidad anual (server-side enforcement)
+          if (cotizData.moneda === 'EUR' && cotizData.modalidad !== 'anual') {
+            console.warn(`[COTIZ-WARN] España detectada pero modalidad=${cotizData.modalidad}. Forzando anual.`);
+            cotizData.modalidad = 'anual';
+          }
           // Inyectar datos del owner desde Firestore para el footer del PDF
           try {
             if (OWNER_UID) {
