@@ -311,7 +311,7 @@ const equipoMedilink = {
 };
 
 // Leads pre-registrados (MIIA los trata como potenciales clientes de Medilink)
-let allowedLeads = [];
+let allowedLeads = Object.keys(contactTypes); // Pre-seed con contactos conocidos
 let flaggedBots = {};
 let lastInteractionTime = {};
 let selfChatLoopCounter = {};
