@@ -481,7 +481,8 @@ async function runAgendaEngine() {
           // Si lo pidió alguien del círculo (no el owner en self-chat), informar al owner también
           if (evt.requestedBy && evt.requestedBy !== `${OWNER_PHONE}@s.whatsapp.net` && evt.source !== 'owner_selfchat') {
             safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-              `📅 MIIA acaba de recordarle a *${evt.contactName}*: "${evt.reason}"`
+              `📅 MIIA acaba de recordarle a *${evt.contactName}*: "${evt.reason}"`,
+              { isSelfChat: true }
             ).catch(() => {});
           }
 
@@ -1792,7 +1793,8 @@ Nuevo resumen actualizado:`;
         const contactName = leadNames[phone] || phone.split('@')[0];
         const alertType = isInsult ? '⚠️ INSULTO' : '🔔 QUEJA';
         safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-          `${alertType} recibido de *${contactName}* (+${phone.split('@')[0]})\n\n📩 "${effectiveMsg.substring(0, 300)}"\n\nMIIA respondió con empatía. Considera contactarlo manualmente.`
+          `${alertType} recibido de *${contactName}* (+${phone.split('@')[0]})\n\n📩 "${effectiveMsg.substring(0, 300)}"\n\nMIIA respondió con empatía. Considera contactarlo manualmente.`,
+          { isSelfChat: true }
         ).catch(() => {});
 
         console.log(`[QUEJA/INSULTO] Protocolo activado para ${phone} — tipo: ${isInsult ? 'insulto' : 'queja'}`);
@@ -2169,7 +2171,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           // 3. Si Calendar no está conectado, avisar al owner
           if (!calendarOk && !isSelfChat) {
             safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-              `📅 *Evento agendado internamente* (Calendar no conectado)\n${contactName} pidió: "${razon}" para el ${fecha}\nMIIA lo recordará, pero no está en tu Google Calendar.\n\n💡 Conectá Calendar desde tu dashboard → Conexiones.`
+              `📅 *Evento agendado internamente* (Calendar no conectado)\n${contactName} pidió: "${razon}" para el ${fecha}\nMIIA lo recordará, pero no está en tu Google Calendar.\n\n💡 Conectá Calendar desde tu dashboard → Conexiones.`,
+              { isSelfChat: true }
             ).catch(() => {});
           }
         }
@@ -2515,7 +2518,8 @@ async function handleIncomingMessage(message) {
         `⚠️ *MEDIA NO PROCESADA*\n` +
         `Lead: *${leadName}* (${leadPhone.split('@')[0]})\n` +
         `Tipo: ${tipoLabel}\n` +
-        `No pude interpretar el ${tipoLabel}. Tomá el control del chat.`
+        `No pude interpretar el ${tipoLabel}. Tomá el control del chat.`,
+        { isSelfChat: true }
       );
       console.log(`[MEDIA] Fallback: alerta enviada a Mariano por ${tipoLabel} de ${leadPhone}`);
       return;
@@ -2586,7 +2590,8 @@ async function handleIncomingMessage(message) {
       console.log(`[MIIA] 🎉 CONVERSIÓN: ${clientName} ahora es cliente (${targetPhone})`);
       // Notificar a Mariano
       safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-        `🎉 *¡Nuevo cliente!* ${clientName} acaba de convertirse en cliente de Medilink.`
+        `🎉 *¡Nuevo cliente!* ${clientName} acaba de convertirse en cliente de Medilink.`,
+        { isSelfChat: true }
       ).catch(() => {});
     }
   }
@@ -2947,7 +2952,8 @@ async function handleIncomingMessage(message) {
       estadisticas.registrarInteresado({ phone: effectiveTarget, nombre: leadName, respuesta: body });
       if (conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget].followUpState = 'converted';
       await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-        `🔔 *${leadName}* está listo para comprar.\n\nSus datos:\n${body}\n\nCreá el link de pago y enviáselo.`);
+        `🔔 *${leadName}* está listo para comprar.\n\nSus datos:\n${body}\n\nCreá el link de pago y enviáselo.`,
+        { isSelfChat: true });
       await safeSendMessage(effectiveTarget,
         `¡Perfecto! Recibí todo. Voy a crear tu link de acceso y en cuanto esté listo te lo mando. ¡Gracias por confiar en Medilink! 🙌`);
       console.log(`[COMPRA] Mariano notificado. Lead ${effectiveTarget} en espera de link.`);
@@ -4056,8 +4062,17 @@ async function processMorningBriefing() {
       })
       .slice(0, 10)
       .map(([lPhone, summary]) => {
-        const name = leadNames[lPhone] || lPhone.split('@')[0];
-        return `▸ *${name}*: ${summary.substring(0, 160)}`;
+        const baseNum = lPhone.split('@')[0];
+        const name = leadNames[lPhone] || baseNum;
+        // Truncar en límite de palabra, no cortar a mitad de frase
+        let shortSummary = summary;
+        if (shortSummary.length > 250) {
+          shortSummary = shortSummary.substring(0, 250);
+          const lastSpace = shortSummary.lastIndexOf(' ');
+          if (lastSpace > 180) shortSummary = shortSummary.substring(0, lastSpace);
+          shortSummary += '…';
+        }
+        return `▸ *${name}*: ${shortSummary}`;
       })
       .join('\n');
 
@@ -4088,8 +4103,8 @@ async function processMorningBriefing() {
     // Sección leads (informativa, sin aprobación)
     if (leadsSection) briefing += leadsSection;
 
-    await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, briefing);
-    console.log(`[BRIEFING] Briefing interactivo enviado a Mariano (${scraperResults.length} regulatorias, leads: ${!!pendingEntries}).`);
+    await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, briefing, { isSelfChat: true });
+    console.log(`[BRIEFING] Briefing enviado a self-chat (${scraperResults.length} regulatorias, leads: ${!!pendingEntries}).`);
   } catch (e) {
     console.error('[BRIEFING] Error:', e.message);
   }
@@ -4200,7 +4215,7 @@ app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
       saveDB();
       console.log(`[HELPCENTER] ✅ Aprendizaje completo: ${learned}/${articleUrls.length} artículos procesados.`);
       // Notify Mariano via WhatsApp
-      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ *Centro de Ayuda Medilink aprendido*\n${learned} artículos procesados y guardados en mi memoria.`).catch(() => {});
+      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ *Centro de Ayuda Medilink aprendido*\n${learned} artículos procesados y guardados en mi memoria.`, { isSelfChat: true }).catch(() => {});
     } catch (e) {
       console.error('[HELPCENTER] Error general:', e.message);
     }
