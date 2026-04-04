@@ -1543,16 +1543,20 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
 
             // Tono según affinity stage
             let toneRule = '';
+            // Saludo según hora (Bogotá)
+            const horaBogota = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' })).getHours();
+            const saludo = horaBogota < 12 ? 'Buenos días' : horaBogota < 18 ? 'Buenas tardes' : 'Buenas noches';
+
             if (stage.stage === 0 && !yaConoce) {
               toneRule = '- Es tu PRIMER contacto con esta persona. Presentate brevemente ("Hola, soy MIIA 👋") y transmití el tema.';
             } else if (stage.stage === 0 && yaConoce) {
-              toneRule = '- Ya hablaste antes pero todavía no se conocen bien. Sé amable y cálida, no te presentes de nuevo, ve al tema.';
+              toneRule = `- Empezá con "${saludo}! Acá MIIA 😊" y ve directo al tema. Amable y cálida.`;
             } else if (stage.stage === 1) {
-              toneRule = '- Ya se van conociendo. Tono amigable, sin presentarte. Ve directo al tema con naturalidad.';
+              toneRule = `- Empezá con "${saludo}! Acá MIIA 😊" y ve directo al tema. Tono amigable y natural.`;
             } else if (stage.stage === 2) {
-              toneRule = '- Ya tienen confianza. Tono cercano, como amiga. Nada de formalidades.';
+              toneRule = `- Empezá con "${saludo}! Acá MIIA ✨" y ve al tema. Tono cercano, con confianza.`;
             } else if (stage.stage >= 3) {
-              toneRule = '- Son íntimas/muy cercanas. Hablale como su mejor amiga, con toda la confianza del mundo. Podés ser graciosa, directa, usar jerga.';
+              toneRule = `- Empezá con "${saludo}! Acá MIIA 💕" y ve al tema. Como mejor amiga, directa, con jerga y humor.`;
             }
 
             const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de ${userProfile.name || 'Mariano'}).
