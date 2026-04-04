@@ -18,8 +18,9 @@ process.on('unhandledRejection', (err) => {
 
 // Graceful shutdown: flush affinity a Firestore antes de cerrar
 process.on('SIGTERM', async () => {
-  console.log('[SHUTDOWN] SIGTERM recibido — guardando affinity en Firestore...');
-  try { await saveAffinityToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error:', e.message); }
+  console.log('[SHUTDOWN] SIGTERM recibido — guardando datos en Firestore...');
+  try { await saveAffinityToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error affinity:', e.message); }
+  try { await saveToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error persistent:', e.message); }
   process.exit(0);
 });
 
@@ -595,6 +596,7 @@ let automationSettings = {
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
+let _firestoreSyncTimer = null;
 function saveDB() {
   try {
     const data = {
@@ -606,6 +608,9 @@ function saveDB() {
     };
     fs.writeFileSync(path.join(DATA_DIR, 'db.json'), JSON.stringify(data, null, 2));
   } catch (e) { console.error('[DB] Error guardando:', e.message); }
+  // Debounced sync a Firestore (30s después del último saveDB)
+  if (_firestoreSyncTimer) clearTimeout(_firestoreSyncTimer);
+  _firestoreSyncTimer = setTimeout(() => { saveToFirestore().catch(() => {}); }, 30000);
 }
 
 function loadDB() {
@@ -636,6 +641,121 @@ function loadDB() {
   } catch (e) { console.error('[DB] Error cargando:', e.message); }
 }
 loadDB();
+
+// ============================================
+// FIRESTORE PERSISTENCE — Datos que sobreviven deploys
+// ============================================
+// db.json es cache local (efímero en Railway). Firestore es fuente de verdad.
+
+const FIRESTORE_SYNC_COLLECTION = 'miia_persistent';
+
+async function saveToFirestore() {
+  if (!OWNER_UID) return;
+  try {
+    const ref = admin.firestore().collection('users').doc(OWNER_UID).collection(FIRESTORE_SYNC_COLLECTION);
+
+    // Contactos y leads (lo más crítico)
+    await ref.doc('contacts').set({
+      allowedLeads,
+      contactTypes,
+      leadNames,
+      familyContacts,
+      equipoMedilink,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // LID mappings
+    await ref.doc('lid_mappings').set({
+      lidToPhone,
+      phoneToLid,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Metadata de conversaciones (affinity, handshake, etc.)
+    await ref.doc('conversation_meta').set({
+      conversationMetadata,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Historial de conversaciones (para contexto de IA)
+    await ref.doc('conversations').set({
+      conversations,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Config y perfil
+    await ref.doc('config').set({
+      automationSettings,
+      userProfile,
+      flaggedBots,
+      keywordsSet,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    console.log('[FIRESTORE] ✅ Datos persistidos correctamente');
+  } catch (e) {
+    console.error('[FIRESTORE] ❌ Error guardando:', e.message);
+  }
+}
+
+async function loadFromFirestore() {
+  if (!OWNER_UID) return false;
+  try {
+    const ref = admin.firestore().collection('users').doc(OWNER_UID).collection(FIRESTORE_SYNC_COLLECTION);
+
+    const contactsDoc = await ref.doc('contacts').get();
+    if (contactsDoc.exists) {
+      const d = contactsDoc.data();
+      if (d.allowedLeads) { for (const l of d.allowedLeads) { if (!allowedLeads.includes(l)) allowedLeads.push(l); } }
+      if (d.contactTypes) Object.assign(contactTypes, d.contactTypes);
+      if (d.leadNames) Object.assign(leadNames, d.leadNames);
+      if (d.familyContacts) Object.assign(familyContacts, d.familyContacts);
+      if (d.equipoMedilink) Object.assign(equipoMedilink, d.equipoMedilink);
+    }
+
+    const lidDoc = await ref.doc('lid_mappings').get();
+    if (lidDoc.exists) {
+      const d = lidDoc.data();
+      if (d.lidToPhone) Object.assign(lidToPhone, d.lidToPhone);
+      if (d.phoneToLid) Object.assign(phoneToLid, d.phoneToLid);
+    }
+
+    const metaDoc = await ref.doc('conversation_meta').get();
+    if (metaDoc.exists) {
+      const d = metaDoc.data();
+      if (d.conversationMetadata) Object.assign(conversationMetadata, d.conversationMetadata);
+    }
+
+    const convoDoc = await ref.doc('conversations').get();
+    if (convoDoc.exists) {
+      const d = convoDoc.data();
+      if (d.conversations) Object.assign(conversations, d.conversations);
+    }
+
+    const configDoc = await ref.doc('config').get();
+    if (configDoc.exists) {
+      const d = configDoc.data();
+      if (d.automationSettings) Object.assign(automationSettings, d.automationSettings);
+      if (d.userProfile) Object.assign(userProfile, d.userProfile);
+      if (d.flaggedBots) Object.assign(flaggedBots, d.flaggedBots);
+      if (d.keywordsSet) keywordsSet = d.keywordsSet;
+    }
+
+    console.log('[FIRESTORE] ✅ Datos cargados desde Firestore (sobrevivió deploy)');
+    return true;
+  } catch (e) {
+    console.error('[FIRESTORE] ❌ Error cargando:', e.message);
+    return false;
+  }
+}
+
+// Cargar desde Firestore al arrancar (después de loadDB para que Firestore tenga prioridad)
+loadFromFirestore().then(loaded => {
+  if (loaded) console.log('[FIRESTORE] 🔄 Datos de Firestore mergeados con db.json local');
+});
+
+// Sync periódico a Firestore cada 2 minutos (batch, no en cada cambio)
+setInterval(() => { saveToFirestore().catch(() => {}); }, 2 * 60 * 1000);
 
 // ============================================
 // HELPERS GENERALES
