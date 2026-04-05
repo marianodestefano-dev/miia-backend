@@ -314,6 +314,86 @@ const equipoMedilink = {
   '573014259700': { name: null, presented: false }
 };
 
+// ═══ SPORT COMMAND HELPERS ═══
+const KNOWN_FUTBOL_TEAMS = {
+  'boca': { team: 'Boca Juniors', rivalry: 'River Plate', league: 'liga_argentina' },
+  'boca juniors': { team: 'Boca Juniors', rivalry: 'River Plate', league: 'liga_argentina' },
+  'river': { team: 'River Plate', rivalry: 'Boca Juniors', league: 'liga_argentina' },
+  'river plate': { team: 'River Plate', rivalry: 'Boca Juniors', league: 'liga_argentina' },
+  'racing': { team: 'Racing Club', rivalry: 'Independiente', league: 'liga_argentina' },
+  'independiente': { team: 'Independiente', rivalry: 'Racing Club', league: 'liga_argentina' },
+  'san lorenzo': { team: 'San Lorenzo', rivalry: 'Huracán', league: 'liga_argentina' },
+  'nacional': { team: 'Atlético Nacional', rivalry: 'América de Cali', league: 'liga_colombiana' },
+  'millonarios': { team: 'Millonarios', rivalry: 'Santa Fe', league: 'liga_colombiana' },
+  'barcelona': { team: 'FC Barcelona', rivalry: 'Real Madrid', league: 'la_liga' },
+  'real madrid': { team: 'Real Madrid', rivalry: 'FC Barcelona', league: 'la_liga' },
+  'psg': { team: 'Paris Saint-Germain', rivalry: 'Olympique Marseille', league: 'ligue_1' },
+  'manchester city': { team: 'Manchester City', rivalry: 'Manchester United', league: 'premier_league' },
+  'liverpool': { team: 'Liverpool', rivalry: 'Manchester United', league: 'premier_league' },
+  'juventus': { team: 'Juventus', rivalry: 'Inter Milan', league: 'serie_a' },
+  'inter': { team: 'Inter Milan', rivalry: 'AC Milan', league: 'serie_a' },
+  'bayern': { team: 'Bayern Munich', rivalry: 'Borussia Dortmund', league: 'bundesliga' },
+};
+
+const KNOWN_F1_DRIVERS = {
+  'verstappen': { driver: 'Verstappen', team: 'Red Bull', rivalry: 'Hamilton' },
+  'max': { driver: 'Verstappen', team: 'Red Bull', rivalry: 'Hamilton' },
+  'hamilton': { driver: 'Hamilton', team: 'Ferrari', rivalry: 'Verstappen' },
+  'leclerc': { driver: 'Leclerc', team: 'Ferrari', rivalry: 'Sainz' },
+  'colapinto': { driver: 'Colapinto', team: 'Alpine', rivalry: '' },
+  'norris': { driver: 'Norris', team: 'McLaren', rivalry: 'Piastri' },
+  'piastri': { driver: 'Piastri', team: 'McLaren', rivalry: 'Norris' },
+  'sainz': { driver: 'Sainz', team: 'Williams', rivalry: 'Leclerc' },
+  'perez': { driver: 'Perez', team: 'Red Bull', rivalry: 'Verstappen' },
+  'checo': { driver: 'Perez', team: 'Red Bull', rivalry: 'Verstappen' },
+  'alonso': { driver: 'Alonso', team: 'Aston Martin', rivalry: '' },
+  'red bull': { driver: 'Red Bull Racing', team: 'Red Bull', rivalry: 'McLaren' },
+  'ferrari': { driver: 'Ferrari', team: 'Ferrari', rivalry: 'McLaren' },
+  'mclaren': { driver: 'McLaren', team: 'McLaren', rivalry: 'Ferrari' },
+};
+
+function _parseSportPreference(raw) {
+  const lower = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+  // Check F1 primero (drivers/teams)
+  for (const [key, data] of Object.entries(KNOWN_F1_DRIVERS)) {
+    if (lower.includes(key)) {
+      return { type: 'f1', driver: data.driver, team: data.team, rivalry: data.rivalry };
+    }
+  }
+
+  // Check fútbol
+  for (const [key, data] of Object.entries(KNOWN_FUTBOL_TEAMS)) {
+    if (lower.includes(key)) {
+      return { type: 'futbol', team: data.team, rivalry: data.rivalry, league: data.league };
+    }
+  }
+
+  // Fallback: asumir fútbol si no se reconoce
+  if (raw.length > 1) {
+    return { type: 'futbol', team: raw, rivalry: '', league: 'unknown' };
+  }
+
+  return null;
+}
+
+function _findContactPhoneBySportName(name) {
+  const lower = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Buscar en familyContacts
+  for (const [phone, data] of Object.entries(familyContacts)) {
+    if (data.name && data.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(lower)) {
+      return `${phone}@s.whatsapp.net`;
+    }
+  }
+  // Buscar en equipoMedilink
+  for (const [phone, data] of Object.entries(equipoMedilink)) {
+    if (data.name && data.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').includes(lower)) {
+      return `${phone}@s.whatsapp.net`;
+    }
+  }
+  return null;
+}
+
 // Leads pre-registrados (MIIA los trata como potenciales clientes de Medilink)
 let allowedLeads = Object.keys(contactTypes); // Pre-seed con contactos conocidos
 let flaggedBots = {};
@@ -2072,6 +2152,91 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         if (OWNER_UID) await admin.firestore().collection('users').doc(OWNER_UID).update({ humanizer_enabled: true });
         _humanizerCache = { value: true, ts: Date.now() };
         await safeSendMessage(phone, '✅ Humanizador activado. Incluiré pausas variables y pequeños errores tipográficos ocasionales.');
+        return;
+      }
+    }
+
+    // ═══ COMANDOS DEPORTIVOS (self-chat) ═══
+    if (isAdmin && effectiveMsg) {
+      const sportLower = effectiveMsg.toLowerCase().trim();
+
+      // "soy hincha de Boca" / "soy fan de Verstappen" / "sigo a Red Bull"
+      const hinchaMatch = sportLower.match(/^(?:miia\s+)?(?:soy\s+(?:hincha|fan|fanatico|fanática)\s+de|sigo\s+a)\s+(.+)/i);
+      if (hinchaMatch) {
+        const raw = hinchaMatch[1].trim();
+        const sportPref = _parseSportPreference(raw);
+        if (sportPref) {
+          try {
+            await sportEngine.addSportPreference('self', 'Owner', sportPref);
+            await safeSendMessage(phone, `✅ Anotado! Voy a seguir a ${sportPref.team || sportPref.driver} (${sportPref.type}) y te aviso cuando jueguen 🔥`);
+          } catch (err) {
+            console.error(`[SPORT-CMD] Error agregando preferencia: ${err.message}`);
+            await safeSendMessage(phone, `❌ No pude guardar la preferencia: ${err.message}`);
+          }
+          return;
+        }
+      }
+
+      // "deporte Roberto hincha de River" → preferencia para contacto
+      const deporteContactoMatch = sportLower.match(/^(?:miia\s+)?deporte\s+(\S+)\s+(?:hincha|fan)\s+de\s+(.+)/i);
+      if (deporteContactoMatch) {
+        const contactName = deporteContactoMatch[1].trim();
+        const raw = deporteContactoMatch[2].trim();
+        const sportPref = _parseSportPreference(raw);
+        if (sportPref) {
+          // Buscar teléfono del contacto en familyContacts, equipoMedilink, o leadNames
+          const contactPhone = _findContactPhoneBySportName(contactName);
+          try {
+            await sportEngine.addSportPreference(
+              contactPhone || contactName,
+              contactName,
+              sportPref
+            );
+            await safeSendMessage(phone, `✅ Anotado! ${contactName} es fan de ${sportPref.team || sportPref.driver} (${sportPref.type}). Le voy a avisar cuando jueguen 🔥`);
+          } catch (err) {
+            console.error(`[SPORT-CMD] Error: ${err.message}`);
+            await safeSendMessage(phone, `❌ Error: ${err.message}`);
+          }
+          return;
+        }
+      }
+
+      // "deporte eliminar Roberto futbol" → eliminar preferencia
+      const deporteElimMatch = sportLower.match(/^(?:miia\s+)?deporte\s+eliminar\s+(\S+)\s+(\S+)/i);
+      if (deporteElimMatch) {
+        const contactName = deporteElimMatch[1].trim();
+        const sportType = deporteElimMatch[2].trim();
+        const contactPhone = contactName.toLowerCase() === 'yo' || contactName.toLowerCase() === 'mi'
+          ? 'self'
+          : (_findContactPhoneBySportName(contactName) || contactName);
+        try {
+          await sportEngine.removeSportPreference(contactPhone, sportType);
+          await safeSendMessage(phone, `✅ Eliminada preferencia de ${sportType} para ${contactName}`);
+        } catch (err) {
+          await safeSendMessage(phone, `❌ Error: ${err.message}`);
+        }
+        return;
+      }
+
+      // "mis deportes" → listar preferencias actuales
+      if (sportLower.match(/^(?:miia\s+)?mis\s+deportes$/i)) {
+        const stats = sportEngine.getStats();
+        if (stats.contactsWithPrefs === 0) {
+          await safeSendMessage(phone, '📊 No tenés deportes configurados aún. Decime "soy hincha de [equipo]" para empezar!');
+        } else {
+          let msg = `📊 Deportes configurados:\n`;
+          msg += `• Adapters cargados: ${stats.adaptersLoaded}\n`;
+          msg += `• Contactos con preferencias: ${stats.contactsWithPrefs}\n`;
+          if (stats.activeEvents > 0) {
+            msg += `• Eventos activos: ${stats.activeEvents}\n`;
+            for (const ev of stats.events) {
+              msg += `  - ${ev.name} (${ev.sport}) — ${ev.contacts} contacto(s)\n`;
+            }
+          } else {
+            msg += `• Sin eventos activos en este momento`;
+          }
+          await safeSendMessage(phone, msg);
+        }
         return;
       }
     }
