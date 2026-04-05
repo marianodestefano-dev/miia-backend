@@ -207,10 +207,28 @@ console.error = function(...args) {
       return; // NO imprimir — silencio total durante startup
     }
 
-    // Post-startup: route crypto errors to smart recovery
+    // Post-startup: route crypto error to the SPECIFIC tenant (not all)
+    // Try to identify the tenant from the error string (phone number or JID)
+    let matched = false;
     for (const [uid, tenant] of tenants) {
       if (!tenant._sessionApis) continue;
-      handleCryptoError(uid, tenant);
+      const tenantPhone = tenant.phone || '';
+      // Check if the error contains this tenant's phone number
+      if (tenantPhone && errorStr.includes(tenantPhone)) {
+        handleCryptoError(uid, tenant);
+        matched = true;
+        break;
+      }
+    }
+    // If only 1 tenant active, attribute to that one
+    if (!matched) {
+      const activeTenants = [...tenants.entries()].filter(([, t]) => t._sessionApis);
+      if (activeTenants.length === 1) {
+        handleCryptoError(activeTenants[0][0], activeTenants[0][1]);
+      } else if (activeTenants.length > 1) {
+        // Cannot determine which tenant — log but do NOT cascade to all
+        originalConsoleError.apply(console, [`[TM] ⚠️ Crypto error detected but cannot attribute to specific tenant (${activeTenants.length} active). Skipping recovery cascade.`]);
+      }
     }
   }
   return originalConsoleError.apply(console, args);

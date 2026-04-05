@@ -844,10 +844,14 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     if (em.includes('credit') || em.includes('balance') || em.includes('billing') || em.includes('quota')) {
       const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${aiProvider}) no tiene créditos o saldo disponible.\n\nSolución: Cargá saldo en la cuenta de ${aiProvider === 'claude' ? 'console.anthropic.com' : aiProvider === 'openai' ? 'platform.openai.com' : 'aistudio.google.com'} → Billing.\n\nMientras tanto, podés cambiar a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
       try {
-        if (ctx.sock && ctx.selfJid) {
-          await ctx.sock.sendMessage(ctx.selfJid, { text: alertMsg });
+        const selfJid = tenantState.sock?.user?.id;
+        if (tenantState.sock && selfJid) {
+          await tenantState.sock.sendMessage(selfJid, { text: alertMsg });
+          console.log(`${logPrefix} ✅ Notificación de billing enviada al owner`);
         }
-      } catch (_) {}
+      } catch (notifyErr) {
+        console.error(`${logPrefix} ❌ Error notificando billing al owner:`, notifyErr.message);
+      }
     }
     return;
   }
@@ -906,12 +910,15 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       try { await ref.update({ status: 'approved', appliedAt: admin.firestore.FieldValue.serverTimestamp() }); } catch (_) {}
     } : null,
     notifyOwner: async (msg) => {
-      if (ctx.sock && ctx.selfJid) {
+      const selfJid = tenantState.sock?.user?.id;
+      if (tenantState.sock && selfJid) {
         try {
-          await ctx.sock.sendMessage(ctx.selfJid, { text: msg });
+          await tenantState.sock.sendMessage(selfJid, { text: msg });
         } catch (e) {
           console.error(`${logPrefix} ❌ Error notificando al owner:`, e.message);
         }
+      } else {
+        console.warn(`${logPrefix} ⚠️ No se pudo notificar al owner — sock o selfJid no disponible`);
       }
     }
   };

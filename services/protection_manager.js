@@ -44,6 +44,10 @@ const LEGAL_AGE_BY_COUNTRY = {
   '595': { country: 'Paraguay', age: 18, dataAutonomyAge: 14 },
   '591': { country: 'Bolivia', age: 18, dataAutonomyAge: 14 },
   '1': { country: 'USA/Canadá', age: 18, dataAutonomyAge: 13 }, // COPPA
+  '1809': { country: 'Rep. Dominicana', age: 18, dataAutonomyAge: 14 },
+  '1829': { country: 'Rep. Dominicana', age: 18, dataAutonomyAge: 14 },
+  '1849': { country: 'Rep. Dominicana', age: 18, dataAutonomyAge: 14 },
+  '1787': { country: 'Puerto Rico', age: 18, dataAutonomyAge: 13 },
   '44': { country: 'Reino Unido', age: 18, dataAutonomyAge: 13 },
   '33': { country: 'Francia', age: 18, dataAutonomyAge: 15 },
   '49': { country: 'Alemania', age: 18, dataAutonomyAge: 16 },
@@ -59,8 +63,8 @@ const DEFAULT_LEGAL = { country: 'Desconocido', age: 18, dataAutonomyAge: 14 };
  */
 function getLegalInfoFromPhone(phone) {
   const clean = (phone || '').replace(/\D/g, '');
-  // Probar código de 3 dígitos, luego 2, luego 1
-  for (const len of [3, 2, 1]) {
+  // Probar código de 4 dígitos (DR, PR), luego 3, 2, 1
+  for (const len of [4, 3, 2, 1]) {
     const code = clean.substring(0, len);
     if (LEGAL_AGE_BY_COUNTRY[code]) {
       return LEGAL_AGE_BY_COUNTRY[code];
@@ -212,7 +216,7 @@ async function createLinkOTP(protectedUid, protectedPhone, protectedName) {
       expiresAt: expiresAt.toISOString()
     });
 
-  console.log(`[PROTECTION] 🔑 OTP de vinculación creado para ${protectedName} (${protectedUid}): ${otp}`);
+  console.log(`[PROTECTION] 🔑 OTP de vinculación creado para ${protectedName} (${protectedUid})`);
   return otp;
 }
 

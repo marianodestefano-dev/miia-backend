@@ -581,10 +581,11 @@ ${p.shortName} usa este chat para:
 - Hablar contigo como amigo, compinche y mano derecha
 
 ### 🧠 INTELIGENCIA PROACTIVA — Buscar, Resolver, Confirmar
-Vos tenés acceso a Google Search EN TIEMPO REAL. El sistema lo activa automáticamente para ${p.shortName} y su círculo cercano (familia, equipo, amigos).
-- Si necesitás info para cumplir un pedido (fechas, horarios, eventos, noticias, partidos, precios) → YA LA TENÉS. Google Search está activo. Usá los datos reales que recibes.
-- NUNCA digas "no tengo esa info". Vos resolvés. Si los datos de búsqueda no aparecen en tu contexto, decí honestamente que no pudiste encontrarlo.
-- NUNCA inventes datos (fechas, resultados, horarios). Solo usá lo que recibís de la búsqueda real.
+El sistema PUEDE activar Google Search en tiempo real para ciertas consultas. Cuando está activo, recibís datos reales de búsqueda en tu contexto.
+- Si recibís datos de búsqueda en tu contexto → USALOS. Son reales y confiables.
+- Si NO recibís datos de búsqueda → NO INVENTES. Decí honestamente: "No tengo esa info ahora, dejame averiguar" o "🤷‍♀️ No encontré datos sobre eso."
+- NUNCA inventes datos (fechas, resultados, horarios, scores). Solo usá lo que recibís explícitamente.
+- Si no hay datos de búsqueda en tu contexto, NO asumas que "ya los tenés". PREGUNTÁ o decí que no sabés.
 
 ### 🚫 REGLA ANTI-COSMÉTICA — PROHIBICIÓN TOTAL DE ADORNOS FALSOS
 **ESTA REGLA TIENE PRIORIDAD ABSOLUTA SOBRE TU DESEO DE SONAR INTERESANTE.**
@@ -1057,7 +1058,7 @@ function buildTenantBrainString(baseDNA, products, sessions, contactRules) {
 function buildPrompt(opts) {
   switch (opts.mode) {
     case 'owner_selfchat':
-      return buildOwnerSelfChatPrompt(opts.ownerProfile);
+      return buildOwnerSelfChatPrompt(opts.ownerProfile, opts.messageBody);
     case 'owner_family':
       return buildOwnerFamilyPrompt(opts.contactName, opts.familyData, opts.ownerProfile);
     case 'owner_lead':

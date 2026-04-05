@@ -3933,12 +3933,16 @@ async function handleIncomingMessage(message) {
     }
     // Velocidad de auto-bucle
     const lastInt = lastInteractionTime[targetPhoneId] || 0;
-    if (now - lastInt < 20000) {
-      selfChatLoopCounter[targetPhoneId] = (selfChatLoopCounter[targetPhoneId] || 0) + 1;
-    } else {
-      selfChatLoopCounter[targetPhoneId] = 0;
+    if (!selfChatLoopCounter[targetPhoneId] || typeof selfChatLoopCounter[targetPhoneId] === 'number') {
+      selfChatLoopCounter[targetPhoneId] = { count: 0, lastTime: 0 };
     }
-    if (selfChatLoopCounter[targetPhoneId] >= 3) {
+    if (now - lastInt < 20000) {
+      selfChatLoopCounter[targetPhoneId].count++;
+    } else {
+      selfChatLoopCounter[targetPhoneId].count = 0;
+    }
+    selfChatLoopCounter[targetPhoneId].lastTime = now;
+    if (selfChatLoopCounter[targetPhoneId].count >= 3) {
       if (!conversationMetadata[targetPhoneId]) conversationMetadata[targetPhoneId] = {};
       conversationMetadata[targetPhoneId].miiaFamilyPaused = true;
       return;
@@ -4163,10 +4167,7 @@ async function handleIncomingMessage(message) {
 
   try {
     let phone = message.from;
-    try {
-      const contact = await message.getContact();
-      if (contact && contact.id) phone = contact.id._serialized;
-    } catch (e) {}
+    // NOTA: message es un objeto adaptado de Baileys, NO tiene getContact()/getChat()
 
     // Fix @lid para mensajes ENTRANTES: resolver LID a número real
     if (!fromMe && phone.includes('@lid')) {
@@ -4175,15 +4176,17 @@ async function handleIncomingMessage(message) {
         console.log(`[LID-MAP] ✅ Resuelto entrante: ${phone} → ${resolved}`);
         phone = resolved;
       } else {
-        // Fallback: intentar vía getChat (wwebjs legacy)
-        try {
-          const chat = await message.getChat();
-          if (chat && chat.id && chat.id._serialized && !chat.id._serialized.includes('@lid')) {
-            console.log(`[WA] @lid resuelto via getChat: ${phone} → ${chat.id._serialized}`);
-            registerLidMapping(phone, chat.id._serialized);
-            phone = chat.id._serialized;
+        // Fallback 1: buscar pushName en el mensaje para matchear con contactos conocidos
+        if (message.pushName) {
+          for (const [knownPhone, knownName] of Object.entries(leadNames || {})) {
+            if (knownName === message.pushName && knownPhone.includes('@s.whatsapp.net')) {
+              console.log(`[LID-MAP] 🔗 Matched LID via pushName: ${phone} → ${knownPhone} (${message.pushName})`);
+              registerLidMapping(phone, knownPhone);
+              phone = knownPhone;
+              break;
+            }
           }
-        } catch (e) {}
+        }
         // Fallback 2: buscar si hay un contacto con dileAMode activo que fue contactado recientemente
         if (phone.includes('@lid')) {
           for (const [cPhone, meta] of Object.entries(conversationMetadata)) {
@@ -4191,19 +4194,6 @@ async function handleIncomingMessage(message) {
               console.log(`[LID-MAP] 🔗 Matched LID via dileA: ${phone} → ${cPhone} (contact: ${meta.dileAContact})`);
               registerLidMapping(phone, cPhone);
               phone = cPhone;
-              break;
-            }
-          }
-        }
-        // Fallback 3: buscar si hay un familiar registrado que no tiene LID asignado
-        if (phone.includes('@lid')) {
-          for (const [fPhone, fInfo] of Object.entries(familyContacts || {})) {
-            const fullPhone = fPhone.includes('@') ? fPhone : `${fPhone}@s.whatsapp.net`;
-            if (!phoneToLid[fullPhone]) {
-              // Este familiar nunca fue mapeado — posible match
-              console.log(`[LID-MAP] 🔗 Matched LID via family (first unmapped): ${phone} → ${fullPhone} (${fInfo.name})`);
-              registerLidMapping(phone, fullPhone);
-              phone = fullPhone;
               break;
             }
           }
@@ -4631,16 +4621,17 @@ async function handleIncomingMessage(message) {
 
     // Emitir mensaje entrante al frontend
     try {
-      const ct = await message.getContact();
       io.emit('new_message', {
         from: effectiveTarget,
-        fromName: leadNames[effectiveTarget] || ct.name || ct.pushname || 'Desconocido',
+        fromName: leadNames[effectiveTarget] || message.pushName || effectiveTarget.split('@')[0],
         body: body,
         mediaType: mediaContext ? mediaContext.mediaType : null,
         timestamp: Date.now(),
         type: contactTypes[effectiveTarget] || 'lead'
       });
-    } catch (e) {}
+    } catch (e) {
+      console.warn(`[SOCKET] ⚠️ Error emitiendo new_message:`, e.message);
+    }
 
     // Debounce real de 3s: acumula todos los mensajes seguidos y responde de una vez
     if (messageTimers[effectiveTarget]) clearTimeout(messageTimers[effectiveTarget]);

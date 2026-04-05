@@ -419,9 +419,14 @@ async function processLearningTags(aiMessage, ctx, callbacks) {
   cleanMsg = cleanMsg.replace(/\[(?:APRENDIZAJE_NEGOCIO|GUARDAR_APRENDIZAJE):[^\]]+\]/g, '');
 
   // --- Tag PERSONAL ---
+  // 🔒 SEGURIDAD: Leads NO pueden guardar aprendizaje personal (solo su perfil se guarda via otro mecanismo)
   const personalRegex = /\[APRENDIZAJE_PERSONAL:([^\]]+)\]/g;
   while ((match = personalRegex.exec(aiMessage)) !== null) {
     const text = match[1].trim();
+    if (ctx.role === 'lead') {
+      console.warn(`[LEARNING:PERSONAL] 🚫 BLOQUEADO: Lead ${ctx.contactPhone} — no puede guardar aprendizaje personal: "${text.substring(0, 80)}"`);
+      continue;
+    }
     try {
       await callbacks.savePersonalLearning(ctx.uid, text, `MIIA_AUTO_${ctx.role}`);
       console.log(`[LEARNING:PERSONAL] ✅ Guardado para uid=${ctx.uid}: "${text.substring(0, 80)}..."`);
@@ -446,9 +451,14 @@ async function processLearningTags(aiMessage, ctx, callbacks) {
   cleanMsg = cleanMsg.replace(/\[APRENDIZAJE_DUDOSO:[^\]]+\]/g, '');
 
   // --- Tag GUARDAR_NOTA (referencia, no cambia comportamiento) ---
+  // 🔒 SEGURIDAD: Solo owner, agent y equipo pueden guardar notas. Leads BLOQUEADOS.
   const notaRegex = /\[GUARDAR_NOTA:([^\]]+)\]/g;
   while ((match = notaRegex.exec(aiMessage)) !== null) {
     const text = match[1].trim();
+    if (ctx.role === 'lead') {
+      console.warn(`[LEARNING:NOTA] 🚫 BLOQUEADO: Lead ${ctx.contactPhone} intentó guardar nota: "${text.substring(0, 80)}"`);
+      continue;
+    }
     const targetUid = ctx.role === 'agent' ? ctx.ownerUid : ctx.uid;
     try {
       await callbacks.saveBusinessLearning(targetUid, `[NOTA] ${text}`, `MIIA_NOTA_${ctx.role}`);
