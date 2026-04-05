@@ -1003,7 +1003,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           const hasRecentMsg = messages.some(msg => {
             const ts = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
               : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
-            return (now - ts) < 90;
+            return (now - ts) < 30; // B6 FIX: 90→30s para evitar re-procesamiento post-reconexión
           });
           if (hasRecentMsg) {
             console.log(`[TM:${uid}] ⚡ type=append con ${messages.length} msg(s) reciente(s) — procesando como notify`);

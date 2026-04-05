@@ -7,9 +7,18 @@ process.env.GRPC_DNS_RESOLVER = 'native';
 // Estos llenan Railway logs a 500/sec sin aportar info útil
 const _origLog = console.log.bind(console);
 const _origErr = console.error.bind(console);
-const _signalFilter = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair|lastRemoteEphemeralKey|previousCounter|rootKey|indexInfo|baseKey:|baseKeyType|registrationId|currentRatchet|pubKey:|privKey:|remoteIdentityKey|Decrypted message with closed|Closing open session/;
-console.log = (...args) => { if (typeof args[0] === 'string' && _signalFilter.test(args[0])) return; _origLog(...args); };
-console.error = (...args) => { if (typeof args[0] === 'string' && _signalFilter.test(args[0])) return; _origErr(...args); };
+const _signalFilter = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair|lastRemoteEphemeralKey|previousCounter|rootKey|indexInfo|baseKey:|baseKeyType|registrationId|currentRatchet|pubKey:|privKey:|remoteIdentityKey|Decrypted message with closed|Closing open session|Failed to decrypt message|<Buffer /;
+// B2 FIX: Filter both string args AND stringified objects (libsignal dumps SessionEntry as objects)
+const _isSignalNoise = (...args) => {
+  for (const a of args) {
+    if (typeof a === 'string' && _signalFilter.test(a)) return true;
+    // libsignal console.log(SessionEntry {...}) — objects with _chains, privKey, etc.
+    if (a && typeof a === 'object' && ('_chains' in a || 'currentRatchet' in a || 'indexInfo' in a)) return true;
+  }
+  return false;
+};
+console.log = (...args) => { if (_isSignalNoise(...args)) return; _origLog(...args); };
+console.error = (...args) => { if (_isSignalNoise(...args)) return; _origErr(...args); };
 
 // ═══ RESILIENCE SHIELD — Monitoreo centralizado de salud ═══
 const shield = require('./core/resilience_shield');
@@ -143,29 +152,12 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.miia-app.com';
 // ============================================
 // FORCE FLUSH PARA LOGS EN RAILWAY
 // ============================================
-const originalLog = console.log;
-const originalError = console.error;
-
-// Filtro de ruido libsignal: suprimir dumps de SessionEntry, Buffer, chains, etc.
-const _libsignalNoise = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair:|pubKey:|privKey:|lastRemoteEphemeralKey:|previousCounter:|rootKey:|indexInfo:|baseKey:|baseKeyType:|closed:|remoteIdentityKey:|registrationId:|currentRatchet:|pendingPreKey:|signedKeyId:|preKeyId:|<Buffer /;
-
-console.log = function(...args) {
-  const first = args[0];
-  if (typeof first === 'string' && _libsignalNoise.test(first)) return; // Suprimir ruido libsignal
-  originalLog.apply(console, args);
-  if (process.stdout.write) {
-    process.stdout.write(''); // Force flush
-  }
-};
-
-console.error = function(...args) {
-  const first = args[0];
-  if (typeof first === 'string' && _libsignalNoise.test(first)) return; // Suprimir ruido libsignal
-  originalError.apply(console, args);
-  if (process.stderr.write) {
-    process.stderr.write(''); // Force flush
-  }
-};
+// Force flush wrapper — console.log/error ya tienen filtro de signal noise (líneas 8-21)
+// Solo agregar force-flush sin re-override
+const _flushLog = console.log;
+const _flushErr = console.error;
+console.log = function(...args) { _flushLog(...args); if (process.stdout.write) process.stdout.write(''); };
+console.error = function(...args) { _flushErr(...args); if (process.stderr.write) process.stderr.write(''); };
 
 const app = express();
 const server = http.createServer(app);
@@ -1271,6 +1263,7 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
           const retryText = retryParts.filter(p => p.text).map(p => p.text).join('');
           if (retryText) {
             console.log(`[GEMINI] ✅ Fallback key exitoso (${retryText.length} chars)`);
+            shield.recordSuccess(shield.SYSTEMS.GEMINI); // B3 FIX: compensar el recordFail previo
             return retryText;
           }
         }
@@ -3945,6 +3938,7 @@ async function handleIncomingMessage(message) {
     }
     selfChatLoopCounter[targetPhoneId].lastTime = now;
     if (selfChatLoopCounter[targetPhoneId].count >= 3) {
+      console.warn(`[HIM] ⚠️ Self-chat loop detected (${selfChatLoopCounter[targetPhoneId].count} msgs in <20s) for ${targetPhoneId} — pausing MIIA`);
       if (!conversationMetadata[targetPhoneId]) conversationMetadata[targetPhoneId] = {};
       conversationMetadata[targetPhoneId].miiaFamilyPaused = true;
       return;
@@ -4169,6 +4163,8 @@ async function handleIncomingMessage(message) {
 
   try {
     let phone = message.from;
+    // B1 DIAGNOSTIC: Log al entrar en try-block para rastrear returns silenciosos
+    console.log(`[HIM-TRACE] 📍 Processing: from=${phone} fromMe=${fromMe} body="${(body||'').substring(0,30)}" to=${message.to||'?'}`);
     // NOTA: message es un objeto adaptado de Baileys, NO tiene getContact()/getChat()
 
     // Fix @lid para mensajes ENTRANTES: resolver LID a número real
@@ -4382,6 +4378,11 @@ async function handleIncomingMessage(message) {
     const isEquipo = !!equipoMedilink[effectiveTarget.split('@')[0]];
     const isSelfChatMIIA = isSelfChatMsg && (isMIIAActive || isFamily);
 
+    // B1 DIAGNOSTIC: Log de estado de clasificación
+    if (isSelfChatMsg || fromMe) {
+      console.log(`[HIM-TRACE] 📍 Classification: effectiveTarget=${effectiveTarget} isSelfChatMsg=${isSelfChatMsg} isMIIAActive=${isMIIAActive} isSelfChatMIIA=${isSelfChatMIIA} isFamily=${isFamily} isProcessing=${!!isProcessing[effectiveTarget]}`);
+    }
+
     // Siempre guardar mensajes entrantes de familia
     if (isFamily && !fromMe) {
       if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
@@ -4414,7 +4415,10 @@ async function handleIncomingMessage(message) {
       console.log(`[WA] BUCLE PREVENIDO para ${effectiveTarget}.`);
       return;
     }
-    if (lastAiSentBody[effectiveTarget] && lastAiSentBody[effectiveTarget] === cleanBody) return;
+    if (lastAiSentBody[effectiveTarget] && lastAiSentBody[effectiveTarget] === cleanBody) {
+      console.log(`[HIM] 🔁 lastAiSentBody match — skipping echo for ${effectiveTarget}`);
+      return;
+    }
 
     if (!fromMe || isSelfChatMIIA) {
       // Guardar mensaje ANTES del guard isProcessing para capturar multi-mensajes en ráfaga
@@ -4638,13 +4642,22 @@ async function handleIncomingMessage(message) {
     // Debounce real de 3s: acumula todos los mensajes seguidos y responde de una vez
     if (messageTimers[effectiveTarget]) clearTimeout(messageTimers[effectiveTarget]);
     if (isProcessing[effectiveTarget]) {
-      // Ya está procesando una respuesta — marcar para re-procesar al terminar
-      pendingResponses[effectiveTarget] = true;
-      return;
+      // Safety: si isProcessing lleva >120s, forzar reset (stuck por reconexión/crash)
+      const processingAge = Date.now() - (isProcessing[effectiveTarget] || 0);
+      if (typeof isProcessing[effectiveTarget] === 'number' && processingAge > 120000) {
+        console.warn(`[WA] ⚠��� isProcessing STUCK para ${effectiveTarget} (${Math.round(processingAge/1000)}s) — forzando reset`);
+        delete isProcessing[effectiveTarget];
+        delete pendingResponses[effectiveTarget];
+      } else {
+        // Ya está procesando una respuesta — marcar para re-procesar al terminar
+        pendingResponses[effectiveTarget] = true;
+        console.log(`[WA] Mensaje acumulado para ${effectiveTarget} (isProcessing desde hace ${Math.round(processingAge/1000)}s)`);
+        return;
+      }
     }
     messageTimers[effectiveTarget] = setTimeout(async () => {
       delete messageTimers[effectiveTarget];
-      isProcessing[effectiveTarget] = true;
+      isProcessing[effectiveTarget] = Date.now(); // Timestamp en lugar de boolean para detectar stuck
       try {
         await processAndSendAIResponse(effectiveTarget, null, true);
       } finally {
@@ -4652,7 +4665,7 @@ async function handleIncomingMessage(message) {
         if (pendingResponses[effectiveTarget]) {
           delete pendingResponses[effectiveTarget];
           setTimeout(async () => {
-            isProcessing[effectiveTarget] = true;
+            isProcessing[effectiveTarget] = Date.now();
             try { await processAndSendAIResponse(effectiveTarget, null, true); }
             finally { delete isProcessing[effectiveTarget]; }
           }, 1000);
@@ -5132,6 +5145,19 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
       isReady = true;
       ownerConnectedAt = Math.floor(Date.now() / 1000);
       io.emit('whatsapp_ready', { status: 'connected' });
+
+      // ═══ B1 FIX: Reset de estado post-reconexión ═══
+      // Limpiar isProcessing/pendingResponses/messageTimers que pudieron quedar stuck
+      // durante la desconexión/reconexión
+      const stuckKeys = Object.keys(isProcessing);
+      if (stuckKeys.length > 0) {
+        console.warn(`[WA] 🔧 Limpiando ${stuckKeys.length} isProcessing stuck post-reconexión: ${stuckKeys.join(', ')}`);
+        for (const k of stuckKeys) {
+          delete isProcessing[k];
+          delete pendingResponses[k];
+          if (messageTimers[k]) { clearTimeout(messageTimers[k]); delete messageTimers[k]; }
+        }
+      }
 
       // Guardar número de WhatsApp en Firestore (para detección de owner)
       try {
