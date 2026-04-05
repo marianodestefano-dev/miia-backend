@@ -62,6 +62,10 @@ const messageLogic = require('./message_logic');
 // BUSINESSES & CONTACT GROUPS ROUTES
 const businessesRouter = require('./routes/businesses');
 
+// SPORT ENGINE — seguimiento deportivo en vivo
+const sportEngine = require('./sports/sport_engine');
+const { buildSportsPrompt } = require('./prompt_builder');
+
 // UNIFIED MODULES — extracted from duplicated code
 const { callGemini, callGeminiChat } = require('./gemini_client');
 const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
@@ -535,6 +539,48 @@ async function runAgendaEngine() {
 // Cada 30 min. Primera ejecución 3 min post-startup.
 setInterval(runAgendaEngine, 1800000);
 setTimeout(runAgendaEngine, 180000);
+
+// ═══ SPORT ENGINE — Seguimiento deportivo en vivo ═══
+// Cada 30s (el engine internamente maneja intervalos por deporte).
+// Primera ejecución 5 min post-startup (esperar WhatsApp connect).
+setTimeout(async () => {
+  if (!OWNER_UID) {
+    console.log('[SPORT-ENGINE] ⏭️ OWNER_UID no disponible, sport engine desactivado');
+    return;
+  }
+  try {
+    // Inyectar dependencias a los adapters que usan Gemini
+    const geminiSearch = (prompt) => generateAIContent(prompt, { enableSearch: true });
+    const adapterClasses = [
+      require('./sports/adapters/futbol_adapter'),
+      require('./sports/adapters/tenis_adapter'),
+      require('./sports/adapters/nba_adapter'),
+      require('./sports/adapters/ufc_adapter'),
+      require('./sports/adapters/rugby_adapter'),
+      require('./sports/adapters/boxeo_adapter'),
+      require('./sports/adapters/golf_adapter'),
+      require('./sports/adapters/ciclismo_adapter'),
+    ];
+    for (const Cls of adapterClasses) {
+      if (typeof Cls.setDeps === 'function') Cls.setDeps({ geminiSearch });
+    }
+
+    await sportEngine.initSportsEngine(OWNER_UID, {
+      generateAIContent,
+      safeSendMessage,
+      isWithinSchedule,
+      isSystemPaused: () => isSystemPaused,
+      getScheduleConfig,
+      buildSportsPrompt,
+      getOwnerProfile: async () => null,  // TODO: cargar desde Firestore
+    });
+
+    setInterval(() => sportEngine.runSportsEngine(), 30000);
+    console.log('[SPORT-ENGINE] ✅ Engine deportivo iniciado (poll cada 30s)');
+  } catch (err) {
+    console.error('[SPORT-ENGINE] ❌ Error inicializando:', err.message);
+  }
+}, 300000);
 
 let morningWakeupDone   = '';        // evita repetir el despertar en el mismo día
 let morningBriefingDone = '';        // evita repetir el briefing en el mismo día

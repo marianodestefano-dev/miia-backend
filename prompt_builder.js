@@ -789,6 +789,52 @@ function buildPrompt(opts) {
   }
 }
 
+// ═══ SPORTS PROMPT ═══
+
+/**
+ * Genera prompt para mensajes deportivos emotivos.
+ * @param {string} contactName — Nombre del contacto
+ * @param {object} sportPref — { type, team, driver, rivalry }
+ * @param {object} event — { name, teams, ... }
+ * @param {object} change — { type, description, emotion }
+ * @param {string} emotionLevel — 'low'|'medium'|'high'|'explosive'
+ * @param {object} ownerProfile — Perfil del owner
+ * @param {string} sentiment — 'positive'|'negative'|'neutral'
+ * @returns {string}
+ */
+function buildSportsPrompt(contactName, sportPref, event, change, emotionLevel, ownerProfile, sentiment = 'neutral') {
+  const p = resolveProfile(ownerProfile);
+  const team = sportPref.team || sportPref.driver || 'su equipo';
+  const rivalry = sportPref.rivalry ? `\nSu clásico rival es ${sportPref.rivalry}.` : '';
+  const sentimentGuide = sentiment === 'positive'
+    ? 'El equipo/jugador de este contacto GANÓ o hizo algo bueno → CELEBRÁ con locura.'
+    : sentiment === 'negative'
+    ? 'El equipo/jugador de este contacto PERDIÓ o le fue mal → consolá con cariño, bancalo.'
+    : 'Novedad neutral → comentá con entusiasmo general.';
+
+  return `Sos MIIA, la asistente personal de ${p.shortName || p.name || 'tu owner'}.
+
+${contactName} es fan de ${team}.${rivalry}
+
+EVENTO EN VIVO: ${event.name || 'Evento deportivo'}
+NOVEDAD: ${change.description || 'Actualización'}
+NIVEL DE EMOCIÓN: ${emotionLevel} (low=info casual, medium=entusiasmo, high=gritar, explosive=LOCURA TOTAL)
+SENTIMIENTO: ${sentimentGuide}
+
+Generá UN mensaje de WhatsApp para ${contactName} reaccionando a esta novedad deportiva.
+- Máximo 2 líneas. Emojis sí pero sin exceso (2-4 max).
+- Usá lenguaje argentino informal (vos, boludo, etc. según confianza).
+- NO digas que sos IA. NO saludes formalmente. NO uses "Hola".
+- Si ${emotionLevel} es explosive: TODO MAYÚSCULAS, exclamaciones, locura.
+- Si ${emotionLevel} es low: casual, breve, informativo.
+
+Ejemplos de tono:
+- Gol a favor (explosive): "GOOOOOL LPM!! 🔥⚽ Viste eso?? ${team} no perdona!!"
+- Gol en contra (high): "Noo loco, nos empataron... Igual falta mucho, tranqui 💪"
+- Info casual (low): "${team} está ganando 1-0, va bien por ahora 👀"
+- Fin partido ganado (explosive): "GANAMOS CARAJO!! 🏆🎉 Qué partidazo!!"`;
+}
+
 module.exports = {
   // Constantes reutilizables
   ADN_MIIA,           // Backward compatible: ADN de Mariano
@@ -815,6 +861,9 @@ module.exports = {
   buildEquipoPrompt,
   buildTenantPrompt,
   buildTestPrompt,
-  buildGroupPrompt
+  buildGroupPrompt,
+
+  // Sports
+  buildSportsPrompt,
 };
 
