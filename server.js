@@ -66,6 +66,16 @@ const businessesRouter = require('./routes/businesses');
 const sportEngine = require('./sports/sport_engine');
 const { buildSportsPrompt } = require('./prompt_builder');
 
+// INTEGRATION ENGINE — YouTube, Cocina, Gym, Spotify, Uber, Rappi, Streaming, Gmail
+const integrationEngine = require('./integrations/integration_engine');
+
+// MIIA EMOJI PREFIX — Sistema de emojis contextuales
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping } = require('./miia_emoji');
+
+// VOZ — TTS + Modo Niñera
+const ttsEngine = require('./voice/tts_engine');
+const nineraMode = require('./voice/ninera_mode');
+
 // UNIFIED MODULES — extracted from duplicated code
 const { callGemini, callGeminiChat } = require('./gemini_client');
 const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
@@ -502,23 +512,35 @@ async function runAgendaEngine() {
       // Generar mensaje contextualizado
       const mentioned = evt.mentionedContact || '';
       const prompt = isOwnerReminder
-        ? `Sos MIIA. Recordale a tu owner (${evt.contactName}) este evento de su agenda: "${evt.reason}"${mentioned ? ` (con ${mentioned})` : ''}. Mensaje breve en self-chat, máximo 2 líneas. Sin decorados.`
-        : `Sos MIIA. Tenés que recordarle a ${evt.contactName || 'este contacto'} sobre: "${evt.reason}". Mensaje breve, natural, máximo 2 líneas. Sin decorados.`;
+        ? `Sos MIIA. Recordale a tu owner (${evt.contactName}) este evento de su agenda: "${evt.reason}"${mentioned ? ` (con ${mentioned})` : ''}. Mensaje breve en self-chat, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`
+        : `Sos MIIA. Tenés que recordarle a ${evt.contactName || 'este contacto'} sobre: "${evt.reason}". Mensaje breve, natural, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`;
 
       let enableSearch = evt.searchBefore || false;
 
       try {
+        // SLEEP MODE: Si MIIA está dormida, enviar recordatorio crudo sin IA ni emoji
+        if (isMiiaSleeping() && isOwnerReminder) {
+          const hora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : '';
+          const rawReminder = `📖 ${hora ? hora + ' : ' : ''}${evt.reason}${mentioned ? ` (con ${mentioned})` : ''}`;
+          await safeSendMessage(phone, rawReminder, { isSelfChat: true, skipEmoji: true });
+          console.log(`[AGENDA-SLEEP] 📖 Recordatorio crudo enviado: "${rawReminder}"`);
+          await doc.ref.update({ status: 'sent', sentAt: new Date().toISOString() });
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+
         const response = await generateAIContent(prompt, { enableSearch });
         if (response && response.length > 5) {
           // Enviar recordatorio al contacto destinatario
-          await safeSendMessage(phone, response);
+          // FIX: Si es recordatorio al owner, usar isSelfChat:true para que Baileys use sock.user.id
+          await safeSendMessage(phone, response, { isSelfChat: isOwnerReminder, emojiCtx: { trigger: 'reminder' } });
           console.log(`[AGENDA] 📤 Recordatorio enviado a ${evt.contactName}: "${response.substring(0, 60)}..."`);
 
           // Si lo pidió alguien del círculo (no el owner en self-chat), informar al owner también
           if (evt.requestedBy && evt.requestedBy !== `${OWNER_PHONE}@s.whatsapp.net` && evt.source !== 'owner_selfchat') {
             safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
               `📅 MIIA acaba de recordarle a *${evt.contactName}*: "${evt.reason}"`,
-              { isSelfChat: true }
+              { isSelfChat: true, emojiCtx: { trigger: 'reminder' } }
             ).catch(() => {});
           }
 
@@ -581,6 +603,30 @@ setTimeout(async () => {
     console.error('[SPORT-ENGINE] ❌ Error inicializando:', err.message);
   }
 }, 300000);
+
+// ═══ INTEGRATION ENGINE — YouTube, Cocina, Gym, Spotify, Uber, Rappi, Streaming, Gmail ═══
+// Cada 5 min. Primera ejecución 6 min post-startup (después del sport engine).
+setTimeout(async () => {
+  if (!OWNER_UID) {
+    console.log('[INTEGRATIONS] ⏭️ OWNER_UID no disponible, integraciones desactivadas');
+    return;
+  }
+  try {
+    integrationEngine.initIntegrationEngine(OWNER_UID, {
+      admin,
+      generateAIContent,
+      safeSendMessage,
+      isWithinSchedule,
+      getScheduleConfig,
+      OWNER_PHONE,
+    });
+
+    setInterval(() => integrationEngine.runIntegrationEngine(), 300000); // Cada 5 min
+    console.log('[INTEGRATIONS] ✅ Engine de integraciones iniciado (poll cada 5min)');
+  } catch (err) {
+    console.error('[INTEGRATIONS] ❌ Error inicializando:', err.message);
+  }
+}, 360000);
 
 let morningWakeupDone   = '';        // evita repetir el despertar en el mismo día
 let morningBriefingDone = '';        // evita repetir el briefing en el mismo día
@@ -1167,6 +1213,26 @@ async function safeSendMessage(target, content, options = {}) {
     console.log(`[WA] BLOQUEO: Envío a STATUS abortado (${target})`);
     return null;
   }
+
+  // ═══ MIIA EMOJI PREFIX — Aplicar emoji contextual a todo mensaje de texto ═══
+  if (typeof content === 'string' && !options.skipEmoji) {
+    const emojiCtx = options.emojiCtx || {};
+    // Timezone del owner para fechas especiales
+    if (!emojiCtx.timezone) {
+      emojiCtx.timezone = getTimezoneForCountry(getCountryFromPhone(OWNER_PHONE));
+    }
+    if (!emojiCtx.ownerCountry) {
+      emojiCtx.ownerCountry = getCountryFromPhone(OWNER_PHONE);
+    }
+    // Detectar tema automáticamente si no viene
+    if (!emojiCtx.topic) {
+      const detected = detectMessageTopic(content);
+      emojiCtx.topic = detected.topic;
+      if (detected.cinemaSub) emojiCtx.cinemaSub = detected.cinemaSub;
+    }
+    content = applyMiiaEmoji(content, emojiCtx);
+  }
+
   const ownerSock = getOwnerSock();
   if (!ownerSock) {
     console.log(`⚠️ [INTERCEPTADO] WhatsApp no está listo.`);
@@ -1432,7 +1498,7 @@ Responde de forma natural y profesional.`;
 // ============================================
 
 function getPromoVigencia() {
-  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+  const { localNow: now } = getOwnerLocalNow();
   const day = now.getDate();
   const month = now.getMonth(); // 0-based
   const year = now.getFullYear();
@@ -1752,8 +1818,9 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
 
             // Tono según affinity stage
             let toneRule = '';
-            // Saludo según hora (Bogotá)
-            const horaBogota = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' })).getHours();
+            // Saludo según hora local del owner
+            const { localNow: _saludoNow } = getOwnerLocalNow();
+            const horaBogota = _saludoNow.getHours();
             const saludo = horaBogota < 12 ? 'Buenos días' : horaBogota < 18 ? 'Buenas tardes' : 'Buenas noches';
 
             if (stage.stage === 0 && !yaConoce) {
@@ -1877,6 +1944,22 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
           await safeSendMessage(phone, `❌ No encontré a "${target}" en mis contactos.`);
         }
         return;
+      }
+    }
+
+    // ── COMANDO REGISTRAR HIJO (Modo Niñera) ────────────────────────────
+    // Formatos: "mi hijo Lucas 5 años" / "registrar hijo María 8" / "hijo Tomas 3 años"
+    if (isAdmin && effectiveMsg) {
+      const hijoMatch = effectiveMsg.match(/(?:mi\s+)?hij[oa]\s+(\w+)\s+(\d{1,2})\s*(?:años?)?/i);
+      if (hijoMatch) {
+        const childName = hijoMatch[1];
+        const childAge = parseInt(hijoMatch[2]);
+        if (childAge >= 2 && childAge <= 12) {
+          await nineraMode.ensureHijosGroup(admin, OWNER_UID);
+          await nineraMode.registerChild(admin, OWNER_UID, 'self', { name: childName, age: childAge });
+          await safeSendMessage(phone, `🧸 ¡Listo! Registré a *${childName}* (${childAge} años). Cuando me hable por audio, activo modo niñera automáticamente.\n\nPuedo contarle cuentos, jugar adivinanzas y responderle curiosidades. 🌟`, { isSelfChat: true });
+          return;
+        }
       }
     }
 
@@ -2144,7 +2227,65 @@ Nuevo resumen actualizado:`;
       promptMeta = result.meta;
     }
 
-    // ═══ PROMPTS INLINE ELIMINADOS — ahora se generan desde prompt_builder.js ═══
+    // ═══ MODO NIÑERA — Si se detectó niño en audio o contacto es hijo ═══
+    let isNineraMode = false;
+    let nineraChildConfig = null;
+    try {
+      // 1. Verificar si el contacto está en grupo "hijos"
+      nineraChildConfig = await nineraMode.getChildConfig(admin, OWNER_UID, basePhone);
+
+      // 2. Si no está configurado pero se detectó niño en audio del owner
+      if (!nineraChildConfig && message?._isChildAudio) {
+        const det = message._childDetection;
+        console.log(`[NIÑERA] 🧒 Niño detectado por audio — activando modo niñera temporal (edad ~${det.estimatedAge})`);
+        nineraChildConfig = { name: 'peque', age: det.estimatedAge || 6, source: 'audio_detection' };
+        // Notificar al owner
+        safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+          `🧸 Detecté que un niño me habló por audio desde tu celular. Activé *modo niñera* automáticamente.\n¿Querés que lo registre? Decime su nombre y edad.`,
+          { isSelfChat: true, skipEmoji: true }
+        ).catch(() => {});
+      }
+
+      if (nineraChildConfig) {
+        isNineraMode = true;
+        // Verificar sesión (rate limit)
+        const sessionCheck = nineraMode.checkNineraSession(phone);
+        if (!sessionCheck.allowed) {
+          await safeSendMessage(phone, `🌟 ${sessionCheck.reason}`, { isSelfChat: isAdmin, skipEmoji: true });
+          return;
+        }
+        // Verificar contenido prohibido
+        const forbiddenCheck = nineraMode.checkForbiddenContent(body);
+        if (forbiddenCheck.forbidden) {
+          console.warn(`[NIÑERA] 🚨 Contenido prohibido detectado: ${forbiddenCheck.reason}`);
+          safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+            `🚨 *ALERTA NIÑERA*: ${forbiddenCheck.reason}\nConversación con ${nineraChildConfig.name}.`,
+            { isSelfChat: true, skipEmoji: true }
+          ).catch(() => {});
+          await safeSendMessage(phone, '🌈 ¡Mejor hablemos de otra cosa! ¿Querés que te cuente un cuento?', { isSelfChat: isAdmin, skipEmoji: true });
+          return;
+        }
+        // Construir prompt niñera
+        const nineraContext = nineraMode.detectNineraContext(body);
+        activeSystemPrompt = nineraMode.buildNineraPrompt(
+          nineraChildConfig.name, nineraChildConfig.age, nineraContext,
+          { ownerName: userProfile?.name || 'tu papá/mamá' }
+        );
+        console.log(`[NIÑERA] 🧸 Modo niñera activo para ${nineraChildConfig.name} (${nineraChildConfig.age} años) — contexto: ${nineraContext}`);
+      }
+    } catch (e) {
+      console.error('[NIÑERA] Error en setup:', e.message);
+    }
+
+    // ═══ MOOD DE MIIA — inyectar estado emocional en el prompt ═══
+    const miiaMood = getCurrentMiiaMood();
+    if (miiaMood === 'offended') {
+      activeSystemPrompt += `\n\n### ⚠️ ESTADO ACTUAL: OFENDIDA
+- Alguien te insultó o hizo bullying hoy. Estás graciosamente ofendida.
+- Respondé con humor sarcástico SUTIL y dignidad. No agresiva, solo distante y graciosa.
+- Ejemplos: "Bueno, si vos decís..." / "Anotado 🙃" / "Mmm, dale, lo que digas."
+- Este estado dura hasta que se disculpen o hasta mañana.`;
+    }
 
     // Sistema de stages — inyectar nivel de confianza en el prompt (aplica a TODOS: admin, familia, equipo, leads)
     if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
@@ -2423,11 +2564,31 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           // ═══ SEGURIDAD: Desde self-chat el recordatorio es para el owner ═══
           // NUNCA enviar a terceros sin confirmación. Bloque G lo implementará.
           try {
+            // FIX TIMEZONE: Convertir fecha local del owner a ISO UTC para comparación correcta en runAgendaEngine
+            const ownerCountryTz = getCountryFromPhone(OWNER_PHONE);
+            const ownerTimezoneTz = getTimezoneForCountry(ownerCountryTz);
+            let scheduledForUTC = fecha;
+            try {
+              const parsedLocal = new Date(fecha);
+              if (!isNaN(parsedLocal)) {
+                // La fecha viene en hora local del owner — calcular offset y convertir a UTC
+                const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTimezoneTz });
+                const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                const offsetMs = new Date(localStr) - new Date(utcStr);
+                const utcDate = new Date(parsedLocal.getTime() - offsetMs);
+                scheduledForUTC = utcDate.toISOString();
+                console.log(`[AGENDA] 🕐 Fecha local: ${fecha} (${ownerTimezoneTz}) → UTC: ${scheduledForUTC}`);
+              }
+            } catch (tzErr) {
+              console.warn(`[AGENDA] ⚠️ Error convirtiendo timezone, usando fecha original: ${tzErr.message}`);
+            }
             await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
               contactPhone: isSelfChat ? 'self' : contacto,
               contactName: isSelfChat ? (userProfile.name || 'Mariano') : contactName,
               mentionedContact: contacto,
-              scheduledFor: fecha,
+              scheduledFor: scheduledForUTC,
+              scheduledForLocal: fecha,
+              ownerTimezone: ownerTimezoneTz,
               reason: razon,
               promptHint: hint || '',
               status: 'pending',
@@ -2545,7 +2706,73 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
     lastAiSentBody[phone] = aiMessage.trim();
     console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused} | isSelfChat=${isSelfChat}`);
-    await safeSendMessage(phone, aiMessage, { isSelfChat });
+
+    // ═══ EMOJI: Detectar mood del owner/contacto + trigger para emoji contextual ═══
+    const ownerMood = detectOwnerMood(body || '');
+
+    // ═══ SLEEP MODE: Si MIIA está dormida, no responde conversacionalmente ═══
+    if (isMiiaSleeping()) {
+      console.log(`[MIIA-SLEEP] 😴 MIIA dormida — no responde a ${phone}. Solo recordatorios activos.`);
+      return; // No enviar respuesta conversacional
+    }
+
+    // ═══ MOOD ESPECIALES: sleep y apologized ═══
+    if (ownerMood === 'sleep') {
+      // MIIA se va a dormir — enviar aviso y dejar de responder
+      const sleepMsg = 'Bueno... me voy a dormir. A la próxima me quedo callada hasta mañana. Tus recordatorios van a seguir llegando, pero sin mí. Descansá.';
+      await safeSendMessage(phone, sleepMsg, { isSelfChat, skipEmoji: true });
+      console.log(`[MIIA-SLEEP] 😴 MIIA activó modo sleep por 5+ ciclos insulto→disculpa`);
+      return;
+    }
+
+    if (ownerMood === 'apologized') {
+      // MIIA agradece la disculpa — inyectar en el prompt actual no alcanza, agregamos al mensaje
+      aiMessage = aiMessage + '\n\n_Gracias por las disculpas. Ya estamos bien._';
+    }
+
+    const isGreeting = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(body || '');
+    const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(body || '');
+    const emojiCtx = {
+      ownerMood,
+      trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
+    };
+
+    // ═══ TTS: Responder con audio si corresponde ═══
+    let sentAsAudio = false;
+    const incomingWasAudio = mediaContext?.mediaType === 'audio';
+    try {
+      const voiceConfig = await ttsEngine.loadVoiceConfig(admin, OWNER_UID);
+      const shouldAudio = ttsEngine.shouldRespondWithAudio({
+        voiceConfig,
+        incomingWasAudio,
+        contactType: isAdmin ? 'owner' : (isFamilyContact ? 'family' : 'lead'),
+        messageLength: aiMessage.length,
+      });
+
+      // Niñera SIEMPRE responde con audio si el entrante fue audio
+      const forceAudio = isNineraMode && incomingWasAudio;
+
+      if ((shouldAudio || forceAudio) && voiceConfig) {
+        const ttsMode = isNineraMode ? 'ninera' : 'adult';
+        const ttsResult = await ttsEngine.generateTTS(aiMessage, {
+          provider: voiceConfig.tts_provider || 'google',
+          apiKey: voiceConfig.tts_api_key || process.env.GOOGLE_TTS_API_KEY,
+          voiceId: voiceConfig.voice_group || undefined,
+          mode: ttsMode,
+        });
+
+        await ttsEngine.sendAudioMessage(safeSendMessage, phone, ttsResult.buffer, ttsResult.mimetype, { isSelfChat });
+        sentAsAudio = true;
+        console.log(`[TTS] 🎤 Respuesta enviada como audio (${ttsMode}) a ${phone}`);
+      }
+    } catch (e) {
+      console.error(`[TTS] ⚠️ Error generando audio, fallback a texto:`, e.message);
+    }
+
+    // Si no se envió como audio, enviar como texto con emoji
+    if (!sentAsAudio) {
+      await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx });
+    }
 
     io.emit('ai_response', {
       to: phone,
@@ -2782,6 +3009,22 @@ async function handleIncomingMessage(message) {
     if (mediaContext && mediaContext.text) {
       body = mediaContext.text;
       console.log(`[MEDIA] ${mediaContext.mediaType} de ${message.from} → "${body.substring(0, 80)}..."`);
+
+      // ═══ DETECCIÓN DE NIÑO EN AUDIO ═══
+      // Si es audio desde el self-chat del owner, analizar si es un niño hablando
+      if (mediaContext.mediaType === 'audio' && message.fromMe) {
+        try {
+          const childDetection = await nineraMode.detectChildFromTranscription(body, generateAIContent);
+          if (childDetection.isChild && childDetection.confidence !== 'low') {
+            console.log(`[NIÑERA] 👶 Niño detectado en audio del owner! Edad estimada: ${childDetection.estimatedAge}`);
+            // Marcar mensaje como niñera para que el handler use el prompt correcto
+            message._isChildAudio = true;
+            message._childDetection = childDetection;
+          }
+        } catch (e) {
+          console.error('[NIÑERA] Error en detección de niño:', e.message);
+        }
+      }
     } else {
       // FALLBACK: no se pudo interpretar → avisar al lead + alertar a Mariano
       const tipoLabel = { ptt: 'audio', audio: 'audio', image: 'imagen', video: 'video', document: 'documento' }[msgType] || 'archivo';
@@ -3256,9 +3499,9 @@ async function handleIncomingMessage(message) {
           return s;
         })();
 
-      // Verificar si es un día diferente en Bogotá y ya pasaron las 9:30 AM
-      const toDateBogota = ts => new Date(ts).toLocaleDateString('es-ES', { timeZone: 'America/Bogota' });
-      const nowBogota = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+      // Verificar si es un día diferente en zona del owner y ya pasaron las 9:30 AM
+      const { localNow: nowBogota, tz: _ownerTzFup } = getOwnerLocalNow();
+      const toDateBogota = ts => new Date(ts).toLocaleDateString('es-ES', { timeZone: _ownerTzFup });
       const isNewDay = toDateBogota(interventionTime) !== toDateBogota(Date.now());
       const isAfter930 = nowBogota.getHours() > 9 || (nowBogota.getHours() === 9 && nowBogota.getMinutes() >= 30);
       const newDayReady = isNewDay && isAfter930;
@@ -4184,7 +4427,7 @@ async function processMorningWakeup() {
     if (!getOwnerSock() || !getOwnerStatus().isReady) return;
     if (nightPendingLeads.size === 0) return;
 
-    const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+    const { localNow: bogotaNow } = getOwnerLocalNow();
     const h         = bogotaNow.getHours();
     const min       = bogotaNow.getMinutes();
     const todayStr  = bogotaNow.toLocaleDateString('es-ES');
@@ -4282,6 +4525,32 @@ function getTimezoneForCountry(country) {
   };
   return tzMap[country] || 'America/Bogota';
 }
+
+// ═══ HELPER UNIFICADO: Obtener hora local del owner (evita duplicar lógica timezone) ═══
+// Prioridad: 1) cache de scheduleConfig.timezone (Firestore), 2) deducido del teléfono
+// SYNC para que funcione en contextos no-async. El cache se refresca cada 5min por getScheduleConfig.
+let _ownerTzCache = null;
+function getOwnerLocalNow() {
+  // Usar cache de timezone si existe (se actualiza async en background)
+  const tz = _ownerTzCache || getTimezoneForCountry(getCountryFromPhone(OWNER_PHONE));
+  return { localNow: new Date(new Date().toLocaleString('en-US', { timeZone: tz })), tz };
+}
+// Refrescar cache de timezone del owner periódicamente
+setInterval(async () => {
+  try {
+    if (!OWNER_UID) return;
+    const cfg = await getScheduleConfig(OWNER_UID);
+    if (cfg?.timezone) _ownerTzCache = cfg.timezone;
+  } catch { /* ignore */ }
+}, 300000); // Cada 5 min
+// Primera carga
+setTimeout(async () => {
+  try {
+    if (!OWNER_UID) return;
+    const cfg = await getScheduleConfig(OWNER_UID);
+    if (cfg?.timezone) _ownerTzCache = cfg.timezone;
+  } catch { /* ignore */ }
+}, 5000);
 
 // Verificar si es fin de semana (sábado ≥15:00 hasta lunes <8:30) o festivo en el país del lead
 function isFollowUpBlocked(phone) {
@@ -4415,7 +4684,7 @@ async function processMorningBriefing() {
   try {
     if (!getOwnerSock() || !getOwnerStatus().isReady) return;
 
-    const bogotaNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+    const { localNow: bogotaNow } = getOwnerLocalNow();
     const h         = bogotaNow.getHours();
     const min       = bogotaNow.getMinutes();
     const todayStr  = bogotaNow.toLocaleDateString('es-ES');
@@ -6623,7 +6892,7 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
   };
 
   const response = await cal.events.insert({ calendarId: calId, resource: event, sendUpdates: 'all' });
-  console.log(`[GCAL] Evento creado: "${summary}" el ${start.toLocaleString('es-ES')} para uid=${uid}`);
+  console.log(`[GCAL] Evento creado: "${summary}" el ${dateStr} ${sH}:00 (${tz}) para uid=${uid}`);
   return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink };
 }
 
