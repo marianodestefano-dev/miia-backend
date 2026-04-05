@@ -3,7 +3,7 @@
 **ÚLTIMA ACTUALIZACIÓN**: 2026-04-03 (SESIÓN 9 — SISTEMA AFFINITY + DISEÑO INTELIGENCIA)
 **ESTADO**: AFFINITY ✅ | IDENTIDAD ✅ | RESET/HARTAZGO ✅ | FIRESTORE PERSIST ✅
 **URGENCIA**: BAJA — Sistema estable, affinity funcionando, planes completos para Bloques B-E
-**STANDARD DE CÓDIGO**: Google + Amazon + NASA (fail loudly, exhaustive logging, zero silent failures)
+**STANDARD DE CÓDIGO**: Google + Amazon + APPLE + NASA (fail loudly, exhaustive logging, desing style, zero silent failures) siempre leyendo completamente (CLAUDE.md) y (RESUMEN_EJECUTIVO_MIIA.md)
 
 ---
 

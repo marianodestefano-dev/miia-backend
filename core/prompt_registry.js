@@ -364,7 +364,7 @@ async function diffFromCheckpoint(checkpointName) {
 function generatePricingFromSource() {
   let PRECIOS;
   try {
-    const cg = require('./cotizacion_generator');
+    const cg = require('../services/cotizacion_generator');
     PRECIOS = cg.PRECIOS || cg.default?.PRECIOS;
     if (!PRECIOS) throw new Error('PRECIOS not exported from cotizacion_generator');
   } catch (e) {

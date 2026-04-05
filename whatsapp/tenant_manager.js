@@ -23,9 +23,9 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
-const { callAI } = require('./ai_client');
-const { buildTenantPrompt, buildOwnerLeadPrompt } = require('./prompt_builder');
-const { sendSessionRecoveryEmail } = require('./mail_service');
+const { callAI } = require('../ai/ai_client');
+const { buildTenantPrompt, buildOwnerLeadPrompt } = require('../core/prompt_builder');
+const { sendSessionRecoveryEmail } = require('../services/mail_service');
 const { handleTenantMessage } = require('./tenant_message_handler');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────

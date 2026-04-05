@@ -1,6 +1,9 @@
 # MIIA Backend — Instrucciones para Claude Code
 
 ## PROTOCOLO DE ARRANQUE — OBLIGATORIO en cada sesión y compactación
+## STANDARD DE CÓDIGO: 
+Google + Amazon + APPLE + NASA (fail loudly, exhaustive logging, desing style, zero silent failures) siempre leyendo completamente (CLAUDE.md) y (RESUMEN_EJECUTIVO_MIIA.md)
+## SIEMPRE EN ESPAÑOL.
 
 **Paso 1**: Leer estos sub-archivos EN ORDEN (están diseñados para ser cortos y atómicos):
 
@@ -45,4 +48,3 @@ Antes de tocar `server.js` o `tenant_manager.js`:
 
 ---
 
-## SIEMPRE EN ESPAÑOL. SIEMPRE CÓDIGO CONCRETO. SIEMPRE NIVEL NASA.

@@ -35,57 +35,38 @@ const path = require('path');
 const crypto = require('crypto');
 // WhatsApp: Baileys (via tenant_manager.js) — no Chrome/Puppeteer needed
 
-// CEREBRO ABSOLUTO — módulo de aprendizaje autónomo nocturno
-const cerebroAbsoluto = require('./cerebro_absoluto');
+// ═══ CORE — Lógica central de MIIA ═══
+const cerebroAbsoluto = require('./data/cerebro_absoluto');
+const confidenceEngine = require('./core/confidence_engine');
+const messageLogic = require('./core/message_logic');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping } = require('./core/miia_emoji');
+const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt } = require('./core/prompt_builder');
+const { assemblePrompt } = require('./core/prompt_modules');
 
-// CONFIDENCE ENGINE — evaluación inteligente de contenido importante para aprendizaje autónomo
-const confidenceEngine = require('./confidence_engine');
+// ═══ AI — Clientes y adaptadores IA ═══
+const { callGemini, callGeminiChat } = require('./ai/gemini_client');
+const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai/ai_client');
 
-// GENERADOR DE COTIZACIONES PDF
-const cotizacionGenerator = require('./cotizacion_generator');
+// ═══ SERVICES — Servicios externos ═══
+const cotizacionGenerator = require('./services/cotizacion_generator');
+const webScraper = require('./services/web_scraper');
+const estadisticas = require('./services/estadisticas');
+const mailService = require('./services/mail_service');
 
-// SCRAPER REGULATORIO — actualización normativa semanal
-const webScraper = require('./web_scraper');
+// ═══ WHATSAPP — Baileys, tenants, mensajes ═══
+const tenantManager = require('./whatsapp/tenant_manager');
+const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 
-// ESTADÍSTICAS — seguimiento de conversiones y pipeline
-const estadisticas = require('./estadisticas');
-
-// TENANT MANAGER — multi-tenant WhatsApp isolation
-const tenantManager = require('./tenant_manager');
-
-// TENANT MESSAGE HANDLER — orquestador completo para owners/agents (Option D Fase 2)
-const tenantMessageHandler = require('./tenant_message_handler');
-
-// MESSAGE LOGIC — funciones puras compartidas (normalizeText, tags, geo, etc.)
-const messageLogic = require('./message_logic');
-
-// BUSINESSES & CONTACT GROUPS ROUTES
+// ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
-
-// SPORT ENGINE — seguimiento deportivo en vivo
 const sportEngine = require('./sports/sport_engine');
-const { buildSportsPrompt } = require('./prompt_builder');
-
-// INTEGRATION ENGINE — YouTube, Cocina, Gym, Spotify, Uber, Rappi, Streaming, Gmail
 const integrationEngine = require('./integrations/integration_engine');
-
-// MIIA EMOJI PREFIX — Sistema de emojis contextuales
-const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping } = require('./miia_emoji');
-
-// VOZ — TTS + Modo Niñera
 const ttsEngine = require('./voice/tts_engine');
 const nineraMode = require('./voice/ninera_mode');
 
-// UNIFIED MODULES — extracted from duplicated code
-const { callGemini, callGeminiChat } = require('./gemini_client');
-const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai_client');
-const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt } = require('./prompt_builder');
-const { assemblePrompt } = require('./prompt_modules');
-
-// NUEVAS FUNCIONALIDADES
+// ═══ LIBS EXTERNAS ═══
 const multer = require('multer');
 const nodemailer = require('nodemailer');
-const mailService = require('./mail_service');
 const { google } = require('googleapis');
 const { ImapFlow } = require('imapflow');
 let pdfParse, mammoth;
@@ -4426,7 +4407,7 @@ app.post('/api/tenant/:uid/clean-session', express.json(), async (req, res) => {
     console.log(`[CLEAN-SESSION] 🔧 Limpiando sesión corrupta para ${uid}...`);
 
     // Eliminar sesión de Firestore (fuerza reconexión)
-    const { deleteFirestoreSession } = require('./baileys_session_store');
+    const { deleteFirestoreSession } = require('./whatsapp/baileys_session_store');
     await deleteFirestoreSession(`tenant-${uid}`);
 
     // Marcar en Firestore que necesita reconectar
@@ -5416,7 +5397,7 @@ app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, r
 
 // ── Prompt Registry — Módulos versionados + checkpoints ─────────────────────
 
-const promptRegistry = require('./prompt_registry');
+const promptRegistry = require('./core/prompt_registry');
 
 // Listar módulos
 app.get('/api/prompt-registry/modules', verifyAdminToken, async (req, res) => {
@@ -5486,7 +5467,7 @@ app.get('/api/prompt-registry/diff/:checkpointName', verifyAdminToken, async (re
 // Seed desde prompt_builder (run once)
 app.post('/api/prompt-registry/seed', verifyAdminToken, async (req, res) => {
   try {
-    const promptBuilder = require('./prompt_builder');
+    const promptBuilder = require('./core/prompt_builder');
     const result = await promptRegistry.seedFromPromptBuilder(promptBuilder);
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }

@@ -13,20 +13,20 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const cerebroAbsoluto = require('./cerebro_absoluto');
 
 // GENERADOR DE COTIZACIONES PDF
-const cotizacionGenerator = require('./cotizacion_generator');
+const cotizacionGenerator = require('../services/cotizacion_generator');
 
 // SCRAPER REGULATORIO — actualización normativa semanal
-const webScraper = require('./web_scraper');
+const webScraper = require('../services/web_scraper');
 
 // ESTADÍSTICAS — seguimiento de conversiones y pipeline
-const estadisticas = require('./estadisticas');
+const estadisticas = require('../services/estadisticas');
 
 // TENANT MANAGER — multi-tenant WhatsApp isolation
-const tenantManager = require('./tenant_manager');
+const tenantManager = require('../whatsapp/tenant_manager');
 
 // UNIFIED MODULES — extracted from duplicated code
-const { callGemini, callGeminiChat } = require('./gemini_client');
-const { buildPrompt, buildTenantBrainString } = require('./prompt_builder');
+const { callGemini, callGeminiChat } = require('../ai/gemini_client');
+const { buildPrompt, buildTenantBrainString } = require('../core/prompt_builder');
 
 // FIREBASE ADMIN — actualizar Firestore desde webhook
 const admin = require('firebase-admin');

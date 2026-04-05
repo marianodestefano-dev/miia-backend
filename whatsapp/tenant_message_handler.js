@@ -34,15 +34,15 @@ const {
   cleanResidualTags, splitMessage,
   getBasePhone, toJid, delay,
   MIIA_CIERRE, MSG_SUSCRIPCION
-} = require('./message_logic');
+} = require('../core/message_logic');
 
 const {
   buildOwnerSelfChatPrompt, buildOwnerFamilyPrompt,
   buildOwnerLeadPrompt, buildEquipoPrompt, buildGroupPrompt,
   buildADN, buildVademecum, resolveProfile, DEFAULT_OWNER_PROFILE
-} = require('./prompt_builder');
+} = require('../core/prompt_builder');
 
-const { callAI } = require('./ai_client');
+const { callAI } = require('../ai/ai_client');
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
