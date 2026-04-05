@@ -881,6 +881,30 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const hasMedia = !!(msg.message?.audioMessage || msg.message?.imageMessage
           || msg.message?.videoMessage || msg.message?.documentMessage
           || msg.message?.stickerMessage);
+
+        // ═══ CONTEXT INFO: quoted replies + forwarded messages ═══
+        const ctxInfo = msg.message?.extendedTextMessage?.contextInfo
+          || msg.message?.imageMessage?.contextInfo
+          || msg.message?.videoMessage?.contextInfo
+          || msg.message?.audioMessage?.contextInfo
+          || null;
+        const messageContext = {};
+        if (ctxInfo) {
+          if (ctxInfo.quotedMessage) {
+            const quotedText = ctxInfo.quotedMessage.conversation
+              || ctxInfo.quotedMessage.extendedTextMessage?.text
+              || ctxInfo.quotedMessage.imageMessage?.caption
+              || '[media]';
+            messageContext.quotedText = quotedText;
+            messageContext.quotedParticipant = ctxInfo.participant || null;
+            console.log(`[TM:${uid}] 💬 Quoted reply detected: "${quotedText.substring(0, 60)}..."`);
+          }
+          if (ctxInfo.isForwarded) {
+            messageContext.isForwarded = true;
+            messageContext.forwardingScore = ctxInfo.forwardingScore || 1;
+            console.log(`[TM:${uid}] ↪️ Forwarded message detected (score: ${messageContext.forwardingScore})`);
+          }
+        }
         // ═══ CRÍTICO: Verificar contenido ANTES de dedup ═══
         // WhatsApp envía el mismo msgId primero con body="" (notification/receipt)
         // y luego con el body real. Si registramos el vacío como "visto",
@@ -949,7 +973,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           const realSelfChat = isFromMe && (from === `${myNumber}@s.whatsapp.net` || from === tenant.sock?.user?.id);
           const ownerUid = tenant.ownerUid || uid;
           const role = tenant.role || 'owner';
-          handleTenantMessage(uid, ownerUid, role, from, body, realSelfChat, isFromMe, tenant)
+          handleTenantMessage(uid, ownerUid, role, from, body, realSelfChat, isFromMe, tenant, messageContext)
             .catch(e => console.error(`[TM:${uid}] handleTenantMessage error:`, e.message));
         }
       }

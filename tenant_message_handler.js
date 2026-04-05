@@ -531,7 +531,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
  * @param {boolean} isFromMe - Si el mensaje fue enviado por el propio tenant
  * @param {Object} tenantState - Referencia al tenant en tenant_manager (para sock, io, isReady)
  */
-async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSelfChat, isFromMe, tenantState) {
+async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSelfChat, isFromMe, tenantState, messageContext = {}) {
   const logPrefix = `[TMH:${uid}]`;
 
   // ── PASO 1: Obtener contexto ──
@@ -564,13 +564,23 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     return;
   }
 
-  // ── PASO 5: Guardar mensaje entrante ──
+  // ── PASO 5: Guardar mensaje entrante (con contexto de respuesta/reenvío) ──
   if (!ctx.conversations[phone]) ctx.conversations[phone] = [];
-  ctx.conversations[phone].push({
+  const msgEntry = {
     role: isSelfChat ? 'user' : (isFromMe ? 'assistant' : 'user'),
     content: messageBody,
     timestamp: Date.now()
-  });
+  };
+  // Enriquecer con contexto de quoted reply o forwarded
+  if (messageContext.quotedText) {
+    msgEntry.quotedText = messageContext.quotedText;
+    console.log(`${logPrefix} 💬 Mensaje cita: "${messageContext.quotedText.substring(0, 80)}..."`);
+  }
+  if (messageContext.isForwarded) {
+    msgEntry.isForwarded = true;
+    console.log(`${logPrefix} ↪️ Mensaje reenviado (score: ${messageContext.forwardingScore || 1})`);
+  }
+  ctx.conversations[phone].push(msgEntry);
   if (ctx.conversations[phone].length > 40) {
     ctx.conversations[phone] = ctx.conversations[phone].slice(-40);
   }
@@ -758,9 +768,18 @@ Respondé "sí" para guardar todos, "no" para descartar, o indicá cuáles sí/n
   }
 
   // Historial de conversación reciente (últimos 20 mensajes)
-  const history = (ctx.conversations[phone] || []).slice(-20).map(m =>
-    `${m.role === 'user' ? 'Cliente' : 'MIIA'}: ${m.content}`
-  ).join('\n');
+  // Incluye contexto de quoted replies y forwarded messages
+  const history = (ctx.conversations[phone] || []).slice(-20).map(m => {
+    const speaker = m.role === 'user' ? 'Cliente' : 'MIIA';
+    let line = `${speaker}: ${m.content}`;
+    if (m.quotedText) {
+      line = `${speaker} [respondiendo a: "${m.quotedText.substring(0, 120)}"]: ${m.content}`;
+    }
+    if (m.isForwarded) {
+      line = `${speaker} [mensaje reenviado]: ${m.content}`;
+    }
+    return line;
+  }).join('\n');
 
   // Ensamblado final del prompt
   const fullPrompt = `${activeSystemPrompt}
