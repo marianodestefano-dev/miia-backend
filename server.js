@@ -85,6 +85,7 @@ const { assemblePrompt } = require('./prompt_modules');
 // NUEVAS FUNCIONALIDADES
 const multer = require('multer');
 const nodemailer = require('nodemailer');
+const mailService = require('./mail_service');
 const { google } = require('googleapis');
 const { ImapFlow } = require('imapflow');
 let pdfParse, mammoth;
@@ -1188,6 +1189,25 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
     }
     const isRetryable = response.status === 503 || response.status === 429;
     if (isRetryable && attempt < MAX_RETRIES) {
+      // En 429, intentar con la otra key PRIMERO (sin delay)
+      if (response.status === 429 && GEMINI_KEYS.length > 1) {
+        const fallbackKey = getGeminiFallbackKey(key);
+        console.warn(`[GEMINI] ♻️ 429 rate limit — probando key alternativa...`);
+        const retryResp = await fetch(`${GEMINI_URL}?key=${fallbackKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (retryResp.ok) {
+          const retryData = await retryResp.json();
+          const retryParts = retryData.candidates?.[0]?.content?.parts || [];
+          const retryText = retryParts.filter(p => p.text).map(p => p.text).join('');
+          if (retryText) {
+            console.log(`[GEMINI] ✅ Fallback key exitoso (${retryText.length} chars)`);
+            return retryText;
+          }
+        }
+      }
       const delay = RETRY_DELAYS[attempt];
       console.warn(`[GEMINI] ⏳ Error ${response.status} — reintentando en ${delay / 1000}s (intento ${attempt + 1}/${MAX_RETRIES})...`);
       await new Promise(r => setTimeout(r, delay));
@@ -1960,6 +1980,157 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
           await safeSendMessage(phone, `🧸 ¡Listo! Registré a *${childName}* (${childAge} años). Cuando me hable por audio, activo modo niñera automáticamente.\n\nPuedo contarle cuentos, jugar adivinanzas y responderle curiosidades. 🌟`, { isSelfChat: true });
           return;
         }
+      }
+    }
+
+    // ── COMANDO ENVIAR EMAIL DESDE WHATSAPP ────────────────────────────
+    // Formatos: "mandále un mail a juan@x.com diciendo ..." / "email a maria@gmail.com asunto: ... mensaje: ..."
+    // También: "mandále un mail a Juan que mañana no puedo" (MIIA busca email en contactos)
+    if (isAdmin && effectiveMsg) {
+      const emailCmdMatch = effectiveMsg.match(/(?:mand[aá](?:le)?|envi[aá](?:le)?)\s+(?:un\s+)?(?:mail|email|correo)\s+a\s+(.+)/i);
+      if (emailCmdMatch) {
+        const rest = emailCmdMatch[1].trim();
+        let targetEmail = null;
+        let targetName = null;
+        let emailBody = '';
+        let emailSubject = 'Mensaje de MIIA';
+
+        // Caso 1: email directo — "a juan@x.com diciendo ..."
+        const directEmailMatch = rest.match(/^([\w.-]+@[\w.-]+\.\w+)\s+(?:diciendo|que|mensaje:?|asunto:?)\s*(.*)/is);
+        if (directEmailMatch) {
+          targetEmail = directEmailMatch[1];
+          emailBody = directEmailMatch[2].trim();
+        } else {
+          // Caso 2: nombre de contacto — "a Juan que mañana no puedo"
+          const nameMatch = rest.match(/^(\w+)\s+(?:diciendo|que|mensaje:?)\s*(.*)/is);
+          if (nameMatch) {
+            targetName = nameMatch[1];
+            emailBody = nameMatch[2].trim();
+            // Buscar email en contactos de Firestore
+            try {
+              const contactsSnap = await admin.firestore()
+                .collection('users').doc(OWNER_UID)
+                .collection('contact_index').get();
+              for (const doc of contactsSnap.docs) {
+                const data = doc.data();
+                if (data.name && data.name.toLowerCase() === targetName.toLowerCase() && data.email) {
+                  targetEmail = data.email;
+                  targetName = data.name;
+                  break;
+                }
+              }
+              // También buscar en family/team contacts
+              if (!targetEmail && familyContacts) {
+                for (const [fp, fi] of Object.entries(familyContacts)) {
+                  if (fi.name && fi.name.toLowerCase() === targetName.toLowerCase() && fi.email) {
+                    targetEmail = fi.email;
+                    targetName = fi.name;
+                    break;
+                  }
+                }
+              }
+            } catch (e) {
+              console.error('[MAIL-CMD] Error buscando contacto:', e.message);
+            }
+          }
+        }
+
+        // Extraer asunto si viene con "asunto: X mensaje: Y"
+        const asuntoMatch = emailBody.match(/asunto:?\s*(.+?)(?:\s+mensaje:?\s*(.+))/is);
+        if (asuntoMatch) {
+          emailSubject = asuntoMatch[1].trim();
+          emailBody = asuntoMatch[2].trim();
+        }
+
+        if (!targetEmail) {
+          const noEmailMsg = targetName
+            ? `📧 No tengo el email de *${targetName}*. ¿Me lo pasás? Escribí: "email de ${targetName} es nombre@dominio.com"`
+            : `📧 No entendí el destinatario. Usá:\n• _"mandále un mail a juan@gmail.com diciendo ..."_\n• _"mandále un mail a Juan que mañana no puedo"_`;
+          await safeSendMessage(phone, noEmailMsg, { isSelfChat: true });
+          return;
+        }
+
+        if (!emailBody) {
+          await safeSendMessage(phone, `📧 ¿Qué querés que diga el mail a *${targetEmail}*?`, { isSelfChat: true });
+          return;
+        }
+
+        // Generar email profesional con IA
+        const ownerName = tenantState?.name || 'el owner';
+        const emailPrompt = `Redactá un email breve y profesional en nombre de ${ownerName}.
+El destinatario es: ${targetName || targetEmail}
+El mensaje que quiere transmitir es: "${emailBody}"
+Asunto sugerido (si no tiene): algo corto y claro.
+
+Respondé SOLO con JSON (sin markdown): {"subject": "...", "body": "..."}
+El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
+
+        try {
+          const aiResponse = await generateAIContent(emailPrompt);
+          const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            emailSubject = parsed.subject || emailSubject;
+            emailBody = parsed.body || emailBody;
+          }
+        } catch (e) {
+          console.warn('[MAIL-CMD] IA no pudo mejorar el email, enviando original:', e.message);
+        }
+
+        const result = await mailService.sendGenericEmail(targetEmail, emailSubject, emailBody, {
+          fromName: ownerName,
+          replyTo: tenantState?.email,
+        });
+
+        if (result.success) {
+          await safeSendMessage(phone, `📧 ¡Listo! Email enviado a *${targetName || targetEmail}*\n📋 Asunto: _${emailSubject}_`, { isSelfChat: true });
+        } else {
+          await safeSendMessage(phone, `❌ No pude enviar el email: ${result.error}`, { isSelfChat: true });
+        }
+        return;
+      }
+
+      // Guardar email de contacto: "email de Juan es juan@gmail.com"
+      const saveEmailMatch = effectiveMsg.match(/email\s+de\s+(\w+)\s+(?:es|:)\s+([\w.-]+@[\w.-]+\.\w+)/i);
+      if (saveEmailMatch) {
+        const contactName = saveEmailMatch[1];
+        const contactEmail = saveEmailMatch[2];
+        try {
+          // Buscar contacto y guardar email
+          const contactsSnap = await admin.firestore()
+            .collection('users').doc(OWNER_UID)
+            .collection('contact_index').get();
+          let saved = false;
+          for (const doc of contactsSnap.docs) {
+            const data = doc.data();
+            if (data.name && data.name.toLowerCase() === contactName.toLowerCase()) {
+              await doc.ref.update({ email: contactEmail });
+              saved = true;
+              break;
+            }
+          }
+          if (!saved) {
+            // Buscar en familyContacts
+            for (const [fp, fi] of Object.entries(familyContacts || {})) {
+              if (fi.name && fi.name.toLowerCase() === contactName.toLowerCase()) {
+                await admin.firestore()
+                  .collection('users').doc(OWNER_UID)
+                  .collection('contact_index').doc(fp)
+                  .set({ name: fi.name, email: contactEmail }, { merge: true });
+                saved = true;
+                break;
+              }
+            }
+          }
+          await safeSendMessage(phone, saved
+            ? `✅ Guardé el email de *${contactName}*: ${contactEmail}`
+            : `⚠️ No encontré a "${contactName}" en tus contactos, pero guardé el email por si lo necesitás.`,
+            { isSelfChat: true });
+        } catch (e) {
+          console.error('[MAIL-CMD] Error guardando email:', e.message);
+          await safeSendMessage(phone, `❌ Error guardando email: ${e.message}`, { isSelfChat: true });
+        }
+        return;
       }
     }
 

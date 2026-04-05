@@ -23,7 +23,7 @@ function initMailer() {
   const smtpPort = parseInt(process.env.SMTP_PORT || '587');
   const smtpUser = process.env.SMTP_USER || '';
   const smtpPass = process.env.SMTP_PASS || '';
-  const smtpFrom = process.env.SMTP_FROM || 'noreply@miia.app';
+  const smtpFrom = process.env.SMTP_FROM || '"MIIA" <hola@miia-app.com>';
 
   if (!smtpHost || !smtpUser || !smtpPass) {
     console.warn('[MAIL] ⚠️ SMTP no configurado. Variables vacías: SMTP_HOST, SMTP_USER, SMTP_PASS');
@@ -73,12 +73,12 @@ async function sendSessionRecoveryEmail(uid, email, data = {}) {
         <style>
           body { font-family: Inter, -apple-system, sans-serif; color: #333; line-height: 1.6; }
           .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }
+          .header { background: linear-gradient(135deg, #00E5FF 0%, #7C3AED 50%, #FF1744 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }
           .content { padding: 20px; background: #f9fafb; border-radius: 8px; margin: 20px 0; }
           .alert { padding: 15px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px; margin: 15px 0; }
           .code { font-family: monospace; padding: 10px; background: white; border: 1px solid #ddd; border-radius: 4px; }
           .footer { color: #666; font-size: 0.85rem; text-align: center; margin-top: 20px; }
-          a { color: #667eea; text-decoration: none; }
+          a { color: #7C3AED; text-decoration: none; }
         </style>
       </head>
       <body>
@@ -99,7 +99,7 @@ async function sendSessionRecoveryEmail(uid, email, data = {}) {
 
             <h3>¿Qué necesitas hacer?</h3>
             <ol>
-              <li>Accede a tu <a href="https://miia-frontend.vercel.app/owner-dashboard.html">Dashboard de MIIA</a></li>
+              <li>Accede a tu <a href="https://www.miia-app.com/owner-dashboard.html">Dashboard de MIIA</a></li>
               <li>Haz clic en el botón <strong>"Conectar WhatsApp"</strong> en la sección <strong>Inicio</strong></li>
               <li>Escanea el código QR que aparecerá con tu teléfono</li>
               <li>¡Listo! Tu sesión estará reconectada</li>
@@ -116,7 +116,7 @@ async function sendSessionRecoveryEmail(uid, email, data = {}) {
           </div>
 
           <div class="footer">
-            <p>© 2026 MIIA - Asistente de Ventas IA | <a href="https://miia.app">miia.app</a></p>
+            <p>© 2026 MIIA — Tu asistente IA | <a href="https://www.miia-app.com">miia-app.com</a></p>
           </div>
         </div>
       </body>
@@ -125,7 +125,7 @@ async function sendSessionRecoveryEmail(uid, email, data = {}) {
 
   try {
     const info = await transporter.sendMail({
-      from: process.env.SMTP_FROM || '"MIIA" <noreply@miia.app>',
+      from: process.env.SMTP_FROM || '"MIIA" <hola@miia-app.com>',
       to: email,
       subject: subject,
       html: htmlBody
@@ -140,12 +140,78 @@ async function sendSessionRecoveryEmail(uid, email, data = {}) {
 }
 
 /**
+ * Enviar email genérico (usado por MIIA desde WhatsApp)
+ * @param {string} to - Email destinatario
+ * @param {string} subject - Asunto
+ * @param {string} body - Cuerpo del mensaje (texto plano)
+ * @param {Object} opts - { fromName, replyTo }
+ * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
+ */
+async function sendGenericEmail(to, subject, body, opts = {}) {
+  if (!transporter) {
+    console.log('[MAIL] ❌ SMTP no configurado. Email NO enviado.');
+    return { success: false, error: 'SMTP no configurado' };
+  }
+
+  if (!to || !to.includes('@')) {
+    return { success: false, error: 'Email destinatario inválido' };
+  }
+
+  const fromName = opts.fromName || 'MIIA';
+  const from = `"${fromName}" <${process.env.SMTP_FROM?.match(/<(.+)>/)?.[1] || process.env.SMTP_USER || 'hola@miia-app.com'}>`;
+
+  const htmlBody = `
+    <!DOCTYPE html>
+    <html>
+      <head><meta charset="utf-8">
+        <style>
+          body { font-family: Inter, -apple-system, sans-serif; color: #333; line-height: 1.6; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: linear-gradient(135deg, #00E5FF 0%, #7C3AED 50%, #FF1744 100%); color: white; padding: 15px 20px; border-radius: 8px 8px 0 0; }
+          .content { padding: 20px; background: #f9fafb; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; }
+          .footer { color: #999; font-size: 0.8rem; text-align: center; margin-top: 15px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header"><h2 style="margin:0;">📧 ${subject}</h2></div>
+          <div class="content">
+            ${body.split('\n').map(line => `<p>${line || '&nbsp;'}</p>`).join('')}
+          </div>
+          <div class="footer">
+            <p>Enviado por MIIA en nombre de tu contacto | <a href="https://www.miia-app.com" style="color:#7C3AED;">miia-app.com</a></p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to,
+      subject,
+      text: body,
+      html: htmlBody,
+      ...(opts.replyTo && { replyTo: opts.replyTo }),
+    });
+
+    console.log(`[MAIL] ✅ Email genérico enviado a ${to} — Subject: "${subject}" (ID: ${info.messageId})`);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error(`[MAIL] ❌ Error enviando email a ${to}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Inicializar al cargar el módulo
  */
 initMailer();
 
 module.exports = {
   sendSessionRecoveryEmail,
+  sendGenericEmail,
   initMailer,
   isConfigured: () => !!transporter
 };
