@@ -161,7 +161,6 @@ console.error = function(...args) { _flushErr(...args); if (process.stderr.write
 
 const app = express();
 const server = http.createServer(app);
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.miia-app.com';
 const ALLOWED_ORIGINS = [FRONTEND_URL, 'http://localhost:3000', 'http://localhost:8080', 'http://127.0.0.1:5500'];
 const io = socketIO(server, {
   cors: {
@@ -1126,6 +1125,15 @@ console.log(`[GEMINI] 🔑 ${GEMINI_KEYS.length} API keys configuradas (rotació
 // Registrar keys en el key pool unificado (para ai_client.js multi-provider)
 const { keyPool } = require('./ai/ai_client');
 keyPool.register('gemini', GEMINI_KEYS);
+
+// ═══ GEMINI BACKUP KEYS — 17 keys de emergencia (2 cuentas Google) ═══
+// Se activan SOLO cuando TODAS las keys primarias están en cooldown
+// Propósito: garantizar servicio mínimo para que admin/owner/agent pueda reconectar su propia API key
+const GEMINI_BACKUP_KEYS = (process.env.GEMINI_BACKUP_KEYS || '').split(',').filter(k => k && k.trim().length > 10);
+if (GEMINI_BACKUP_KEYS.length > 0) {
+  keyPool.registerBackup('gemini', GEMINI_BACKUP_KEYS);
+}
+
 if (process.env.OPENAI_API_KEY) keyPool.register('openai', [process.env.OPENAI_API_KEY]);
 if (process.env.CLAUDE_API_KEY) keyPool.register('claude', [process.env.CLAUDE_API_KEY]);
 // Groq: soporta múltiples keys via GROQ_API_KEY, GROQ_API_KEY_2, etc.
@@ -1276,6 +1284,51 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
     const err = await response.text();
     throw new Error(`Gemini API error: ${response.status} - ${err}`);
   }
+}
+
+// ═══ EMERGENCY BACKUP — Último recurso con keys de emergencia ═══
+// Se llama SOLO cuando generateAIContent falla por keys agotadas
+async function generateAIContentEmergency(prompt, { enableSearch = false } = {}) {
+  if (GEMINI_BACKUP_KEYS.length === 0) return null;
+
+  console.warn(`[GEMINI-EMERGENCY] 🛡️ Intentando con ${GEMINI_BACKUP_KEYS.length} keys de emergencia...`);
+  const payload = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: 4096 }
+  };
+  if (enableSearch) {
+    payload.tools = [{ google_search: {} }];
+  }
+
+  // Intentar cada backup key secuencialmente hasta que una funcione
+  for (let i = 0; i < GEMINI_BACKUP_KEYS.length; i++) {
+    const bkKey = GEMINI_BACKUP_KEYS[i].trim();
+    try {
+      const resp = await fetch(`${GEMINI_URL}?key=${bkKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const parts = data.candidates?.[0]?.content?.parts || [];
+        const text = parts.filter(p => p.text).map(p => p.text).join('');
+        if (text) {
+          console.log(`[GEMINI-EMERGENCY] ✅ Backup key #${i + 1} exitosa (${text.length} chars)`);
+          shield.recordSuccess(shield.SYSTEMS.GEMINI);
+          return text;
+        }
+      }
+      // 429 o error → probar siguiente
+      if (resp.status !== 429 && resp.status !== 503) {
+        keyPool.markFailed('gemini', bkKey, String(resp.status));
+      }
+    } catch (e) {
+      // Network error → probar siguiente
+    }
+  }
+  console.error(`[GEMINI-EMERGENCY] ❌ TODAS las ${GEMINI_BACKUP_KEYS.length} backup keys fallaron`);
+  return null;
 }
 
 // safeSendMessage: envío seguro con delay humano
@@ -2820,7 +2873,13 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Search activo — ${isSelfChat ? 'self-chat' : isFamilyContact ? 'familia' : isAdmin ? 'admin' : 'equipo'}`);
 
     console.log(`[MIIA] Llamando a Gemini para ${basePhone} (isAdmin=${isAdmin}, isSelfChat=${isSelfChat}, search=${searchTriggered}, apiKey=${GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE' ? 'OK' : 'NO CONFIGURADA'})...`);
-    let aiMessage = await generateAIContent(fullPrompt, { enableSearch: searchTriggered });
+    let aiMessage;
+    try {
+      aiMessage = await generateAIContent(fullPrompt, { enableSearch: searchTriggered });
+    } catch (primaryErr) {
+      console.warn(`[MIIA] ⚠️ Primary keys fallaron: ${primaryErr.message} — intentando EMERGENCY backup...`);
+      aiMessage = await generateAIContentEmergency(fullPrompt, { enableSearch: searchTriggered });
+    }
     console.log(`[MIIA] ✅ Respuesta Gemini recibida, longitud: ${aiMessage?.length || 0}`);
 
     if (!aiMessage) {

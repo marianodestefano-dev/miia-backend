@@ -23,7 +23,7 @@
 const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutos de cooldown para keys agotadas
 const MAX_CONSECUTIVE_FAILS = 3;    // Tras N fallos consecutivos → cooldown
 
-// Estructura: { provider: { keys: [{ key, fails, lastFail, cooldownUntil, totalCalls, totalFails }], index: 0 } }
+// Estructura: { provider: { keys: [{ key, fails, lastFail, cooldownUntil, totalCalls, totalFails, tier }], index: 0 } }
 const pools = {};
 
 /**
@@ -56,13 +56,56 @@ function register(provider, keys) {
       lastFail: null,
       cooldownUntil: null,
       totalCalls: 0,
-      totalFails: 0
+      totalFails: 0,
+      tier: 'primary'
     });
     existingKeys.add(trimmed);
     added++;
   }
 
   console.log(`[KEY-POOL] ✅ ${provider}: ${added} keys registradas (total: ${pools[provider].keys.length})`);
+}
+
+/**
+ * Registra keys de EMERGENCIA/BACKUP para un proveedor.
+ * Estas keys solo se usan cuando TODAS las primarias están en cooldown.
+ * @param {string} provider
+ * @param {string[]} keys - Array de API keys de backup
+ */
+function registerBackup(provider, keys) {
+  if (!provider || !Array.isArray(keys)) {
+    console.error(`[KEY-POOL] ❌ registerBackup() parámetros inválidos: provider=${provider}`);
+    return;
+  }
+
+  if (!pools[provider]) {
+    pools[provider] = { keys: [], index: 0 };
+  }
+
+  const existingKeys = new Set(pools[provider].keys.map(k => k.key));
+  let added = 0;
+
+  for (const key of keys) {
+    if (!key || typeof key !== 'string' || key.trim().length < 10) continue;
+    const trimmed = key.trim();
+    if (existingKeys.has(trimmed)) continue;
+
+    pools[provider].keys.push({
+      key: trimmed,
+      fails: 0,
+      lastFail: null,
+      cooldownUntil: null,
+      totalCalls: 0,
+      totalFails: 0,
+      tier: 'backup'
+    });
+    existingKeys.add(trimmed);
+    added++;
+  }
+
+  const totalPrimary = pools[provider].keys.filter(k => k.tier === 'primary').length;
+  const totalBackup = pools[provider].keys.filter(k => k.tier === 'backup').length;
+  console.log(`[KEY-POOL] 🛡️ ${provider}: ${added} BACKUP keys registradas (${totalPrimary} primary + ${totalBackup} backup = ${pools[provider].keys.length} total)`);
 }
 
 /**
@@ -75,41 +118,50 @@ function getKey(provider) {
   if (!pool || pool.keys.length === 0) return null;
 
   const now = Date.now();
-  const total = pool.keys.length;
+  const primaryKeys = pool.keys.filter(k => k.tier === 'primary');
+  const backupKeys = pool.keys.filter(k => k.tier === 'backup');
 
-  // Intentar encontrar una key disponible en round-robin
-  for (let i = 0; i < total; i++) {
-    const idx = (pool.index + i) % total;
-    const entry = pool.keys[idx];
+  // FASE 1: Intentar keys PRIMARIAS (round-robin con skip de cooldown)
+  const primaryResult = _getAvailableKey(primaryKeys, pool, now, provider, 'primary');
+  if (primaryResult) return primaryResult;
 
-    // ¿Está en cooldown?
-    if (entry.cooldownUntil && now < entry.cooldownUntil) continue;
-
-    // Si estaba en cooldown pero ya pasó, resetear
-    if (entry.cooldownUntil && now >= entry.cooldownUntil) {
-      entry.cooldownUntil = null;
-      entry.fails = 0;
-      console.log(`[KEY-POOL] 🔄 ${provider} key #${idx} sale de cooldown`);
+  // FASE 2: Todas las primarias en cooldown → usar keys de BACKUP
+  if (backupKeys.length > 0) {
+    const backupResult = _getAvailableKey(backupKeys, pool, now, provider, 'backup');
+    if (backupResult) {
+      console.warn(`[KEY-POOL] 🛡️ ${provider}: Primarias agotadas → usando key de EMERGENCIA`);
+      return backupResult;
     }
-
-    // Usar esta key y avanzar el índice
-    pool.index = (idx + 1) % total;
-    entry.totalCalls++;
-    return entry.key;
   }
 
-  // Todas las keys están en cooldown — devolver la que expira primero
-  const earliest = pool.keys.reduce((min, k) =>
+  // FASE 3: TODO en cooldown — devolver la que expira primero (primary preferida)
+  const allKeys = primaryKeys.length > 0 ? primaryKeys : backupKeys;
+  const earliest = allKeys.reduce((min, k) =>
     (!min || (k.cooldownUntil || Infinity) < (min.cooldownUntil || Infinity)) ? k : min
   , null);
 
   if (earliest) {
     const waitSec = Math.ceil(((earliest.cooldownUntil || 0) - now) / 1000);
-    console.warn(`[KEY-POOL] ⚠️ ${provider}: TODAS las keys en cooldown. Próxima disponible en ${waitSec}s. Usando la menos dañada.`);
+    console.warn(`[KEY-POOL] ⚠️ ${provider}: TODAS las keys en cooldown (${primaryKeys.length}+${backupKeys.length}). Próxima en ${waitSec}s.`);
     earliest.totalCalls++;
     return earliest.key;
   }
 
+  return null;
+}
+
+/** Helper interno: busca key disponible en un subset del pool */
+function _getAvailableKey(keySubset, pool, now, provider, tierLabel) {
+  for (const entry of keySubset) {
+    if (entry.cooldownUntil && now < entry.cooldownUntil) continue;
+    if (entry.cooldownUntil && now >= entry.cooldownUntil) {
+      entry.cooldownUntil = null;
+      entry.fails = 0;
+      console.log(`[KEY-POOL] 🔄 ${provider} ${tierLabel} key ...${entry.key.slice(-4)} sale de cooldown`);
+    }
+    entry.totalCalls++;
+    return entry.key;
+  }
   return null;
 }
 
@@ -214,6 +266,7 @@ function hasKeys(provider) {
 
 module.exports = {
   register,
+  registerBackup,
   getKey,
   markFailed,
   markSuccess,

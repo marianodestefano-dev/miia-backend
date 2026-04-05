@@ -839,21 +839,36 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     aiMessage = await callAI(aiProvider, aiApiKey, fullPrompt);
   } catch (e) {
     console.error(`${logPrefix} ❌ Error llamando a ${aiProvider} para ${basePhone}:`, e.message);
-    // Notificar al usuario si es un error de créditos/billing
     const em = e.message.toLowerCase();
-    if (em.includes('credit') || em.includes('balance') || em.includes('billing') || em.includes('quota')) {
-      const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${aiProvider}) no tiene créditos o saldo disponible.\n\nSolución: Cargá saldo en la cuenta de ${aiProvider === 'claude' ? 'console.anthropic.com' : aiProvider === 'openai' ? 'platform.openai.com' : 'aistudio.google.com'} → Billing.\n\nMientras tanto, podés cambiar a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
+
+    // ═══ EMERGENCY BACKUP: Si falla por quota/keys agotadas, intentar con backup pool ═══
+    if (em.includes('agotada') || em.includes('429') || em.includes('quota') || em.includes('rate') || em.includes('credit') || em.includes('billing') || em.includes('balance')) {
+      console.warn(`${logPrefix} 🛡️ Intentando con backup keys de emergencia...`);
       try {
-        const selfJid = tenantState.sock?.user?.id;
-        if (tenantState.sock && selfJid) {
-          await tenantState.sock.sendMessage(selfJid, { text: alertMsg });
-          console.log(`${logPrefix} ✅ Notificación de billing enviada al owner`);
-        }
-      } catch (notifyErr) {
-        console.error(`${logPrefix} ❌ Error notificando billing al owner:`, notifyErr.message);
+        // callAI con gemini usará el keyPool que incluye backup keys
+        aiMessage = await callAI('gemini', null, fullPrompt);
+      } catch (backupErr) {
+        console.error(`${logPrefix} ❌ Backup keys también fallaron: ${backupErr.message}`);
       }
+
+      // Si el backup también falló, notificar al usuario
+      if (!aiMessage) {
+        const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${aiProvider}) no tiene créditos o saldo disponible.\n\nSolución: Cargá saldo en la cuenta de ${aiProvider === 'claude' ? 'console.anthropic.com' : aiProvider === 'openai' ? 'platform.openai.com' : 'aistudio.google.com'} → Billing.\n\nMientras tanto, podés cambiar a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
+        try {
+          const selfJid = tenantState.sock?.user?.id;
+          if (tenantState.sock && selfJid) {
+            await tenantState.sock.sendMessage(selfJid, { text: alertMsg });
+            console.log(`${logPrefix} ✅ Notificación de billing enviada al owner`);
+          }
+        } catch (notifyErr) {
+          console.error(`${logPrefix} ❌ Error notificando billing al owner:`, notifyErr.message);
+        }
+        return;
+      }
+      console.log(`${logPrefix} ✅ Backup key de emergencia exitosa para ${basePhone}`);
+    } else {
+      return;
     }
-    return;
   }
 
   if (!aiMessage || !aiMessage.trim()) {
