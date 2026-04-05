@@ -42,6 +42,7 @@ const messageLogic = require('./core/message_logic');
 const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping } = require('./core/miia_emoji');
 const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
+const interMiia = require('./core/inter_miia');
 
 // ═══ AI — Clientes y adaptadores IA ═══
 const { callGemini, callGeminiChat } = require('./ai/gemini_client');
@@ -2115,6 +2116,37 @@ El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
       }
     }
 
+    // ── COMANDO INTER-MIIA (coordinación entre MIIAs) ────────────────────────────
+    // "decile a la MIIA de Ale que me agende una reunión el viernes"
+    if (isAdmin && effectiveMsg) {
+      const interCmd = interMiia.detectInterMiiaCommand(effectiveMsg);
+      if (interCmd.isInterMiia) {
+        const contact = await interMiia.findContactByName(admin, OWNER_UID, interCmd.targetName, familyContacts, equipoMedilink);
+        if (!contact) {
+          await safeSendMessage(phone, `❌ No encontré a "${interCmd.targetName}" en tus contactos. Verificá el nombre.`, { isSelfChat: true });
+          return;
+        }
+
+        const result = await interMiia.sendInterMiia({
+          safeSendMessage,
+          generateAIContent,
+          admin,
+          ownerUid: OWNER_UID,
+          ownerName: tenantState?.name || 'tu contacto',
+          ownerPhone: phone,
+          targetPhone: contact.phone,
+          targetName: contact.name,
+          action: interCmd.action,
+          detail: interCmd.detail,
+        });
+
+        if (!result.success) {
+          await safeSendMessage(phone, result.message || '❌ No pude enviar el mensaje inter-MIIA.', { isSelfChat: true });
+        }
+        return;
+      }
+    }
+
     // ── APROBACIÓN DE BRIEFING REGULATORIO ────────────────────────────
     if (isAdmin && briefingPendingApproval.length > 0) {
       const lower = (userMessage || '').toLowerCase().trim();
@@ -2377,6 +2409,23 @@ Nuevo resumen actualizado:`;
       });
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
+    }
+
+    // ═══ INTER-MIIA — Detectar mensajes de otra MIIA ═══
+    if (!isAdmin && effectiveMsg) {
+      const incoming = interMiia.detectIncomingInterMiia(effectiveMsg);
+      if (incoming.isInterMiia) {
+        console.log(`[INTER-MIIA] 📨 Mensaje inter-MIIA recibido de ${basePhone}: action=${incoming.action}`);
+        await interMiia.processIncomingInterMiia({
+          safeSendMessage,
+          ownerPhone: `${OWNER_PHONE}@s.whatsapp.net`,
+          action: incoming.action,
+          data: incoming.data,
+          cleanMessage: incoming.cleanMessage,
+          senderPhone: phone,
+        });
+        return; // No procesar como mensaje normal
+      }
     }
 
     // ═══ MODO NIÑERA — Si se detectó niño en audio o contacto es hijo ═══
