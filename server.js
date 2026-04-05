@@ -2436,8 +2436,9 @@ Nuevo resumen actualizado:`;
       nineraChildConfig = await nineraMode.getChildConfig(admin, OWNER_UID, basePhone);
 
       // 2. Si no está configurado pero se detectó niño en audio del owner
-      if (!nineraChildConfig && message?._isChildAudio) {
-        const det = message._childDetection;
+      // Nota: detección de niño por audio se hace en messages.upsert, no aquí
+      if (false) {
+        const det = {};
         console.log(`[NIÑERA] 🧒 Niño detectado por audio — activando modo niñera temporal (edad ~${det.estimatedAge})`);
         nineraChildConfig = { name: 'peque', age: det.estimatedAge || 6, source: 'audio_detection' };
         // Notificar al owner
@@ -2456,7 +2457,7 @@ Nuevo resumen actualizado:`;
           return;
         }
         // Verificar contenido prohibido
-        const forbiddenCheck = nineraMode.checkForbiddenContent(body);
+        const forbiddenCheck = nineraMode.checkForbiddenContent(userMessage);
         if (forbiddenCheck.forbidden) {
           console.warn(`[NIÑERA] 🚨 Contenido prohibido detectado: ${forbiddenCheck.reason}`);
           safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
@@ -2467,7 +2468,7 @@ Nuevo resumen actualizado:`;
           return;
         }
         // Construir prompt niñera
-        const nineraContext = nineraMode.detectNineraContext(body);
+        const nineraContext = nineraMode.detectNineraContext(userMessage);
         activeSystemPrompt = nineraMode.buildNineraPrompt(
           nineraChildConfig.name, nineraChildConfig.age, nineraContext,
           { ownerName: userProfile?.name || 'tu papá/mamá' }
@@ -2909,7 +2910,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused} | isSelfChat=${isSelfChat}`);
 
     // ═══ EMOJI: Detectar mood del owner/contacto + trigger para emoji contextual ═══
-    const ownerMood = detectOwnerMood(body || '');
+    const ownerMood = detectOwnerMood(userMessage || '');
 
     // ═══ SLEEP MODE: Si MIIA está dormida, no responde conversacionalmente ═══
     if (isMiiaSleeping()) {
