@@ -703,70 +703,17 @@ async function logProtectionEvent(uid, eventType, details = {}) {
   }
 }
 
-// ═══ SESIÓN KIDS — Control de tiempo ═══
+// ═══ SESIÓN KIDS — Delegado a kids_mode.js (fuente única de verdad) ═══
+// NOTA: Se importa kids_mode para evitar duplicar el store de sesiones.
+const kidsMode = require('../voice/kids_mode');
 
-// En memoria: { [phone]: { startedAt, warned5min } }
-const kidsSessions = {};
-
-/**
- * Verificar/gestionar sesión KIDS
- * @returns {{ allowed: boolean, message?: string, minutesLeft?: number }}
- */
+// checkKidsSession y resetKidsSession delegados a kids_mode.js
 function checkKidsSession(phone, maxMinutes = 30, cooldownMinutes = 10) {
-  const now = Date.now();
-  const session = kidsSessions[phone];
-
-  if (!session) {
-    // Nueva sesión
-    kidsSessions[phone] = { startedAt: now, warned5min: false };
-    return { allowed: true, minutesLeft: maxMinutes };
-  }
-
-  const elapsedMin = (now - session.startedAt) / 60000;
-
-  // Cooldown activo
-  if (session.cooldownUntil && now < session.cooldownUntil) {
-    const cooldownLeft = Math.ceil((session.cooldownUntil - now) / 60000);
-    return {
-      allowed: false,
-      message: `Ahora es momento de descansar un poquito. Volvemos a jugar en ${cooldownLeft} minutos. 🌟`,
-      cooldownMinutes: cooldownLeft
-    };
-  }
-
-  // Sesión expirada → activar cooldown
-  if (elapsedMin >= maxMinutes) {
-    kidsSessions[phone] = {
-      ...session,
-      cooldownUntil: now + cooldownMinutes * 60000
-    };
-    return {
-      allowed: false,
-      message: '¡Fue muy divertido! Pero es hora de descansar un ratito. Vuelve en un rato y seguimos jugando. 🌈',
-      sessionExpired: true
-    };
-  }
-
-  // Aviso 5 minutos antes
-  const minutesLeft = Math.ceil(maxMinutes - elapsedMin);
-  if (minutesLeft <= 5 && !session.warned5min) {
-    kidsSessions[phone].warned5min = true;
-    return {
-      allowed: true,
-      minutesLeft,
-      warn5min: true,
-      warnMessage: `¡Uy, nos quedan ${minutesLeft} minutitos! Aprovechemos. ⏰`
-    };
-  }
-
-  return { allowed: true, minutesLeft };
+  return kidsMode.checkKidsSession(phone, maxMinutes, cooldownMinutes);
 }
 
-/**
- * Resetear sesión KIDS (nuevo día o cooldown terminado)
- */
 function resetKidsSession(phone) {
-  delete kidsSessions[phone];
+  return kidsMode.resetKidsSession ? kidsMode.resetKidsSession(phone) : null;
 }
 
 // ═══ CONTENIDO FILTRADO KIDS ═══

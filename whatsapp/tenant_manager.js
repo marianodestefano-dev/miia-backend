@@ -700,7 +700,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       }
     }, 180000); // Cada 3 minutos
 
-    // Watchdog: detecta zombie y reconecta
+    // Watchdog: detecta zombie y reconecta (offset 90s para intercalar con heartbeat)
+    setTimeout(() => {
     tenant._watchdog = setInterval(() => {
       if (!tenant.isReady) return;
       const silentMinutes = (Date.now() - tenant._lastSocketActivity) / 60000;
@@ -721,7 +722,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           }, 5000);
         }
       }
-    }, 180000); // Cada 3 minutos (intercalado con heartbeat)
+    }, 180000); // Cada 3 minutos
+    }, 90000); // Offset 90s para intercalar con heartbeat
 
     // ─── Connection updates (QR, auth, ready) ───
     sock.ev.on('connection.update', async (update) => {
@@ -1195,7 +1197,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
     // Detectar si es número nuevo comparando con el número guardado anteriormente
     let _connectedNumber = null;
-    const _origOnReady = tenant.onReady;
+    // Store original onReady only ONCE to prevent nesting on reconnect
+    if (!tenant._origOnReady && tenant.onReady) {
+      tenant._origOnReady = tenant.onReady;
+    }
+    const _origOnReady = tenant._origOnReady;
     tenant.onReady = (sock) => {
       // Detectar número nuevo → limpiar ADN anterior
       const newNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
@@ -1561,10 +1567,11 @@ async function gracefulShutdown(signal) {
   console.log(`[TM] 🛑 ${signal} received — cerrando ${tenants.size} conexiones limpiamente...`);
   const promises = [];
   for (const [uid, tenant] of tenants) {
-    // Limpiar watchdog y pre-emptive refresh
+    // Limpiar todos los intervals
     if (tenant._watchdog) clearInterval(tenant._watchdog);
     if (tenant._heartbeat) clearInterval(tenant._heartbeat);
     if (tenant._preemptiveRefresh) clearInterval(tenant._preemptiveRefresh);
+    if (tenant._engineHealthTimer) clearInterval(tenant._engineHealthTimer);
     // Guardar health status
     if (tenant._sessionApis) {
       promises.push(tenant._sessionApis.recordHealth('shutdown', `Graceful ${signal}`));

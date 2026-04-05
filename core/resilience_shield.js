@@ -463,8 +463,14 @@ function startHealthMonitor(intervalMs = 300_000) {
         s.health = Math.min(100, s.health + 2);
       }
     }
-    if (healthState.node.health < 100 && healthState.node.unhandledErrors === 0) {
+    // Node health recovery: si no hubo errores en los últimos 5 minutos, recuperar
+    const noRecentNodeErrors = !healthState.node.lastError || (now - healthState.node.lastError.at > 5 * 60_000);
+    if (healthState.node.health < 100 && noRecentNodeErrors) {
       healthState.node.health = Math.min(100, healthState.node.health + 2);
+      // Reset counter gradualmente cuando la salud se recupera por completo
+      if (healthState.node.health >= 100) {
+        healthState.node.unhandledErrors = 0;
+      }
     }
   }, intervalMs);
 

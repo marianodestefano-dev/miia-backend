@@ -48,8 +48,18 @@ const OTP_SECURITY_PATTERNS = [
   /\b(seguridad.*miia|filtro.*seguridad|restricci[oó]n)\b/i,
 ];
 
-// Estado de sesiones KIDS por contacto
+// Estado de sesiones KIDS por contacto (fuente única de verdad — protection_manager delega aquí)
 const kidsSessions = {};
+
+// Limpieza periódica: eliminar sesiones >24h para evitar memory leak
+setInterval(() => {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [phone, session] of Object.entries(kidsSessions)) {
+    if (session.startedAt && session.startedAt < cutoff) {
+      delete kidsSessions[phone];
+    }
+  }
+}, 3600000); // Cada 1 hora
 
 // ═══════════════════════════════════════════════════════════════════
 // DETECCIÓN DE NIÑO
@@ -423,6 +433,9 @@ module.exports = {
   registerChild,
   ensureHijosGroup,
   MAX_KIDS_SESSION_MINUTES,
+
+  // Sesión
+  resetKidsSession: (phone) => { delete kidsSessions[phone]; },
 
   // Filtro OTP/Seguridad
   checkOTPSecurityFilter,

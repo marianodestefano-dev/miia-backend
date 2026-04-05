@@ -950,7 +950,7 @@ function buildGroupPrompt(groupConfig, contactName, ownerProfile) {
   const p = resolveProfile(ownerProfile);
   const g = groupConfig || {};
 
-  return `Eres MIIA, asistente personal de ${p.fullName || p.name}.
+  return `Eres MIIA, asistente personal de ${p.name}.
 Estás hablando con ${contactName || 'un contacto'}, que pertenece al grupo "${g.name || 'General'}".
 
 TONO CONFIGURADO POR EL USUARIO PARA ESTE GRUPO:

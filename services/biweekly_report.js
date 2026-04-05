@@ -340,19 +340,21 @@ async function runBiweeklyReport(ownerUid, ownerPhone, conversations, leadSummar
     if (dayOfMonth !== 1 && dayOfMonth !== 16) return;
 
     // Verificar que no se haya enviado ya hoy
-    const todayStr = now.toISOString().split('T')[0];
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     try {
       const existingSnap = await admin.firestore()
         .collection('users').doc(ownerUid)
         .collection('biweekly_reports')
-        .where('sentAt', '>=', todayStr)
+        .where('sentAt', '>=', todayStart.toISOString())
         .limit(1)
         .get();
       if (!existingSnap.empty) {
         console.log('[REPORT] ℹ️ Informe ya enviado hoy, saltando');
         return;
       }
-    } catch (e) { /* continuar */ }
+    } catch (e) {
+      console.warn(`[REPORT] ⚠️ Error verificando duplicados: ${e.message}`);
+    }
 
     // Obtener datos del owner
     const ownerDoc = await admin.firestore().collection('users').doc(ownerUid).get();

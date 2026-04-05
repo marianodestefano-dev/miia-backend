@@ -50,7 +50,7 @@ async function call(apiKey, prompt, opts = {}) {
       await new Promise(r => setTimeout(r, 3000));
     }
   }
-  return '';
+  throw new Error('Mistral: all retries exhausted without response');
 }
 
 async function callChat(apiKey, messages, systemPrompt, opts = {}) {
@@ -82,7 +82,9 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[MISTRAL] ERROR ${response.status}:`, errorText.substring(0, 200));
-      return null;
+      const err = new Error(`Mistral chat error: ${response.status}`);
+      err.status = response.status;
+      throw err;
     }
 
     const data = await response.json();

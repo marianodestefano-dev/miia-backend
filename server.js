@@ -169,9 +169,11 @@ console.error = function(...args) {
 
 const app = express();
 const server = http.createServer(app);
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.miia-app.com';
+const ALLOWED_ORIGINS = [FRONTEND_URL, 'http://localhost:3000', 'http://localhost:8080', 'http://127.0.0.1:5500'];
 const io = socketIO(server, {
   cors: {
-    origin: "*",
+    origin: ALLOWED_ORIGINS,
     methods: ["GET", "POST"]
   }
 });
@@ -263,8 +265,8 @@ function registerLidMapping(lid, phone) {
   lidToPhone[lidBase] = phoneFull;
   phoneToLid[phoneFull] = lidBase;
   console.log(`[LID-MAP] 🔗 ${lidBase} → ${phoneFull}`);
-  // Persistir para sobrevivir reinicios (debounced via saveDB)
-  try { saveDB(); } catch (e) {}
+  // Persistir — no llamar saveDB() aquí para evitar thrashing durante sync masivo.
+  // La persistencia ocurre en el ciclo normal de saveDB (cada 2 min via setInterval).
 }
 
 function resolveLid(jid) {
@@ -889,7 +891,7 @@ setInterval(() => { saveToFirestore().catch(() => {}); }, 2 * 60 * 1000);
 // ============================================
 
 const getBasePhone = (p) => (p || '').split('@')[0];
-const toJid = (phone) => phone.includes('@') ? phone.replace('@s.whatsapp.net', '@s.whatsapp.net') : `${phone}@s.whatsapp.net`;
+const toJid = (phone) => phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 const ensureConversation = (p) => { if (!conversations[p]) conversations[p] = []; return conversations[p]; };
 
@@ -1102,7 +1104,7 @@ function isWithinAutoResponseSchedule() {
   const day = bogotaDate.getDay() === 0 ? 7 : bogotaDate.getDay();
   if (!automationSettings.schedule.days.includes(day)) return false;
   const time = `${bogotaDate.getHours().toString().padStart(2, '0')}:${bogotaDate.getMinutes().toString().padStart(2, '0')}`;
-  return time >= automationSettings.schedule.start && time <= automationSettings.schedule.end;
+  return time >= automationSettings.schedule.start && time < automationSettings.schedule.end;
 }
 
 // ============================================
@@ -1273,9 +1275,9 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
           }
         }
       }
-      const delay = RETRY_DELAYS[attempt];
-      console.warn(`[GEMINI] ⏳ Error ${response.status} — reintentando en ${delay / 1000}s (intento ${attempt + 1}/${MAX_RETRIES})...`);
-      await new Promise(r => setTimeout(r, delay));
+      const retryDelay = RETRY_DELAYS[attempt];
+      console.warn(`[GEMINI] ⏳ Error ${response.status} — reintentando en ${retryDelay / 1000}s (intento ${attempt + 1}/${MAX_RETRIES})...`);
+      await new Promise(r => setTimeout(r, retryDelay));
       continue;
     }
     const err = await response.text();
@@ -1360,10 +1362,10 @@ async function safeSendMessage(target, content, options = {}) {
       for (let i = 0; i < chunks.length; i++) {
         const isLast = i === chunks.length - 1;
         const chunkContent = isLast ? chunks[i] : chunks[i] + '\n...';
-        const delay = i === 0
+        const chunkDelay = i === 0
           ? (options.noDelay ? 0 : Math.floor(Math.random() * 1500) + 1500)
           : Math.floor(Math.random() * 2000) + 2000; // 2-4s entre chunks (humano)
-        if (delay > 0) await new Promise(r => setTimeout(r, delay));
+        if (chunkDelay > 0) await new Promise(r => setTimeout(r, chunkDelay));
         try {
           let sendJid = target;
           if (options.isSelfChat) {
@@ -1932,8 +1934,7 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
         effectiveMsg && Date.now() - conversationMetadata[phone].pendingLearningAskedAt < 300000) {
       // 300 segundos = 5 minutos de ventana para responder
       const msgLower = effectiveMsg.toLowerCase().trim();
-      const isYes = /^(sí|si|yes|ok|dale|claro|perfecto|gracias|acepto|listo)$/i.test(msgLower) ||
-                    msgLower.includes('sí') || msgLower.includes('si');
+      const isYes = /^(sí|si|yes|ok|dale|claro|perfecto|gracias|acepto|listo)$/i.test(msgLower);
       const isNo = /^(no|nope|nah|no|nada)$/i.test(msgLower);
       const isPartial = /^(solo|algunas|algunas de|parte|parcial)$/i.test(msgLower);
 
@@ -2599,7 +2600,7 @@ Nuevo resumen actualizado:`;
         ];
         const response = EMPATHETIC_RESPONSES[Math.floor(Math.random() * EMPATHETIC_RESPONSES.length)];
 
-        conversations[phone].push({ role: 'user', content: effectiveMsg, timestamp: Date.now() });
+        // NOTA: user message ya fue pusheado arriba (línea ~2471). Solo pushear la respuesta.
         conversations[phone].push({ role: 'assistant', content: response, timestamp: Date.now() });
         if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
         saveDB();
@@ -2623,7 +2624,8 @@ Nuevo resumen actualizado:`;
     // Keyword shortcut check
     const isLikelyAnalysis = userMessage && userMessage.length > 180;
     const matched = (!isLikelyAnalysis) && userMessage && keywordsSet.find(k => {
-      try { return new RegExp(`\\b${k.key}\\b`, 'i').test(userMessage); } catch (e) { return userMessage.toLowerCase().includes(k.key.toLowerCase()); }
+      const escaped = k.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      try { return new RegExp(`\\b${escaped}\\b`, 'i').test(userMessage); } catch (e) { return userMessage.toLowerCase().includes(k.key.toLowerCase()); }
     });
     if (matched && !isAdmin) {
       conversations[phone].push({ role: 'assistant', content: matched.response, timestamp: Date.now() });
@@ -4697,11 +4699,23 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Enviar mensaje manual desde frontend (Baileys API)
+  // Enviar mensaje manual desde frontend (Baileys API) — requiere Firebase token
   socket.on('send_message', async (data) => {
-    const { to, message } = data;
-    const sock = getOwnerSock();
+    const { to, message, token } = data;
 
+    // Verificar autenticación
+    if (!token) {
+      socket.emit('error', { message: 'Token de autenticación requerido' });
+      return;
+    }
+    try {
+      await admin.auth().verifyIdToken(token);
+    } catch (authErr) {
+      socket.emit('error', { message: 'Token inválido' });
+      return;
+    }
+
+    const sock = getOwnerSock();
     if (!sock) {
       socket.emit('error', { message: 'WhatsApp no conectado' });
       return;
@@ -4948,7 +4962,7 @@ app.get('/api/firebase-status', (_req, res) => {
       hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
       hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
       hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
-      privateKeyStart: (process.env.FIREBASE_PRIVATE_KEY || '').substring(0, 30)
+      hasPrivateKeyContent: (process.env.FIREBASE_PRIVATE_KEY || '').length > 50
     });
   }
 });
@@ -5228,13 +5242,13 @@ app.post('/api/tenant/:uid/request-pairing-code', express.json(), async (req, re
 });
 
 // POST /api/tenant/:uid/logout — Disconnect tenant WhatsApp
-app.post('/api/tenant/:uid/logout', async (req, res) => {
+app.post('/api/tenant/:uid/logout', verifyTenantAuth, async (req, res) => {
   const result = await tenantManager.destroyTenant(req.params.uid);
   res.json(result);
 });
 
 // POST /api/tenant/:uid/clean-session — Clean corrupted Baileys session (MessageCounterError recovery)
-app.post('/api/tenant/:uid/clean-session', express.json(), async (req, res) => {
+app.post('/api/tenant/:uid/clean-session', verifyTenantAuth, express.json(), async (req, res) => {
   const uid = req.params.uid;
   try {
     console.log(`[CLEAN-SESSION] 🔧 Limpiando sesión corrupta para ${uid}...`);
@@ -5330,7 +5344,7 @@ app.post('/api/chat', async (req, res) => {
     console.log('[API CHAT] 🔑 GEMINI_API_KEY está configurada:', !!GEMINI_API_KEY);
     
     const geminiUrl = `${GEMINI_URL}?key=${getGeminiKey()}`;
-    console.log('[API CHAT] 🌐 URL Gemini (oculta):', geminiUrl.replace(GEMINI_API_KEY, 'API_KEY_HIDDEN'));
+    console.log('[API CHAT] 🌐 URL Gemini (oculta):', geminiUrl.replace(/key=[^&]+/, 'key=HIDDEN'));
     
     const payload = {
       contents: conversationHistory,
@@ -6471,7 +6485,7 @@ async function getPendingApprovals(ownerUid) {
 }
 
 // GET /api/tenant/:uid/learning-approvals — Ver aprobaciones pendientes
-app.get('/api/tenant/:uid/learning-approvals', async (req, res) => {
+app.get('/api/tenant/:uid/learning-approvals', verifyTenantAuth, async (req, res) => {
   try {
     const pending = await getPendingApprovals(req.params.uid);
     res.json({ approvals: pending });
@@ -6896,7 +6910,7 @@ app.post('/api/tenant/:uid/import', express.json({ limit: '10mb' }), async (req,
 });
 
 // GET /api/admin/imports — List all imports for admin dashboard
-app.get('/api/admin/imports', async (req, res) => {
+app.get('/api/admin/imports', verifyAdminToken, async (req, res) => {
   try {
     const snap = await admin.firestore().collection('imports').orderBy('imported_at', 'desc').limit(50).get();
     const imports = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -7125,6 +7139,32 @@ async function verifyAdminToken(req, res, next) {
       if (!hasRole) return res.status(403).json({ error: 'El usuario no tiene rol admin' });
     }
     req.user = { uid: decodedToken.uid, email: decodedToken.email };
+    next();
+  } catch (e) {
+    res.status(401).json({ error: 'Unauthorized: ' + e.message });
+  }
+}
+
+/**
+ * verifyTenantAuth — Verifica que el request tiene un Firebase token válido
+ * y que el uid del token coincide con el :uid del endpoint O es admin.
+ */
+async function verifyTenantAuth(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Falta header Authorization: Bearer <token>' });
+    }
+    const idToken = authHeader.substring(7);
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const requestedUid = req.params.uid;
+    const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+    const isAdmin = adminEmails.includes((decodedToken.email || '').toLowerCase());
+    // El usuario solo puede acceder a su propio uid, o ser admin
+    if (!isAdmin && decodedToken.uid !== requestedUid) {
+      return res.status(403).json({ error: 'No tienes permiso para acceder a este recurso' });
+    }
+    req.user = { uid: decodedToken.uid, email: decodedToken.email, isAdmin };
     next();
   } catch (e) {
     res.status(401).json({ error: 'Unauthorized: ' + e.message });
