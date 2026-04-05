@@ -2038,7 +2038,7 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
         }
 
         // Generar email profesional con IA
-        const ownerName = tenantState?.name || 'el owner';
+        const ownerName = userProfile?.name || 'el owner';
         const emailPrompt = `Redactá un email breve y profesional en nombre de ${ownerName}.
 El destinatario es: ${targetName || targetEmail}
 El mensaje que quiere transmitir es: "${emailBody}"
@@ -2061,7 +2061,7 @@ El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
 
         const result = await mailService.sendGenericEmail(targetEmail, emailSubject, emailBody, {
           fromName: ownerName,
-          replyTo: tenantState?.email,
+          replyTo: userProfile?.email,
         });
 
         if (result.success) {
@@ -2132,7 +2132,7 @@ El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
           generateAIContent,
           admin,
           ownerUid: OWNER_UID,
-          ownerName: tenantState?.name || 'tu contacto',
+          ownerName: userProfile?.name || 'tu contacto',
           ownerPhone: phone,
           targetPhone: contact.phone,
           targetName: contact.name,
