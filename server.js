@@ -982,13 +982,32 @@ function isWithinAutoResponseSchedule() {
 // GEMINI AI
 // ============================================
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
+// ═══ GEMINI API KEYS — Rotación + Fallback ═══
+// GEMINI_API_KEY = key principal (mariano.destefano@gmail.com)
+// GEMINI_API_KEY_2 = key secundaria (hola@miia-app.com)
+const GEMINI_KEYS = [
+  process.env.GEMINI_API_KEY,
+  process.env.GEMINI_API_KEY_2
+].filter(k => k && k !== 'YOUR_GEMINI_API_KEY_HERE');
+let _geminiKeyIndex = 0;
+function getGeminiKey() {
+  if (GEMINI_KEYS.length === 0) return 'YOUR_GEMINI_API_KEY_HERE';
+  const key = GEMINI_KEYS[_geminiKeyIndex % GEMINI_KEYS.length];
+  _geminiKeyIndex++;
+  return key;
+}
+function getGeminiFallbackKey(failedKey) {
+  return GEMINI_KEYS.find(k => k !== failedKey) || failedKey;
+}
+const GEMINI_API_KEY = GEMINI_KEYS[0] || 'YOUR_GEMINI_API_KEY_HERE';
+console.log(`[GEMINI] 🔑 ${GEMINI_KEYS.length} API keys configuradas (rotación ${GEMINI_KEYS.length > 1 ? 'ACTIVA' : 'INACTIVA'})`);
 // Force gemini-2.5-flash — 2.5-pro gives 503 overloaded, 2.0-flash gives 404
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 async function callGeminiAPI(messages, systemPrompt) {
+  const key = getGeminiKey();
   try {
-    const url = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
+    const url = `${GEMINI_URL}?key=${key}`;
     const payload = {
       contents: messages.map(m => ({
         role: m.role === 'assistant' ? 'model' : 'user',
@@ -999,7 +1018,7 @@ async function callGeminiAPI(messages, systemPrompt) {
       }
     };
 
-    console.log(`[GEMINI] Request: ${messages.length} msgs, prompt ${systemPrompt.length} chars`);
+    console.log(`[GEMINI] Request: ${messages.length} msgs, prompt ${systemPrompt.length} chars, key #${(_geminiKeyIndex - 1) % GEMINI_KEYS.length + 1}`);
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1008,7 +1027,24 @@ async function callGeminiAPI(messages, systemPrompt) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`[GEMINI] ERROR ${response.status}:`, errorText.substring(0, 200));
+      console.error(`[GEMINI] ERROR ${response.status} (key #${(_geminiKeyIndex - 1) % GEMINI_KEYS.length + 1}):`, errorText.substring(0, 200));
+      // Fallback a la otra key si hay 429 (rate limit) o 403
+      if ((response.status === 429 || response.status === 403) && GEMINI_KEYS.length > 1) {
+        const fallbackKey = getGeminiFallbackKey(key);
+        console.log(`[GEMINI] ♻️ Reintentando con key alternativa...`);
+        const retryResp = await fetch(`${GEMINI_URL}?key=${fallbackKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (retryResp.ok) {
+          const retryData = await retryResp.json();
+          if (retryData.candidates?.[0]?.content?.parts?.[0]?.text) {
+            console.log(`[GEMINI] ✅ Fallback exitoso`);
+            return retryData.candidates[0].content.parts[0].text;
+          }
+        }
+      }
       return null;
     }
 
@@ -1029,8 +1065,9 @@ async function callGeminiAPI(messages, systemPrompt) {
 
 // generateAIContent: versión fetch con retry automático para errores 503/429
 async function generateAIContent(prompt, { enableSearch = false } = {}) {
-  const url = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
-  console.log(`[GEMINI] Llamando a la API (search=${enableSearch}) con url: ${url}`);
+  const key = getGeminiKey();
+  const url = `${GEMINI_URL}?key=${key}`;
+  console.log(`[GEMINI] Llamando a la API (search=${enableSearch}), key #${(_geminiKeyIndex - 1) % GEMINI_KEYS.length + 1}`);
   const payload = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     ...(enableSearch && { tools: [{ google_search: {} }] })
@@ -2592,7 +2629,7 @@ async function processMediaMessage(message) {
     return { text: null, mediaType };
   }
 
-  const url = `${GEMINI_FLASH_URL}?key=${GEMINI_API_KEY}`;
+  const url = `${GEMINI_FLASH_URL}?key=${getGeminiKey()}`;
   const payload = {
     contents: [{
       role: 'user',
@@ -3999,7 +4036,7 @@ app.post('/api/chat', async (req, res) => {
     console.log(`[API CHAT] 📨 Cantidad de mensajes en historial: ${conversationHistory.length}`);
     console.log('[API CHAT] 🔑 GEMINI_API_KEY está configurada:', !!GEMINI_API_KEY);
     
-    const geminiUrl = `${GEMINI_URL}?key=${GEMINI_API_KEY}`;
+    const geminiUrl = `${GEMINI_URL}?key=${getGeminiKey()}`;
     console.log('[API CHAT] 🌐 URL Gemini (oculta):', geminiUrl.replace(GEMINI_API_KEY, 'API_KEY_HIDDEN'));
     
     const payload = {
