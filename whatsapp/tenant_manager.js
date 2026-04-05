@@ -534,7 +534,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       printQRInTerminal: false,
       browser: ['MIIA', 'Chrome', '120.0.0'],
       generateHighQualityLinkPreview: false,
-      syncFullHistory: true,
+      syncFullHistory: false,
       markOnlineOnConnect: false,
       // ── Stability options ──
       retryRequestDelayMs: 250,
@@ -630,6 +630,12 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         tenant.qrCode = null;
         tenant._initializing = false;
         tenant._reconnecting = false; // Liberar lock anti-cascada
+        // Cancelar timer de reconexión pendiente (previene socket duplicado → 440 loop)
+        if (tenant._reconnectTimer) {
+          clearTimeout(tenant._reconnectTimer);
+          tenant._reconnectTimer = null;
+          console.log(`[TM:${uid}] 🛑 Reconnect timer cancelado — conexión ya abierta`);
+        }
         tenant.connectedAt = Math.floor(Date.now() / 1000); // Unix timestamp en segundos
         // Anti-repetición post-deploy: ignorar mensajes anteriores al boot
         if (!tenant._lastProcessedTs) {
@@ -754,11 +760,16 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             tenant._sessionApis.purgeSessionKeys().catch(() => {});
           }
 
-          setTimeout(() => {
+          // Guardar timer para poder cancelarlo si connection='open' llega antes
+          tenant._reconnectTimer = setTimeout(() => {
+            tenant._reconnectTimer = null;
             tenant._reconnecting = false; // Liberar lock
-            if (tenants.has(uid)) {
+            // Si ya está conectado (open llegó antes del timer), no reconectar
+            if (tenants.has(uid) && !tenant.isReady) {
               tenant._initializing = true;
               startBaileysConnection(uid, tenant, ioInstance);
+            } else if (tenant.isReady) {
+              console.log(`[TM:${uid}] ⏸️ Reconnect timer expiró pero ya estamos connected — ignorando`);
             }
           }, delay);
         } else {
