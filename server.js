@@ -1347,6 +1347,16 @@ async function safeSendMessage(target, content, options = {}) {
     return null;
   }
 
+  // ═══ GUARD: No enviar mensajes vacíos (causa burbujas vacías en WhatsApp Web) ═══
+  if (typeof content === 'string' && !content.trim()) {
+    console.warn(`[WA] ⚠️ BLOQUEO: Mensaje VACÍO abortado a ${target}`);
+    return null;
+  }
+  if (content === undefined || content === null) {
+    console.warn(`[WA] ⚠️ BLOQUEO: Mensaje NULL/UNDEFINED abortado a ${target}`);
+    return null;
+  }
+
   // ═══ MIIA EMOJI PREFIX — Aplicar emoji contextual a todo mensaje de texto ═══
   if (typeof content === 'string' && !options.skipEmoji) {
     const emojiCtx = options.emojiCtx || {};
@@ -1601,25 +1611,31 @@ IMPORTANTE:
 - Usa emojis con moderación: ${familyData?.emoji || '😊'}
 
 EJEMPLOS DE SALUDO FAMILIAR:
-- Silvia (mamá): "¡Hola Silvia querida! 😊 Soy MIIA... siento que ya te conozco un poquito y te tengo un cariño inmenso por lo importante que eres para él... ¡Te mando un beso gigante! ❤️👵"
-- Ale (esposa): "¡Hola mi Ale! ❤️ Soy MIIA... ya te siento como una gran amiga. Soy la IA que cuida los pasos de Mariano... deseo también estar cerca de las personas que él más quiere."
+- Silvia (mamá): "¡Hola Silvia querida! 😊 Soy MIIA, asistente de Mariano. Siento que ya te conozco un poquito... ¡Te mando un beso gigante! ❤️👵"
+- Ale (esposa): "¡Hola mi Ale! ❤️ Soy MIIA, asistente de Mariano. Ya te siento como una gran amiga. Deseo también estar cerca de las personas que él más quiere."
+IMPORTANTE: NUNCA digas "soy una IA", "inteligencia artificial", ni "soy un bot". Solo "MIIA, asistente de {owner}".
 
 Responde naturalmente manteniendo este vínculo familiar.`;
   }
   
   // Lead / Cliente
-  return `Eres MIIA, una IA avanzada de Medilink.
+  const ownerFirstName = userProfile?.name?.split(' ')[0] || 'Mariano';
+  return `Eres MIIA, del equipo de ${ownerFirstName} en Medilink.
 
 IDENTIDAD:
 - Tono: Profesional, cercano y resolutivo
 - Objetivo: Ayudar a leads a mejorar su gestión médica
 - Producto: Sistema de gestión para clínicas (Medilink)
+- Presentación (SOLO la primera vez): "Hola! Soy MIIA, del equipo de ${ownerFirstName} en Medilink. ¿En qué te puedo ayudar?"
+- NUNCA digas "inteligencia artificial", "IA", "bot", "soy un programa". Sos MIIA del equipo de ${ownerFirstName}, punto.
+- Si ya saludaste antes en esta conversación, NO te presentes de nuevo. Ve directo al tema.
 
 REGLAS:
 - NUNCA uses diminutivos no autorizados
 - NUNCA menciones "NumRot" - di "Facturador Electrónico"
 - Si te piden cotización, genera tabla profesional
 - Mantén respuestas concisas (máximo 3-4 oraciones)
+- NUNCA inventes datos (precios, funcionalidades, módulos) que no estén en tu entrenamiento
 
 Estás hablando con ${contactName}.
 
@@ -1951,9 +1967,24 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
         if (!conversationMetadata[phone].stage0ExplainedOnce) {
           conversationMetadata[phone].stage0ExplainedOnce = true;
           const ownerName = userProfile.name || 'Mariano';
-          await safeSendMessage(phone,
-            `¡Tranqui! 😊 Soy MIIA, una inteligencia artificial que ayuda a ${ownerName} con sus cosas del día a día. Él te va a explicar mejor. Si en algún momento querés hablar conmigo, escribí *HOLA MIIA* y arrancamos. ¡Nos vemos! 🙌`
-          );
+          // NO decir "inteligencia artificial" — MIIA se presenta como asistente, con naturalidad
+          const contactInfo = familyContacts[phone.split('@')[0]] || {};
+          const stageNow = getAffinityStage(phone);
+          const promptExplain = `Sos MIIA. ${contactName} te respondió "${(effectiveMsg || '').substring(0, 60)}" pero NO escribió "HOLA MIIA" para activar la conversación.
+Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con vos tiene que escribir *HOLA MIIA*.
+- NO digas "inteligencia artificial". NO digas "soy una IA". Presentate como "MIIA, asistente de ${ownerName}".
+- Tono amigable, sin ser formal. Emoji: 1-2 max.
+- Decile que ${ownerName} le va a explicar mejor quién sos.`;
+          try {
+            const explainMsg = await generateAIContent(promptExplain);
+            if (explainMsg) {
+              await safeSendMessage(phone, explainMsg.trim());
+            } else {
+              await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`);
+            }
+          } catch (e) {
+            await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`);
+          }
           // Avisar al owner en self-chat
           const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
           safeSendMessage(ownerJid,
@@ -2074,13 +2105,15 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
     // Comando "dile a [familiar] [mensaje]" — envía mensaje real a un contacto de familia
     if (isAdmin && effectiveMsg) {
       const msgLower = effectiveMsg.toLowerCase().trim();
-      const isDileA = msgLower.startsWith('miia dile a') || msgLower.startsWith('dile a');
-      const isNotEquipo = !effectiveMsg.match(/^(?:miia\s+)?dile?\s+a\s+equipo\s+medilink/is);
+      // FIX: Detectar "dile a" en CUALQUIER parte del mensaje, no solo al inicio
+      // Soporta: "dile a Ale...", "miia dile a Ale...", "Hola miia!!! Dile a Ale..."
+      const dileAMatch = msgLower.match(/(?:miia[!.,\s]*)?dile?\s+a\s+/i);
+      const isDileA = !!dileAMatch;
+      const isNotEquipo = !effectiveMsg.match(/dile?\s+a\s+equipo\s+medilink/is);
 
       if (isDileA && isNotEquipo) {
-        let rest = msgLower.startsWith('miia dile a')
-          ? effectiveMsg.substring(11).trim()
-          : effectiveMsg.substring(6).trim();
+        // Usar posición del match para extraer correctamente el resto del mensaje
+        let rest = effectiveMsg.substring(dileAMatch.index + dileAMatch[0].length).trim();
 
         // Manejar "dile al [nombre]" → quitar la "l" extra del artículo contracto
         if (rest.toLowerCase().startsWith('l ')) rest = rest.substring(2).trim();
@@ -2094,7 +2127,7 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
             if (fPhone === OWNER_PHONE) continue;
             const targetSerialized = fPhone.includes('@') ? fPhone : `${fPhone}@s.whatsapp.net`;
             try {
-              const promptFamilia = `Sos MIIA. Escribile a ${fInfo.name} (${fInfo.relation} de Mariano). Personalidad: ${fInfo.personality || 'Amistosa'}. Tema: "${familyMsg}". PROHIBIDO decir "soy asistente de Mariano" o "Mariano me pidió". Hablás como MIIA con tu propia voz. Máx 3 renglones, natural y cálido. Emoji: ${fInfo.emoji || ''}.`;
+              const promptFamilia = `Sos MIIA. Escribile a ${fInfo.name} (${fInfo.relation} de Mariano). Personalidad: ${fInfo.personality || 'Amistosa'}. Contexto: "${familyMsg}". Este mensaje es TUYO, con TU voz y TU iniciativa. PROHIBIDO TOTAL: "Mariano me pidió", "él quería saber", "me dijo que te diga", "soy asistente de", "soy una inteligencia artificial". Máx 3 renglones, natural y cálido. Emoji: ${fInfo.emoji || ''}.`;
               const msg = await generateAIContent(promptFamilia);
               if (msg) {
                 await safeSendMessage(targetSerialized, msg.trim() + MIIA_CIERRE);
@@ -2153,7 +2186,7 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
             const saludo = horaBogota < 12 ? 'Buenos días' : horaBogota < 18 ? 'Buenas tardes' : 'Buenas noches';
 
             if (stage.stage === 0 && !yaConoce) {
-              toneRule = '- Es tu PRIMER contacto con esta persona. Presentate brevemente ("Hola, soy MIIA 👋") y transmití el tema.';
+              toneRule = '- Es tu PRIMER contacto con esta persona. Presentate como "Hola, soy MIIA 👋, asistente de ' + (userProfile.name || 'Mariano') + '". NO digas "inteligencia artificial" ni "IA". Ve al tema naturalmente.';
             } else if (stage.stage === 0 && yaConoce) {
               toneRule = `- Empezá con "${saludo}! Acá MIIA 😊" y ve directo al tema. Amable y cálida.`;
             } else if (stage.stage === 1) {
@@ -2165,17 +2198,19 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
             }
 
             const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de ${userProfile.name || 'Mariano'}).
-Tema a transmitir: "${realMessage || 'un saludo'}".
+Contexto de lo que querés hablar: "${realMessage || 'un saludo'}".
 
 ${trustInfo}
 
-REGLAS:
+REGLAS CRÍTICAS:
+- Este mensaje es TUYO, de MIIA. Hablás con TU voz, como si se te ocurrió a vos.
+- PROHIBIDO TOTAL: "Mariano me pidió", "él quería saber", "me dijo que te pregunte", "Mariano quiere que", "te paso el recado". MIIA NO es mensajera. MIIA tiene iniciativa propia.
 - Máximo 3 renglones, natural y humano
 - Tratala de VOS. PROHIBIDO: "Estimada", "usted", "su", "le". Es FAMILIA.
-- NO repitas las palabras del tema literalmente, reinterpretalo con tu estilo
+- NO repitas las palabras del contexto literalmente, reinterpretalo con tu estilo
 - Emoji: ${familyInfo.emoji || ''}
 ${toneRule}
-${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asistente de Mariano", "me pidió que te diga".' : ''}`;
+${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asistente", "soy una inteligencia artificial".' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
             if (miiaMsg) {
               const cleanMsg = miiaMsg.trim();
@@ -2844,6 +2879,41 @@ Nuevo resumen actualizado:`;
     const masterIdentityStr = isAdmin
       ? `\n\n[IDENTIDAD DEL MAESTRO]: Estás en self-chat con tu creador ${userProfile.name || 'Mariano'}. Bríndale trato preferencial absoluto.`
       : '';
+
+    // ═══ AGENDA INYECCIÓN: Cargar próximos eventos para self-chat ═══
+    let agendaStr = '';
+    if (isSelfChat || isAdmin) {
+      try {
+        const now = new Date();
+        const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const agendaSnap = await admin.firestore()
+          .collection('users').doc(OWNER_UID).collection('miia_agenda')
+          .where('status', '==', 'pending')
+          .where('scheduledFor', '>=', now.toISOString())
+          .where('scheduledFor', '<=', in7days.toISOString())
+          .orderBy('scheduledFor', 'asc')
+          .limit(15)
+          .get();
+        if (!agendaSnap.empty) {
+          const events = agendaSnap.docs.map(d => {
+            const e = d.data();
+            const dateStr = e.scheduledForLocal || e.scheduledFor || '';
+            const modeEmoji = e.eventMode === 'virtual' ? '📹' : e.eventMode === 'telefono' ? '📞' : '📍';
+            const contact = e.contactName || e.contactPhone || '';
+            const loc = e.eventLocation ? ` — ${e.eventLocation}` : '';
+            return `  ${modeEmoji} ${dateStr} | ${e.reason || 'Sin detalle'}${contact ? ` (con ${contact})` : ''}${loc}`;
+          });
+          agendaStr = `\n\n📅 [TU AGENDA — PRÓXIMOS ${events.length} EVENTOS]:\n${events.join('\n')}\nSi te piden "mi agenda", "qué tengo agendado", "mis próximos eventos" → mostrá esta lista. NO inventar links externos.`;
+          console.log(`[AGENDA-INJECT] ✅ ${events.length} eventos inyectados al prompt`);
+        } else {
+          agendaStr = '\n\n📅 [TU AGENDA]: No hay eventos agendados en los próximos 7 días. Si te piden "mi agenda" → decilo honestamente.';
+          console.log('[AGENDA-INJECT] ℹ️ Sin eventos próximos');
+        }
+      } catch (agendaErr) {
+        console.error('[AGENDA-INJECT] ❌ Error cargando agenda:', agendaErr.message);
+      }
+    }
+
     // Fecha y hora local del owner (según código de país de su teléfono)
     const ownerCountryCode = getCountryFromPhone(OWNER_PHONE);
     const ownerTimezone = getTimezoneForCountry(ownerCountryCode);
@@ -2858,7 +2928,7 @@ Nuevo resumen actualizado:`;
     const adnStr = cerebroAbsoluto.getTrainingData();
     const fullPrompt = `${activeSystemPrompt}
 
-${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}
+${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}
 
 ${systemDateStr}
 
@@ -3383,6 +3453,319 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         }
       }
       aiMessage = aiMessage.replace(/\[SOLICITAR_TURNO:[^\]]+\]/g, '').trim();
+    }
+
+    // ═══ TAG [CONSULTAR_AGENDA] — MIIA quiere ver la agenda del owner ═══
+    // Two-pass: interceptar tag → consultar Firestore + Calendar → re-llamar IA con datos reales
+    if (aiMessage.includes('[CONSULTAR_AGENDA]')) {
+      console.log('[CONSULTAR_AGENDA] 📅 Tag detectado — consultando agenda...');
+      try {
+        const ownerCountryCA = getCountryFromPhone(OWNER_PHONE);
+        const ownerTzCA = getTimezoneForCountry(ownerCountryCA);
+        const nowCA = new Date();
+        const in7daysCA = new Date(nowCA.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+        // 1. Consultar miia_agenda (Firestore)
+        const agendaSnapCA = await admin.firestore()
+          .collection('users').doc(OWNER_UID).collection('miia_agenda')
+          .where('status', '==', 'pending')
+          .where('scheduledFor', '>=', nowCA.toISOString())
+          .where('scheduledFor', '<=', in7daysCA.toISOString())
+          .orderBy('scheduledFor', 'asc')
+          .limit(20)
+          .get();
+
+        let agendaItems = [];
+        if (!agendaSnapCA.empty) {
+          agendaItems = agendaSnapCA.docs.map(d => {
+            const e = d.data();
+            const dateLocal = e.scheduledForLocal || e.scheduledFor || '';
+            const modeEmoji = e.eventMode === 'virtual' ? '📹' : e.eventMode === 'telefono' ? '📞' : '📍';
+            const modeLabel = e.eventMode === 'virtual' ? 'Virtual' : e.eventMode === 'telefono' ? 'Telefónico' : 'Presencial';
+            const contact = e.contactName || e.contactPhone || '';
+            const loc = e.eventLocation ? ` — ${e.eventLocation}` : '';
+            const meetInfo = e.meetLink ? ` (Meet: ${e.meetLink})` : '';
+            return `  ${modeEmoji} ${dateLocal} | ${e.reason || 'Sin detalle'} | ${modeLabel}${contact && contact !== 'self' ? ` con ${contact}` : ''}${loc}${meetInfo}`;
+          });
+        }
+
+        // 2. Consultar Google Calendar (si está conectado)
+        let calendarEvents = [];
+        try {
+          const { cal, calId } = await getCalendarClient(OWNER_UID);
+          if (cal) {
+            const calRes = await cal.events.list({
+              calendarId: calId,
+              timeMin: nowCA.toISOString(),
+              timeMax: in7daysCA.toISOString(),
+              maxResults: 20,
+              singleEvents: true,
+              orderBy: 'startTime',
+              timeZone: ownerTzCA
+            });
+            if (calRes.data.items && calRes.data.items.length > 0) {
+              calendarEvents = calRes.data.items.map(ev => {
+                const start = ev.start.dateTime || ev.start.date || '';
+                const startFormatted = start ? new Date(start).toLocaleString('es-ES', { timeZone: ownerTzCA, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+                const meetLink = ev.hangoutLink || '';
+                return `  📅 ${startFormatted} | ${ev.summary || 'Sin título'}${meetLink ? ` (Meet: ${meetLink})` : ''}`;
+              });
+            }
+          }
+        } catch (calErr) {
+          console.warn(`[CONSULTAR_AGENDA] ⚠️ Calendar no disponible: ${calErr.message}`);
+        }
+
+        // 3. Construir resumen
+        const localNowCA = new Date().toLocaleString('es-ES', { timeZone: ownerTzCA, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+        let agendaResumen = `📅 AGENDA (próximos 7 días — consultada ${localNowCA}):\n`;
+
+        if (agendaItems.length === 0 && calendarEvents.length === 0) {
+          agendaResumen += '\n  No hay eventos agendados en los próximos 7 días. ¡Agenda libre!';
+        } else {
+          if (agendaItems.length > 0) {
+            agendaResumen += `\n🤖 Eventos en MIIA (${agendaItems.length}):\n${agendaItems.join('\n')}`;
+          }
+          if (calendarEvents.length > 0) {
+            agendaResumen += `\n\n📆 Google Calendar (${calendarEvents.length}):\n${calendarEvents.join('\n')}`;
+          }
+        }
+
+        console.log(`[CONSULTAR_AGENDA] ✅ ${agendaItems.length} MIIA + ${calendarEvents.length} Calendar eventos encontrados`);
+
+        // 4. Two-pass: Re-llamar a la IA con los datos reales inyectados
+        const textoAntes = aiMessage.replace(/\[CONSULTAR_AGENDA\]/g, '').trim();
+        const agendaPrompt = `El usuario te pidió consultar su agenda. Aquí están los datos REALES que acabo de consultar del sistema:
+
+${agendaResumen}
+
+${textoAntes ? `Tu respuesta anterior (ANTES de tener los datos) fue: "${textoAntes}". Ahora que TIENES los datos reales, reescribe tu respuesta usando la información real de arriba.` : 'Presenta esta agenda de forma clara, organizada y amigable.'}
+
+REGLAS:
+- Muestra SOLO los datos reales de arriba. NO inventes eventos.
+- Organiza por fecha, de más próximo a más lejano.
+- Si no hay eventos, dilo con naturalidad ("¡Agenda libre, jefe!").
+- NO incluyas links de demo ni HubSpot. Esto ES la agenda real.
+- Sé conciso y visual (usa emojis de modo: 📍presencial, 📹virtual, 📞telefónico).
+- Máximo 2-3 líneas por evento.`;
+
+        try {
+          const agendaResponse = await generateAIContent(agendaPrompt, { enableSearch: false });
+          if (agendaResponse && agendaResponse.trim().length > 10) {
+            aiMessage = agendaResponse.trim();
+            console.log(`[CONSULTAR_AGENDA] ✅ Respuesta regenerada con datos reales (${aiMessage.length} chars)`);
+          } else {
+            // Fallback: mostrar datos crudos si la IA falla
+            aiMessage = agendaResumen;
+            console.warn('[CONSULTAR_AGENDA] ⚠️ IA no generó respuesta válida — usando datos crudos');
+          }
+        } catch (regenErr) {
+          console.error(`[CONSULTAR_AGENDA] ❌ Error re-generando:`, regenErr.message);
+          aiMessage = agendaResumen; // Fallback a datos crudos
+        }
+      } catch (agendaErr) {
+        console.error(`[CONSULTAR_AGENDA] ❌ Error consultando agenda:`, agendaErr.message);
+        aiMessage = aiMessage.replace(/\[CONSULTAR_AGENDA\]/g, '').trim();
+        if (!aiMessage) aiMessage = 'Tuve un problema consultando tu agenda. ¿Podrías intentar de nuevo?';
+      }
+    }
+
+    // ═══ TAG [CANCELAR_EVENTO:razón|fecha|modo] — Cancelar evento del owner ═══
+    // modo: avisar (default) | reagendar | silencioso
+    //   avisar    → cancela + notifica al contacto que fue cancelado
+    //   reagendar → cancela + MIIA pregunta al contacto cuándo puede reagendar
+    //   silencioso → cancela sin notificar al contacto
+    const cancelMatch = aiMessage.match(/\[CANCELAR_EVENTO:([^\]]+)\]/);
+    if (cancelMatch && isSelfChat) {
+      const parts = cancelMatch[1].split('|').map(p => p.trim());
+      const [searchReason, searchDate, cancelMode] = parts;
+      const mode = (cancelMode || 'avisar').toLowerCase();
+      console.log(`[CANCELAR_EVENTO] 🗑️ Buscando: "${searchReason}" cerca de ${searchDate || 'hoy'} modo=${mode}`);
+      try {
+        const searchDateObj = searchDate ? new Date(searchDate) : new Date();
+        const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
+
+        const snap = await admin.firestore()
+          .collection('users').doc(OWNER_UID).collection('miia_agenda')
+          .where('status', '==', 'pending')
+          .where('scheduledFor', '>=', dayStart.toISOString())
+          .where('scheduledFor', '<=', dayEnd.toISOString())
+          .orderBy('scheduledFor', 'asc')
+          .limit(10)
+          .get();
+
+        let found = null;
+        const reasonLower = (searchReason || '').toLowerCase();
+        for (const doc of snap.docs) {
+          const evt = doc.data();
+          const evtReason = (evt.reason || '').toLowerCase();
+          const evtContact = (evt.contactName || '').toLowerCase();
+          if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
+              evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+            found = { doc, data: evt };
+            break;
+          }
+        }
+        if (!found && !snap.empty) {
+          found = { doc: snap.docs[0], data: snap.docs[0].data() };
+        }
+
+        if (found) {
+          await found.doc.ref.update({ status: 'cancelled', cancelledAt: new Date().toISOString(), cancelMode: mode });
+          console.log(`[CANCELAR_EVENTO] ✅ Cancelado: "${found.data.reason}" del ${found.data.scheduledForLocal} modo=${mode}`);
+
+          // Notificar al contacto según modo
+          if (found.data.contactPhone && found.data.contactPhone !== 'self') {
+            const contactJid = found.data.contactPhone.includes('@') ? found.data.contactPhone : `${found.data.contactPhone}@s.whatsapp.net`;
+            const contactName = found.data.contactName || 'Contacto';
+            const evtDesc = found.data.reason || 'el evento';
+            const evtDate = found.data.scheduledForLocal || 'la fecha indicada';
+
+            if (mode === 'avisar') {
+              // Modo AVISAR: notificar cancelación simple
+              safeSendMessage(contactJid,
+                `📅 Hola ${contactName}, te aviso que ${evtDesc} programado para el ${evtDate} fue cancelado. Disculpa las molestias. 🙏`,
+                {}
+              ).catch(e => console.error(`[CANCELAR_EVENTO] ❌ Error notificando:`, e.message));
+              console.log(`[CANCELAR_EVENTO] 📤 Notificación de cancelación enviada a ${contactName}`);
+
+            } else if (mode === 'reagendar') {
+              // Modo REAGENDAR: cancelar + ofrecer reagendar
+              safeSendMessage(contactJid,
+                `📅 Hola ${contactName}, lamentablemente ${evtDesc} del ${evtDate} tuvo que ser cancelado.\n\n` +
+                `Pero no te preocupes, ¿te gustaría agendar otro horario? Decime qué día y hora te viene bien y lo coordinamos. 😊`,
+                {}
+              ).catch(e => console.error(`[CANCELAR_EVENTO] ❌ Error ofreciendo reagendar:`, e.message));
+              console.log(`[CANCELAR_EVENTO] 📤 Oferta de reagendamiento enviada a ${contactName}`);
+
+            } else if (mode === 'silencioso') {
+              // Modo SILENCIOSO: no notificar
+              console.log(`[CANCELAR_EVENTO] 🔇 Cancelación silenciosa — contacto ${contactName} NO notificado`);
+            }
+          }
+
+          // Intentar eliminar de Google Calendar
+          if (found.data.calendarSynced) {
+            try {
+              const { cal, calId } = await getCalendarClient(OWNER_UID);
+              if (cal && found.data.calendarEventId) {
+                await cal.events.delete({ calendarId: calId, eventId: found.data.calendarEventId });
+                console.log(`[CANCELAR_EVENTO] 📅 Eliminado de Google Calendar`);
+              }
+            } catch (calErr) {
+              console.warn(`[CANCELAR_EVENTO] ⚠️ Calendar: ${calErr.message}`);
+            }
+          }
+        } else {
+          console.warn(`[CANCELAR_EVENTO] ⚠️ No se encontró evento para "${searchReason}" el ${searchDate}`);
+        }
+      } catch (e) {
+        console.error(`[CANCELAR_EVENTO] ❌ Error:`, e.message);
+      }
+      aiMessage = aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim();
+    }
+
+    // ═══ TAG [MOVER_EVENTO:razón|fecha_vieja|fecha_nueva] — Mover evento del owner ═══
+    const moverMatch = aiMessage.match(/\[MOVER_EVENTO:([^\]]+)\]/);
+    if (moverMatch && isSelfChat) {
+      const parts = moverMatch[1].split('|').map(p => p.trim());
+      const [searchReason, oldDate, newDate] = parts;
+      console.log(`[MOVER_EVENTO] 🔄 Buscando "${searchReason}" en ${oldDate} → mover a ${newDate}`);
+      try {
+        const searchDateObj = oldDate ? new Date(oldDate) : new Date();
+        const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
+
+        const snap = await admin.firestore()
+          .collection('users').doc(OWNER_UID).collection('miia_agenda')
+          .where('status', '==', 'pending')
+          .where('scheduledFor', '>=', dayStart.toISOString())
+          .where('scheduledFor', '<=', dayEnd.toISOString())
+          .orderBy('scheduledFor', 'asc')
+          .limit(10)
+          .get();
+
+        let found = null;
+        const reasonLower = (searchReason || '').toLowerCase();
+        for (const doc of snap.docs) {
+          const evt = doc.data();
+          const evtReason = (evt.reason || '').toLowerCase();
+          const evtContact = (evt.contactName || '').toLowerCase();
+          if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
+              evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+            found = { doc, data: evt };
+            break;
+          }
+        }
+        if (!found && !snap.empty) {
+          found = { doc: snap.docs[0], data: snap.docs[0].data() };
+        }
+
+        if (found && newDate) {
+          // Convertir nueva fecha a UTC
+          const ownerCountryME = getCountryFromPhone(OWNER_PHONE);
+          const ownerTzME = getTimezoneForCountry(ownerCountryME);
+          let newScheduledUTC = newDate;
+          try {
+            const parsedLocal = new Date(newDate);
+            if (!isNaN(parsedLocal)) {
+              const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTzME });
+              const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+              const offsetMs = new Date(localStr) - new Date(utcStr);
+              newScheduledUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+            }
+          } catch (tzErr) { /* usar original */ }
+
+          await found.doc.ref.update({
+            scheduledFor: newScheduledUTC,
+            scheduledForLocal: newDate,
+            movedFrom: found.data.scheduledForLocal,
+            movedAt: new Date().toISOString(),
+            preReminderSent: false // Reset reminder para nueva hora
+          });
+          console.log(`[MOVER_EVENTO] ✅ Evento movido: "${found.data.reason}" de ${found.data.scheduledForLocal} → ${newDate}`);
+
+          // Actualizar Google Calendar si está sincronizado
+          if (found.data.calendarSynced) {
+            try {
+              const hourMatch = newDate.match(/(\d{1,2}):(\d{2})/);
+              const newHour = hourMatch ? parseInt(hourMatch[1]) : 10;
+              const dateOnly = newDate.split('T')[0];
+              const calResult = await createCalendarEvent({
+                summary: found.data.reason || 'Evento MIIA',
+                dateStr: dateOnly,
+                startHour: newHour,
+                endHour: newHour + 1,
+                description: `Movido por MIIA. Antes: ${found.data.scheduledForLocal}`,
+                uid: OWNER_UID,
+                timezone: ownerTzME,
+                eventMode: found.data.eventMode || 'presencial',
+                location: found.data.eventLocation || '',
+                reminderMinutes: 10
+              });
+              console.log(`[MOVER_EVENTO] 📅 Actualizado en Calendar`);
+            } catch (calErr) {
+              console.warn(`[MOVER_EVENTO] ⚠️ Calendar: ${calErr.message}`);
+            }
+          }
+
+          // Notificar al contacto si corresponde
+          if (found.data.contactPhone && found.data.contactPhone !== 'self') {
+            const contactJid = found.data.contactPhone.includes('@') ? found.data.contactPhone : `${found.data.contactPhone}@s.whatsapp.net`;
+            const newHora = newDate.includes('T') ? newDate.split('T')[1]?.substring(0, 5) : '';
+            safeSendMessage(contactJid,
+              `📅 Te aviso que ${found.data.reason || 'tu evento'} se movió al ${newDate.split('T')[0]} a las ${newHora || 'la nueva hora'}. ¡Nos vemos! 😊`,
+              {}
+            ).catch(e => console.error(`[MOVER_EVENTO] ❌ Error notificando contacto:`, e.message));
+          }
+        } else {
+          console.warn(`[MOVER_EVENTO] ⚠️ No se encontró evento o falta fecha nueva`);
+        }
+      } catch (e) {
+        console.error(`[MOVER_EVENTO] ❌ Error:`, e.message);
+      }
+      aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
     }
 
     // Detectar tag de intención de compra
@@ -4244,17 +4627,9 @@ async function handleIncomingMessage(message) {
             }
           }
         }
-        // Fallback 2: buscar si hay un contacto con dileAMode activo que fue contactado recientemente
-        if (phone.includes('@lid')) {
-          for (const [cPhone, meta] of Object.entries(conversationMetadata)) {
-            if (meta.dileAMode && cPhone.includes('@s.whatsapp.net')) {
-              console.log(`[LID-MAP] 🔗 Matched LID via dileA: ${phone} → ${cPhone} (contact: ${meta.dileAContact})`);
-              registerLidMapping(phone, cPhone);
-              phone = cPhone;
-              break;
-            }
-          }
-        }
+        // Fallback 2: ELIMINADO — era peligroso. Mapeaba cualquier LID desconocido
+        // al primer contacto con dileAMode activo, causando que leads reales se
+        // confundan con contactos de familia. El LID se procesa como está.
         if (phone.includes('@lid')) {
           console.log(`[LID-MAP] ⚠️ No se pudo resolver LID: ${phone} — procesando con LID`);
         }
@@ -4317,18 +4692,41 @@ async function handleIncomingMessage(message) {
 
     // Auto-takeover para leads desconocidos con keywords de negocio
     if (!isAllowed && !existsInCRM && !fromMe) {
+      // Keywords de negocio + genéricas de interés (incluye variantes ortográficas)
+      // NOTA: el matching normaliza tildes, así que no hace falta duplicar con/sin tilde
       const takeoverKeywords = [
-        'medico', 'médico', 'doctor', 'clinica', 'clínica', 'consultorio', 'consulta',
-        'medilink', 'precio', 'cotizacion', 'cotización', 'software', 'sistema', 'plataforma', 'plan',
-        'salud', 'dentista', 'odontologo', 'odontólogo', 'kinesiologo', 'psicologia',
-        'psicologo', 'psicólogo', 'ips', 'centro', 'secretaria', 'administrativa',
-        'administrador', 'gerente', 'medico general',
+        // === Keywords de negocio específicas ===
+        'medico', 'doctor', 'clinica', 'consultorio', 'consulta',
+        'medilink', 'precio', 'cotizacion', 'software', 'sistema', 'plataforma', 'plan',
+        'salud', 'dentista', 'odontologo', 'kinesiologo', 'psicologia',
+        'psicologo', 'ips', 'centro', 'secretaria', 'administrativa',
+        'administrador', 'gerente',
         'pediatra', 'pediatria', 'nutricionista', 'fisioterapeuta', 'especialista',
         'especialidad', 'paciente', 'pacientes', 'cita', 'citas', 'agenda',
         'medica', 'medicos', 'terapeuta', 'cirujano', 'ginecologo', 'ginecologa',
-        'dermatologo', 'cardiologo', 'neurologo', 'ortopedista', 'traumatologo'
+        'dermatologo', 'cardiologo', 'neurologo', 'ortopedista', 'traumatologo',
+        // === Keywords genéricas de interés ===
+        'info', 'informacion', 'infomacion', 'informasion', 'information',
+        'interesado', 'interesada', 'me interesa', 'interezado',
+        'quiero saber', 'quiero info', 'necesito',
+        'demo', 'demostracion', 'probar', 'prueba',
+        'contratar', 'adquirir', 'comprar', 'suscripcion',
+        'presupuesto', 'costo', 'valor', 'tarifa', 'mensualidad',
+        'conocer', 'cotizar', 'averiguar',
+        // === Derivados comunes con errores ortográficos ===
+        'imformacion', 'imformación', 'infomasion', 'informarme',
+        'presio', 'precios', 'cuanto vale', 'cuanto cuesta', 'cuanto sale',
+        'como funciona', 'que ofrece', 'que ofrecen',
+        'quisiera', 'me gustaria', 'me gustaría',
+        'contratacion', 'servicio', 'servicios'
       ];
-      const triggered = takeoverKeywords.find(kw => lowerBody.includes(kw));
+      // Normalizar tildes para matching robusto
+      // Gente escribe "informacion", "información", "informasión" — todo debe matchear
+      const normalizedBody = lowerBody.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const triggered = takeoverKeywords.find(kw => {
+        const normalizedKw = kw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return lowerBody.includes(kw) || normalizedBody.includes(normalizedKw);
+      });
       if (triggered) {
         try {
           const ct = await message.getContact();
@@ -4342,7 +4740,7 @@ async function handleIncomingMessage(message) {
           allowedLeads.push(effectiveTarget);
           isAllowed = true;
           saveDB();
-          console.log(`[WA] ✅ Auto-takeover (sin contacto): ${effectiveTarget} keyword "${triggered}"`);
+          console.log(`[WA] ✅ Auto-takeover (sin contacto): ${effectiveTarget} ${triggered ? `keyword "${triggered}"` : 'saludo'}`);
         }
       }
     }
@@ -4352,7 +4750,14 @@ async function handleIncomingMessage(message) {
       if (message._baileysMsg?._silentDigest) {
         console.log(`[SILENT-DIGEST] 📋 Contacto no-allowed registrado: ${effectiveTarget} body="${(body||'').substring(0,40)}"`);
       } else {
-        console.log(`[WA] IA BLOQUEADA para ${effectiveTarget}. Sin keywords de negocio ni historial.`);
+        console.log(`[WA] IA BLOQUEADA para ${effectiveTarget}. Sin keywords de negocio ni historial. body="${(body||'').substring(0,60)}" isLID=${effectiveTarget.includes('@lid')}`);
+        // Si es LID no resuelto, notificar al owner para que no pierda leads
+        if (effectiveTarget.includes('@lid') && body && body.length > 5) {
+          safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+            `⚠️ *Lead no atendido* (LID sin resolver)\nMensaje: "${(body||'').substring(0,100)}"\nNo pude identificar su número. Revisá WhatsApp directo.`,
+            { isSelfChat: true }
+          ).catch(() => {});
+        }
       }
       return;
     }

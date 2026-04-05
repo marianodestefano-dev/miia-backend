@@ -689,14 +689,21 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     tenant._lastSocketActivity = Date.now();
 
     // Heartbeat: mantiene el socket vivo para Railway con tráfico WS real
+    // FIX: NO usar sendPresenceUpdate('available') — genera notificación visible
+    // al owner cada 3 min (suena/vibra el teléfono). Usar query de bajo nivel.
     tenant._heartbeat = setInterval(async () => {
       if (!tenant.isReady || !tenant.sock) return;
       try {
-        // sendPresenceUpdate genera tráfico WS real visible al proxy
-        await tenant.sock.sendPresenceUpdate('available');
-        tenant._lastSocketActivity = Date.now();
+        // fetchStatus genera tráfico WS real sin cambiar presencia visible
+        // Alternativa: sock.query() con IQ stanza de bajo nivel
+        if (tenant.sock.ws && tenant.sock.ws.readyState === 1) {
+          // Enviar ping WS nativo (bajo nivel, sin generar notificación)
+          tenant.sock.ws.ping();
+          tenant._lastSocketActivity = Date.now();
+        }
       } catch (e) {
         // Si falla, el watchdog lo detectará
+        console.warn(`[TM:${uid}] ⚠️ Heartbeat ping failed: ${e.message}`);
       }
     }, 180000); // Cada 3 minutos
 
@@ -1118,8 +1125,14 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           // Esto complementa el dedup en memoria (TTL 10min) para casos donde
           // la reconexión ocurre después de que el TTL expiró.
           if (tenant._lastProcessedTs && msgTs <= tenant._lastProcessedTs) {
-            console.log(`[TM:${uid}] ⏭️ Mensaje offline ya procesado (ts=${msgTs} <= lastProcessed=${tenant._lastProcessedTs}): "${body.substring(0,30)}"`);
-            continue;
+            // NO descartar mensajes de terceros si son recientes (menos de 2 min antes de lastProcessed)
+            // Esto previene perder mensajes reales que llegan desordenados post-reconexión
+            const tsDiff = tenant._lastProcessedTs - msgTs;
+            if (isFromMe || tsDiff > 120) {
+              console.log(`[TM:${uid}] ⏭️ Mensaje offline ya procesado (ts=${msgTs} <= lastProcessed=${tenant._lastProcessedTs}, diff=${tsDiff}s): "${body.substring(0,30)}"`);
+              continue;
+            }
+            console.log(`[TM:${uid}] ⚠️ Mensaje offline reciente de tercero (diff=${tsDiff}s <= 120s) — procesando igualmente: "${body.substring(0,30)}"`);
           }
           console.log(`[TM:${uid}] 📦 Mensaje offline de ${from} (hace ${ageSec}s): "${body.substring(0,40)}" → buffer`);
           if (!offlineBuffer[from]) offlineBuffer[from] = { msgs: [], timer: null };
@@ -1134,7 +1147,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         }
 
         // Actualizar último timestamp procesado (anti-repetición post-reconexión)
-        if (msgTs > (tenant._lastProcessedTs || 0)) {
+        // SOLO actualizar con mensajes de terceros (no fromMe) para evitar que
+        // mensajes propios de MIIA re-entregados post-reconexión eleven el timestamp
+        // y causen que mensajes reales de contactos se descarten como "ya procesados"
+        if (!isFromMe && msgTs > (tenant._lastProcessedTs || 0)) {
           tenant._lastProcessedTs = msgTs;
         }
 

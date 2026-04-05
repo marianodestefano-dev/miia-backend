@@ -543,6 +543,9 @@ function cleanResidualTags(aiMessage) {
   return aiMessage
     .replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '')
     .replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '')
+    .replace(/\[CONSULTAR_AGENDA\]/g, '')
+    .replace(/\[CANCELAR_EVENTO:[^\]]*\]/g, '')
+    .replace(/\[MOVER_EVENTO:[^\]]*\]/g, '')
     .trim();
 }
 
