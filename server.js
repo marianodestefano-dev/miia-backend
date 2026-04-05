@@ -2941,7 +2941,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
     // ═══ TTS: Responder con audio SOLO cuando el owner manda audio ═══
     let sentAsAudio = false;
-    const incomingWasAudio = mediaContext?.mediaType === 'audio';
+    // mediaContext only exists in messages.upsert handler, not here
+    const incomingWasAudio = false;
 
     // Detección de preferencia de audio/texto del owner
     if (!incomingWasAudio && /\b(prefer\w*\s+texto|respond[eé]\s+(?:con\s+)?texto|no\s+(?:me\s+)?(?:mand|envi)[eé]s?\s+audio|sin\s+audio|solo\s+texto)\b/i.test(userMessage || '')) {
