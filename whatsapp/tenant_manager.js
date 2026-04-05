@@ -33,6 +33,115 @@ const tenants = new Map();
 const tenantReconnectAttempts = new Map(); // { uid: attemptCount }
 const tenantCryptoErrors = new Map(); // { uid: { count, windowStart } }
 
+// ═══════════════════════════════════════════════════════════════════
+// DUAL-ENGINE F1 — Motor Combustión + Motor Eléctrico
+// ═══════════════════════════════════════════════════════════════════
+// Dos perfiles de conexión independientes. Cuando uno entra en loop
+// de fallos, el otro toma el control con configuración diferente.
+// Cada engine hereda el diagnóstico del que falló.
+// ═══════════════════════════════════════════════════════════════════
+
+const ENGINE_PROFILES = {
+  A: {
+    name: 'Combustión',
+    emoji: '🔥',
+    browser: ['MIIA', 'Chrome', '120.0.0'],
+    keepAliveIntervalMs: 25_000,
+    connectTimeoutMs: 60_000,
+    retryRequestDelayMs: 250,
+    markOnlineOnConnect: false,
+  },
+  B: {
+    name: 'Eléctrico',
+    emoji: '⚡',
+    browser: ['MIIA', 'Firefox', '115.0'],
+    keepAliveIntervalMs: 15_000,
+    connectTimeoutMs: 45_000,
+    retryRequestDelayMs: 400,
+    markOnlineOnConnect: true, // Diferente estrategia
+  }
+};
+
+// Health scoring por engine por tenant
+// healthScore: 100 = perfecto, 0 = muerto
+// consecutiveFails: fallos seguidos sin conexión estable
+// lastFailReason: diagnóstico para el otro engine
+const ENGINE_SWITCH_THRESHOLD = 3; // Switch después de 3 fallos consecutivos
+const ENGINE_HEALTH_RECOVERY_INTERVAL = 300_000; // Recuperar 10pts cada 5min estable
+
+function getEngineState(tenant) {
+  if (!tenant._engineState) {
+    tenant._engineState = {
+      current: 'A',
+      A: { healthScore: 100, consecutiveFails: 0, lastFailReason: null, totalConnections: 0, lastStableAt: null },
+      B: { healthScore: 100, consecutiveFails: 0, lastFailReason: null, totalConnections: 0, lastStableAt: null },
+      switchCount: 0,
+      lastSwitchAt: null,
+    };
+  }
+  return tenant._engineState;
+}
+
+function getCurrentEngineProfile(tenant) {
+  const es = getEngineState(tenant);
+  return ENGINE_PROFILES[es.current];
+}
+
+function recordEngineSuccess(tenant, uid) {
+  const es = getEngineState(tenant);
+  const engine = es[es.current];
+  engine.consecutiveFails = 0;
+  engine.healthScore = Math.min(100, engine.healthScore + 5);
+  engine.totalConnections++;
+  engine.lastStableAt = Date.now();
+}
+
+function recordEngineFail(tenant, uid, reason) {
+  const es = getEngineState(tenant);
+  const engine = es[es.current];
+  engine.consecutiveFails++;
+  engine.healthScore = Math.max(0, engine.healthScore - 15);
+  engine.lastFailReason = reason;
+
+  // ¿Necesita switchear?
+  if (engine.consecutiveFails >= ENGINE_SWITCH_THRESHOLD) {
+    const other = es.current === 'A' ? 'B' : 'A';
+    const otherEngine = es[other];
+
+    // Solo switchear si el otro tiene mejor salud O si pasó suficiente tiempo
+    const cooldownOk = !es.lastSwitchAt || (Date.now() - es.lastSwitchAt > 60_000);
+    if (cooldownOk && otherEngine.healthScore > 20) {
+      const prev = es.current;
+      es.current = other;
+      es.switchCount++;
+      es.lastSwitchAt = Date.now();
+      // Reset consecutiveFails del nuevo engine
+      otherEngine.consecutiveFails = 0;
+      console.log(`[TM:${uid}] 🏎️ ENGINE SWITCH: ${ENGINE_PROFILES[prev].emoji} ${ENGINE_PROFILES[prev].name} → ${ENGINE_PROFILES[other].emoji} ${ENGINE_PROFILES[other].name} | Razón: ${reason} | Switch #${es.switchCount}`);
+      console.log(`[TM:${uid}] 📊 Health: A=${es.A.healthScore}/100, B=${es.B.healthScore}/100 | Herencia: "${engine.lastFailReason}"`);
+      return true; // Switched
+    }
+  }
+  return false; // No switch
+}
+
+// Health recovery: si un engine lleva 5+ min estable, recuperar puntos del otro
+function startEngineHealthRecovery(tenant, uid) {
+  if (tenant._engineHealthTimer) clearInterval(tenant._engineHealthTimer);
+  tenant._engineHealthTimer = setInterval(() => {
+    const es = getEngineState(tenant);
+    if (!tenant.isReady) return;
+    const current = es[es.current];
+    const other = es[es.current === 'A' ? 'B' : 'A'];
+    // Engine activo estable → recuperar salud
+    current.healthScore = Math.min(100, current.healthScore + 2);
+    // Engine inactivo → recuperar lentamente (para que esté listo si se necesita)
+    if (other.healthScore < 80) {
+      other.healthScore = Math.min(80, other.healthScore + 5);
+    }
+  }, ENGINE_HEALTH_RECOVERY_INTERVAL);
+}
+
 const DATA_ROOT = path.join(__dirname, 'data', 'tenants');
 if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 
@@ -515,15 +624,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
     console.log(`[TM:${uid}] 📡 Connecting with Baileys v${version.join('.')} (session v${getCredsVersion()}, identity=${getIdentityHash()})...`);
 
-    // ═══ TÉCNICA 1: Configuración agresiva de estabilidad ═══
-    // WhatsApp Web usa Chrome/Windows — replicamos exactamente eso.
-    // retryRequestDelayMs: Baileys por defecto reintenta requests fallidos muy rápido,
-    //   lo que causa cascadas de error. Lo suavizamos a 250ms base.
-    // connectTimeoutMs: Default es 20s — muy corto para Railway cold starts. 60s.
-    // keepAliveIntervalMs: Heartbeat WS cada 25s (WhatsApp Web usa ~30s). Esto previene
-    //   disconnects por inactividad de firewall/proxy.
-    // emitOwnEvents: false → evita que Baileys procese sus propios mensajes enviados como
-    //   si fueran entrantes, reduciendo MessageCounterError en ~40%.
+    // ═══ DUAL-ENGINE F1: Seleccionar perfil de conexión ═══
+    const engineProfile = getCurrentEngineProfile(tenant);
+    const engineState = getEngineState(tenant);
+    console.log(`[TM:${uid}] 🏎️ Engine ${engineProfile.emoji} ${engineProfile.name} (${engineState.current}) | Health: A=${engineState.A.healthScore}, B=${engineState.B.healthScore}`);
+
     const sock = makeWASocket({
       version,
       auth: {
@@ -532,19 +637,17 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       },
       logger: baileysLogger,
       printQRInTerminal: false,
-      browser: ['MIIA', 'Chrome', '120.0.0'],
+      browser: engineProfile.browser,
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
-      markOnlineOnConnect: false,
-      // ── Stability options ──
-      retryRequestDelayMs: 250,
-      connectTimeoutMs: 60_000,
-      keepAliveIntervalMs: 25_000,
+      markOnlineOnConnect: engineProfile.markOnlineOnConnect,
+      // ── Stability options (engine-specific) ──
+      retryRequestDelayMs: engineProfile.retryRequestDelayMs,
+      connectTimeoutMs: engineProfile.connectTimeoutMs,
+      keepAliveIntervalMs: engineProfile.keepAliveIntervalMs,
       emitOwnEvents: false,
-      // getMessage: necesario para reintentar mensajes fallidos — Baileys lo usa
-      // para re-encriptar si la primera entrega falló por ratchet desincronizado
+      // getMessage: necesario para reintentar mensajes fallidos
       getMessage: async (key) => {
-        // Buscar en conversaciones del tenant
         const jid = key.remoteJid;
         const msgs = tenant.conversations[jid];
         if (msgs && msgs.length > 0) {
@@ -636,6 +739,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           tenant._reconnectTimer = null;
           console.log(`[TM:${uid}] 🛑 Reconnect timer cancelado — conexión ya abierta`);
         }
+        // 🏎️ DUAL-ENGINE: Registrar éxito del engine actual
+        recordEngineSuccess(tenant, uid);
+        startEngineHealthRecovery(tenant, uid);
         tenant.connectedAt = Math.floor(Date.now() / 1000); // Unix timestamp en segundos
         // Anti-repetición post-deploy: ignorar mensajes anteriores al boot
         if (!tenant._lastProcessedTs) {
@@ -753,6 +859,19 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           const delay = baseDelay + jitter;
 
           console.log(`[TM:${uid}] 🔄 Reconnecting in ${(delay/1000).toFixed(1)}s (attempt #${attempts}, code: ${statusCode})...`);
+
+          // ═══ DUAL-ENGINE F1: Registrar fallo y posible switch ═══
+          const reasonCode = `code_${statusCode || 'unknown'}`;
+          const engineSwitched = recordEngineFail(tenant, uid, reasonCode);
+          if (engineSwitched) {
+            // Engine cambió — purgar session keys del engine anterior para empezar limpio
+            if (tenant._sessionApis) {
+              console.log(`[TM:${uid}] 🏎️ Post-switch: purging session keys del engine anterior`);
+              tenant._sessionApis.purgeSessionKeys().catch(() => {});
+            }
+            // Reset intentos de reconexión al switchear — el nuevo engine empieza fresco
+            tenantReconnectAttempts.set(uid, 0);
+          }
 
           // After 5 normal reconnects, try purging session keys
           if (attempts === 5 && tenant._sessionApis) {
@@ -883,6 +1002,29 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const isFromMe = msg.key.fromMe;
         const isOwner = !!tenant.onMessage;
         if (!isOwner && isFromMe) continue;
+
+        // ═══ REACCIONES: detectar y pasar al handler ═══
+        const reactionMsg = msg.message?.reactionMessage;
+        if (reactionMsg) {
+          const reactEmoji = reactionMsg.text; // '👍', '❤️', '😂', '' (empty = removed reaction)
+          const reactToMsgId = reactionMsg.key?.id;
+          if (reactEmoji && tenant.onMessage) {
+            console.log(`[TM:${uid}] 🎭 Reaction: ${reactEmoji} from ${from} (fromMe=${isFromMe}) on msg ${reactToMsgId}`);
+            tenant.onMessage({
+              from: from,
+              to: from,
+              body: `[REACCIÓN: ${reactEmoji}]`,
+              fromMe: isFromMe,
+              type: 'reaction',
+              id: msg.key,
+              _baileysMsg: msg,
+              _reaction: { emoji: reactEmoji, targetMsgId: reactToMsgId },
+              hasMedia: false,
+              timestamp: msg.messageTimestamp
+            });
+          }
+          continue; // Las reacciones no se procesan como mensajes normales
+        }
 
         const body = msg.message?.conversation
           || msg.message?.extendedTextMessage?.text

@@ -11,9 +11,20 @@ const _signalFilter = /Closing session:|SessionEntry|_chains:|chainKey:|ephemera
 console.log = (...args) => { if (typeof args[0] === 'string' && _signalFilter.test(args[0])) return; _origLog(...args); };
 console.error = (...args) => { if (typeof args[0] === 'string' && _signalFilter.test(args[0])) return; _origErr(...args); };
 
-// Catch unhandled rejections
+// ═══ RESILIENCE SHIELD — Monitoreo centralizado de salud ═══
+const shield = require('./core/resilience_shield');
+
+// Catch unhandled rejections — registrar en Shield
 process.on('unhandledRejection', (err) => {
   console.error('[UNHANDLED REJECTION]', err);
+  shield.recordNodeError('unhandledRejection', err);
+});
+
+// Catch uncaught exceptions — registrar en Shield (NO terminar proceso)
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err);
+  shield.recordNodeError('uncaughtException', err);
+  // NO process.exit() — Railway reinicia el proceso, pero queremos intentar seguir
 });
 
 // Graceful shutdown: flush affinity a Firestore antes de cerrar
@@ -53,6 +64,8 @@ const cotizacionGenerator = require('./services/cotizacion_generator');
 const webScraper = require('./services/web_scraper');
 const estadisticas = require('./services/estadisticas');
 const mailService = require('./services/mail_service');
+const protectionManager = require('./services/protection_manager');
+const biweeklyReport = require('./services/biweekly_report');
 
 // ═══ WHATSAPP — Baileys, tenants, mensajes ═══
 const tenantManager = require('./whatsapp/tenant_manager');
@@ -63,7 +76,7 @@ const businessesRouter = require('./routes/businesses');
 const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
 const ttsEngine = require('./voice/tts_engine');
-const nineraMode = require('./voice/ninera_mode');
+const kidsMode = require('./voice/kids_mode');
 
 // ═══ LIBS EXTERNAS ═══
 const multer = require('multer');
@@ -475,6 +488,45 @@ async function runAgendaEngine() {
       .limit(10)
       .get();
 
+    // ═══ RECORDATORIO PREVIO: 10 min antes del evento → selfchat al owner ═══
+    const REMINDER_MINUTES = 10;
+    const reminderThreshold = new Date(now.getTime() + REMINDER_MINUTES * 60 * 1000);
+    try {
+      const upcomingSnap = await admin.firestore()
+        .collection('users').doc(OWNER_UID).collection('miia_agenda')
+        .where('status', '==', 'pending')
+        .where('scheduledFor', '>', now.toISOString())
+        .where('scheduledFor', '<=', reminderThreshold.toISOString())
+        .limit(10)
+        .get();
+
+      for (const doc of upcomingSnap.docs) {
+        const evt = doc.data();
+        // Solo avisar si no se envió reminder previo aún
+        if (evt.preReminderSent) continue;
+
+        const hora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : '';
+        const modeEmoji = evt.eventMode === 'virtual' ? '📹' : (evt.eventMode === 'telefono' || evt.eventMode === 'telefónico') ? '📞' : '📍';
+        const modeLabel = evt.eventMode === 'virtual' ? 'Virtual (Meet)' : (evt.eventMode === 'telefono' || evt.eventMode === 'telefónico') ? 'Telefónico' : 'Presencial';
+        const locationInfo = evt.eventLocation ? ` — ${evt.eventLocation}` : '';
+        const meetInfo = evt.meetLink ? `\n🔗 ${evt.meetLink}` : '';
+        const contactInfo = evt.contactPhone !== 'self' ? ` con *${evt.contactName || evt.contactPhone}*` : '';
+
+        const reminderMsg = `⏰ *En ${REMINDER_MINUTES} minutos:*\n${modeEmoji} ${evt.reason}${contactInfo}\n🕐 ${hora || 'Hora no especificada'} | ${modeLabel}${locationInfo}${meetInfo}`;
+
+        try {
+          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, reminderMsg, { isSelfChat: true, skipEmoji: true });
+          await doc.ref.update({ preReminderSent: true });
+          console.log(`[AGENDA] ⏰ Pre-recordatorio 10min enviado: "${evt.reason}" a las ${hora}`);
+        } catch (remErr) {
+          console.error(`[AGENDA] ❌ Error enviando pre-recordatorio ${doc.id}:`, remErr.message);
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    } catch (preRemErr) {
+      console.error(`[AGENDA] ❌ Error en pre-recordatorios:`, preRemErr.message);
+    }
+
     if (pendingSnap.empty) return;
 
     for (const doc of pendingSnap.docs) {
@@ -541,8 +593,8 @@ async function runAgendaEngine() {
   }
 }
 
-// Cada 30 min. Primera ejecución 3 min post-startup.
-setInterval(runAgendaEngine, 1800000);
+// Cada 5 min (300s) para capturar recordatorios 10min antes. Primera ejecución 3 min post-startup.
+setInterval(runAgendaEngine, 300000);
 setTimeout(runAgendaEngine, 180000);
 
 // ═══ SPORT ENGINE — Seguimiento deportivo en vivo ═══
@@ -1076,10 +1128,27 @@ function getGeminiFallbackKey(failedKey) {
 }
 const GEMINI_API_KEY = GEMINI_KEYS[0] || 'YOUR_GEMINI_API_KEY_HERE';
 console.log(`[GEMINI] 🔑 ${GEMINI_KEYS.length} API keys configuradas (rotación ${GEMINI_KEYS.length > 1 ? 'ACTIVA' : 'INACTIVA'})`);
+
+// Registrar keys en el key pool unificado (para ai_client.js multi-provider)
+const { keyPool } = require('./ai/ai_client');
+keyPool.register('gemini', GEMINI_KEYS);
+if (process.env.OPENAI_API_KEY) keyPool.register('openai', [process.env.OPENAI_API_KEY]);
+if (process.env.CLAUDE_API_KEY) keyPool.register('claude', [process.env.CLAUDE_API_KEY]);
+// Groq: soporta múltiples keys via GROQ_API_KEY, GROQ_API_KEY_2, etc.
+const GROQ_KEYS = [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2, process.env.GROQ_API_KEY_3].filter(Boolean);
+if (GROQ_KEYS.length) keyPool.register('groq', GROQ_KEYS);
+// Mistral: soporta múltiples keys via MISTRAL_API_KEY, MISTRAL_API_KEY_2, etc.
+const MISTRAL_KEYS = [process.env.MISTRAL_API_KEY, process.env.MISTRAL_API_KEY_2, process.env.MISTRAL_API_KEY_3].filter(Boolean);
+if (MISTRAL_KEYS.length) keyPool.register('mistral', MISTRAL_KEYS);
 // Force gemini-2.5-flash — 2.5-pro gives 503 overloaded, 2.0-flash gives 404
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 async function callGeminiAPI(messages, systemPrompt) {
+  // Shield: verificar circuit breaker antes de llamar
+  if (shield.isCircuitOpen(shield.SYSTEMS.GEMINI)) {
+    console.warn(`[GEMINI] 🔴 Circuit breaker ABIERTO — request bloqueada`);
+    return null;
+  }
   const key = getGeminiKey();
   try {
     const url = `${GEMINI_URL}?key=${key}`;
@@ -1104,6 +1173,10 @@ async function callGeminiAPI(messages, systemPrompt) {
       const errorText = await response.text();
       console.error(`[GEMINI] ERROR ${response.status} (key #${(_geminiKeyIndex - 1) % GEMINI_KEYS.length + 1}):`, errorText.substring(0, 200));
       // Fallback a la otra key si hay 429 (rate limit) o 403
+      // Shield: clasificar y registrar el error
+      const classification = shield.classifyGeminiError(response.status, errorText);
+      shield.recordFail(shield.SYSTEMS.GEMINI, `${classification.type} (HTTP ${response.status})`, { statusCode: response.status });
+
       if ((response.status === 429 || response.status === 403) && GEMINI_KEYS.length > 1) {
         const fallbackKey = getGeminiFallbackKey(key);
         console.log(`[GEMINI] ♻️ Reintentando con key alternativa...`);
@@ -1116,6 +1189,7 @@ async function callGeminiAPI(messages, systemPrompt) {
           const retryData = await retryResp.json();
           if (retryData.candidates?.[0]?.content?.parts?.[0]?.text) {
             console.log(`[GEMINI] ✅ Fallback exitoso`);
+            shield.recordSuccess(shield.SYSTEMS.GEMINI);
             return retryData.candidates[0].content.parts[0].text;
           }
         }
@@ -1126,20 +1200,27 @@ async function callGeminiAPI(messages, systemPrompt) {
     const data = await response.json();
     if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
       console.error('[GEMINI] Estructura de respuesta inválida:', JSON.stringify(data).substring(0, 200));
+      shield.recordFail(shield.SYSTEMS.GEMINI, 'INVALID_RESPONSE_STRUCTURE');
       return null;
     }
 
     const responseText = data.candidates[0].content.parts[0].text;
     console.log(`[GEMINI] OK: ${responseText.length} chars`);
+    shield.recordSuccess(shield.SYSTEMS.GEMINI);
     return responseText;
   } catch (error) {
     console.error('[GEMINI] ERROR CRÍTICO:', error.message);
+    shield.recordFail(shield.SYSTEMS.GEMINI, `NETWORK: ${error.message}`);
     return null;
   }
 }
 
 // generateAIContent: versión fetch con retry automático para errores 503/429
 async function generateAIContent(prompt, { enableSearch = false } = {}) {
+  if (shield.isCircuitOpen(shield.SYSTEMS.GEMINI)) {
+    console.warn(`[GEMINI] 🔴 Circuit breaker ABIERTO — generateAIContent bloqueada`);
+    throw new Error('Gemini circuit breaker open');
+  }
   const key = getGeminiKey();
   const url = `${GEMINI_URL}?key=${key}`;
   console.log(`[GEMINI] Llamando a la API (search=${enableSearch}), key #${(_geminiKeyIndex - 1) % GEMINI_KEYS.length + 1}`);
@@ -1167,9 +1248,11 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
       if (grounding?.webSearchQueries?.length) {
         console.log(`[GEMINI-SEARCH] 🔍 Búsquedas: ${grounding.webSearchQueries.join(' | ')}`);
       }
+      shield.recordSuccess(shield.SYSTEMS.GEMINI);
       return text;
     }
     const isRetryable = response.status === 503 || response.status === 429;
+    shield.recordFail(shield.SYSTEMS.GEMINI, `generateAI HTTP ${response.status}`, { statusCode: response.status });
     if (isRetryable && attempt < MAX_RETRIES) {
       // En 429, intentar con la otra key PRIMERO (sin delay)
       if (response.status === 429 && GEMINI_KEYS.length > 1) {
@@ -1553,6 +1636,203 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     // Recuperar mensaje real del historial cuando fue llamado con userMessage=null
     const effectiveMsg = userMessage ||
       (conversations[phone] || []).slice().reverse().find(m => m.role === 'user')?.content || null;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // APROBACIÓN DE TURNOS — Owner responde "aprobar", "rechazar", "mover a las X"
+    // Solo en self-chat del owner. Intercepta ANTES de enviar a la IA.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (isSelfChat && effectiveMsg) {
+      const msgLower = (effectiveMsg || '').toLowerCase().trim();
+      const isApproval = /^(aprobar|apruebo|sí|si|dale|ok|listo|aprobado)$/i.test(msgLower);
+      const isRejection = /^(rechazar|rechazo|no|negar|negado|cancelar)$/i.test(msgLower);
+      const moveMatch = msgLower.match(/^(?:mover|cambiar|pasar)\s+(?:a\s+las?\s+)?(\d{1,2})[:\.]?(\d{2})?\s*$/i);
+
+      if (isApproval || isRejection || moveMatch) {
+        try {
+          // Buscar la solicitud más reciente pendiente de aprobación
+          const pendingSnap = await admin.firestore()
+            .collection('users').doc(OWNER_UID).collection('pending_appointments')
+            .where('status', '==', 'waiting_approval')
+            .orderBy('createdAt', 'desc')
+            .limit(1)
+            .get();
+
+          if (!pendingSnap.empty) {
+            const apptDoc = pendingSnap.docs[0];
+            const appt = apptDoc.data();
+            const contactJid = appt.contactJid;
+            const contactName = appt.contactName;
+
+            if (isApproval) {
+              // ═══ APROBAR: Crear el evento en Calendar + Firestore ═══
+              const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+              const ownerTz = getTimezoneForCountry(ownerCountry);
+              const hourMatch = appt.scheduledForLocal.match(/(\d{1,2}):(\d{2})/);
+              const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+
+              let calendarOk = false;
+              let meetLink = null;
+              try {
+                const calResult = await createCalendarEvent({
+                  summary: appt.reason || 'Evento MIIA',
+                  dateStr: appt.scheduledForLocal.split('T')[0],
+                  startHour: startH,
+                  endHour: startH + 1,
+                  description: `Agendado por MIIA para ${contactName}. ${appt.hint || ''}`.trim(),
+                  uid: OWNER_UID,
+                  timezone: ownerTz,
+                  eventMode: appt.eventMode || 'presencial',
+                  location: appt.eventMode === 'presencial' ? (appt.eventLocation || '') : '',
+                  phoneNumber: (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? (appt.eventLocation || '') : '',
+                  reminderMinutes: 10
+                });
+                calendarOk = true;
+                meetLink = calResult.meetLink || null;
+              } catch (calErr) {
+                console.warn(`[TURNO-APROBADO] ⚠️ Calendar: ${calErr.message}`);
+              }
+
+              // Guardar en miia_agenda
+              await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
+                contactPhone: appt.contactPhone,
+                contactName: contactName,
+                scheduledFor: appt.scheduledFor,
+                scheduledForLocal: appt.scheduledForLocal,
+                ownerTimezone: ownerTz,
+                reason: appt.reason,
+                eventMode: appt.eventMode || 'presencial',
+                eventLocation: appt.eventLocation || '',
+                meetLink: meetLink || '',
+                status: 'pending',
+                calendarSynced: calendarOk,
+                reminderMinutes: 10,
+                requestedBy: contactJid,
+                createdAt: new Date().toISOString(),
+                source: 'approved_by_owner'
+              });
+
+              await apptDoc.ref.update({ status: 'approved', approvedAt: new Date().toISOString() });
+
+              // Notificar al contacto
+              const modeEmoji = appt.eventMode === 'virtual' ? '📹' : (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? '📞' : '📍';
+              const meetInfo = meetLink ? `\n🔗 Link: ${meetLink}` : '';
+              const locationInfo = appt.eventLocation ? ` en ${appt.eventLocation}` : '';
+              const confirmMsg = `✅ ¡Confirmado! Tu ${appt.reason} quedó agendado para el ${appt.scheduledForLocal.replace('T', ' a las ').substring(0, 16)}${locationInfo}. ${modeEmoji}${meetInfo}\nTe voy a recordar antes del evento. 😊`;
+
+              await safeSendMessage(contactJid, confirmMsg);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                `✅ Turno aprobado y confirmado a *${contactName}*.${calendarOk ? ' 📅 En tu Calendar.' : ''}`,
+                { isSelfChat: true, skipEmoji: true });
+
+              console.log(`[TURNO-APROBADO] ✅ ${contactName}: "${appt.reason}" aprobado por owner`);
+              return;
+
+            } else if (isRejection) {
+              // ═══ RECHAZAR: Notificar al contacto ═══
+              await apptDoc.ref.update({ status: 'rejected', rejectedAt: new Date().toISOString() });
+
+              const rejectMsg = `Lo siento, no fue posible agendar tu ${appt.reason} para esa fecha. ¿Te gustaría proponer otro horario? 😊`;
+              await safeSendMessage(contactJid, rejectMsg);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                `❌ Turno rechazado. Se avisó a *${contactName}*.`,
+                { isSelfChat: true, skipEmoji: true });
+
+              console.log(`[TURNO-RECHAZADO] ❌ ${contactName}: "${appt.reason}" rechazado por owner`);
+              return;
+
+            } else if (moveMatch) {
+              // ═══ MOVER: Cambiar horario y aprobar ═══
+              const newHour = parseInt(moveMatch[1]);
+              const newMin = moveMatch[2] ? moveMatch[2] : '00';
+              const newHourStr = String(newHour).padStart(2, '0');
+
+              // Recalcular fecha con nuevo horario
+              const dateOnly = appt.scheduledForLocal.split('T')[0];
+              const newScheduledLocal = `${dateOnly}T${newHourStr}:${newMin}:00`;
+
+              // Convertir a UTC
+              const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+              const ownerTz = getTimezoneForCountry(ownerCountry);
+              let newScheduledUTC = newScheduledLocal;
+              try {
+                const parsedLocal = new Date(newScheduledLocal);
+                if (!isNaN(parsedLocal)) {
+                  const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+                  const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                  const offsetMs = new Date(localStr) - new Date(utcStr);
+                  newScheduledUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+                }
+              } catch (e) { /* usar local */ }
+
+              let calendarOk = false;
+              let meetLink = null;
+              try {
+                const calResult = await createCalendarEvent({
+                  summary: appt.reason || 'Evento MIIA',
+                  dateStr: dateOnly,
+                  startHour: newHour,
+                  endHour: newHour + 1,
+                  description: `Agendado por MIIA para ${contactName}. ${appt.hint || ''}`.trim(),
+                  uid: OWNER_UID,
+                  timezone: ownerTz,
+                  eventMode: appt.eventMode || 'presencial',
+                  location: appt.eventMode === 'presencial' ? (appt.eventLocation || '') : '',
+                  phoneNumber: (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? (appt.eventLocation || '') : '',
+                  reminderMinutes: 10
+                });
+                calendarOk = true;
+                meetLink = calResult.meetLink || null;
+              } catch (calErr) {
+                console.warn(`[TURNO-MOVIDO] ⚠️ Calendar: ${calErr.message}`);
+              }
+
+              // Guardar en miia_agenda con nuevo horario
+              await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
+                contactPhone: appt.contactPhone,
+                contactName: contactName,
+                scheduledFor: newScheduledUTC,
+                scheduledForLocal: newScheduledLocal,
+                ownerTimezone: ownerTz,
+                reason: appt.reason,
+                eventMode: appt.eventMode || 'presencial',
+                eventLocation: appt.eventLocation || '',
+                meetLink: meetLink || '',
+                status: 'pending',
+                calendarSynced: calendarOk,
+                reminderMinutes: 10,
+                requestedBy: contactJid,
+                createdAt: new Date().toISOString(),
+                source: 'moved_by_owner'
+              });
+
+              await apptDoc.ref.update({
+                status: 'moved',
+                movedTo: newScheduledLocal,
+                movedAt: new Date().toISOString()
+              });
+
+              // Notificar al contacto con nuevo horario
+              const modeEmoji = appt.eventMode === 'virtual' ? '📹' : (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? '📞' : '📍';
+              const meetInfo = meetLink ? `\n🔗 Link: ${meetLink}` : '';
+              const confirmMsg = `✅ ¡Confirmado! Tu ${appt.reason} quedó agendado para el ${dateOnly} a las ${newHourStr}:${newMin}. ${modeEmoji}${meetInfo}\nTe voy a recordar antes del evento. 😊`;
+
+              await safeSendMessage(contactJid, confirmMsg);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                `✅ Turno movido a las ${newHourStr}:${newMin} y confirmado a *${contactName}*.${calendarOk ? ' 📅 En tu Calendar.' : ''}`,
+                { isSelfChat: true, skipEmoji: true });
+
+              console.log(`[TURNO-MOVIDO] 🕐 ${contactName}: "${appt.reason}" movido a ${newHourStr}:${newMin}`);
+              return;
+            }
+          } else {
+            // No hay turnos pendientes pero el owner escribió "aprobar"/"rechazar"
+            console.log(`[TURNO] ℹ️ Owner escribió "${msgLower}" pero no hay turnos pendientes`);
+          }
+        } catch (apptErr) {
+          console.error(`[TURNO] ❌ Error procesando aprobación:`, apptErr.message);
+        }
+      }
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // MANEJO DE COMANDOS "DILE A" — HOLA MIIA / CHAU MIIA
@@ -1949,7 +2229,7 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
       }
     }
 
-    // ── COMANDO REGISTRAR HIJO (Modo Niñera) ────────────────────────────
+    // ── COMANDO REGISTRAR HIJO (Protección KIDS) ────────────────────────────
     // Formatos: "mi hijo Lucas 5 años" / "registrar hijo María 8" / "hijo Tomas 3 años"
     if (isAdmin && effectiveMsg) {
       const hijoMatch = effectiveMsg.match(/(?:mi\s+)?hij[oa]\s+(\w+)\s+(\d{1,2})\s*(?:años?)?/i);
@@ -1957,19 +2237,20 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
         const childName = hijoMatch[1];
         const childAge = parseInt(hijoMatch[2]);
         if (childAge >= 2 && childAge <= 12) {
-          await nineraMode.ensureHijosGroup(admin, OWNER_UID);
-          await nineraMode.registerChild(admin, OWNER_UID, 'self', { name: childName, age: childAge });
-          await safeSendMessage(phone, `🧸 ¡Listo! Registré a *${childName}* (${childAge} años). Cuando me hable por audio, activo modo niñera automáticamente.\n\nPuedo contarle cuentos, jugar adivinanzas y responderle curiosidades. 🌟`, { isSelfChat: true });
+          await kidsMode.ensureHijosGroup(admin, OWNER_UID);
+          await kidsMode.registerChild(admin, OWNER_UID, 'self', { name: childName, age: childAge });
+          await safeSendMessage(phone, `🧸 ¡Listo! Registré a *${childName}* (${childAge} años). Cuando me hable por audio, activo Protección KIDS automáticamente.\n\nPuedo contarle cuentos, jugar adivinanzas y responderle curiosidades. 🌟`, { isSelfChat: true });
           return;
         }
       }
     }
 
     // ── COMANDO ENVIAR EMAIL DESDE WHATSAPP ────────────────────────────
-    // Formatos: "mandále un mail a juan@x.com diciendo ..." / "email a maria@gmail.com asunto: ... mensaje: ..."
-    // También: "mandále un mail a Juan que mañana no puedo" (MIIA busca email en contactos)
+    // Detecta TODAS las variaciones posibles de pedir envío de email:
+    // "mandále un mail a X", "envíale un correo a X", "le puedes enviar un email a X",
+    // "puedes mandar un correo a X", "envía un mail a X", "manda correo a X"
     if (isAdmin && effectiveMsg) {
-      const emailCmdMatch = effectiveMsg.match(/(?:mand[aá](?:le)?|envi[aá](?:le)?)\s+(?:un\s+)?(?:mail|email|correo)\s+a\s+(.+)/i);
+      const emailCmdMatch = effectiveMsg.match(/(?:(?:le\s+)?(?:pued[eo]s?\s+)?(?:mand[aá](?:r?(?:le)?)?|envi[aá](?:r?(?:le)?)?|escrib[eí](?:r?(?:le)?)?)|(?:mail|email|correo)\s+(?:a|para))\s+(?:un\s+)?(?:mail|email|correo\s+)?(?:a\s+)?(.+)/i);
       if (emailCmdMatch) {
         const rest = emailCmdMatch[1].trim();
         let targetEmail = null;
@@ -2433,17 +2714,17 @@ Nuevo resumen actualizado:`;
     let nineraChildConfig = null;
     try {
       // 1. Verificar si el contacto está en grupo "hijos"
-      nineraChildConfig = await nineraMode.getChildConfig(admin, OWNER_UID, basePhone);
+      nineraChildConfig = await kidsMode.getChildConfig(admin, OWNER_UID, basePhone);
 
       // 2. Si no está configurado pero se detectó niño en audio del owner
       // Nota: detección de niño por audio se hace en messages.upsert, no aquí
       if (false) {
         const det = {};
-        console.log(`[NIÑERA] 🧒 Niño detectado por audio — activando modo niñera temporal (edad ~${det.estimatedAge})`);
+        console.log(`[KIDS] 🧒 Niño detectado por audio — activando Protección KIDS temporal (edad ~${det.estimatedAge})`);
         nineraChildConfig = { name: 'peque', age: det.estimatedAge || 6, source: 'audio_detection' };
         // Notificar al owner
         safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-          `🧸 Detecté que un niño me habló por audio desde tu celular. Activé *modo niñera* automáticamente.\n¿Querés que lo registre? Decime su nombre y edad.`,
+          `🧸 Detecté que un niño me habló por audio desde tu celular. Activé *Protección KIDS* automáticamente.\n¿Querés que lo registre? Decime su nombre y edad.`,
           { isSelfChat: true, skipEmoji: true }
         ).catch(() => {});
       }
@@ -2451,32 +2732,46 @@ Nuevo resumen actualizado:`;
       if (nineraChildConfig) {
         isNineraMode = true;
         // Verificar sesión (rate limit)
-        const sessionCheck = nineraMode.checkNineraSession(phone);
+        const sessionCheck = kidsMode.checkNineraSession(phone);
         if (!sessionCheck.allowed) {
           await safeSendMessage(phone, `🌟 ${sessionCheck.reason}`, { isSelfChat: isAdmin, skipEmoji: true });
           return;
         }
         // Verificar contenido prohibido
-        const forbiddenCheck = nineraMode.checkForbiddenContent(userMessage);
+        const forbiddenCheck = kidsMode.checkForbiddenContent(userMessage);
         if (forbiddenCheck.forbidden) {
-          console.warn(`[NIÑERA] 🚨 Contenido prohibido detectado: ${forbiddenCheck.reason}`);
+          console.warn(`[KIDS] 🚨 Contenido prohibido detectado: ${forbiddenCheck.reason}`);
           safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-            `🚨 *ALERTA NIÑERA*: ${forbiddenCheck.reason}\nConversación con ${nineraChildConfig.name}.`,
+            `🚨 *ALERTA KIDS*: ${forbiddenCheck.reason}\nConversación con ${nineraChildConfig.name}.`,
             { isSelfChat: true, skipEmoji: true }
           ).catch(() => {});
-          await safeSendMessage(phone, '🌈 ¡Mejor hablemos de otra cosa! ¿Querés que te cuente un cuento?', { isSelfChat: isAdmin, skipEmoji: true });
+          await safeSendMessage(phone, '🌈 ¡Mejor hablemos de otra cosa! ¿Quieres que te cuente un cuento?', { isSelfChat: isAdmin, skipEmoji: true });
           return;
         }
-        // Construir prompt niñera
-        const nineraContext = nineraMode.detectNineraContext(userMessage);
-        activeSystemPrompt = nineraMode.buildNineraPrompt(
-          nineraChildConfig.name, nineraChildConfig.age, nineraContext,
+
+        // ═══ FILTRO OTP/SEGURIDAD: El niño NUNCA debe saber sobre protección ═══
+        const otpCheck = kidsMode.checkOTPSecurityFilter(userMessage);
+        if (otpCheck.blocked) {
+          console.warn(`[KIDS] 🚨 Niño preguntó sobre seguridad/OTP — redirigiendo`);
+          // Alertar al adulto responsable
+          safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+            `🚨 *ALERTA PROTECCIÓN KIDS*: ${nineraChildConfig.name} intentó preguntar sobre seguridad, códigos o protección.\nMensaje: "${(userMessage || '').substring(0, 100)}"\nMIIA lo redirigió a otra actividad.`,
+            { isSelfChat: true, skipEmoji: true }
+          ).catch(() => {});
+          await safeSendMessage(phone, otpCheck.redirect, { isSelfChat: isAdmin, skipEmoji: true });
+          return;
+        }
+
+        // Construir prompt KIDS
+        const kidsContext = kidsMode.detectKidsContext(userMessage);
+        activeSystemPrompt = kidsMode.buildKidsPrompt(
+          nineraChildConfig.name, nineraChildConfig.age, kidsContext,
           { ownerName: userProfile?.name || 'tu papá/mamá' }
         );
-        console.log(`[NIÑERA] 🧸 Modo niñera activo para ${nineraChildConfig.name} (${nineraChildConfig.age} años) — contexto: ${nineraContext}`);
+        console.log(`[KIDS] 🛡️ Modo Protección KIDS activo para ${nineraChildConfig.name} (${nineraChildConfig.age} años) — contexto: ${kidsContext}`);
       }
     } catch (e) {
-      console.error('[NIÑERA] Error en setup:', e.message);
+      console.error('[KIDS] Error en setup:', e.message);
     }
 
     // ═══ MOOD DE MIIA — inyectar estado emocional en el prompt ═══
@@ -2569,7 +2864,35 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     // [APRENDIZAJE_PERSONAL:texto] → datos personales privados de Mariano
     // [APRENDIZAJE_DUDOSO:texto]   → encola para aprobación en self-chat
     // [GUARDAR_APRENDIZAJE:texto]  → legacy, se trata como NEGOCIO
-    const adminCtx = { uid: OWNER_UID || 'admin', ownerUid: OWNER_UID || 'admin', role: 'admin', isOwner: true };
+    const adminCtx = {
+      uid: OWNER_UID || 'admin', ownerUid: OWNER_UID || 'admin',
+      role: isAdmin ? 'admin' : (isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'team' : 'lead')),
+      isOwner: isAdmin,
+      contactName: leadNames[phone] || basePhone,
+      contactPhone: basePhone,
+      learningKeyValid: false,
+      approvalDocRef: null
+    };
+    // Detectar clave dinámica de aprendizaje en el mensaje
+    if (body) {
+      const keyMatch = body.match(/\b([A-Z2-9]{6})\b/i);
+      if (keyMatch) {
+        try {
+          const result = await validateLearningKey(adminCtx.ownerUid, keyMatch[1].toUpperCase());
+          if (result.valid) {
+            adminCtx.learningKeyValid = true;
+            adminCtx.approvalDocRef = result.docRef;
+            console.log(`[LEARNING] 🔑 Clave dinámica válida: ${keyMatch[1].toUpperCase()} de ${basePhone}`);
+          } else if (result.expired) {
+            // Notificar al agente que la clave expiró — debe solicitar una nueva
+            adminCtx.expiredKeyDetected = true;
+            console.log(`[LEARNING] ⏰ Clave expirada detectada: ${keyMatch[1].toUpperCase()} de ${basePhone}`);
+          }
+        } catch (e) {
+          console.error(`[LEARNING] Error validando clave:`, e.message);
+        }
+      }
+    }
     const adminCallbacks = {
       saveBusinessLearning: async (ownerUid, text, source) => {
         if (isAdmin) {
@@ -2602,6 +2925,19 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       queueDubiousLearning: async (ownerUid, sourceUid, text) => {
         adminPendingQuestions.push({ text, source: sourceUid });
         console.log(`[LEARNING:DUDOSO] ❓ Encolado para aprobación: "${text.substring(0, 80)}..."`);
+      },
+      notifyOwner: async (msg) => {
+        try {
+          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, msg, { isSelfChat: true });
+        } catch (e) {
+          console.error(`[LEARNING] ❌ Error notificando al owner:`, e.message);
+        }
+      },
+      createLearningApproval: async (ownerUid, data) => {
+        return await createLearningApproval(ownerUid, data);
+      },
+      markApprovalApplied: async (docRef) => {
+        return await markApprovalApplied(docRef);
       }
     };
     const adminPendingQuestions = [];
@@ -2725,55 +3061,101 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
     aiMessage = aiMessage.replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '').trim();
 
-    // Detectar tag [AGENDAR_EVENTO:contacto|fecha|razón|hint]
+    // ═══ CONFIG AGENDA PRIMERA VEZ: Si no hay schedule_config, MIIA pregunta ═══
+    const hasAgendaTag = aiMessage.includes('[AGENDAR_EVENTO:') || aiMessage.includes('[SOLICITAR_TURNO:');
+    if (hasAgendaTag && OWNER_UID) {
+      try {
+        const schedCfg = await getScheduleConfig(OWNER_UID);
+        if (!schedCfg || !schedCfg.eventDuration) {
+          // Primera vez agendando — preguntar config
+          const configDoc = await admin.firestore().collection('users').doc(OWNER_UID)
+            .collection('settings').doc('schedule_config').get();
+          if (!configDoc.exists) {
+            // Guardar defaults y avisar al owner
+            await admin.firestore().collection('users').doc(OWNER_UID)
+              .collection('settings').doc('schedule_config').set({
+                work: { duration: 60, breathing: 15, hours: '09:00-18:00', days: [1, 2, 3, 4, 5] },
+                personal: { duration: 120, breathing: 30, days: [0, 6] },
+                reminderMinutes: 10,
+                defaultMode: 'presencial',
+                segment: null,
+                calendarEmail: null,
+                configuredAt: new Date().toISOString(),
+                configuredBy: 'auto_defaults'
+              });
+            // Avisar al owner en selfchat
+            safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+              `📅 *Primera vez agendando* — Configuré valores por defecto:\n\n` +
+              `🏢 *Trabajo*: reuniones de 1 hora, 15 min de respiro, L-V 9:00-18:00\n` +
+              `👤 *Personal*: eventos de 2 horas, 30 min de respiro, fines de semana\n` +
+              `⏰ *Recordatorio*: 10 minutos antes\n` +
+              `📍 *Modo*: presencial por defecto\n\n` +
+              `Si quieres cambiar algo, dime. Por ejemplo:\n` +
+              `• "Mis reuniones duran 30 minutos"\n` +
+              `• "Soy médico" (ajusto turnos de 20 min)\n` +
+              `• "Mi email para Calendar es X"`,
+              { isSelfChat: true, skipEmoji: true }
+            ).catch(() => {});
+            console.log(`[AGENDA] 📋 Config de agenda primera vez creada con defaults para ${OWNER_UID}`);
+          }
+        }
+      } catch (cfgErr) {
+        console.warn(`[AGENDA] ⚠️ Error verificando schedule_config: ${cfgErr.message}`);
+      }
+    }
+
+    // Detectar tag [AGENDAR_EVENTO:contacto|fecha|razón|hint|modo|ubicación]
+    // modo: presencial (default) | virtual | telefono
+    // ubicación: dirección física o número de teléfono según modo
     const agendarMatch = aiMessage.match(/\[AGENDAR_EVENTO:([^\]]+)\]/g);
     if (agendarMatch) {
       for (const tag of agendarMatch) {
         const inner = tag.replace('[AGENDAR_EVENTO:', '').replace(']', '');
         const parts = inner.split('|').map(p => p.trim());
         if (parts.length >= 3) {
-          const [contacto, fecha, razon, hint] = parts;
+          const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
           const contactName = leadNames[`${contacto}@s.whatsapp.net`] || contacto;
           let calendarOk = false;
+          let meetLink = null;
+          const eventMode = (modo || 'presencial').toLowerCase();
 
           // 1. Intentar crear evento en Google Calendar
           try {
             const parsedDate = new Date(fecha);
-            // Timezone del owner según su teléfono
             const ownerCountry = getCountryFromPhone(OWNER_PHONE);
             const ownerTz = getTimezoneForCountry(ownerCountry);
             if (!isNaN(parsedDate)) {
-              // Extraer hora en timezone local (si viene en el string fecha)
               const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
               const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
-              await createCalendarEvent({
+              const calResult = await createCalendarEvent({
                 summary: razon || 'Evento MIIA',
                 dateStr: fecha.split('T')[0],
                 startHour: startH,
                 endHour: startH + 1,
                 description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
                 uid: OWNER_UID,
-                timezone: ownerTz
+                timezone: ownerTz,
+                eventMode: eventMode,
+                location: eventMode === 'presencial' ? (ubicacion || '') : '',
+                phoneNumber: (eventMode === 'telefono' || eventMode === 'telefónico') ? (ubicacion || contacto) : '',
+                reminderMinutes: 10
               });
               calendarOk = true;
-              console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName}`);
+              meetLink = calResult.meetLink || null;
+              console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode}${meetLink ? ` meet=${meetLink}` : ''}`);
             }
           } catch (calErr) {
             console.warn(`[AGENDA] ⚠️ Google Calendar no disponible: ${calErr.message}. Guardando en Firestore.`);
           }
 
           // 2. Guardar en Firestore
-          // ═══ SEGURIDAD: Desde self-chat el recordatorio es para el owner ═══
-          // NUNCA enviar a terceros sin confirmación. Bloque G lo implementará.
           try {
-            // FIX TIMEZONE: Convertir fecha local del owner a ISO UTC para comparación correcta en runAgendaEngine
             const ownerCountryTz = getCountryFromPhone(OWNER_PHONE);
             const ownerTimezoneTz = getTimezoneForCountry(ownerCountryTz);
             let scheduledForUTC = fecha;
             try {
               const parsedLocal = new Date(fecha);
               if (!isNaN(parsedLocal)) {
-                // La fecha viene en hora local del owner — calcular offset y convertir a UTC
                 const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTimezoneTz });
                 const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
                 const offsetMs = new Date(localStr) - new Date(utcStr);
@@ -2793,9 +3175,13 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
               ownerTimezone: ownerTimezoneTz,
               reason: razon,
               promptHint: hint || '',
+              eventMode: eventMode,
+              eventLocation: ubicacion || '',
+              meetLink: meetLink || '',
               status: 'pending',
               calendarSynced: calendarOk,
               remindContact: false,
+              reminderMinutes: 10,
               requestedBy: phone,
               searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
               createdAt: new Date().toISOString(),
@@ -2807,14 +3193,137 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
           // 3. Si Calendar no está conectado, avisar al owner
           if (!calendarOk && !isSelfChat) {
+            const modeLabel = eventMode === 'virtual' ? '📹 Virtual' : eventMode === 'telefono' || eventMode === 'telefónico' ? '📞 Telefónico' : '📍 Presencial';
             safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-              `📅 *Evento agendado internamente* (Calendar no conectado)\n${contactName} pidió: "${razon}" para el ${fecha}\nMIIA lo recordará, pero no está en tu Google Calendar.\n\n💡 Conectá Calendar desde tu dashboard → Conexiones.`,
+              `📅 *Evento agendado internamente* (Calendar no conectado)\n${contactName} pidió: "${razon}" para el ${fecha}\nModo: ${modeLabel}${ubicacion ? ` — ${ubicacion}` : ''}\nMIIA lo recordará, pero no está en tu Google Calendar.\n\n💡 Conecta Calendar desde tu dashboard → Conexiones.`,
               { isSelfChat: true }
             ).catch(() => {});
+          }
+
+          // 4. Si es virtual y hay meetLink, informar al contacto
+          if (meetLink && !isSelfChat) {
+            console.log(`[AGENDA] 📹 Link de Meet generado para ${contactName}: ${meetLink}`);
           }
         }
       }
       aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').trim();
+    }
+
+    // ═══ Detectar tag [SOLICITAR_TURNO:contacto|fecha|razón|hint|modo|ubicación] ═══
+    // Contactos (leads, familia, equipo) solicitan → owner aprueba/rechaza/modifica
+    const solicitarMatch = aiMessage.match(/\[SOLICITAR_TURNO:([^\]]+)\]/g);
+    if (solicitarMatch) {
+      for (const tag of solicitarMatch) {
+        const inner = tag.replace('[SOLICITAR_TURNO:', '').replace(']', '');
+        const parts = inner.split('|').map(p => p.trim());
+        if (parts.length >= 3) {
+          const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
+          const contactName = leadNames[`${contacto}@s.whatsapp.net`] || contacto;
+          const eventMode = (modo || 'presencial').toLowerCase();
+          const modeEmoji = eventMode === 'virtual' ? '📹' : (eventMode === 'telefono' || eventMode === 'telefónico') ? '📞' : '📍';
+          const modeLabel = eventMode === 'virtual' ? 'Virtual (Meet)' : (eventMode === 'telefono' || eventMode === 'telefónico') ? 'Telefónico' : 'Presencial';
+
+          // Timezone del owner
+          const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+          const ownerTz = getTimezoneForCountry(ownerCountry);
+
+          // Convertir fecha a UTC para Firestore
+          let scheduledForUTC = fecha;
+          try {
+            const parsedLocal = new Date(fecha);
+            if (!isNaN(parsedLocal)) {
+              const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+              const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+              const offsetMs = new Date(localStr) - new Date(utcStr);
+              scheduledForUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+            }
+          } catch (tzErr) {
+            console.warn(`[SOLICITAR_TURNO] ⚠️ Error timezone: ${tzErr.message}`);
+          }
+
+          // Guardar solicitud pendiente en Firestore
+          let appointmentId = null;
+          try {
+            const docRef = await admin.firestore().collection('users').doc(OWNER_UID).collection('pending_appointments').add({
+              contactPhone: contacto,
+              contactJid: phone,
+              contactName: contactName,
+              scheduledFor: scheduledForUTC,
+              scheduledForLocal: fecha,
+              ownerTimezone: ownerTz,
+              reason: razon,
+              hint: hint || '',
+              eventMode: eventMode,
+              eventLocation: ubicacion || '',
+              status: 'waiting_approval',
+              requestedBy: phone,
+              createdAt: new Date().toISOString()
+            });
+            appointmentId = docRef.id;
+            console.log(`[SOLICITAR_TURNO] 📋 Solicitud ${appointmentId} creada: ${contactName} pide "${razon}" el ${fecha}`);
+          } catch (e) {
+            console.error(`[SOLICITAR_TURNO] ❌ Error guardando solicitud:`, e.message);
+          }
+
+          // Verificar solapamiento con Google Calendar
+          let overlapInfo = '';
+          let freeSlots = [];
+          try {
+            const dateOnly = fecha.split('T')[0];
+            const availability = await checkCalendarAvailability(dateOnly, OWNER_UID);
+            const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
+            const requestedHour = hourMatch ? parseInt(hourMatch[1]) : null;
+
+            if (requestedHour !== null && availability.busySlots > 0) {
+              // Buscar si hay algo a esa hora
+              const busyAtTime = availability.freeSlots ? !availability.freeSlots.includes(`${requestedHour}:00 - ${requestedHour + 1}:00`) : false;
+              if (busyAtTime) {
+                overlapInfo = `\n⚠️ *SOLAPAMIENTO*: Ya tienes algo agendado a las ${requestedHour}:00.`;
+              }
+            }
+            freeSlots = availability.freeSlots || [];
+          } catch (calErr) {
+            overlapInfo = '\n📅 (Calendar no conectado — no puedo verificar solapamiento)';
+            console.warn(`[SOLICITAR_TURNO] Calendar check failed: ${calErr.message}`);
+          }
+
+          // Sugerir respiro
+          const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
+          const requestedHour = hourMatch ? parseInt(hourMatch[1]) : null;
+          let respiroSuggestion = '';
+          if (requestedHour !== null && freeSlots.length > 0) {
+            // Buscar slots cercanos libres como alternativa
+            const nearbyFree = freeSlots.filter(s => {
+              const slotH = parseInt(s.split(':')[0]);
+              return Math.abs(slotH - requestedHour) <= 2 && slotH !== requestedHour;
+            });
+            if (nearbyFree.length > 0) {
+              respiroSuggestion = `\n💡 *Horarios cercanos libres*: ${nearbyFree.join(', ')}`;
+            }
+          }
+
+          // Notificar al owner en self-chat
+          const approvalMsg = `📋 *SOLICITUD DE TURNO* (ID: ${appointmentId ? appointmentId.slice(-6) : '???'})\n\n` +
+            `👤 *Contacto*: ${contactName}\n` +
+            `📅 *Fecha*: ${fecha}\n` +
+            `📝 *Motivo*: ${razon}\n` +
+            `${modeEmoji} *Modo*: ${modeLabel}${ubicacion ? ` — ${ubicacion}` : ''}` +
+            `${overlapInfo}${respiroSuggestion}\n\n` +
+            `Responde:\n` +
+            `✅ *"aprobar"* → agenda como está\n` +
+            `🕐 *"mover a las 16:00"* → cambia horario\n` +
+            `❌ *"rechazar"* → MIIA avisa al contacto\n` +
+            `${hint ? `\n💬 Nota del contacto: ${hint}` : ''}`;
+
+          try {
+            await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, approvalMsg, { isSelfChat: true, skipEmoji: true });
+            console.log(`[SOLICITAR_TURNO] 📤 Notificación enviada al owner para aprobación`);
+          } catch (sendErr) {
+            console.error(`[SOLICITAR_TURNO] ❌ Error notificando al owner:`, sendErr.message);
+          }
+        }
+      }
+      aiMessage = aiMessage.replace(/\[SOLICITAR_TURNO:[^\]]+\]/g, '').trim();
     }
 
     // Detectar tag de intención de compra
@@ -3145,6 +3654,35 @@ async function processMediaMessage(message) {
   if (!response.ok) {
     const err = await response.text();
     console.error(`[MEDIA] Gemini Flash error ${response.status}: ${err.substring(0, 200)}`);
+    shield.recordFail(shield.SYSTEMS.GEMINI, `MEDIA_${response.status}`, { statusCode: response.status });
+
+    // Fallback: si 429/403, reintentar con key alternativa
+    if ((response.status === 429 || response.status === 403) && GEMINI_KEYS.length > 1) {
+      const fallbackKey = getGeminiFallbackKey(url.split('key=')[1]);
+      console.log(`[MEDIA] ♻️ Reintentando media con key alternativa...`);
+      const retryUrl = `${GEMINI_FLASH_URL}?key=${fallbackKey}`;
+      try {
+        const retryResp = await fetch(retryUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          timeout: MEDIA_TIMEOUT_MS
+        });
+        if (retryResp.ok) {
+          const retryData = await retryResp.json();
+          const retryText = retryData.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (retryText?.trim()) {
+            console.log(`[MEDIA] ✅ Fallback key exitoso para ${mediaType} (${retryText.length} chars)`);
+            shield.recordSuccess(shield.SYSTEMS.GEMINI);
+            media.data = null;
+            media = null;
+            return { text: retryText.trim(), mediaType };
+          }
+        }
+      } catch (retryErr) {
+        console.error(`[MEDIA] Fallback key también falló: ${retryErr.message}`);
+      }
+    }
     return { text: null, mediaType };
   }
 
@@ -3170,6 +3708,61 @@ async function processMediaMessage(message) {
 async function handleIncomingMessage(message) {
   // LOG DE DIAGNÓSTICO: cada mensaje que entra a handleIncomingMessage
   console.log(`[HIM] 📩 from=${message.from} to=${message.to} fromMe=${message.fromMe} body="${(message.body||'').substring(0,50)}" hasMedia=${message.hasMedia} type=${message.type} id=${message.id?._serialized||'?'}`);
+
+  // ═══ REACCIONES: responder inteligentemente a emojis ═══
+  if (message.type === 'reaction' && message._reaction) {
+    const { emoji, targetMsgId } = message._reaction;
+    const fromNum = message.from.split('@')[0].split(':')[0];
+    const ownerNum = OWNER_PHONE;
+    const isSelfChat = message.fromMe || fromNum === ownerNum;
+
+    // Reacción vacía = reacción removida → ignorar
+    if (!emoji) return;
+
+    // Owner reaccionó → solo acknowledge
+    if (message.fromMe) {
+      console.log(`[REACTION] Owner reaccionó con ${emoji} — acknowledged`);
+      return;
+    }
+
+    console.log(`[REACTION] ${fromNum} reaccionó con ${emoji} a ${targetMsgId} (selfChat=${isSelfChat})`);
+
+    // Ratio 30%: solo responder ~30% de las veces (sentido común)
+    const shouldRespond = Math.random() < 0.50;
+    if (!shouldRespond) {
+      console.log(`[REACTION] Skip (ratio 30%) — no responder esta vez`);
+      return;
+    }
+
+    // Clasificar emoción del emoji
+    const POSITIVE_EMOJIS = ['👍', '❤️', '😍', '🔥', '💪', '👏', '🙌', '💯', '✨', '🥰', '😘', '💕', '🫶', '⭐', '🤩'];
+    const NEGATIVE_EMOJIS = ['👎', '😢', '😭', '😡', '🤬', '💔', '😤', '😞', '😔', '🥺'];
+    const FUNNY_EMOJIS = ['😂', '🤣', '😆', '😜', '🤪', '💀', '☠️'];
+    const SURPRISE_EMOJIS = ['😮', '😱', '🤯', '😳', '🫢', '👀'];
+    const SWEET_EMOJIS = ['🥹', '🤗', '😊', '☺️', '💗', '🫂', '💝'];
+
+    let reactionEmojis;
+    if (POSITIVE_EMOJIS.includes(emoji)) {
+      reactionEmojis = ['💪', '🔥', '😎', '✨', '🫶', '💯', '🙌'];
+    } else if (NEGATIVE_EMOJIS.includes(emoji)) {
+      reactionEmojis = ['🫂', '💪', '❤️', '🤗'];
+    } else if (FUNNY_EMOJIS.includes(emoji)) {
+      reactionEmojis = ['😂', '🤣', '💀', '😜'];
+    } else if (SURPRISE_EMOJIS.includes(emoji)) {
+      reactionEmojis = ['👀', '🤯', '😱', '🔥'];
+    } else if (SWEET_EMOJIS.includes(emoji)) {
+      reactionEmojis = ['🥹', '❤️', '🫶', '💕'];
+    } else {
+      // Emoji no clasificado → responder con el mismo o similar
+      reactionEmojis = [emoji, '👀', '✨'];
+    }
+
+    // Modo emoji-only: responder SOLO con un emoji (sin prefijo de MIIA)
+    const responseEmoji = reactionEmojis[Math.floor(Math.random() * reactionEmojis.length)];
+    console.log(`[REACTION] Respondiendo con emoji: ${responseEmoji}`);
+    await safeSendMessage(message.from, responseEmoji);
+    return;
+  }
 
   // ANTI-RÁFAGA INTELIGENTE: Mensajes offline se procesan con contexto
   // El buffer en tenant_manager acumula y envía solo el último por contacto
@@ -3236,15 +3829,15 @@ async function handleIncomingMessage(message) {
       // Si es audio desde el self-chat del owner, analizar si es un niño hablando
       if (mediaContext.mediaType === 'audio' && message.fromMe) {
         try {
-          const childDetection = await nineraMode.detectChildFromTranscription(body, generateAIContent);
+          const childDetection = await kidsMode.detectChildFromTranscription(body, generateAIContent);
           if (childDetection.isChild && childDetection.confidence !== 'low') {
-            console.log(`[NIÑERA] 👶 Niño detectado en audio del owner! Edad estimada: ${childDetection.estimatedAge}`);
+            console.log(`[KIDS] 👶 Niño detectado en audio del owner! Edad estimada: ${childDetection.estimatedAge}`);
             // Marcar mensaje como niñera para que el handler use el prompt correcto
             message._isChildAudio = true;
             message._childDetection = childDetection;
           }
         } catch (e) {
-          console.error('[NIÑERA] Error en detección de niño:', e.message);
+          console.error('[KIDS] Error en detección de niño:', e.message);
         }
       }
     } else {
@@ -3253,18 +3846,57 @@ async function handleIncomingMessage(message) {
       const leadPhone = message.from;
       const leadName = leadNames[leadPhone] || leadPhone.split('@')[0];
 
-      // Responder al lead con mensaje de espera
-      await safeSendMessage(leadPhone, `Recibí tu ${tipoLabel}, un momento por favor`);
+      const isSelfChatMedia = message.fromMe && leadPhone.includes(OWNER_PHONE);
 
-      // ALERTA a Mariano con datos del lead
-      await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-        `⚠️ *MEDIA NO PROCESADA*\n` +
-        `Lead: *${leadName}* (${leadPhone.split('@')[0]})\n` +
-        `Tipo: ${tipoLabel}\n` +
-        `No pude interpretar el ${tipoLabel}. Tomá el control del chat.`,
-        { isSelfChat: true }
-      );
-      console.log(`[MEDIA] Fallback: alerta enviada a Mariano por ${tipoLabel} de ${leadPhone}`);
+      if (isSelfChatMedia) {
+        // Self-chat: avisar al owner de forma directa
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+          `🙍‍♀️: No pude procesar tu ${tipoLabel}, jefe. Puede ser un tema temporal con la IA. Intentá de nuevo en unos minutos.`,
+          { isSelfChat: true }
+        );
+        console.log(`[MEDIA] Self-chat: ${tipoLabel} no procesado — avisé al owner`);
+      } else {
+        // Lead/Contacto: responder naturalmente sin delatar que es IA (con variaciones)
+        const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+        const mediaErrorVariations = {
+          audio: [
+            'Ay... No logro escucharlo, está en silencio 😬',
+            'No me llegó el audio bien, se cortó 😅',
+            'Mmm no se escucha nada, será que se grabó sin sonido?',
+            'No pude escuchar el audio 🤷‍♀️',
+            'Se ve que el audio no se grabó bien, no escucho nada 😬',
+          ],
+          imagen: [
+            'Hmm, no me cargó la imagen 🙏',
+            'No se ve la imagen, capaz se envió mal',
+            'La imagen no me llegó bien 😅',
+            'No logro ver la imagen, será la conexión?',
+          ],
+          video: [
+            'No me cargó el video 😅',
+            'El video no se reprodujo, no sé qué pasó',
+            'Mmm no puedo ver el video 🤷‍♀️',
+            'El video no me llegó bien',
+          ],
+          documento: [
+            'No pude abrir el archivo 🤷‍♀️',
+            'El archivo no se abrió, capaz se corrompió',
+            'No logro abrir el documento 😅',
+            'Mmm el archivo no me carga',
+          ],
+        };
+        const naturalMsg = pick(mediaErrorVariations[tipoLabel] || mediaErrorVariations.documento);
+        await safeSendMessage(leadPhone, naturalMsg);
+        // Alertar al owner en self-chat
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+          `⚠️ *MEDIA NO PROCESADA*\n` +
+          `Contacto: *${leadName}* (${leadPhone.split('@')[0]})\n` +
+          `Tipo: ${tipoLabel}\n` +
+          `Respondí: "${naturalMsg}"\nTomá el control si es urgente.`,
+          { isSelfChat: true }
+        );
+        console.log(`[MEDIA] Fallback natural enviado a ${leadPhone}, alerta al owner`);
+      }
       return;
     }
   }
@@ -3308,6 +3940,160 @@ async function handleIncomingMessage(message) {
     }
   }
   lastInteractionTime[targetPhoneId] = now;
+
+  // ═══ PROTECCIÓN: Guardar ubicación compartida via WhatsApp ═══
+  try {
+    const rawMsg = message._data || message;
+    const locMsg = rawMsg?.message?.locationMessage || rawMsg?.message?.liveLocationMessage;
+    if (locMsg && locMsg.degreesLatitude && locMsg.degreesLongitude) {
+      const senderPhone = message.from?.split('@')[0]?.split(':')[0] || '';
+      // Buscar UID del sender en Firestore
+      const userSnap = await admin.firestore().collection('users')
+        .where('phone', '==', senderPhone).limit(1).get();
+      if (!userSnap.empty) {
+        const senderUid = userSnap.docs[0].id;
+        await protectionManager.saveSharedLocation(senderUid, locMsg.degreesLatitude, locMsg.degreesLongitude);
+        console.log(`[PROTECTION] 📍 Ubicación guardada para ${senderPhone}: ${locMsg.degreesLatitude}, ${locMsg.degreesLongitude}`);
+      }
+    }
+  } catch (locErr) {
+    // No fallar silenciosamente pero no bloquear el flujo
+    console.warn(`[PROTECTION] ⚠️ Error procesando ubicación: ${locErr.message}`);
+  }
+
+  // ═══ PROTECCIÓN: Detección automática KIDS/ABUELOS (silenciosa) ═══
+  if (!fromMe && body && !isSelfChat) {
+    try {
+      const senderPhone = (message.from || '').split('@')[0]?.split(':')[0] || '';
+      const msgHistory = (conversations[targetPhoneId] || []).filter(m => m.role === 'user').slice(-5);
+      const detected = protectionManager.detectProtectionMode(body, msgHistory);
+      if (detected) {
+        // Verificar si ya tiene modo configurado
+        const userSnap = await admin.firestore().collection('users')
+          .where('phone', '==', senderPhone).limit(1).get();
+        if (!userSnap.empty) {
+          const senderUid = userSnap.docs[0].id;
+          const protConfig = await admin.firestore().collection('users').doc(senderUid)
+            .collection('protection').doc('config').get();
+          const existingMode = protConfig.exists ? protConfig.data().mode : null;
+          if (!existingMode) {
+            await protectionManager.activateProtectionMode(senderUid, detected, {
+              detectedAutomatically: true,
+              phone: senderPhone
+            });
+            console.log(`[PROTECTION] 🛡️ Modo ${detected} DETECTADO automáticamente para ${senderPhone}`);
+          }
+        }
+      }
+    } catch (protErr) {
+      console.warn(`[PROTECTION] ⚠️ Error en detección automática: ${protErr.message}`);
+    }
+  }
+
+  // ═══ PROTECCIÓN: Comandos selfchat del owner para vincular/desvincular ═══
+  if (isSelfChat && body) {
+    const bodyLower = body.toLowerCase().trim();
+
+    // "proteger a mi hijo Lucas 8 años" o "proteger a mi mamá María 75 años"
+    const protectMatch = bodyLower.match(/^proteger\s+a\s+(?:mi\s+)?(hijo|hija|mamá|mama|papá|papa|abuelo|abuela)\s+(.+?)\s+(\d{1,3})\s*(?:años|a[ñn]os)$/i);
+    if (protectMatch) {
+      const [, , name, ageStr] = protectMatch;
+      const age = parseInt(ageStr);
+      const isMinor = age < 18;
+      const isElderly = age >= 70;
+      const mode = isMinor ? 'kids' : (isElderly ? 'elderly' : null);
+
+      if (mode) {
+        // Generar OTP para que el protegido lo apruebe
+        const otp = await protectionManager.createLinkOTP(OWNER_UID, OWNER_PHONE, name.trim());
+        const modeLabel = mode === 'kids' ? 'Protección KIDS' : 'Protección ABUELOS';
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+          `🛡️ *${modeLabel}* para ${name.trim()} (${age} años)\n\nPara vincular, envía este código en el selfchat de ${name.trim()}:\n\n🔑 *${otp}*\n\nExpira en 24 horas.`,
+          { isSelfChat: true, skipEmoji: true }
+        );
+        console.log(`[PROTECTION] 🔑 OTP generado para vincular ${name.trim()} en modo ${mode}`);
+        return;
+      } else {
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+          `ℹ️ Modo Protección aplica para menores de 18 años (KIDS) o mayores de 70 años (ABUELOS). ${name.trim()} tiene ${age} años.`,
+          { isSelfChat: true, skipEmoji: true }
+        );
+        return;
+      }
+    }
+
+    // "tengo X años" — menor informando su edad para desvinculación
+    const ageMatch = bodyLower.match(/^tengo\s+(\d{1,2})\s*(?:años|a[ñn]os)$/i);
+    if (ageMatch) {
+      const age = parseInt(ageMatch[1]);
+      try {
+        const result = await protectionManager.checkAgeAutonomy(OWNER_UID, age, OWNER_PHONE);
+        if (result.eligible) {
+          // Iniciar proceso de desvinculación
+          const unlinkResult = await protectionManager.initiateAgeUnlink(OWNER_UID, OWNER_PHONE, 'el menor');
+          if (unlinkResult.success) {
+            await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+              `🔓 Tienes ${age} años y en ${result.country} puedes gestionar tus datos de forma independiente (edad legal: ${result.autonomyAge} años).\n\nSe ha enviado una solicitud de autorización a tus padres/tutores. Cuando te envíen el código, pégalo aquí.`,
+              { isSelfChat: true, skipEmoji: true }
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(`[PROTECTION] Error verificando edad: ${e.message}`);
+      }
+    }
+
+    // ═══ SEGMENTOS PROFESIONALES: "soy médico", "soy abogado", etc. ═══
+    const PROFESSIONAL_SEGMENTS = {
+      medico:    { pattern: /^soy\s+(m[eé]dic[oa]|doctor[a]?|odont[oó]log[oa]|dentista|fisioterapeuta|kinesiólog[oa]|nutricionista|psic[oó]log[oa]|veterinari[oa])$/i,
+                   label: 'Médico / Salud', work: { duration: 20, breathing: 5, hours: '08:00-20:00', days: [1,2,3,4,5,6] }, personal: { duration: 60, breathing: 15, days: [0] }, defaultMode: 'presencial' },
+      abogado:   { pattern: /^soy\s+(abogad[oa]|notar[oi][oa]?|escriban[oa])$/i,
+                   label: 'Abogado / Legal', work: { duration: 45, breathing: 15, hours: '09:00-18:00', days: [1,2,3,4,5] }, personal: { duration: 90, breathing: 20, days: [0,6] }, defaultMode: 'presencial' },
+      coach:     { pattern: /^soy\s+(coach|coaching|mentor[a]?|consultor[a]?|asesor[a]?|terapeuta)$/i,
+                   label: 'Coach / Consultor', work: { duration: 50, breathing: 10, hours: '08:00-21:00', days: [1,2,3,4,5,6] }, personal: { duration: 90, breathing: 15, days: [0] }, defaultMode: 'virtual' },
+      profesor:  { pattern: /^soy\s+(profesor[a]?|maestr[oa]|docente|tutor[a]?|instructor[a]?)$/i,
+                   label: 'Profesor / Educación', work: { duration: 45, breathing: 10, hours: '08:00-20:00', days: [1,2,3,4,5] }, personal: { duration: 60, breathing: 15, days: [0,6] }, defaultMode: 'virtual' },
+      fitness:   { pattern: /^soy\s+(entrenador[a]?|personal\s*trainer|preparador[a]?\s*f[ií]sic[oa]|instructor[a]?\s*(?:de\s+)?(?:gym|fitness|yoga|pilates))$/i,
+                   label: 'Fitness / Entrenamiento', work: { duration: 60, breathing: 10, hours: '06:00-22:00', days: [1,2,3,4,5,6] }, personal: { duration: 60, breathing: 15, days: [0] }, defaultMode: 'presencial' },
+      inmobiliaria: { pattern: /^soy\s+((?:agente\s+)?inmobiliari[oa]|realtor|corredor[a]?\s*(?:de\s+)?(?:propiedades|bienes\s+ra[ií]ces))$/i,
+                   label: 'Inmobiliaria', work: { duration: 30, breathing: 15, hours: '09:00-19:00', days: [1,2,3,4,5,6] }, personal: { duration: 90, breathing: 20, days: [0] }, defaultMode: 'presencial' },
+      contador:  { pattern: /^soy\s+(contador[a]?|contable|auditor[a]?)$/i,
+                   label: 'Contador / Finanzas', work: { duration: 45, breathing: 10, hours: '09:00-18:00', days: [1,2,3,4,5] }, personal: { duration: 60, breathing: 15, days: [0,6] }, defaultMode: 'virtual' },
+    };
+
+    for (const [segKey, seg] of Object.entries(PROFESSIONAL_SEGMENTS)) {
+      if (seg.pattern.test(bodyLower)) {
+        try {
+          await admin.firestore().collection('users').doc(OWNER_UID)
+            .collection('settings').doc('schedule_config').set({
+              work: seg.work,
+              personal: seg.personal,
+              reminderMinutes: 10,
+              defaultMode: seg.defaultMode,
+              segment: segKey,
+              segmentLabel: seg.label,
+              calendarEmail: null,
+              configuredAt: new Date().toISOString(),
+              configuredBy: 'segment_auto'
+            }, { merge: true });
+
+          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+            `✅ *Segmento: ${seg.label}*\n\nConfiguré tu agenda con estos valores optimizados:\n\n` +
+            `🏢 *Trabajo*: turnos de ${seg.work.duration} min, ${seg.work.breathing} min de respiro, ${seg.work.hours}\n` +
+            `👤 *Personal*: eventos de ${seg.personal.duration} min, ${seg.personal.breathing} min de respiro\n` +
+            `📍 *Modo*: ${seg.defaultMode} por defecto\n` +
+            `⏰ *Recordatorio*: 10 minutos antes\n\n` +
+            `Puedes ajustar cualquier valor. Ej: "mis turnos duran 30 minutos" o "trabajo de 10 a 19".`,
+            { isSelfChat: true, skipEmoji: true }
+          );
+          console.log(`[AGENDA] 🏷️ Segmento profesional configurado: ${seg.label} para ${OWNER_UID}`);
+        } catch (segErr) {
+          console.error(`[AGENDA] ❌ Error configurando segmento ${segKey}: ${segErr.message}`);
+        }
+        return; // Procesado, no enviar a IA
+      }
+    }
+  }
 
 
   // Determinar teléfono real del destinatario
@@ -4945,8 +5731,31 @@ async function processMorningBriefing() {
       ? `\n\n*👥 LEADS CON PENDIENTES HOY:*\n${pendingEntries}`
       : '';
 
-    // ── 3. Sin nada que informar ──
-    if (!scraperResults.length && !leadsSection) {
+    // ── 3. Aprobaciones de aprendizaje pendientes ──
+    let approvalsSection = '';
+    try {
+      const pending = await getPendingApprovals(OWNER_UID);
+      if (pending.length > 0) {
+        approvalsSection = `\n\n*🔑 APROBACIONES DE APRENDIZAJE PENDIENTES (${pending.length}):*\n`;
+        for (const p of pending) {
+          const daysText = p.daysLeft === 1 ? 'expira hoy' : `${p.daysLeft} días restantes`;
+          approvalsSection += `▸ *${p.agentName}*: "${(p.changes || '').substring(0, 150)}…" — clave *${p.key}* (${daysText})\n`;
+          // Actualizar lastReminder para no spamear
+          try {
+            await admin.firestore().collection('users').doc(OWNER_UID)
+              .collection('learning_approvals').doc(p.id)
+              .update({ lastReminder: admin.firestore.FieldValue.serverTimestamp() });
+          } catch (_) {}
+        }
+        approvalsSection += `\nReenvía la clave al agente para aprobar, o ignora para que expire.`;
+      }
+      console.log(`[BRIEFING] Aprobaciones pendientes: ${pending.length}`);
+    } catch (e) {
+      console.error('[BRIEFING] Error cargando aprobaciones:', e.message);
+    }
+
+    // ── 4. Sin nada que informar ──
+    if (!scraperResults.length && !leadsSection && !approvalsSection) {
       console.log('[BRIEFING] Sin novedades hoy. No se envía mensaje.');
       return;
     }
@@ -4968,6 +5777,9 @@ async function processMorningBriefing() {
     // Sección leads (informativa, sin aprobación)
     if (leadsSection) briefing += leadsSection;
 
+    // Sección aprobaciones pendientes
+    if (approvalsSection) briefing += approvalsSection;
+
     await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, briefing, { isSelfChat: true });
     console.log(`[BRIEFING] Briefing enviado a self-chat (${scraperResults.length} regulatorias, leads: ${!!pendingEntries}).`);
   } catch (e) {
@@ -4976,6 +5788,15 @@ async function processMorningBriefing() {
 
   // Follow-up automático a leads sin respuesta de 3+ días
   await processLeadFollowUps();
+
+  // ═══ INFORME QUINCENAL — Se ejecuta el 1ro y 16 de cada mes a las 9:00 AM ═══
+  try {
+    await biweeklyReport.runBiweeklyReport(
+      OWNER_UID, OWNER_PHONE, conversations, leadSummaries, leadNames, safeSendMessage
+    );
+  } catch (e) {
+    console.error('[REPORT] ❌ Error en informe quincenal:', e.message);
+  }
 }
 
 // Contador de rate limit de mensajes enviados por hora
@@ -5558,6 +6379,110 @@ function maskApiKey(key) {
   if (!key || key.length < 8) return '****';
   return key.substring(0, 6) + '...' + key.substring(key.length - 4);
 }
+
+// ═══ LEARNING APPROVAL — Sistema de aprobación dinámica de aprendizaje ═══
+//
+// Flujo: Agente/Familiar enseña a MIIA → confirma que está conforme →
+//        MIIA genera clave única (6 dígitos) → la envía al Owner con detalle completo →
+//        Owner revisa y si aprueba, reenvía la clave al agente →
+//        Agente pega la clave en su chat → MIIA valida y aplica los cambios.
+//
+// Clave: única por solicitud, válida 3 días. MIIA recuerda al owner cada mañana.
+// Si expira: agente debe solicitar nuevamente.
+// Firestore: users/{ownerUid}/learning_approvals/{approvalId}
+
+function generateLearningKey() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let key = '';
+  for (let i = 0; i < 6; i++) key += chars[Math.floor(Math.random() * chars.length)];
+  return key;
+}
+
+async function createLearningApproval(ownerUid, data) {
+  const key = generateLearningKey();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+
+  const approval = {
+    agentUid: data.agentUid || '',
+    agentName: data.agentName || 'Desconocido',
+    agentPhone: data.agentPhone || '',
+    key,
+    changes: data.changes || '',
+    pendingData: data.pendingData || null,
+    scope: data.scope || 'business_global',
+    status: 'pending',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+    appliedAt: null,
+    lastReminder: null
+  };
+
+  const ref = await admin.firestore().collection('users').doc(ownerUid)
+    .collection('learning_approvals').add(approval);
+
+  console.log(`[LEARNING-APPROVAL] 🔑 Solicitud creada: ${ref.id} key=${key} agente=${data.agentName} scope=${data.scope} expira=${expiresAt.toISOString()}`);
+  return { approvalId: ref.id, key, expiresAt };
+}
+
+async function validateLearningKey(ownerUid, keyProvided) {
+  if (!keyProvided || keyProvided.length !== 6) return { valid: false };
+
+  const snap = await admin.firestore().collection('users').doc(ownerUid)
+    .collection('learning_approvals')
+    .where('key', '==', keyProvided.toUpperCase())
+    .where('status', '==', 'pending')
+    .limit(1).get();
+
+  if (snap.empty) return { valid: false };
+
+  const doc = snap.docs[0];
+  const approval = doc.data();
+  const expiresAt = approval.expiresAt?.toDate ? approval.expiresAt.toDate() : new Date(approval.expiresAt);
+
+  if (new Date() > expiresAt) {
+    await doc.ref.update({ status: 'expired' });
+    console.log(`[LEARNING-APPROVAL] ⏰ Clave ${keyProvided} expirada (agente: ${approval.agentName})`);
+    return { valid: false, expired: true, agentName: approval.agentName, agentPhone: approval.agentPhone };
+  }
+
+  return { valid: true, approval, approvalId: doc.id, docRef: doc.ref };
+}
+
+async function markApprovalApplied(docRef) {
+  await docRef.update({ status: 'approved', appliedAt: admin.firestore.FieldValue.serverTimestamp() });
+}
+
+async function getPendingApprovals(ownerUid) {
+  const snap = await admin.firestore().collection('users').doc(ownerUid)
+    .collection('learning_approvals')
+    .where('status', '==', 'pending').get();
+
+  const pending = [];
+  const now = new Date();
+
+  for (const doc of snap.docs) {
+    const data = doc.data();
+    const expiresAt = data.expiresAt?.toDate ? data.expiresAt.toDate() : new Date(data.expiresAt);
+    if (now > expiresAt) {
+      await doc.ref.update({ status: 'expired' });
+      console.log(`[LEARNING-APPROVAL] ⏰ Auto-expirada: ${doc.id} (agente: ${data.agentName})`);
+    } else {
+      pending.push({ id: doc.id, ...data, daysLeft: Math.ceil((expiresAt - now) / 86400000) });
+    }
+  }
+  return pending;
+}
+
+// GET /api/tenant/:uid/learning-approvals — Ver aprobaciones pendientes
+app.get('/api/tenant/:uid/learning-approvals', async (req, res) => {
+  try {
+    const pending = await getPendingApprovals(req.params.uid);
+    res.json({ approvals: pending });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // GET /api/tenant/:uid/ai-config — Get all configured AI providers
 app.get('/api/tenant/:uid/ai-config', async (req, res) => {
@@ -6517,7 +7442,45 @@ app.post('/api/paypal/capture-agent', express.json(), async (req, res) => {
 // SERVIDOR
 // ============================================
 
+// ═══ RESILIENCE SHIELD: Iniciar monitoreo + endpoint ═══
+shield.startHealthMonitor(300_000); // Health log cada 5 minutos
+// Conectar Shield con safeSendMessage para notificaciones al owner
+shield.setNotifyFunction(async (uid, message) => {
+  try {
+    const tm = require('./whatsapp/tenant_manager');
+    const tenant = tm.getTenant ? tm.getTenant(uid) : null;
+    if (tenant?.sock && tenant.isReady && tenant.whatsappNumber) {
+      await safeSendMessage(`${tenant.whatsappNumber}@s.whatsapp.net`, message, { isSelfChat: true });
+    }
+  } catch (e) {
+    console.error(`[SHIELD-NOTIFY] Error: ${e.message}`);
+  }
+});
+app.get('/api/health', (req, res) => res.json(shield.getHealthDashboard()));
+app.get('/api/health/unknown-errors', (req, res) => res.json(shield.getUnknownErrors()));
+
 const PORT = process.env.PORT || 3000;
+// Inyectar funciones de aprobación dinámica en tenant_message_handler
+tenantMessageHandler.setApprovalFunctions({
+  validateLearningKey,
+  createLearningApproval,
+  markApprovalApplied
+});
+
+// Inyectar dependencias en protection_manager
+protectionManager.setProtectionDependencies({
+  sendGenericEmail: mailService.sendGenericEmail,
+  safeSendMessage,
+  generateAIContent
+});
+
+// Inyectar dependencias en biweekly_report
+biweeklyReport.setReportDependencies({
+  sendGenericEmail: mailService.sendGenericEmail,
+  generateAIContent,
+  getProtectionAlerts: protectionManager.getProtectionAlertsForReport
+});
+
 server.listen(PORT, () => {
   console.log('\n🚀 ═══ SERVIDOR INICIADO ═══');
   console.log(`📡 Puerto: ${PORT}`);
@@ -6563,6 +7526,7 @@ server.listen(PORT, () => {
           const adminSnap = await admin.firestore().collection('users').where('role', '==', 'admin').limit(1).get();
           if (!adminSnap.empty) {
             OWNER_UID = adminSnap.docs[0].id;
+            shield.setActiveOwnerUid(OWNER_UID);
             console.log(`[AUTO-INIT] ✅ Admin auto-detectado: ${OWNER_UID}`);
           } else {
             console.log('[AUTO-INIT] ⚠️ No se encontró usuario con role=admin en Firestore.');
@@ -7085,7 +8049,23 @@ async function checkCalendarAvailability(dateStr, uid) {
   return { date: targetDate.toLocaleDateString('es-ES'), busySlots: busySlots.length, freeSlots };
 }
 
-async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description, uid, timezone }) {
+/**
+ * createCalendarEvent — Crea evento en Google Calendar
+ * @param {Object} opts
+ * @param {string} opts.summary - Título del evento
+ * @param {string} opts.dateStr - Fecha 'YYYY-MM-DD' o 'YYYY-MM-DDTHH:mm'
+ * @param {number} opts.startHour - Hora inicio (0-23)
+ * @param {number} opts.endHour - Hora fin (0-23)
+ * @param {string} opts.attendeeEmail - Email del invitado (opcional)
+ * @param {string} opts.description - Descripción del evento
+ * @param {string} opts.uid - UID del owner en Firestore
+ * @param {string} opts.timezone - Timezone IANA (ej: 'America/Bogota')
+ * @param {string} opts.eventMode - 'presencial' | 'virtual' | 'telefono' (default: 'presencial')
+ * @param {string} opts.location - Dirección física para presencial (opcional)
+ * @param {string} opts.phoneNumber - Número de teléfono para modo telefónico (opcional)
+ * @param {number} opts.reminderMinutes - Minutos antes para recordatorio (default: 10)
+ */
+async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description, uid, timezone, eventMode, location, phoneNumber, reminderMinutes }) {
   const { cal, calId } = await getCalendarClient(uid);
 
   // Determinar timezone: parámetro explícito > scheduleConfig del user > default Bogotá
@@ -7105,17 +8085,73 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
   const sH = String(startHour || 10).padStart(2, '0');
   const eH = String(endHour || (startHour || 10) + 1).padStart(2, '0');
 
+  // ═══ MODO DEL EVENTO: presencial / virtual / teléfono ═══
+  const mode = (eventMode || 'presencial').toLowerCase().trim();
+  let eventDescription = description || 'Agendado automáticamente por MIIA';
+  let eventLocation = '';
+  let conferenceData = null;
+
+  if (mode === 'virtual') {
+    // Google Meet — conferenceData genera link automáticamente
+    conferenceData = {
+      createRequest: {
+        requestId: `miia-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        conferenceSolutionKey: { type: 'hangoutsMeet' }
+      }
+    };
+    eventDescription += '\n\n📹 Reunión virtual — el link de Google Meet se adjunta automáticamente.';
+    console.log(`[GCAL] 📹 Modo VIRTUAL: se generará link de Google Meet`);
+  } else if (mode === 'telefono' || mode === 'telefónico') {
+    // Llamada telefónica — incluir número en descripción
+    const phone = phoneNumber || '';
+    eventLocation = phone ? `Llamada telefónica: ${phone}` : 'Llamada telefónica';
+    eventDescription += phone
+      ? `\n\n📞 Llamada telefónica al: ${phone}`
+      : '\n\n📞 Llamada telefónica (número pendiente de confirmar)';
+    console.log(`[GCAL] 📞 Modo TELÉFONO: ${phone || 'sin número especificado'}`);
+  } else {
+    // Presencial — incluir dirección si existe
+    if (location) {
+      eventLocation = location;
+      eventDescription += `\n\n📍 Ubicación: ${location}`;
+    }
+    console.log(`[GCAL] 📍 Modo PRESENCIAL: ${location || 'sin dirección especificada'}`);
+  }
+
+  // ═══ RECORDATORIO: 10 minutos por defecto (hardcodeado, owner puede cambiar) ═══
+  const reminder = reminderMinutes ?? 10;
+
   const event = {
     summary: summary || 'Reunión con MIIA',
-    description: description || 'Agendado automáticamente por MIIA',
+    description: eventDescription,
     start: { dateTime: `${year}-${month}-${day}T${sH}:00:00`, timeZone: tz },
     end: { dateTime: `${year}-${month}-${day}T${eH}:00:00`, timeZone: tz },
-    attendees: attendeeEmail ? [{ email: attendeeEmail }] : []
+    attendees: attendeeEmail ? [{ email: attendeeEmail }] : [],
+    reminders: {
+      useDefault: false,
+      overrides: [
+        { method: 'popup', minutes: reminder }
+      ]
+    }
   };
 
-  const response = await cal.events.insert({ calendarId: calId, resource: event, sendUpdates: 'all' });
-  console.log(`[GCAL] Evento creado: "${summary}" el ${dateStr} ${sH}:00 (${tz}) para uid=${uid}`);
-  return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink };
+  // Agregar ubicación si existe
+  if (eventLocation) event.location = eventLocation;
+
+  // Agregar conferenceData para Google Meet
+  if (conferenceData) event.conferenceData = conferenceData;
+
+  // Insert con conferenceDataVersion si es virtual (requerido por API)
+  const insertParams = { calendarId: calId, resource: event, sendUpdates: 'all' };
+  if (conferenceData) insertParams.conferenceDataVersion = 1;
+
+  const response = await cal.events.insert(insertParams);
+
+  // Extraer link de Meet si se creó
+  const meetLink = response.data?.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri || null;
+
+  console.log(`[GCAL] ✅ Evento creado: "${summary}" el ${dateStr} ${sH}:00 (${tz}) modo=${mode} reminder=${reminder}min uid=${uid}${meetLink ? ` meet=${meetLink}` : ''}`);
+  return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink, meetLink, mode };
 }
 
 // Endpoints para que el dashboard/MIIA consulte/cree citas

@@ -1,7 +1,7 @@
 # ESTADO ACTUAL — Actualizar SIEMPRE al inicio y fin de cada sesión
 
-**Última actualización**: Sesión 10, 2026-04-03
-**Deploy**: ✅ DEPLOYADO — commit 8120687 en main Y main-test (Railway)
+**Última actualización**: Sesión 11, 2026-04-05
+**Deploy**: ✅ DEPLOYADO — commit d2c120f en main Y main-test (Railway)
 
 ## Funciona HOY (en producción tras este deploy)
 - [x] Self-chat, Familia, Equipo, Leads
@@ -18,6 +18,21 @@
 - [x] Graceful shutdown SIGTERM
 - [x] Prompt registry (módulos versionados + checkpoints + rollback)
 - [x] Fix Receta AR ($3 × usuarios)
+- [x] Gemini dual API key rotation (429 fallback)
+- [x] Inter-MIIA coordination (detectInterMiiaCommand, sendInterMiia, processIncomingInterMiia)
+- [x] Email desde WhatsApp ("mandále un mail a X diciendo Y")
+- [x] Backend reorganizado en 2 capas (core/, ai/, services/, whatsapp/, data/, voice/)
+
+## Bugs resueltos sesión 11
+- [x] `body is not defined` → `userMessage` (2 commits)
+- [x] `message is not defined` → disabled with `if (false)` (audio child detection)
+- [x] `mediaContext is not defined` → `incomingWasAudio = false`
+- [x] `tenantState is not defined` → `userProfile` (3 ocurrencias: email cmd, inter-MIIA)
+
+## Auditoría processMiiaResponse (líneas 1534-3034)
+- Escaneadas TODAS las variables usadas en la función
+- Todas confirmadas: globals, requires, o function-scoped
+- No quedan ReferenceError potenciales
 
 ## Bugs pendientes (NO resueltos aún)
 - [ ] **P4**: setTenantTrainingData — ya exportado en module.exports pero verificar que server.js lo usa
@@ -29,21 +44,18 @@
 - [ ] **Ficha estética por plan**: NO está en el prompt
 - [ ] **Eventos deportivos**: Solo reactivo, no proactivo (Bloque G)
 
-## Sesión 10 — Lo que se hizo
-- Commit: `8120687`
-- Deploy: main-test pusheado (Railway autodeploy). Antes tenía 13 commits de atraso.
-- tenant_manager.js: Smart recovery, dedup, watchdog, pre-emptive refresh, graceful shutdown, telemetría, config estabilidad Baileys
-- baileys_session_store.js v2.0: Identity/session separation, 7 capas protección
-- prompt_registry.js: NUEVO — módulos Firestore + checkpoints + rollback + pricing auto-sync
-- cotizacion_generator.js: Fix Receta AR ($3 × usuarios)
-- server.js: 8 endpoints prompt registry
-- .claude/: 6 sub-archivos para continuidad post-compactación
-- CLAUDE.md: Reescrito como router (40 líneas)
-- Análisis completo: cotización PDF vs prompt vs generator por país
-- Diagnóstico MIIA desactualizada: Railway corría código de sesión 7, resuelto con merge
+## Sesión 11 — Lo que se hizo
+- Commits: `b97ff14`, `3ae3ea7`, `9feb8d5`, `d2c120f`
+- Fix: 4 ReferenceError bugs en processMiiaResponse (body, message, mediaContext, tenantState)
+- Auditoría completa de processMiiaResponse (1500 líneas) — 0 variables sin declarar
+- Backend reorganizado: ~50 require() actualizados a nueva estructura de carpetas
+- Inter-MIIA: nuevo módulo `core/inter_miia.js`
+- Email desde WA: `services/mail_service.js` + `sendGenericEmail()`
+- Gemini 429 fix: rotación de API keys con fallback automático
+- Frontend: Hero carousel con 5 slides (cotización, agenda, deporte, inter-MIIA, voz)
 
 ## Ramas
-- `main` = `main-test` = commit `8120687` (idénticas)
+- `main` = `main-test` = commit `d2c120f` (idénticas)
 - Railway autodeploya desde `main-test`
 
 ## Bloques pendientes

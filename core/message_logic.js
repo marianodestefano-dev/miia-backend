@@ -315,16 +315,105 @@ async function processLearningTags(aiMessage, ctx, callbacks) {
   let cleanMsg = aiMessage;
 
   // --- Tag NEGOCIO (nuevo) + GUARDAR_APRENDIZAJE (legacy → trata como negocio) ---
+  // 🔒 SISTEMA DE AUTENTICACIÓN DE APRENDIZAJE — 5 niveles de confianza:
+  //
+  // | Quién              | Personal    | Negocio                          |
+  // |--------------------|-------------|----------------------------------|
+  // | Owner (self-chat)  | ✅ Directo  | ✅ Directo (es el dueño)         |
+  // | Admin              | ✅ Directo  | ✅ Directo                       |
+  // | Agente + CLAVE     | ✅ Directo  | ✅ Directo (tiene clave)         |
+  // | Agente sin clave   | ✅ Directo  | ⏳ Encolar → owner aprueba      |
+  // | Familia/Equipo+KEY | ✅ Directo  | ✅ Directo (owner les dio clave) |
+  // | Familia/Equipo     | ✅ De ellos | ⏳ Encolar → owner aprueba      |
+  // | Lead               | ❌ BLOQUEADO| ❌ BLOQUEADO (SIEMPRE)           |
+  //
+  // La clave de aprendizaje (learningKey) es alfanumérica de 6 dígitos,
+  // se genera al crear el negocio y se ve en el dashboard del owner/agente.
+  // El contacto la incluye en su mensaje de confirmación: "sí AB12CD"
+  // MIIA detecta la clave en ctx.learningKeyProvided (pre-procesado por el handler).
+
   const negocioRegex = /\[(?:APRENDIZAJE_NEGOCIO|GUARDAR_APRENDIZAJE):([^\]]+)\]/g;
   let match;
   while ((match = negocioRegex.exec(aiMessage)) !== null) {
     const text = match[1].trim();
     const targetUid = ctx.role === 'agent' ? ctx.ownerUid : ctx.uid;
-    try {
-      await callbacks.saveBusinessLearning(targetUid, text, `MIIA_AUTO_${ctx.role}`);
-      console.log(`[LEARNING:NEGOCIO] ✅ Guardado para owner=${targetUid}: "${text.substring(0, 80)}..."`);
-    } catch (e) {
-      console.error(`[LEARNING:NEGOCIO] ❌ Error guardando:`, e.message);
+
+    // Nivel 1: Owner/Admin → guardar directo
+    if (ctx.isOwner || ctx.role === 'admin') {
+      try {
+        await callbacks.saveBusinessLearning(targetUid, text, `MIIA_AUTO_${ctx.role}`);
+        console.log(`[LEARNING:NEGOCIO] ✅ Guardado (${ctx.role}) para owner=${targetUid}: "${text.substring(0, 80)}..."`);
+      } catch (e) {
+        console.error(`[LEARNING:NEGOCIO] ❌ Error guardando:`, e.message);
+      }
+      continue;
+    }
+
+    // Nivel 2: Agente/Familia/Equipo CON clave de aprobación válida → guardar directo
+    if ((ctx.role === 'agent' || ctx.role === 'family' || ctx.role === 'team') && ctx.learningKeyValid) {
+      try {
+        await callbacks.saveBusinessLearning(targetUid, text, `MIIA_APPROVED_${ctx.role}`);
+        // Marcar la aprobación como aplicada
+        if (ctx.approvalDocRef && callbacks.markApprovalApplied) {
+          await callbacks.markApprovalApplied(ctx.approvalDocRef);
+        }
+        console.log(`[LEARNING:NEGOCIO] 🔑 Guardado con clave aprobada (${ctx.role}) para owner=${targetUid}: "${text.substring(0, 80)}..."`);
+      } catch (e) {
+        console.error(`[LEARNING:NEGOCIO] ❌ Error guardando:`, e.message);
+      }
+      continue;
+    }
+
+    // Nivel 3: Agente/Familia/Equipo SIN clave → solicitar aprobación dinámica al owner
+    if (ctx.role === 'agent' || ctx.role === 'family' || ctx.role === 'team') {
+      try {
+        // Crear solicitud de aprobación con clave dinámica
+        if (callbacks.createLearningApproval) {
+          const { key, expiresAt } = await callbacks.createLearningApproval(ctx.ownerUid || targetUid, {
+            agentUid: ctx.uid,
+            agentName: ctx.contactName || ctx.role,
+            agentPhone: ctx.contactPhone || '',
+            changes: text,
+            scope: ctx.learningScope || 'business_global'
+          });
+          const expDate = expiresAt instanceof Date ? expiresAt.toLocaleDateString('es', { day: 'numeric', month: 'long' }) : '';
+          // Notificar al owner con clave + detalle
+          if (callbacks.notifyOwner) {
+            await callbacks.notifyOwner(
+              `📋 *Solicitud de aprendizaje*\n` +
+              `De: *${ctx.contactName || ctx.role}*\n` +
+              `Cambio: "${text.substring(0, 300)}"\n` +
+              `Alcance: ${ctx.learningScope === 'agent_only' ? 'Solo para este agente' : 'General del negocio'}\n\n` +
+              `🔑 Clave de aprobación: *${key}*\n` +
+              `Válida hasta: ${expDate}\n\n` +
+              `Si apruebas, reenvía o copia esta clave al agente.`
+            );
+          }
+          console.log(`[LEARNING:NEGOCIO] 🔑 Aprobación solicitada (${ctx.role}) key=${key}: "${text.substring(0, 80)}..."`);
+        } else {
+          // Fallback: encolar como dudoso
+          await callbacks.queueDubiousLearning(ctx.ownerUid || targetUid, ctx.uid, `[NEGOCIO pendiente de ${ctx.role}] ${text}`);
+          console.log(`[LEARNING:NEGOCIO] ⏳ Encolado para aprobación (fallback): "${text.substring(0, 80)}..."`);
+        }
+        pendingQuestions.push({ text, source: ctx.role, type: 'business_needs_approval' });
+      } catch (e) {
+        console.error(`[LEARNING:NEGOCIO] ❌ Error creando aprobación:`, e.message);
+      }
+      continue;
+    }
+
+    // Nivel 4: Lead o rol desconocido → BLOQUEADO SIEMPRE (con o sin clave)
+    console.warn(`[LEARNING:NEGOCIO] 🚨 BLOQUEADO — rol="${ctx.role}" contacto="${ctx.contactName || '?'}" intentó guardar: "${text.substring(0, 120)}"`);
+    if (callbacks.notifyOwner) {
+      try {
+        await callbacks.notifyOwner(
+          `⚠️ *Intento de aprendizaje bloqueado*\n` +
+          `Contacto: *${ctx.contactName || 'Desconocido'}* (${ctx.contactPhone || '?'})\n` +
+          `Intentó enseñarme: "${text.substring(0, 200)}"\n` +
+          `Motivo: rol "${ctx.role}" no tiene permisos.\n` +
+          `No guardé nada. Si es legítimo, ingresalo desde el self-chat.`
+        );
+      } catch (_) {}
     }
   }
   cleanMsg = cleanMsg.replace(/\[(?:APRENDIZAJE_NEGOCIO|GUARDAR_APRENDIZAJE):[^\]]+\]/g, '');

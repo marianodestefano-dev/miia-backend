@@ -55,6 +55,18 @@ const { callAI } = require('../ai/ai_client');
  */
 const tenantContexts = new Map();
 
+// Funciones de aprobación dinámica (inyectadas desde server.js via setApprovalFunctions)
+let _validateLearningKey = null;
+let _createLearningApproval = null;
+let _markApprovalApplied = null;
+
+function setApprovalFunctions({ validateLearningKey, createLearningApproval, markApprovalApplied }) {
+  _validateLearningKey = validateLearningKey;
+  _createLearningApproval = createLearningApproval;
+  _markApprovalApplied = markApprovalApplied;
+  console.log('[TMH] ✅ Funciones de aprobación dinámica inyectadas');
+}
+
 // ═══════════════════════════════════════════════════════════════
 // FIRESTORE HELPERS — Cada función loguea TODO (éxito y error)
 // ═══════════════════════════════════════════════════════════════
@@ -504,7 +516,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
     ctx.lastProfileLoad = now;
   }
 
-  console.log(`[TMH:${uid}] ✅ Contexto listo — cerebro=${businessCerebro.length}ch, personal=${personalBrain.length}ch, familia=${Object.keys(familyContacts).length}, equipo=${Object.keys(teamContacts).length}`);
+  console.log(`[TMH:${uid}] ✅ Contexto listo — cerebro=${businessCerebro.length}ch, personal=${personalBrain.length}ch, familia=${Object.keys(familyContacts).length}, equipo=${Object.keys(teamContacts).length}, approvalSystem=${_validateLearningKey ? 'ACTIVE' : 'PENDING'}`);
   return ctx;
 }
 
@@ -720,6 +732,24 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     activeSystemPrompt = buildOwnerLeadPrompt(ctx.leadNames[phone] || '', leadCerebro, countryContext, ctx.ownerProfile);
   }
 
+  // ═══ INYECTAR HORA REAL — Desde timezone del dashboard del owner (Firestore) ═══
+  // Prioridad: 1) settings/schedule.timezone (auto-detectado del browser), 2) users/{uid}.timezone, 3) fallback Bogotá
+  let ownerTz = 'America/Bogota'; // fallback
+  try {
+    const scheduleDoc = await admin.firestore().collection('users').doc(ctx.ownerUid).collection('settings').doc('schedule').get();
+    if (scheduleDoc.exists && scheduleDoc.data().timezone) {
+      ownerTz = scheduleDoc.data().timezone;
+    } else {
+      // Fallback: timezone directo en el doc del usuario
+      const userDoc = await admin.firestore().collection('users').doc(ctx.ownerUid).get();
+      if (userDoc.exists && userDoc.data().timezone) {
+        ownerTz = userDoc.data().timezone;
+      }
+    }
+  } catch (_) { /* usar fallback */ }
+  const nowLocal = new Date().toLocaleString('es', { timeZone: ownerTz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  activeSystemPrompt += `\n\n## ⏰ HORA ACTUAL\nAhora son: ${nowLocal} (zona: ${ownerTz}). Usá esta hora para saludar correctamente (buen día/buenas tardes/buenas noches) y para saber si es finde/semana. IMPORTANTE: Si mencionás eventos de otros países (partidos, carreras), CONVERTÍ la hora al timezone del owner (${ownerTz}). Ejemplo: si un partido es a las 20:00 en Argentina y el owner está en Colombia (UTC-5), decí que es a las 18:00.`;
+
   // Sistema de confianza progresiva (solo para leads)
   if (!ctx.conversationMetadata[phone]) ctx.conversationMetadata[phone] = { trustPoints: 0 };
   ctx.conversationMetadata[phone].trustPoints = (ctx.conversationMetadata[phone].trustPoints || 0) + 1;
@@ -832,11 +862,58 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   // ── PASO 11: Procesar tags de IA ──
 
   // 11a. Tags de aprendizaje (NEGOCIO, PERSONAL, DUDOSO, legacy GUARDAR_APRENDIZAJE)
-  const tagCtx = { uid, ownerUid, role, isOwner: role === 'owner' };
+  // 🔒 Detectar clave de aprobación dinámica en el mensaje del usuario (6 alfanuméricos)
+  let learningKeyValid = false;
+  let approvalDocRef = null;
+  let expiredKeyDetected = false;
+  if (messageBody && role !== 'owner') {
+    // Buscar cualquier secuencia de 6 alfanuméricos en el mensaje
+    const keyMatch = messageBody.match(/\b([A-Z2-9]{6})\b/i);
+    if (keyMatch) {
+      try {
+        if (_validateLearningKey) {
+          const result = await _validateLearningKey(ownerUid, keyMatch[1].toUpperCase());
+          if (result.valid) {
+            learningKeyValid = true;
+            approvalDocRef = result.docRef;
+            console.log(`${logPrefix} 🔑 Clave de aprobación válida: ${keyMatch[1]} (agente: ${result.approval.agentName})`);
+          } else if (result.expired) {
+            expiredKeyDetected = true;
+            console.log(`${logPrefix} ⏰ Clave expirada: ${keyMatch[1]}`);
+          }
+        }
+      } catch (e) {
+        console.error(`${logPrefix} Error validando clave:`, e.message);
+      }
+    }
+  }
+  const contactName = ctx.leadNames?.[phone] || basePhone;
+  const tagCtx = {
+    uid, ownerUid, role,
+    isOwner: role === 'owner',
+    learningKeyValid,
+    approvalDocRef,
+    contactName,
+    contactPhone: basePhone,
+    learningScope: 'business_global' // puede ser 'agent_only' si el agente lo pidió
+  };
   const tagCallbacks = {
     saveBusinessLearning,
     savePersonalLearning,
-    queueDubiousLearning
+    queueDubiousLearning,
+    createLearningApproval: _createLearningApproval || null,
+    markApprovalApplied: approvalDocRef ? async (ref) => {
+      try { await ref.update({ status: 'approved', appliedAt: admin.firestore.FieldValue.serverTimestamp() }); } catch (_) {}
+    } : null,
+    notifyOwner: async (msg) => {
+      if (ctx.sock && ctx.selfJid) {
+        try {
+          await ctx.sock.sendMessage(ctx.selfJid, { text: msg });
+        } catch (e) {
+          console.error(`${logPrefix} ❌ Error notificando al owner:`, e.message);
+        }
+      }
+    }
   };
 
   const { cleanMessage, pendingQuestions } = await processLearningTags(aiMessage, tagCtx, tagCallbacks);
@@ -863,6 +940,12 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   // 11f. Agregar MIIA_CIERRE para leads (no self-chat, no familia, no equipo)
   if (contactType === 'lead' && !isSelfChat) {
     aiMessage = aiMessage.trimEnd() + MIIA_CIERRE;
+  }
+
+  // 11g. Notificar clave expirada al agente/familiar
+  if (expiredKeyDetected && role !== 'owner') {
+    aiMessage += '\n\n⏰ La clave de aprobación que ingresaste ya expiró. Si necesitas hacer cambios, vuelve a solicitarlos y recibirás una nueva clave.';
+    console.log(`${logPrefix} ⏰ Clave expirada notificada a ${basePhone}`);
   }
 
   // ── PASO 12: Enviar respuesta ──
@@ -986,4 +1069,7 @@ module.exports = {
   savePersonalLearning,
   queueDubiousLearning,
   saveAgendaEvent,
+
+  // Inyección de funciones de aprobación dinámica (llamar desde server.js al inicio)
+  setApprovalFunctions,
 };
