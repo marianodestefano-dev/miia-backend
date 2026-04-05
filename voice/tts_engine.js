@@ -277,33 +277,51 @@ async function isVoiceEnabled(admin, ownerUid) {
  * @param {Object} ctx - { voiceConfig, incomingWasAudio, contactType, messageLength, mode }
  * @returns {boolean}
  */
+/**
+ * Estado de preferencia de audio por contacto.
+ * null = nunca preguntó (primer audio → preguntar)
+ * true = prefiere audio
+ * false = prefiere texto
+ */
+const audioPreference = {};
+
 function shouldRespondWithAudio(ctx) {
-  if (!ctx.voiceConfig?.voice_enabled) return false;
-
-  const mode = ctx.voiceConfig.voice_mode || 'keywords';
-
-  switch (mode) {
-    case 'auto':
-      // Responder audio si: entrante fue audio, o mensaje es corto y emocional
-      if (ctx.incomingWasAudio) return true;
-      if (ctx.messageLength > 200) return false; // Audios largos cansan
-      return false;
-
-    case 'keywords':
-      // Solo responder audio si el entrante fue audio
-      return ctx.incomingWasAudio === true;
-
-    case 'always':
-      // Siempre audio (excepto mensajes muy largos)
-      return ctx.messageLength <= 300;
-
-    case 'manual':
-      // Solo cuando el prompt genera [ENVIAR_AUDIO]
-      return false;
-
-    default:
-      return false;
+  // REGLA MARIANO: TTS se activa SOLO cuando el owner manda audio
+  // Si el owner dijo "prefiero texto", no enviar audio
+  if (ctx.contactPhone && audioPreference[ctx.contactPhone] === false) {
+    return false;
   }
+
+  // Si no hay voice config en Firestore, usar default (habilitado para audio entrante)
+  const voiceEnabled = ctx.voiceConfig?.voice_enabled !== false; // Default: true
+  if (!voiceEnabled) return false;
+
+  // Solo responder audio si el entrante fue audio (modo keywords = default)
+  if (!ctx.incomingWasAudio) return false;
+
+  // No enviar audios muy largos
+  if (ctx.messageLength > 300) return false;
+
+  // Leads NUNCA reciben audio de MIIA (solo owner, familia, equipo)
+  if (ctx.contactType === 'lead') return false;
+
+  return true;
+}
+
+/**
+ * ¿Es el primer audio que MIIA enviaría a este contacto?
+ * Si es así, debe preguntar si prefiere audio o texto.
+ */
+function isFirstAudioForContact(contactPhone) {
+  return audioPreference[contactPhone] === undefined;
+}
+
+/**
+ * Registrar preferencia de audio del contacto.
+ */
+function setAudioPreference(contactPhone, prefersAudio) {
+  audioPreference[contactPhone] = prefersAudio;
+  console.log(`[TTS] 🎤 Preferencia de ${contactPhone}: ${prefersAudio ? 'AUDIO' : 'TEXTO'}`);
 }
 
 /**
@@ -335,5 +353,7 @@ module.exports = {
   loadVoiceConfig,
   isVoiceEnabled,
   shouldRespondWithAudio,
+  isFirstAudioForContact,
+  setAudioPreference,
   sendAudioMessage,
 };

@@ -2737,9 +2737,17 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
     };
 
-    // ═══ TTS: Responder con audio si corresponde ═══
+    // ═══ TTS: Responder con audio SOLO cuando el owner manda audio ═══
     let sentAsAudio = false;
     const incomingWasAudio = mediaContext?.mediaType === 'audio';
+
+    // Detección de preferencia de audio/texto del owner
+    if (!incomingWasAudio && /\b(prefer\w*\s+texto|respond[eé]\s+(?:con\s+)?texto|no\s+(?:me\s+)?(?:mand|envi)[eé]s?\s+audio|sin\s+audio|solo\s+texto)\b/i.test(body || '')) {
+      ttsEngine.setAudioPreference(phone, false);
+    }
+    if (/\b(prefer\w*\s+audio|respond[eé]\s+(?:con\s+)?audio|mand[aá]me\s+audio|con\s+audio|en\s+audio)\b/i.test(body || '')) {
+      ttsEngine.setAudioPreference(phone, true);
+    }
     try {
       const voiceConfig = await ttsEngine.loadVoiceConfig(admin, OWNER_UID);
       const shouldAudio = ttsEngine.shouldRespondWithAudio({
@@ -2747,23 +2755,34 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         incomingWasAudio,
         contactType: isAdmin ? 'owner' : (isFamilyContact ? 'family' : 'lead'),
         messageLength: aiMessage.length,
+        contactPhone: phone,
       });
 
       // Niñera SIEMPRE responde con audio si el entrante fue audio
       const forceAudio = isNineraMode && incomingWasAudio;
 
-      if ((shouldAudio || forceAudio) && voiceConfig) {
-        const ttsMode = isNineraMode ? 'ninera' : 'adult';
-        const ttsResult = await ttsEngine.generateTTS(aiMessage, {
-          provider: voiceConfig.tts_provider || 'google',
-          apiKey: voiceConfig.tts_api_key || process.env.GOOGLE_TTS_API_KEY,
-          voiceId: voiceConfig.voice_group || undefined,
-          mode: ttsMode,
-        });
-
-        await ttsEngine.sendAudioMessage(safeSendMessage, phone, ttsResult.buffer, ttsResult.mimetype, { isSelfChat });
-        sentAsAudio = true;
-        console.log(`[TTS] 🎤 Respuesta enviada como audio (${ttsMode}) a ${phone}`);
+      if (shouldAudio || forceAudio) {
+        // ¿Es el primer audio para este contacto? → Preguntar preferencia
+        if (!isNineraMode && ttsEngine.isFirstAudioForContact(phone)) {
+          ttsEngine.setAudioPreference(phone, true); // Default: audio (ya que mandó audio)
+          // Enviar respuesta como texto + pregunta
+          const pregunta = `\n\n_¿Preferís que te siga respondiendo con audio o con texto? Decime "prefiero audio" o "prefiero texto" 🎤_`;
+          await safeSendMessage(phone, aiMessage + pregunta, { isSelfChat, emojiCtx });
+          console.log(`[TTS] 🎤 Primer audio de ${phone} — preguntando preferencia`);
+        } else {
+          // Generar y enviar audio
+          const ttsMode = isNineraMode ? 'ninera' : 'adult';
+          const ttsConfig = {
+            provider: voiceConfig?.tts_provider || 'google',
+            apiKey: voiceConfig?.tts_api_key || process.env.GOOGLE_TTS_API_KEY,
+            voiceId: voiceConfig?.voice_group || undefined,
+            mode: ttsMode,
+          };
+          const ttsResult = await ttsEngine.generateTTS(aiMessage, ttsConfig);
+          await ttsEngine.sendAudioMessage(safeSendMessage, phone, ttsResult.buffer, ttsResult.mimetype, { isSelfChat });
+          sentAsAudio = true;
+          console.log(`[TTS] 🎤 Respuesta enviada como audio (${ttsMode}) a ${phone}`);
+        }
       }
     } catch (e) {
       console.error(`[TTS] ⚠️ Error generando audio, fallback a texto:`, e.message);
