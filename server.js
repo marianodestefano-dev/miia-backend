@@ -2932,8 +2932,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       aiMessage = aiMessage + '\n\n_Gracias por las disculpas. Ya estamos bien._';
     }
 
-    const isGreeting = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(body || '');
-    const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(body || '');
+    const isGreeting = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(userMessage || '');
+    const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(userMessage || '');
     const emojiCtx = {
       ownerMood,
       trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
@@ -2944,10 +2944,10 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     const incomingWasAudio = mediaContext?.mediaType === 'audio';
 
     // Detección de preferencia de audio/texto del owner
-    if (!incomingWasAudio && /\b(prefer\w*\s+texto|respond[eé]\s+(?:con\s+)?texto|no\s+(?:me\s+)?(?:mand|envi)[eé]s?\s+audio|sin\s+audio|solo\s+texto)\b/i.test(body || '')) {
+    if (!incomingWasAudio && /\b(prefer\w*\s+texto|respond[eé]\s+(?:con\s+)?texto|no\s+(?:me\s+)?(?:mand|envi)[eé]s?\s+audio|sin\s+audio|solo\s+texto)\b/i.test(userMessage || '')) {
       ttsEngine.setAudioPreference(phone, false);
     }
-    if (/\b(prefer\w*\s+audio|respond[eé]\s+(?:con\s+)?audio|mand[aá]me\s+audio|con\s+audio|en\s+audio)\b/i.test(body || '')) {
+    if (/\b(prefer\w*\s+audio|respond[eé]\s+(?:con\s+)?audio|mand[aá]me\s+audio|con\s+audio|en\s+audio)\b/i.test(userMessage || '')) {
       ttsEngine.setAudioPreference(phone, true);
     }
     try {
