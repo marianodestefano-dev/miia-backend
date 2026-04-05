@@ -5966,29 +5966,15 @@ server.listen(PORT, () => {
   console.log('Tipo de entorno:', process.stdout.isTTY ? 'Terminal Interactiva' : 'Servidor/Contenedor (Railway/Docker)');
   console.log('Logs con force flush: SÍ ✅ (siempre activo)');
 
+  // ═══ VARIABLES DE ENTORNO (solo estado, NUNCA valores sensibles) ═══
+  const SENSITIVE = /key|secret|pass|token|private|credential|api_key|client_id|client_secret|webhook/i;
+  const SAFE_SHOW = ['PORT', 'NODE_ENV', 'RAILWAY_ENVIRONMENT', 'RAILWAY_SERVICE_NAME', 'RAILWAY_PUBLIC_DOMAIN', 'FRONTEND_URL', 'FIREBASE_PROJECT_ID', 'PADDLE_ENV', 'PAYPAL_ENV', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_FROM', 'GOOGLE_REDIRECT_URI', 'ADMIN_EMAILS'];
   console.log('\n🔐 ═══ VARIABLES DE ENTORNO ═══');
-  console.log('PORT:', process.env.PORT || '3000 (default)');
-  console.log('NODE_ENV:', process.env.NODE_ENV || 'no definido');
-  console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? '✅ Configurada (' + process.env.GEMINI_API_KEY + ')' : '❌ NO CONFIGURADA');
-  console.log('ALLOWED_ORIGINS:', process.env.ALLOWED_ORIGINS || 'no definido');
-  
-  console.log('\n📊 ═══ TODAS LAS VARIABLES DE ENTORNO ═══');
-  Object.keys(process.env).sort().forEach(key => {
-    const value = process.env[key];
-    
-    // Ocultar valores sensibles
-    if (key.toLowerCase().includes('key') || 
-        key.toLowerCase().includes('secret') || 
-        key.toLowerCase().includes('password') ||
-        key.toLowerCase().includes('token')) {
-      console.log(`${key}: [OCULTO - longitud: ${value.length}]`);
-    } else if (value.length > 100) {
-      console.log(`${key}: ${value.substring(0, 50)}... [longitud total: ${value.length}]`);
-    } else {
-      console.log(`${key}: ${value}`);
-    }
+  SAFE_SHOW.forEach(k => { if (process.env[k]) console.log(`  ${k}: ${process.env[k]}`); });
+  console.log('\n🔑 ═══ CREDENCIALES (solo presencia) ═══');
+  Object.keys(process.env).sort().filter(k => SENSITIVE.test(k)).forEach(k => {
+    console.log(`  ${k}: ${process.env[k] ? '✅ configurada' : '❌ FALTA'}`);
   });
-  
   console.log('\n═══════════════════════════════════\n');
 
   // ═══ AUTO-RECONEXIÓN DE TODOS LOS USUARIOS ═══
