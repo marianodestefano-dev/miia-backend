@@ -2472,7 +2472,7 @@ El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
       // +1 trustPoint por mensaje del contacto (MIIA no suma, solo el contacto)
       addAffinityPoint(phone);
       // Reset followup counter cuando el lead responde
-      if (OWNER_UID && !isOwnerNumber && !isFamilyContact) {
+      if (OWNER_UID && !isSelfChat && !isFamilyContact) {
         const leadNum = phone.split('@')[0];
         admin.firestore().collection('users').doc(OWNER_UID).collection('followups').doc(leadNum)
           .set({ count: 0, silenced: false, lastResponse: new Date().toISOString() }, { merge: true })
@@ -2828,6 +2828,11 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     let aiMessage = await generateAIContent(fullPrompt, { enableSearch: searchTriggered });
     console.log(`[MIIA] ✅ Respuesta Gemini recibida, longitud: ${aiMessage?.length || 0}`);
 
+    if (!aiMessage) {
+      console.error(`[MIIA] ❌ Gemini devolvió null/vacío para ${basePhone} — no se puede responder`);
+      return;
+    }
+
     // Procesar etiquetas especiales
     if (aiMessage.includes('[FALSO_POSITIVO]')) {
       aiMessage = aiMessage.replace(/\[FALSO_POSITIVO\]/g, '').trim();
@@ -2874,8 +2879,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       approvalDocRef: null
     };
     // Detectar clave dinámica de aprendizaje en el mensaje
-    if (body) {
-      const keyMatch = body.match(/\b([A-Z2-9]{6})\b/i);
+    if (effectiveMsg) {
+      const keyMatch = effectiveMsg.match(/\b([A-Z2-9]{6})\b/i);
       if (keyMatch) {
         try {
           const result = await validateLearningKey(adminCtx.ownerUid, keyMatch[1].toUpperCase());
