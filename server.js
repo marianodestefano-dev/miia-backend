@@ -3275,6 +3275,19 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       return;
     }
 
+    // ── TAG [ALERTA_OWNER:mensaje] — MIIA pide acción manual del owner ──
+    const alertaOwnerMatch = aiMessage.match(/\[ALERTA_OWNER:([^\]]+)\]/);
+    if (alertaOwnerMatch) {
+      const alertMsg = alertaOwnerMatch[1].trim();
+      aiMessage = aiMessage.replace(/\[ALERTA_OWNER:[^\]]+\]/g, '').trim();
+      console.log(`[ALERTA-OWNER] 📢 Lead ${phone}: ${alertMsg}`);
+      const ownerJid2 = getOwnerSock()?.user?.id;
+      if (ownerJid2) {
+        const ownerSelfChat2 = ownerJid2.includes(':') ? ownerJid2.split(':')[0] + '@s.whatsapp.net' : ownerJid2;
+        await safeSendMessage(ownerSelfChat2, `📢 *Acción requerida* — Lead ${basePhone}:\n${alertMsg}`, { isSelfChat: true });
+      }
+    }
+
     saveDB();
 
     // Si hay preguntas pendientes para Mariano (de confidence engine o tags DUDOSO)

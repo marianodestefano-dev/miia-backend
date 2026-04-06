@@ -349,18 +349,22 @@ function renderCell(v) {
 // ─────────────────────────────────────────────────────────────────────
 
 function getLogoBase64() {
-  try {
-    const logoPath = path.join(__dirname, 'Medilink_logo.png');
-    console.log(`[COTIZ-DEBUG] Buscando logo en: ${logoPath}`);
-    const buf = fs.readFileSync(logoPath);
-    console.log(`[COTIZ-DEBUG] Logo leído, buffer size: ${buf.length}`);
-    const base64 = buf.toString('base64');
-    console.log(`[COTIZ-DEBUG] Convertido a base64, size: ${base64.length}`);
-    return 'data:image/png;base64,' + base64;
-  } catch (e) {
-    console.error(`[COTIZ-DEBUG] Error leyendo logo: ${e.message}`);
-    return '';
+  // Buscar logo en múltiples rutas (services/ y raíz del proyecto)
+  const candidates = [
+    path.join(__dirname, 'Medilink_logo.png'),
+    path.join(__dirname, '..', 'Medilink_logo.png'),
+    path.resolve('/app/Medilink_logo.png'),
+    path.resolve('/app/services/Medilink_logo.png'),
+  ];
+  for (const logoPath of candidates) {
+    try {
+      const buf = fs.readFileSync(logoPath);
+      console.log(`[COTIZ-DEBUG] Logo encontrado en: ${logoPath} (${buf.length} bytes)`);
+      return 'data:image/png;base64,' + buf.toString('base64');
+    } catch (_) { /* intentar siguiente */ }
   }
+  console.error(`[COTIZ-DEBUG] Logo NO encontrado en ninguna ruta: ${candidates.join(', ')}`);
+  return '';
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -868,13 +872,20 @@ async function generarPDF(params) {
 // ─────────────────────────────────────────────────────────────────────
 
 async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
-  // Nombre del lead: usar nombre si existe, si no el número de teléfono limpio
+  // Nombre del lead: usar nombre si existe, si no "Cotizacion_Especial"
   const phoneBase    = phone.replace(/[@\w.]+$/, '').replace('@', '') || phone;
+  // Extraer teléfono real (sin LID) — para tracking en nombre del archivo
+  const phoneTracking = phoneBase.replace(/[^0-9]/g, '');
   const nombreMostrar = (params.nombre && params.nombre !== 'Cliente' && params.nombre !== 'Lead')
     ? params.nombre
-    : phoneBase;
-  // Para el nombre del archivo siempre limpio
-  const nombreLimpio = nombreMostrar.replace(/[^a-zA-Z0-9]/g, '_');
+    : 'Cotizacion_Especial';
+  // Para el nombre del archivo: sin acentos, sin caracteres especiales, con teléfono como tracking
+  const nombreLimpio = nombreMostrar
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // Quitar acentos
+    .replace(/[^a-zA-Z0-9\s]/g, '')                     // Solo alfanuméricos y espacios
+    .replace(/\s+/g, '_')                               // Espacios a guiones bajos
+    .replace(/_+/g, '_')                                // No duplicar guiones bajos
+    .replace(/^_|_$/g, '');                             // No empezar/terminar con _
 
   const promo        = getPromoVigencia();
   const modalidad    = (params.moneda === 'EUR') ? 'anual' : (params.modalidad || 'mensual');
@@ -898,7 +909,7 @@ Para agendar una demo: https://meetings.hubspot.com/marianodestefano/demomedilin
   await sendFn(phone, {
     document: buffer,
     mimetype: 'application/pdf',
-    fileName: `Cotizacion_Medilink_${nombreLimpio}.pdf`,
+    fileName: `Cotizacion_Medilink_${nombreLimpio}_${phoneTracking}.pdf`,
     caption
   }, { isSelfChat });
 }
