@@ -8838,7 +8838,8 @@ app.post('/api/paddle/subscribe', express.json(), async (req, res) => {
       monthly:   process.env.PADDLE_PRICE_MONTHLY,
       quarterly: process.env.PADDLE_PRICE_QUARTERLY,
       semestral: process.env.PADDLE_PRICE_SEMESTRAL,
-      annual:    process.env.PADDLE_PRICE_ANNUAL
+      annual:    process.env.PADDLE_PRICE_ANNUAL,
+      familiar:  process.env.PADDLE_PRICE_FAMILIAR
     };
     const priceId = priceIds[plan];
     if (!priceId) return res.status(400).json({ error: 'plan inválido o price ID no configurado' });
