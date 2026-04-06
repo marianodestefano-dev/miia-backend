@@ -9,11 +9,18 @@ const _origLog = console.log.bind(console);
 const _origErr = console.error.bind(console);
 const _signalFilter = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair|lastRemoteEphemeralKey|previousCounter|rootKey|indexInfo|baseKey:|baseKeyType|registrationId|currentRatchet|pubKey:|privKey:|remoteIdentityKey|Decrypted message with closed|Closing open session|Failed to decrypt message|<Buffer /;
 // B2 FIX: Filter both string args AND stringified objects (libsignal dumps SessionEntry as objects)
+// B3 FIX: Also filter Buffer objects containing key material (privKey, rootKey, ephemeralKeyPair)
 const _isSignalNoise = (...args) => {
   for (const a of args) {
     if (typeof a === 'string' && _signalFilter.test(a)) return true;
     // libsignal console.log(SessionEntry {...}) — objects with _chains, privKey, etc.
-    if (a && typeof a === 'object' && ('_chains' in a || 'currentRatchet' in a || 'indexInfo' in a)) return true;
+    if (a && typeof a === 'object') {
+      if ('_chains' in a || 'currentRatchet' in a || 'indexInfo' in a) return true;
+      // Buffer objects from key material — never useful in logs, potential security leak
+      if (Buffer.isBuffer(a) && a.length >= 16 && a.length <= 64) return true;
+      // Objects with key-like properties containing Buffers
+      if ('privKey' in a || 'rootKey' in a || 'ephemeralKeyPair' in a || 'chainKey' in a) return true;
+    }
   }
   return false;
 };
@@ -3275,6 +3282,38 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       return;
     }
 
+    // ── TAG [ENVIAR_CORREO:email|asunto|cuerpo] — MIIA envía email al lead via SMTP ──
+    const enviarCorreoMatch = aiMessage.match(/\[ENVIAR_CORREO:([^|]+)\|([^|]+)\|([^\]]+)\]/);
+    if (enviarCorreoMatch) {
+      const emailTo = enviarCorreoMatch[1].trim();
+      const emailSubject = enviarCorreoMatch[2].trim();
+      const emailBody = enviarCorreoMatch[3].trim();
+      aiMessage = aiMessage.replace(/\[ENVIAR_CORREO:[^\]]+\]/g, '').trim();
+      console.log(`[EMAIL] 📧 Enviando correo a ${emailTo} — Asunto: "${emailSubject}" (solicitado por lead ${phone})`);
+      try {
+        const emailResult = await mailService.sendGenericEmail(emailTo, emailSubject, emailBody, { fromName: 'Medilink - MIIA' });
+        if (emailResult.success) {
+          console.log(`[EMAIL] ✅ Correo enviado exitosamente a ${emailTo} (ID: ${emailResult.messageId})`);
+          // Notificar al owner
+          const ownerJidEmail = getOwnerSock()?.user?.id;
+          if (ownerJidEmail) {
+            const ownerSelfEmail = ownerJidEmail.includes(':') ? ownerJidEmail.split(':')[0] + '@s.whatsapp.net' : ownerJidEmail;
+            await safeSendMessage(ownerSelfEmail, `📧 Email enviado a *${emailTo}* — Asunto: "${emailSubject}" (lead ${basePhone})`, { isSelfChat: true });
+          }
+        } else {
+          console.error(`[EMAIL] ❌ Error enviando correo a ${emailTo}: ${emailResult.error}`);
+          // Fallback: notificar al owner para envío manual
+          const ownerJidFail = getOwnerSock()?.user?.id;
+          if (ownerJidFail) {
+            const ownerSelfFail = ownerJidFail.includes(':') ? ownerJidFail.split(':')[0] + '@s.whatsapp.net' : ownerJidFail;
+            await safeSendMessage(ownerSelfFail, `❌ No pude enviar email a ${emailTo}. Error: ${emailResult.error}. Lead ${basePhone} pidió: "${emailSubject}"`, { isSelfChat: true });
+          }
+        }
+      } catch (emailErr) {
+        console.error(`[EMAIL] ❌ Excepción enviando correo:`, emailErr.message);
+      }
+    }
+
     // ── TAG [ALERTA_OWNER:mensaje] — MIIA pide acción manual del owner ──
     const alertaOwnerMatch = aiMessage.match(/\[ALERTA_OWNER:([^\]]+)\]/);
     if (alertaOwnerMatch) {
@@ -3366,7 +3405,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     } else {
       aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '').trim();
     }
-    aiMessage = aiMessage.replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '').trim();
+    aiMessage = aiMessage.replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '').trim(); // Legacy tag — limpiar si aparece
 
     // ═══ CONFIG AGENDA PRIMERA VEZ: Si no hay schedule_config, MIIA pregunta ═══
     const hasAgendaTag = aiMessage.includes('[AGENDAR_EVENTO:') || aiMessage.includes('[SOLICITAR_TURNO:');

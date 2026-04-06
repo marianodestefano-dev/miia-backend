@@ -150,6 +150,20 @@ const baileysLogger = pino({ level: 'silent' });
 
 // ─── Message deduplication (prevents zombie processing) ───
 const processedMessages = new Map(); // { msgId: timestamp }
+// ─── Noise reduction: count skipped messages instead of logging each one ───
+const _skipCounters = { duplicate: 0, offlineOld: 0, offlineProcessed: 0, _lastFlush: Date.now() };
+function _flushSkipCounters(uid) {
+  const now = Date.now();
+  if (now - _skipCounters._lastFlush < 10000) return; // Flush every 10s max
+  const { duplicate, offlineOld, offlineProcessed } = _skipCounters;
+  if (duplicate + offlineOld + offlineProcessed > 0) {
+    console.log(`[TM:${uid}] 📊 Mensajes omitidos (últimos 10s): ${duplicate} duplicados, ${offlineOld} offline viejos, ${offlineProcessed} offline ya procesados`);
+    _skipCounters.duplicate = 0;
+    _skipCounters.offlineOld = 0;
+    _skipCounters.offlineProcessed = 0;
+  }
+  _skipCounters._lastFlush = now;
+}
 const DEDUP_TTL = 600000; // 10 minutes
 const DEDUP_CLEANUP_INTERVAL = 60000; // cleanup every 60s
 
@@ -256,7 +270,7 @@ function handleCryptoError(uid, tenant) {
     console.log(`[TM:${uid}] 🛡️ Creds writes BLOCKED (crypto error detected)`);
   }
 
-  if (tracker.count <= 10) {
+  if (tracker.count === 1 || tracker.count === 5 || tracker.count === 10) {
     console.log(`[TM:${uid}] 🔐 Crypto error ${tracker.count}/10 in window`);
   }
 
@@ -1094,7 +1108,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         // ─── Deduplication: skip already-processed messages ───
         // DESPUÉS de verificar que tiene contenido real
         if (isDuplicate(msg.key.id)) {
-          console.log(`[TM:${uid}] 🔁 Duplicate message SKIPPED: ${msg.key.id}`);
+          _skipCounters.duplicate++;
+          _flushSkipCounters(uid);
           continue;
         }
 
@@ -1112,7 +1127,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         if (isOffline) {
           const ageSec = tenant.connectedAt - msgTs;
           if (isSelfChat && ageSec > 600) {
-            console.log(`[TM:${uid}] ⏭️ Self-chat offline MUY viejo ignorado (${Math.round(ageSec/60)}min) body="${body.substring(0,30)}"`);
+            _skipCounters.offlineOld++;
+            _flushSkipCounters(uid);
             continue;
           }
         }
@@ -1129,7 +1145,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             // Esto previene perder mensajes reales que llegan desordenados post-reconexión
             const tsDiff = tenant._lastProcessedTs - msgTs;
             if (isFromMe || tsDiff > 120) {
-              console.log(`[TM:${uid}] ⏭️ Mensaje offline ya procesado (ts=${msgTs} <= lastProcessed=${tenant._lastProcessedTs}, diff=${tsDiff}s): "${body.substring(0,30)}"`);
+              _skipCounters.offlineProcessed++;
+              _flushSkipCounters(uid);
               continue;
             }
             console.log(`[TM:${uid}] ⚠️ Mensaje offline reciente de tercero (diff=${tsDiff}s <= 120s) — procesando igualmente: "${body.substring(0,30)}"`);
