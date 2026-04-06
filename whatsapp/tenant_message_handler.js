@@ -559,6 +559,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
  */
 async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSelfChat, isFromMe, tenantState, messageContext = {}) {
   const logPrefix = `[TMH:${uid}]`;
+  try { require('../core/privacy_counters').recordIncoming(uid); } catch (_) {}
 
   // ── PASO 1: Obtener contexto ──
   let ctx;
@@ -1171,6 +1172,7 @@ async function sendTenantMessage(tenantState, phone, content) {
     // Enviar
     await tenantState.sock.sendMessage(phone, { text: content });
     rateLimiter.recordOutgoing(tenantState.uid);
+    try { require('../core/privacy_counters').recordOutgoing(tenantState.uid); } catch (_) {}
     console.log(`[TMH:${tenantState.uid}] 📤 Mensaje enviado a ${phone} (${content.length} chars)`);
     return true;
   } catch (e) {

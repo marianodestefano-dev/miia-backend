@@ -123,6 +123,7 @@ const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_
 const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
 const rateLimiter = require('./core/rate_limiter');
+const privacyCounters = require('./core/privacy_counters');
 
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
@@ -1638,6 +1639,7 @@ async function safeSendMessage(target, content, options = {}) {
           }
           await getOwnerSock().sendMessage(sendJid, { text: parts[i].trim() });
           rateLimiter.recordOutgoing('admin');
+          privacyCounters.recordOutgoing('admin');
           hourlySendLog.count++;
         } catch (e) {
           console.error(`[SPLIT-CASUAL] Error enviando parte ${i + 1}:`, e.message);
@@ -4872,6 +4874,7 @@ async function processMediaMessage(message) {
 async function handleIncomingMessage(message) {
   // LOG DE DIAGNÓSTICO: cada mensaje que entra a handleIncomingMessage
   console.log(`[HIM] 📩 from=${message.from} to=${message.to} fromMe=${message.fromMe} body="${(message.body||'').substring(0,50)}" hasMedia=${message.hasMedia} type=${message.type} id=${message.id?._serialized||'?'}`);
+  privacyCounters.recordIncoming('admin');
 
   // ═══ REACCIONES: responder inteligentemente a emojis ═══
   if (message.type === 'reaction' && message._reaction) {
@@ -8582,6 +8585,37 @@ app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
   }
 });
 
+// ── Admin Privacy Stats (contadores agregados, sin leer mensajes) ────────
+app.get('/api/admin/privacy-stats/:uid', verifyAdminToken, async (req, res) => {
+  try {
+    const counters = await privacyCounters.getCounters(req.params.uid);
+    res.json(counters);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/privacy-stats', verifyAdminToken, async (req, res) => {
+  try {
+    const usersSnap = await admin.firestore().collection('users').get();
+    const results = [];
+    for (const userDoc of usersSnap.docs) {
+      const ud = userDoc.data();
+      const counters = await privacyCounters.getCounters(userDoc.id);
+      results.push({
+        uid: userDoc.id,
+        name: ud.name || ud.email || '?',
+        email: ud.email || '',
+        role: ud.role || 'owner',
+        ...counters
+      });
+    }
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Admin Support Chat (Gemini) ──────────────────────────────────────────
 app.post('/api/admin/support-chat', express.json(), async (req, res) => {
   // Auth inline (verifyAdminToken is defined below)
@@ -9272,6 +9306,7 @@ biweeklyReport.setReportDependencies({
 });
 
 server.listen(PORT, () => {
+  privacyCounters.startAutoFlush();
   console.log('\n🚀 ═══ SERVIDOR INICIADO ═══');
   console.log(`📡 Puerto: ${PORT}`);
   console.log(`🌐 URL del backend: http://localhost:${PORT}`);
