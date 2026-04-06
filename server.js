@@ -8839,7 +8839,8 @@ app.post('/api/paddle/subscribe', express.json(), async (req, res) => {
       quarterly: process.env.PADDLE_PRICE_QUARTERLY,
       semestral: process.env.PADDLE_PRICE_SEMESTRAL,
       annual:    process.env.PADDLE_PRICE_ANNUAL,
-      familiar:  process.env.PADDLE_PRICE_FAMILIAR
+      familiar:  process.env.PADDLE_PRICE_FAMILIAR,
+      familiar_annual: process.env.PADDLE_PRICE_FAMILIAR_ANNUAL
     };
     const priceId = priceIds[plan];
     if (!priceId) return res.status(400).json({ error: 'plan inválido o price ID no configurado' });
@@ -8952,7 +8953,7 @@ app.post('/api/paypal/subscribe', express.json(), async (req, res) => {
   try {
     const { uid, plan } = req.body;
     if (!uid || !plan) return res.status(400).json({ error: 'uid y plan requeridos' });
-    const prices = { monthly: '12.00', quarterly: '30.00', semestral: '55.00', annual: '75.00' };
+    const prices = { monthly: '15.00', quarterly: '39.00', semestral: '69.00', annual: '99.00', familiar: '19.99', familiar_annual: '149.99' };
     const price = prices[plan];
     if (!price) return res.status(400).json({ error: 'plan inválido' });
 
@@ -9062,6 +9063,165 @@ app.post('/api/paypal/capture-agent', express.json(), async (req, res) => {
     }
   } catch (e) {
     console.error('[PAYPAL] capture-agent error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
+// MERCADOPAGO CHECKOUT
+// ============================================
+const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
+
+app.post('/api/mercadopago/subscribe', express.json(), async (req, res) => {
+  try {
+    const { uid, plan } = req.body;
+    if (!uid || !plan) return res.status(400).json({ error: 'uid y plan requeridos' });
+    if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: 'MercadoPago no configurado' });
+
+    const prices = { monthly: 15, quarterly: 39, semestral: 69, annual: 99, familiar: 19.99, familiar_annual: 149.99 };
+    const price = prices[plan];
+    if (!price) return res.status(400).json({ error: 'plan inválido' });
+
+    const planNames = { monthly: 'Mensual', quarterly: 'Trimestral', semestral: 'Semestral', annual: 'Anual', familiar: 'Familiar Mensual', familiar_annual: 'Familiar Anual' };
+
+    const r = await fetch('https://api.mercadopago.com/checkout/preferences', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [{
+          title: `MIIA Plan ${planNames[plan] || plan}`,
+          quantity: 1,
+          unit_price: price,
+          currency_id: 'USD'
+        }],
+        back_urls: {
+          success: `${FRONTEND_URL}/owner-dashboard.html?mp_success=1&plan=${plan}&uid=${uid}`,
+          failure: `${FRONTEND_URL}/owner-dashboard.html?mp_failure=1`,
+          pending: `${FRONTEND_URL}/owner-dashboard.html?mp_pending=1`
+        },
+        auto_return: 'approved',
+        external_reference: JSON.stringify({ uid, plan, type: 'subscription' }),
+        notification_url: `https://api.miia-app.com/api/mercadopago/webhook`
+      })
+    });
+    const pref = await r.json();
+    if (!pref.init_point) {
+      console.error('[MP] Error creando preferencia:', pref);
+      return res.status(500).json({ error: 'No se pudo crear la preferencia', detail: pref });
+    }
+    console.log(`[MP] Preferencia creada para ${uid}, plan ${plan}`);
+    res.json({ url: pref.init_point });
+  } catch (e) {
+    console.error('[MP] subscribe error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/mercadopago/agent-checkout', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.body;
+    if (!uid) return res.status(400).json({ error: 'uid requerido' });
+    if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: 'MercadoPago no configurado' });
+
+    const r = await fetch('https://api.mercadopago.com/checkout/preferences', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [{
+          title: 'MIIA Slot Extra',
+          quantity: 1,
+          unit_price: 3,
+          currency_id: 'USD'
+        }],
+        back_urls: {
+          success: `${FRONTEND_URL}/owner-dashboard.html?mp_agent_success=1&uid=${uid}`,
+          failure: `${FRONTEND_URL}/owner-dashboard.html?mp_failure=1`,
+          pending: `${FRONTEND_URL}/owner-dashboard.html?mp_pending=1`
+        },
+        auto_return: 'approved',
+        external_reference: JSON.stringify({ uid, type: 'agent' }),
+        notification_url: `https://api.miia-app.com/api/mercadopago/webhook`
+      })
+    });
+    const pref = await r.json();
+    if (!pref.init_point) return res.status(500).json({ error: 'No se pudo crear la preferencia' });
+    res.json({ url: pref.init_point });
+  } catch (e) {
+    console.error('[MP] agent-checkout error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/mercadopago/webhook', express.json(), async (req, res) => {
+  try {
+    const { type, data } = req.body;
+    if (type !== 'payment') return res.json({ received: true });
+
+    // Consultar el pago en MercadoPago
+    const paymentId = data?.id;
+    if (!paymentId) return res.json({ received: true });
+
+    const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` }
+    });
+    const payment = await r.json();
+
+    if (payment.status === 'approved') {
+      let ref = {};
+      try { ref = JSON.parse(payment.external_reference || '{}'); } catch (_) {}
+      const { uid, plan, type: payType } = ref;
+
+      if (payType === 'subscription' && plan && uid) {
+        const durations = { monthly: 1, quarterly: 3, semestral: 6, annual: 12, familiar: 1, familiar_annual: 12 };
+        const months = durations[plan] || 1;
+        const now = new Date();
+        const endDate = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+        await admin.firestore().collection('users').doc(uid).update({
+          plan, plan_start_date: now, plan_end_date: endDate, payment_status: 'active', payment_method: 'mercadopago'
+        });
+        console.log(`[MP] Plan ${plan} activado para ${uid} (payment ${paymentId})`);
+      } else if (payType === 'agent' && uid) {
+        await admin.firestore().collection('users').doc(uid).update({
+          agents_limit: admin.firestore.FieldValue.increment(1)
+        });
+        console.log(`[MP] Agente extra comprado por ${uid} (payment ${paymentId})`);
+      }
+    }
+
+    res.json({ received: true });
+  } catch (e) {
+    console.error('[MP] webhook error:', e.message);
+    res.status(400).send('Webhook error: ' + e.message);
+  }
+});
+
+// Endpoint para confirmar pago MP desde el frontend (auto_return)
+app.post('/api/mercadopago/confirm', express.json(), async (req, res) => {
+  try {
+    const { payment_id, plan, uid } = req.body;
+    if (!payment_id || !plan || !uid) return res.status(400).json({ error: 'payment_id, plan y uid requeridos' });
+    if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: 'MercadoPago no configurado' });
+
+    const r = await fetch(`https://api.mercadopago.com/v1/payments/${payment_id}`, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` }
+    });
+    const payment = await r.json();
+
+    if (payment.status === 'approved') {
+      const durations = { monthly: 1, quarterly: 3, semestral: 6, annual: 12, familiar: 1, familiar_annual: 12 };
+      const months = durations[plan] || 1;
+      const now = new Date();
+      const endDate = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+      await admin.firestore().collection('users').doc(uid).update({
+        plan, plan_start_date: now, plan_end_date: endDate, payment_status: 'active', payment_method: 'mercadopago'
+      });
+      console.log(`[MP] Plan ${plan} confirmado para ${uid} via frontend`);
+      res.json({ success: true });
+    } else {
+      res.status(400).json({ error: 'Pago no aprobado', status: payment.status });
+    }
+  } catch (e) {
+    console.error('[MP] confirm error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
