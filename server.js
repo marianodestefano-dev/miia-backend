@@ -7460,6 +7460,14 @@ app.post('/api/tenant/:uid/train/contact-rules', express.json(), async (req, res
   try {
     const { uid } = req.params;
     const { lead_keywords, client_keywords } = req.body;
+    const { validateKeyword } = require('./core/contact_gate');
+
+    // Validar keywords contra blacklist (server-side, no confiar solo en frontend)
+    const allKws = [...(lead_keywords || []), ...(client_keywords || [])];
+    const invalid = allKws.map(kw => ({ kw, ...validateKeyword(kw) })).filter(r => !r.valid);
+    if (invalid.length > 0) {
+      return res.status(400).json({ error: 'Keywords inválidas', details: invalid.map(i => ({ keyword: i.kw, reason: i.reason })) });
+    }
 
     const rulesData = {
       lead_keywords: lead_keywords || [],
