@@ -103,6 +103,7 @@ const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 const taskScheduler = require('./core/task_scheduler');
 const { runPreprocess } = require('./core/miia_preprocess');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_postprocess');
+const actionFeedback = require('./core/action_feedback');
 
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
@@ -3364,9 +3365,21 @@ Nuevo resumen actualizado:`;
       console.error(`[PREPROCESS] ⚠️ Error (no bloquea): ${preErr.message}`);
     }
 
+    // ═══ ACTION FEEDBACK: Inyectar resultados de acciones anteriores + reacción negativa ═══
+    let feedbackContext = '';
+    try {
+      feedbackContext = actionFeedback.consumeFeedback(phone);
+      // Detectar si el contacto reacciona negativamente a lo que MIIA dijo antes
+      const lastMiiaMsg = (conversations[phone] || []).slice().reverse().find(m => m.role === 'assistant');
+      const negativeHint = actionFeedback.detectNegativeReaction(effectiveMsg, lastMiiaMsg?.content);
+      feedbackContext += negativeHint;
+    } catch (fbErr) {
+      console.error(`[ACTION-FEEDBACK] ⚠️ Error (no bloquea): ${fbErr.message}`);
+    }
+
     const fullPrompt = `${activeSystemPrompt}
 
-${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${enrichedContext}
+${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${enrichedContext}${feedbackContext}
 
 ${systemDateStr}
 
@@ -3634,7 +3647,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         const emailResult = await mailService.sendGenericEmail(emailTo, emailSubject, emailBody, { fromName: 'Medilink - MIIA' });
         if (emailResult.success) {
           console.log(`[EMAIL] ✅ Correo enviado exitosamente a ${emailTo} (ID: ${emailResult.messageId})`);
-          // Notificar al owner
+          actionFeedback.recordActionResult(phone, 'email', true, `Email enviado a ${emailTo} — "${emailSubject}"`);
           const ownerJidEmail = getOwnerSock()?.user?.id;
           if (ownerJidEmail) {
             const ownerSelfEmail = ownerJidEmail.includes(':') ? ownerJidEmail.split(':')[0] + '@s.whatsapp.net' : ownerJidEmail;
@@ -3642,6 +3655,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           }
         } else {
           console.error(`[EMAIL] ❌ Error enviando correo a ${emailTo}: ${emailResult.error}`);
+          actionFeedback.recordActionResult(phone, 'email', false, `Falló envío a ${emailTo}: ${emailResult.error}`);
           // Fallback: notificar al owner para envío manual
           const ownerJidFail = getOwnerSock()?.user?.id;
           if (ownerJidFail) {
@@ -3791,8 +3805,10 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChat);
           pdfOk = true;
           console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
+          actionFeedback.recordActionResult(phone, 'cotizacion', true, `Cotización PDF generada y enviada`);
         } catch (e) {
           console.error('[COTIZ] Error PDF:', e.message);
+          actionFeedback.recordActionResult(phone, 'cotizacion', false, `Error generando PDF: ${e.message}`);
         }
         // Extraer texto que Gemini escribió ANTES del tag (ej: "Te envío la cotización...")
         let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
@@ -3901,9 +3917,11 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
               calendarOk = true;
               meetLink = calResult.meetLink || null;
               console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode}${meetLink ? ` meet=${meetLink}` : ''}`);
+              actionFeedback.recordActionResult(phone, 'agendar', true, `"${razon}" agendado el ${fecha} para ${contactName} — Calendar OK`);
             }
           } catch (calErr) {
             console.warn(`[AGENDA] ⚠️ Google Calendar no disponible: ${calErr.message}. Guardando en Firestore.`);
+            actionFeedback.recordActionResult(phone, 'agendar', true, `"${razon}" guardado en Firestore (Calendar no conectado)`);
           }
 
           // 2. Guardar en Firestore
@@ -3947,6 +3965,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
             });
           } catch (e) {
             console.error(`[AGENDA] ❌ Error guardando en Firestore:`, e.message);
+            actionFeedback.recordActionResult(phone, 'agendar', false, `Error guardando "${razon}" en Firestore: ${e.message}`);
           }
 
           // 3. Si Calendar no está conectado, avisar al owner
@@ -4019,8 +4038,10 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
             });
             appointmentId = docRef.id;
             console.log(`[SOLICITAR_TURNO] 📋 Solicitud ${appointmentId} creada: ${contactName} pide "${razon}" el ${fecha}`);
+            actionFeedback.recordActionResult(phone, 'turno', true, `Solicitud de turno enviada al owner: "${razon}" el ${fecha}`);
           } catch (e) {
             console.error(`[SOLICITAR_TURNO] ❌ Error guardando solicitud:`, e.message);
+            actionFeedback.recordActionResult(phone, 'turno', false, `Error creando solicitud de turno: ${e.message}`);
           }
 
           // Verificar solapamiento con Google Calendar
@@ -4243,6 +4264,7 @@ REGLAS:
         if (found) {
           await found.doc.ref.update({ status: 'cancelled', cancelledAt: new Date().toISOString(), cancelMode: mode });
           console.log(`[CANCELAR_EVENTO] ✅ Cancelado: "${found.data.reason}" del ${found.data.scheduledForLocal} modo=${mode}`);
+          actionFeedback.recordActionResult(phone, 'cancelar', true, `"${found.data.reason}" del ${found.data.scheduledForLocal} cancelado (modo=${mode})`);
 
           // Notificar al contacto según modo
           if (found.data.contactPhone && found.data.contactPhone !== 'self') {
@@ -4288,9 +4310,11 @@ REGLAS:
           }
         } else {
           console.warn(`[CANCELAR_EVENTO] ⚠️ No se encontró evento para "${searchReason}" el ${searchDate}`);
+          actionFeedback.recordActionResult(phone, 'cancelar', false, `No se encontró evento "${searchReason}" para cancelar`);
         }
       } catch (e) {
         console.error(`[CANCELAR_EVENTO] ❌ Error:`, e.message);
+        actionFeedback.recordActionResult(phone, 'cancelar', false, `Error cancelando: ${e.message}`);
       }
       aiMessage = aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim();
     }
@@ -4354,6 +4378,7 @@ REGLAS:
             preReminderSent: false // Reset reminder para nueva hora
           });
           console.log(`[MOVER_EVENTO] ✅ Evento movido: "${found.data.reason}" de ${found.data.scheduledForLocal} → ${newDate}`);
+          actionFeedback.recordActionResult(phone, 'mover', true, `"${found.data.reason}" movido de ${found.data.scheduledForLocal} a ${newDate}`);
 
           // Actualizar Google Calendar si está sincronizado
           if (found.data.calendarSynced) {
@@ -4390,9 +4415,11 @@ REGLAS:
           }
         } else {
           console.warn(`[MOVER_EVENTO] ⚠️ No se encontró evento o falta fecha nueva`);
+          actionFeedback.recordActionResult(phone, 'mover', false, `No se encontró evento "${searchReason}" para mover`);
         }
       } catch (e) {
         console.error(`[MOVER_EVENTO] ❌ Error:`, e.message);
+        actionFeedback.recordActionResult(phone, 'mover', false, `Error moviendo evento: ${e.message}`);
       }
       aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
     }
