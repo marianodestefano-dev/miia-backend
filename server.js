@@ -215,6 +215,15 @@ const io = socketIO(server, {
 
 app.use(compression());
 app.use(express.static(path.join(__dirname, '../miia-frontend')));
+
+// ═══ COPYRIGHT HEADERS — Propiedad intelectual en cada respuesta ═══
+app.use((req, res, next) => {
+  res.setHeader('X-Powered-By', 'MIIA Engine');
+  res.setHeader('X-Author', 'Mariano De Stefano');
+  res.setHeader('X-Copyright', '(c) 2024-2026 MIIA App. All rights reserved.');
+  next();
+});
+
 // CORS: Allow all origins for now (can be restricted later)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
