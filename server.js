@@ -121,6 +121,8 @@ const taskScheduler = require('./core/task_scheduler');
 const { runPreprocess } = require('./core/miia_preprocess');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_postprocess');
 const actionFeedback = require('./core/action_feedback');
+const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
+const rateLimiter = require('./core/rate_limiter');
 
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
@@ -1599,9 +1601,45 @@ async function safeSendMessage(target, content, options = {}) {
   }
   hourlySendLog.count++;
 
-  // MULTI-MENSAJE: Si el contenido es largo, partirlo en chunks con "..." al final
-  // Tags especiales NUNCA se parten ni cortan
+  // ═══ SPLIT CASUAL: 30% de respuestas medianas se parten en 2-3 msgs rápidos ═══
+  // Simula estilo humano de mandar varios mensajes cortos seguidos
+  // Solo aplica a leads (no self-chat, no familia, no tags especiales)
   const tieneTagEspecial = typeof content === 'string' && /\[(GENERAR_COTIZACION_PDF|GUARDAR_APRENDIZAJE|GUARDAR_NOTA|APRENDIZAJE_NEGOCIO|APRENDIZAJE_PERSONAL|APRENDIZAJE_DUDOSO):/.test(content);
+  if (
+    typeof content === 'string' &&
+    !options.isSelfChat &&
+    !options.skipSplit &&
+    !tieneTagEspecial &&
+    content.length >= 80 && content.length <= 600 &&
+    content.includes('\n') &&
+    Math.random() < 0.30
+  ) {
+    // Partir por doble salto de línea o punto + salto
+    const parts = content.split(/\n{2,}/).filter(p => p.trim().length > 0);
+    if (parts.length >= 2 && parts.length <= 4) {
+      console.log(`[SPLIT-CASUAL] 💬 Partiendo respuesta en ${parts.length} msgs rápidos para ${target}`);
+      for (let i = 0; i < parts.length; i++) {
+        const partDelay = i === 0 ? 0 : (800 + Math.random() * 1500); // 0.8-2.3s entre partes
+        if (partDelay > 0) await new Promise(r => setTimeout(r, partDelay));
+        try {
+          let sendJid = target;
+          if (options.isSelfChat) {
+            const ownerSockSC = getOwnerSock();
+            sendJid = ownerSockSC?.user?.id || target;
+          }
+          await getOwnerSock().sendMessage(sendJid, { text: parts[i].trim() });
+          rateLimiter.recordOutgoing('admin');
+          hourlySendLog.count++;
+        } catch (e) {
+          console.error(`[SPLIT-CASUAL] Error enviando parte ${i + 1}:`, e.message);
+          break;
+        }
+      }
+      return { status: 'split', parts: parts.length };
+    }
+  }
+
+  // MULTI-MENSAJE: Si el contenido es largo, partirlo en chunks con "..." al final
   const MAX_CHUNK = options.isSelfChat ? 1800 : 1200; // Self-chat permite más largo por chunk
   const MAX_CHUNKS = 5; // Máximo 5 mensajes por respuesta
 
@@ -1725,6 +1763,8 @@ async function safeSendMessage(target, content, options = {}) {
       console.error(`[SEND-ERROR] ❌ Error enviando:`, result.error);
     } else {
       console.log(`[SEND-OK] ✅ sendMessage retornó exitosamente`);
+      // Registrar en rate limiter (admin uid hardcodeado por ahora, tenants usan su uid)
+      rateLimiter.recordOutgoing('admin');
     }
 
     // Registrar mensaje como enviado por bot para que message_create lo ignore
@@ -4843,7 +4883,7 @@ async function handleIncomingMessage(message) {
     console.log(`[REACTION] ${fromNum} reaccionó con ${emoji} a ${targetMsgId} (selfChat=${isSelfChat})`);
 
     // Ratio 30%: solo responder ~30% de las veces (sentido común)
-    const shouldRespond = Math.random() < 0.50;
+    const shouldRespond = Math.random() < 0.30;
     if (!shouldRespond) {
       console.log(`[REACTION] Skip (ratio 30%) — no responder esta vez`);
       return;
@@ -5435,57 +5475,45 @@ async function handleIncomingMessage(message) {
       }
     }
 
-    // Auto-takeover para leads desconocidos con keywords de negocio
+    // Auto-takeover via CONTACT GATE — keywords dinámicas + hardcodeadas admin (Medilink)
     if (!isAllowed && !existsInCRM && !fromMe) {
-      // Keywords de negocio + genéricas de interés (incluye variantes ortográficas)
-      // NOTA: el matching normaliza tildes, así que no hace falta duplicar con/sin tilde
-      const takeoverKeywords = [
-        // === Keywords de negocio específicas ===
+      // Admin (Mariano): mantener keywords hardcodeadas de Medilink como fallback
+      const ADMIN_MEDILINK_KEYWORDS = [
         'medico', 'doctor', 'clinica', 'consultorio', 'consulta',
-        'medilink', 'precio', 'cotizacion', 'software', 'sistema', 'plataforma', 'plan',
+        'medilink', 'precio', 'cotizacion', 'software', 'sistema', 'plataforma',
         'salud', 'dentista', 'odontologo', 'kinesiologo', 'psicologia',
         'psicologo', 'ips', 'centro', 'secretaria', 'administrativa',
-        'administrador', 'gerente',
         'pediatra', 'pediatria', 'nutricionista', 'fisioterapeuta', 'especialista',
-        'especialidad', 'paciente', 'pacientes', 'cita', 'citas', 'agenda',
-        'medica', 'medicos', 'terapeuta', 'cirujano', 'ginecologo', 'ginecologa',
+        'paciente', 'pacientes', 'cita', 'citas',
+        'medica', 'medicos', 'terapeuta', 'cirujano', 'ginecologo',
         'dermatologo', 'cardiologo', 'neurologo', 'ortopedista', 'traumatologo',
-        // === Keywords genéricas de interés ===
-        'info', 'informacion', 'infomacion', 'informasion', 'information',
-        'interesado', 'interesada', 'me interesa', 'interezado',
+        'info', 'informacion', 'infomacion', 'informasion',
+        'interesado', 'interesada', 'me interesa',
         'quiero saber', 'quiero info', 'necesito',
         'demo', 'demostracion', 'probar', 'prueba',
         'contratar', 'adquirir', 'comprar', 'suscripcion',
         'presupuesto', 'costo', 'valor', 'tarifa', 'mensualidad',
         'conocer', 'cotizar', 'averiguar',
-        // === Derivados comunes con errores ortográficos ===
-        'imformacion', 'imformación', 'infomasion', 'informarme',
         'presio', 'precios', 'cuanto vale', 'cuanto cuesta', 'cuanto sale',
         'como funciona', 'que ofrece', 'que ofrecen',
-        'quisiera', 'me gustaria', 'me gustaría',
-        'contratacion', 'servicio', 'servicios'
+        'quisiera', 'me gustaria', 'contratacion', 'servicio', 'servicios'
       ];
-      // Normalizar tildes para matching robusto
-      // Gente escribe "informacion", "información", "informasión" — todo debe matchear
-      const normalizedBody = lowerBody.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      const triggered = takeoverKeywords.find(kw => {
-        const normalizedKw = kw.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        return lowerBody.includes(kw) || normalizedBody.includes(normalizedKw);
-      });
-      if (triggered) {
+      // Combinar: keywords dinámicas del owner + hardcodeadas admin
+      const allKeywords = [...keywordsSet, ...ADMIN_MEDILINK_KEYWORDS];
+      const kwMatch = matchesBusinessKeywords(body, allKeywords);
+      if (kwMatch.matched) {
         try {
           const ct = await message.getContact();
           allowedLeads.push(effectiveTarget);
           isAllowed = true;
           detectContactType(ct.name || ct.pushname || 'Lead', effectiveTarget);
           saveDB();
-          console.log(`[WA] ✅ Auto-takeover: ${effectiveTarget} agregado como lead por keyword "${triggered}"`);
+          console.log(`[WA] ✅ Auto-takeover: ${effectiveTarget} agregado como lead por keyword "${kwMatch.keyword}"`);
         } catch (e) {
-          // Si getContact falla igual registramos el lead
           allowedLeads.push(effectiveTarget);
           isAllowed = true;
           saveDB();
-          console.log(`[WA] ✅ Auto-takeover (sin contacto): ${effectiveTarget} ${triggered ? `keyword "${triggered}"` : 'saludo'}`);
+          console.log(`[WA] ✅ Auto-takeover (sin contacto): ${effectiveTarget} keyword "${kwMatch.keyword}"`);
         }
       }
     }
@@ -5504,14 +5532,11 @@ async function handleIncomingMessage(message) {
       if (message._baileysMsg?._silentDigest) {
         console.log(`[SILENT-DIGEST] 📋 Contacto no-allowed registrado: ${effectiveTarget} body="${(body||'').substring(0,40)}"`);
       } else {
-        console.log(`[WA] IA BLOQUEADA para ${effectiveTarget}. Sin keywords de negocio ni historial. body="${(body||'').substring(0,60)}" isLID=${effectiveTarget.includes('@lid')}`);
-        // Si es LID no resuelto, notificar al owner para que no pierda leads
-        if (effectiveTarget.includes('@lid') && body && body.length > 5) {
-          safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-            `⚠️ *Lead no atendido* (LID sin resolver)\nMensaje: "${(body||'').substring(0,100)}"\nNo pude identificar su número. Revisá WhatsApp directo.`,
-            { isSelfChat: true }
-          ).catch(() => {});
-        }
+        const baseTarget = effectiveTarget.split('@')[0];
+        console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${baseTarget}. Sin keywords. body="${(body||'').substring(0,60)}"`);
+        // Notificar al owner: alguien escribió sin keyword match
+        const alertMsg = buildUnknownContactAlert(baseTarget, body);
+        safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, alertMsg, { isSelfChat: true }).catch(() => {});
       }
       return;
     }
@@ -5543,6 +5568,25 @@ async function handleIncomingMessage(message) {
       console.log(`[SILENT-DIGEST] 📋 ${effectiveTarget} body="${(body||'').substring(0,50)}" → datos guardados, sin respuesta`);
       saveDB();
       return;
+    }
+
+    // ═══ READ RECEIPT SELECTIVO: Solo marcar como leído si MIIA va a responder ═══
+    // Contactos ignorados (sin keyword) ya retornaron arriba → nunca llegan acá → ticks grises
+    // Los que llegan acá SÍ van a recibir respuesta → marcar como leído con delay
+    if (!fromMe && message._baileysMsg?.key) {
+      const readDelayMs = 1500 + Math.random() * 3000; // 1.5-4.5s para leer
+      setTimeout(async () => {
+        try {
+          const ownerSockRR = getOwnerSock();
+          if (ownerSockRR) {
+            await ownerSockRR.readMessages([message._baileysMsg.key]);
+            console.log(`[READ-RECEIPT] ✅ Marcado como leído: ${effectiveTarget} (delay ${Math.round(readDelayMs)}ms)`);
+          }
+        } catch (e) {
+          // Best effort — no falla si no funciona
+          console.log(`[READ-RECEIPT] ⚠️ No se pudo marcar como leído: ${e.message}`);
+        }
+      }, readDelayMs);
     }
 
     // Self-chat: solo responder si MIIA es mencionada
@@ -8820,6 +8864,11 @@ app.get('/api/health/unknown-errors', (req, res) => res.json(shield.getUnknownEr
 app.get('/api/health/task-scheduler', (req, res) => res.json({
   metrics: taskScheduler.getTaskMetrics(),
   silentFailures: taskScheduler.getSilentFailures()
+}));
+
+app.get('/api/health/rate-limiter', (req, res) => res.json({
+  metrics: rateLimiter.getMetrics(),
+  adminLevel: rateLimiter.getLevel('admin'),
 }));
 
 // ═══ MINI APP / PWA — Endpoints de Protección ═══

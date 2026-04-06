@@ -1082,7 +1082,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           || msg.message?.videoMessage?.contextInfo
           || msg.message?.audioMessage?.contextInfo
           || null;
-        const messageContext = {};
+        const messageContext = { msgKey: msg.key };
         if (ctxInfo) {
           if (ctxInfo.quotedMessage) {
             const quotedText = ctxInfo.quotedMessage.conversation

@@ -43,6 +43,12 @@ const {
 } = require('../core/prompt_builder');
 
 const { callAI } = require('../ai/ai_client');
+const {
+  shouldMiiaRespond, matchesBusinessKeywords, getOwnerBusinessKeywords,
+  buildUnknownContactAlert
+} = require('../core/contact_gate');
+const rateLimiter = require('../core/rate_limiter');
+const humanDelay = require('../core/human_delay');
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
@@ -297,13 +303,21 @@ async function classifyContact(ctx, basePhone, messageBody, tenantState) {
 
   const businesses = ctx.businesses || [];
 
-  // PASO 2: Solo 1 negocio → asignar directo
+  // PASO 2: Solo 1 negocio → verificar keywords ANTES de asignar
   if (businesses.length <= 1) {
     const bizId = businesses[0]?.id || null;
     const bizName = businesses[0]?.name || 'Mi Negocio';
-    console.log(`${logPrefix} 📇 PASO 2: 1 negocio → asignar directo a "${bizName}"`);
-    if (bizId) await saveContactIndex(ownerUid, basePhone, { type: 'lead', businessId: bizId, name: '' });
-    return { type: 'lead', businessId: bizId, businessName: bizName };
+    // Verificar keywords de negocio — MIIA NO EXISTE sin keyword match
+    const allKeywords = getOwnerBusinessKeywords(ctx);
+    const kwMatch = matchesBusinessKeywords(messageBody, allKeywords);
+    if (kwMatch.matched) {
+      console.log(`${logPrefix} 📇 PASO 2: Keyword "${kwMatch.keyword}" match → lead de "${bizName}"`);
+      if (bizId) await saveContactIndex(ownerUid, basePhone, { type: 'lead', businessId: bizId, name: '' });
+      return { type: 'lead', businessId: bizId, businessName: bizName };
+    }
+    // Sin keyword match → desconocido, MIIA NO EXISTE
+    console.log(`${logPrefix} 📇 PASO 2: Sin keyword match → unknown (MIIA no existe)`);
+    return { type: 'unknown' };
   }
 
   // PASO 3: whatsapp_number match (solo si 2+ negocios)
@@ -633,42 +647,119 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     ctx.contactTypes[phone] = contactType;
   }
 
-  // ── PASO 7b: Trigger "Hola MIIA" / "Chau MIIA" para grupos ──
+  // ── PASO 7b: CONTACT GATE — Decisión centralizada: ¿MIIA responde o no? ──
   const msgNorm = normalizeText(messageBody);
   const isHolaMiia = msgNorm.includes('hola miia');
   const isChauMiia = msgNorm.includes('chau miia');
+  const isGroup = phone.endsWith('@g.us');
+  const businessKeywords = getOwnerBusinessKeywords(ctx);
 
+  // Actualizar estado de activación ANTES del gate
   if (isHolaMiia) {
     ctx.miiaActive[phone] = true;
     console.log(`${logPrefix} 🟢 MIIA activada para ${basePhone} (trigger "Hola MIIA")`);
   }
 
-  if (isChauMiia) {
+  const gateDecision = shouldMiiaRespond({
+    isSelfChat,
+    isGroup,
+    contactType,
+    miiaActive: !!ctx.miiaActive[phone],
+    isHolaMiia,
+    isChauMiia,
+    messageBody,
+    businessKeywords,
+    basePhone,
+  });
+
+  console.log(`${logPrefix} 🚪 CONTACT-GATE: respond=${gateDecision.respond}, reason=${gateDecision.reason}, action=${gateDecision.action || 'none'}`);
+
+  // Acción: farewell (Chau MIIA)
+  if (gateDecision.action === 'farewell') {
     ctx.miiaActive[phone] = false;
     console.log(`${logPrefix} 🔴 MIIA desactivada para ${basePhone} (trigger "Chau MIIA")`);
-    // Enviar despedida cálida y salir
     const farewell = `¡Fue un gusto charlar! Cuando quieras hablar de nuevo, escribime *Hola MIIA* 😊`;
     ctx.conversations[phone].push({ role: 'assistant', content: farewell, timestamp: Date.now() });
     await sendTenantMessage(tenantState, phone, farewell);
     return;
   }
 
-  // Gate: Si es grupo con autoRespond=false y MIIA no está activa → silencio
-  if (contactType === 'group' && classification?.groupData && !classification.groupData.autoRespond) {
-    if (!ctx.miiaActive[phone]) {
-      console.log(`${logPrefix} 🤫 Grupo "${classification.groupData.name}" sin autoRespond y MIIA no activa para ${basePhone}. Silencio.`);
-      return;
+  // Acción: notificar al owner sobre contacto desconocido sin keywords
+  if (gateDecision.action === 'notify_owner') {
+    const ownerJid = tenantState.sock?.user?.id;
+    if (ownerJid) {
+      const alertMsg = buildUnknownContactAlert(basePhone, messageBody);
+      try {
+        await sendTenantMessage(tenantState, ownerJid, alertMsg);
+        console.log(`${logPrefix} 📢 Owner notificado: desconocido ${basePhone} sin keyword match`);
+      } catch (e) {
+        console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
+      }
     }
   }
 
-  // Gate: familia y equipo también requieren trigger (decisión #3 del plan)
-  if ((contactType === 'familia' || contactType === 'equipo') && !isSelfChat) {
-    if (!ctx.miiaActive[phone] && !isHolaMiia) {
-      // Primera vez: no está activa y no dijo "Hola MIIA" → silencio
-      console.log(`${logPrefix} 🤫 ${contactType} ${basePhone} sin trigger "Hola MIIA". Silencio.`);
-      return;
-    }
+  // Si keyword matcheó en un desconocido → clasificar como lead y guardar en contact_index
+  if (gateDecision.reason === 'keyword_match' && gateDecision.matchedKeyword) {
+    const businesses = ctx.businesses || [];
+    const bizId = businesses[0]?.id || null;
+    const bizName = businesses[0]?.name || 'Mi Negocio';
+    console.log(`${logPrefix} 🏷️ Desconocido ${basePhone} clasificado como lead por keyword "${gateDecision.matchedKeyword}" → ${bizName}`);
+    contactType = 'lead';
+    ctx.contactTypes[phone] = 'lead';
+    if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: '' });
+  }
+
+  // GATE FINAL: si no debe responder → silencio total
+  if (!gateDecision.respond) {
+    console.log(`${logPrefix} 🤫 MIIA NO EXISTE para ${basePhone} (${gateDecision.reason}). Silencio total.`);
+    return;
     // Si es la primera interacción ("Hola MIIA"), ya se activó arriba
+  }
+
+  // ── PASO 7c: Read receipt selectivo — solo marcar leído si MIIA va a responder ──
+  // Contactos ignorados/sin keyword retornaron arriba → nunca llegan acá → ticks grises
+  if (!isSelfChat && messageContext?.msgKey) {
+    const readDelayMs = 1500 + Math.random() * 3000;
+    setTimeout(async () => {
+      try {
+        if (tenantState.sock && tenantState.isReady) {
+          await tenantState.sock.readMessages([messageContext.msgKey]);
+          console.log(`${logPrefix} ✅ Read receipt enviado para ${basePhone} (delay ${Math.round(readDelayMs)}ms)`);
+        }
+      } catch (e) {
+        console.log(`${logPrefix} ⚠️ Read receipt falló: ${e.message}`);
+      }
+    }, readDelayMs);
+  }
+
+  // ── PASO 7d: Rate limiter — auto-límite inteligente (5 niveles, ventana 24h) ──
+  const rlCheck = rateLimiter.shouldRespond(ctx.ownerUid, contactType);
+  console.log(`${logPrefix} 📊 RATE-LIMIT: ${rlCheck.level.emoji} ${rlCheck.level.name} — ${rlCheck.reason}`);
+
+  // Verificar cambio de nivel → notificar al owner en self-chat
+  const rlChange = rateLimiter.checkLevelChange(ctx.ownerUid);
+  if (rlChange.changed && rlChange.message) {
+    const ownerJid = tenantState.sock?.user?.id;
+    if (ownerJid) {
+      try {
+        await sendTenantMessage(tenantState, ownerJid, rlChange.message);
+        console.log(`${logPrefix} 📢 Owner notificado: nivel cambió ${rlChange.oldLevel} → ${rlChange.newLevel}`);
+      } catch (e) {
+        console.error(`${logPrefix} ❌ Error notificando cambio de nivel:`, e.message);
+      }
+    }
+  }
+
+  if (!rlCheck.allowed) {
+    console.log(`${logPrefix} ⛔ RATE-LIMIT: ${contactType} ${basePhone} bloqueado por nivel ${rlCheck.level.name}`);
+    return;
+  }
+
+  // ── PASO 7e: Night mode — MIIA "duerme" automáticamente ──
+  const nightCheck = humanDelay.nightModeGate(ctx.ownerUid, contactType, ctx.ownerProfile?.timezone);
+  if (!nightCheck.allowed) {
+    console.log(`${logPrefix} 🌙 NIGHT MODE: ${contactType} ${basePhone} bloqueado (${nightCheck.reason}). Lead responde mañana.`);
+    return;
   }
 
   // ── PASO 8: Detectar negatividad (solo leads, no familia/equipo/self-chat) ──
@@ -1045,20 +1136,41 @@ async function sendTenantMessage(tenantState, phone, content) {
     console.log(`[TMH:${tenantState.uid}] ✂️ Respuesta recortada a ${content.length} chars para ${phone}`);
   }
 
-  // Delay humanizado antes de escribir (1.5-3 seg)
-  const humanDelay = Math.floor(Math.random() * (3000 - 1500 + 1)) + 1500;
-  await delay(humanDelay);
+  // ═══ HUMAN DELAY: Secuencia correcta → leer → delay → typing → delay → enviar ═══
+  const ctx = tenantContexts.get(tenantState.uid);
+  const ownerHour = humanDelay.getOwnerHour(ctx?.ownerProfile?.timezone);
+  const rlLevel = rateLimiter.getLevel(tenantState.uid);
+  const delayMult = rlLevel.level.delayMultiplier || 1;
+  const isSelfChatMsg = tenantState.sock?.user?.id === phone;
+  const contactTypeForDelay = isSelfChatMsg ? 'owner' : 'lead'; // Simplificado para sendTenantMessage
+
+  // 1. Delay de "lectura" (antes de empezar a escribir)
+  const readMs = humanDelay.calculateReadDelay({
+    contactType: contactTypeForDelay,
+    messageLength: 50, // No tenemos el mensaje original acá, usar estimado
+    isFirstMessage: false,
+    hour: ownerHour,
+    delayMultiplier: delayMult,
+  });
+  // Posible delay extra de "ocupado" (1 de cada 8)
+  const busyMs = humanDelay.maybeBusyDelay(contactTypeForDelay);
+  await delay(readMs + busyMs);
 
   try {
-    // Typing indicator (best effort, no falla si no funciona)
+    // 2. Typing indicator DESPUÉS del delay de lectura (no antes)
     try { await tenantState.sock.sendPresenceUpdate('composing', phone); } catch (_) {}
 
-    // Delay de "escritura" proporcional al largo del mensaje
-    const typingDelay = Math.min((content.length || 50) * 40, 8000);
-    await delay(typingDelay);
+    // 3. Delay de "escritura" proporcional al largo de la respuesta
+    const typingMs = humanDelay.calculateTypingDelay({
+      responseLength: content.length,
+      contactType: contactTypeForDelay,
+      delayMultiplier: delayMult,
+    });
+    await delay(typingMs);
 
     // Enviar
     await tenantState.sock.sendMessage(phone, { text: content });
+    rateLimiter.recordOutgoing(tenantState.uid);
     console.log(`[TMH:${tenantState.uid}] 📤 Mensaje enviado a ${phone} (${content.length} chars)`);
     return true;
   } catch (e) {
