@@ -221,7 +221,6 @@ Si un contacto dice "recuérdame que..." o "no me dejes olvidar...":
 
 IMPORTANTE: Las fechas SIEMPRE en formato ISO (ej: 2026-04-06T15:00:00). Si dicen "mañana" → calculá la fecha real.`;
 }
-}
 
 /**
  * MOD_COTIZACION — Protocolo de cotización. Se carga cuando se detecta intención de precio/cotización.
