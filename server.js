@@ -82,6 +82,8 @@ const estadisticas = require('./services/estadisticas');
 const mailService = require('./services/mail_service');
 const protectionManager = require('./services/protection_manager');
 const biweeklyReport = require('./services/biweekly_report');
+const priceTracker = require('./services/price_tracker');
+const travelTracker = require('./services/travel_tracker');
 
 // ═══ WHATSAPP — Baileys, tenants, mensajes ═══
 const tenantManager = require('./whatsapp/tenant_manager');
@@ -270,7 +272,18 @@ function registerLidMapping(lid, phone) {
 function resolveLid(jid) {
   if (!jid || !jid.includes('@lid')) return jid;
   const lidBase = jid.split('@')[0].split(':')[0];
-  return lidToPhone[lidBase] || jid; // retorna el phone o el LID original si no hay mapeo
+  // Fuente 1: mapa local (llenado por registerLidMapping)
+  if (lidToPhone[lidBase]) return lidToPhone[lidBase];
+  // Fuente 2: mapa de contactos de WhatsApp (llenado por contacts.upsert/update en tenant_manager)
+  // Esto cubre TODOS los contactos del teléfono — la solución definitiva para familia
+  const fromContacts = tenantManager.resolveLidFromContacts(OWNER_UID, jid);
+  if (fromContacts) {
+    // Registrar en mapa local para futuras resoluciones rápidas
+    registerLidMapping(jid, fromContacts);
+    console.log(`[LID-MAP] 📇 Resuelto via contactos WhatsApp: ${lidBase} → ${fromContacts}`);
+    return fromContacts;
+  }
+  return jid; // no resuelto
 }
 
 // --- Variables MIIA (portadas desde index.js) ---
@@ -742,6 +755,40 @@ setTimeout(async () => {
     console.error('[INTEGRATIONS] ❌ Error inicializando:', err.message);
   }
 }, 360000);
+
+// ═══ PRICE TRACKER + TRAVEL TRACKER — Seguimiento precios y vuelos ═══
+setTimeout(() => {
+  if (!OWNER_UID) return;
+  try {
+    priceTracker.initPriceTracker({
+      generateAIContent,
+      safeSendMessage,
+      ownerPhone: OWNER_PHONE,
+      ownerUid: OWNER_UID,
+      getOwnerSock
+    });
+    // Polling precios cada 30 min
+    setInterval(() => priceTracker.checkPrices(OWNER_UID), 1800000);
+    console.log('[PRICE-TRACKER] ✅ Engine iniciado (poll cada 30min)');
+  } catch (err) {
+    console.error('[PRICE-TRACKER] ❌ Error inicializando:', err.message);
+  }
+  try {
+    travelTracker.initTravelTracker({
+      generateAIContent,
+      safeSendMessage,
+      getOwnerSock,
+      ownerUid: OWNER_UID
+    });
+    // Polling alertas de vuelos cada 6 horas
+    setInterval(() => travelTracker.checkFlightAlerts(OWNER_UID), 6 * 3600000);
+    // Verificar pasaporte cada semana
+    setInterval(() => travelTracker.checkPassportExpiry(OWNER_UID), 7 * 24 * 3600000);
+    console.log('[TRAVEL] ✅ Engine iniciado (vuelos cada 6h, pasaporte semanal)');
+  } catch (err) {
+    console.error('[TRAVEL] ❌ Error inicializando:', err.message);
+  }
+}, 420000); // 7 min post-startup
 
 let morningWakeupDone   = '';        // evita repetir el despertar en el mismo día
 let morningBriefingDone = '';        // evita repetir el briefing en el mismo día
@@ -2248,6 +2295,121 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       }
     }
 
+    // ═══ PRICE TRACKER — Self-chat commands ═══
+    // "seguí este producto: URL" / "trackear: URL" / "precio: URL"
+    const priceTrackMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:segui|seguí|trackear?|precio|rastrear?)\s+(?:este\s+producto\s*:?\s*)?(.+)/i);
+    if (isAdmin && priceTrackMatch) {
+      const urlOrProduct = priceTrackMatch[1].trim();
+      if (urlOrProduct.includes('http')) {
+        await safeSendMessage(phone, `🔍 Analizando producto... Dame unos segundos.`);
+        const result = await priceTracker.trackProduct(urlOrProduct, OWNER_UID);
+        if (result.success) {
+          let response = `✅ *Producto registrado para seguimiento*\n📦 ${result.productName}\n💰 ${result.currency} ${result.price?.toLocaleString() || 'N/A'}\n📊 Stock: ${result.stock || 'desconocido'}`;
+          if (result.storeWhatsApp) response += `\n📱 Le escribí al WhatsApp de la tienda consultando precio y stock`;
+          if (result.storeEmail) response += `\n📧 También envié un email a la tienda`;
+          response += `\n\nTe avisaré cuando cambie el precio 💰`;
+          await safeSendMessage(phone, response);
+        } else {
+          await safeSendMessage(phone, `❌ No pude analizar ese producto: ${result.error}`);
+        }
+        return;
+      }
+    }
+
+    // "mis productos" / "productos trackeados" / "mis precios"
+    const priceListMatch = effectiveMsg && /^(?:miia\s+)?(?:mis\s+productos|productos\s+trackeados|mis\s+precios)/i.test(effectiveMsg);
+    if (isAdmin && priceListMatch) {
+      try {
+        const tracksSnap = await admin.firestore()
+          .collection('users').doc(OWNER_UID)
+          .collection('price_tracks')
+          .where('status', '==', 'active')
+          .limit(20).get();
+        if (tracksSnap.empty) {
+          await safeSendMessage(phone, '📦 No tenés productos en seguimiento. Decime "seguí este producto: [URL]" para empezar!');
+        } else {
+          let msg = `📦 *Productos en seguimiento (${tracksSnap.size}):*\n`;
+          for (const doc of tracksSnap.docs) {
+            const t = doc.data();
+            const diff = t.baselinePrice > 0 ? ((t.currentPrice - t.baselinePrice) / t.baselinePrice * 100).toFixed(1) : 0;
+            const arrow = diff > 0 ? '📈' : diff < 0 ? '📉' : '➡️';
+            msg += `\n${arrow} *${t.productName}*\n   ${t.currency} ${t.currentPrice?.toLocaleString()} (${diff > 0 ? '+' : ''}${diff}%) — Stock: ${t.stock}`;
+          }
+          await safeSendMessage(phone, msg);
+        }
+      } catch (e) {
+        await safeSendMessage(phone, `❌ Error consultando productos: ${e.message}`);
+      }
+      return;
+    }
+
+    // ═══ TRAVEL TRACKER — Self-chat commands ═══
+    // "busca vuelos BOG EZE mayo" / "vuelos de bogota a buenos aires"
+    const flightSearchMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:busca?\s+)?vuelos?\s+(?:de\s+)?(\S+)\s+(?:a\s+)?(\S+)\s*(.*)?/i);
+    if (isAdmin && flightSearchMatch) {
+      const origin = flightSearchMatch[1].trim();
+      const dest = flightSearchMatch[2].trim();
+      const dateRange = flightSearchMatch[3]?.trim() || 'próximas semanas';
+      await safeSendMessage(phone, `✈️ Buscando vuelos ${origin} → ${dest} para ${dateRange}...`);
+      const results = await travelTracker.searchFlights(origin, dest, dateRange);
+      await safeSendMessage(phone, results);
+      return;
+    }
+
+    // "avisame si hay vuelos BOG EZE por menos de 200" / "alerta vuelo BOG EZE 200"
+    const flightAlertMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:avisame|alerta)\s+(?:si\s+hay\s+)?vuelos?\s+(\S+)\s+(?:a\s+)?(\S+)\s+(?:por\s+)?(?:menos\s+de\s+)?\$?(\d+)\s*(usd|cop|eur|mxn|clp|ars)?/i);
+    if (isAdmin && flightAlertMatch) {
+      const origin = flightAlertMatch[1].trim();
+      const dest = flightAlertMatch[2].trim();
+      const maxPrice = parseInt(flightAlertMatch[3]);
+      const currency = (flightAlertMatch[4] || 'USD').toUpperCase();
+      const result = await travelTracker.createFlightAlert(OWNER_UID, origin, dest, maxPrice, currency);
+      if (result.success) {
+        await safeSendMessage(phone, `✅ *Alerta de vuelo creada*\n✈️ ${origin} → ${dest}\n💰 Menos de ${currency} ${maxPrice}\n\nTe aviso cuando encuentre algo 🔔`);
+      } else {
+        await safeSendMessage(phone, `❌ Error creando alerta: ${result.error}`);
+      }
+      return;
+    }
+
+    // "qué necesito para viajar a Chile?" / "info Chile" / "viajar a Chile"
+    const destInfoMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:que\s+necesito\s+para\s+)?(?:viajar\s+a|info\s+(?:de\s+)?|informacion\s+(?:de\s+)?)(\S+.*)/i);
+    if (isAdmin && destInfoMatch && /viaj|info|necesito/i.test(effectiveMsg)) {
+      const dest = destInfoMatch[1].replace(/\?/g, '').trim();
+      await safeSendMessage(phone, `🌍 Buscando info sobre ${dest}...`);
+      const info = await travelTracker.getDestinationInfo(dest);
+      await safeSendMessage(phone, info);
+      return;
+    }
+
+    // "checklist para Madrid 7 días" / "checklist viaje Madrid"
+    const checklistMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?checklist\s+(?:para\s+|viaje\s+)?(\S+)\s*(.*)?/i);
+    if (isAdmin && checklistMatch) {
+      const dest = checklistMatch[1].trim();
+      const details = checklistMatch[2]?.trim() || '';
+      await safeSendMessage(phone, `📋 Generando checklist para ${dest}...`);
+      const checklist = await travelTracker.generateChecklist(dest, details);
+      await safeSendMessage(phone, checklist);
+      return;
+    }
+
+    // "mi pasaporte vence en diciembre 2027" / "pasaporte 12/2027"
+    const passportMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:mi\s+)?pasaporte\s+(?:vence\s+(?:en\s+)?)?(.+)/i);
+    if (isAdmin && passportMatch) {
+      const expiryText = passportMatch[1].trim();
+      // Pedir a Gemini que parsee la fecha
+      const parsePrompt = `Convierte esto a fecha ISO: "${expiryText}". Responde SOLO con el formato YYYY-MM-DD. Si no se puede, responde "INVALID".`;
+      const parsed = await generateAIContent(parsePrompt);
+      if (parsed && parsed.trim() !== 'INVALID' && parsed.match(/\d{4}-\d{2}-\d{2}/)) {
+        const expiryDate = parsed.match(/\d{4}-\d{2}-\d{2}/)[0];
+        await travelTracker.savePassport(OWNER_UID, { expiry: expiryDate });
+        await safeSendMessage(phone, `🛂 Pasaporte registrado — vence el *${expiryDate}*. Te avisaré 3 meses antes 📅`);
+      } else {
+        await safeSendMessage(phone, `🤔 No entendí la fecha. Probá con formato: "pasaporte vence en diciembre 2027"`);
+      }
+      return;
+    }
+
     // Comando "dile a equipo medilink que..." — broadcast a todos los miembros del equipo
     const equipoMsgMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?dile?\s+a\s+equipo\s+medilink\s+que?\s+(.+)/is);
     if (isAdmin && equipoMsgMatch) {
@@ -2947,6 +3109,17 @@ Nuevo resumen actualizado:`;
       promptMeta = result.meta;
     }
 
+    // ═══ PROTECCIÓN ELDERLY: Inyectar tono respetuoso si detectado ═══
+    if (conversationMetadata[effectiveTarget]?.protectionMode === 'elderly' && !isAdmin) {
+      activeSystemPrompt += `\n\n## MODO ADULTO MAYOR ACTIVO
+- Habla con MÁXIMO respeto. Usa "usted" si el contacto lo usa.
+- Mensajes CORTOS (máximo 2 líneas). Nada de jerga ni tecnicismos.
+- Paciencia INFINITA. Si repite algo, respondé como si fuera la primera vez.
+- Si menciona salud/malestar → preguntá con cuidado: "¿Está todo bien? ¿Necesita que avise a alguien?"
+- Si detectás confusión o desorientación → emití [ALERTA_OWNER:Posible confusión/desorientación de ${leadNames[effectiveTarget] || 'contacto'}]
+- NUNCA seas condescendiente. Tratalo con la dignidad de un adulto.`;
+    }
+
     // ═══ INTER-MIIA — Detectar mensajes de otra MIIA ═══
     if (!isAdmin && effectiveMsg) {
       const incoming = interMiia.detectIncomingInterMiia(effectiveMsg);
@@ -3324,6 +3497,78 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       if (ownerJid2) {
         const ownerSelfChat2 = ownerJid2.includes(':') ? ownerJid2.split(':')[0] + '@s.whatsapp.net' : ownerJid2;
         await safeSendMessage(ownerSelfChat2, `📢 *Acción requerida* — Lead ${basePhone}:\n${alertMsg}`, { isSelfChat: true });
+      }
+    }
+
+    // ── TAG [MENSAJE_PARA_OWNER:mensaje] — Contacto dice "dile a Mariano que..." ──
+    const msgOwnerMatch = aiMessage.match(/\[MENSAJE_PARA_OWNER:([^\]]+)\]/);
+    if (msgOwnerMatch) {
+      const msgForOwner = msgOwnerMatch[1].trim();
+      aiMessage = aiMessage.replace(/\[MENSAJE_PARA_OWNER:[^\]]+\]/g, '').trim();
+      const contactName = leadNames[phone] || basePhone;
+      console.log(`[DILE-A] 📩 ${contactName} (${basePhone}) → Owner: "${msgForOwner}"`);
+      const ownerJidMsg = getOwnerSock()?.user?.id;
+      if (ownerJidMsg) {
+        const ownerSelfMsg = ownerJidMsg.includes(':') ? ownerJidMsg.split(':')[0] + '@s.whatsapp.net' : ownerJidMsg;
+        await safeSendMessage(ownerSelfMsg, `📩 *${contactName}* te dice:\n"${msgForOwner}"`, { isSelfChat: true });
+      }
+    }
+
+    // ── TAG [RECORDAR_OWNER:fecha|mensaje] — Contacto dice "recuérdale a Mariano que..." ──
+    const recordOwnerMatch = aiMessage.match(/\[RECORDAR_OWNER:([^|]+)\|([^\]]+)\]/);
+    if (recordOwnerMatch) {
+      const recordFecha = recordOwnerMatch[1].trim();
+      const recordMsg = recordOwnerMatch[2].trim();
+      aiMessage = aiMessage.replace(/\[RECORDAR_OWNER:[^\]]+\]/g, '').trim();
+      const contactName = leadNames[phone] || basePhone;
+      console.log(`[RECORDAR] ⏰ ${contactName} quiere recordar al owner: "${recordMsg}" → ${recordFecha}`);
+      // Agendar usando el sistema de agenda existente (miia_agenda en Firestore)
+      if (OWNER_UID) {
+        try {
+          const agendaRef = admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda');
+          await agendaRef.add({
+            type: 'recordatorio_contacto',
+            from: basePhone,
+            fromName: contactName,
+            message: recordMsg,
+            scheduledFor: recordFecha,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'pending',
+            notifyTarget: 'owner'
+          });
+          console.log(`[RECORDAR] ✅ Recordatorio agendado para owner: "${recordMsg}" → ${recordFecha}`);
+        } catch (e) {
+          console.error(`[RECORDAR] ❌ Error agendando recordatorio:`, e.message);
+        }
+      }
+    }
+
+    // ── TAG [RECORDAR_CONTACTO:fecha|mensaje] — Contacto dice "recuérdame que..." ──
+    const recordContactoMatch = aiMessage.match(/\[RECORDAR_CONTACTO:([^|]+)\|([^\]]+)\]/);
+    if (recordContactoMatch) {
+      const recordFecha = recordContactoMatch[1].trim();
+      const recordMsg = recordContactoMatch[2].trim();
+      aiMessage = aiMessage.replace(/\[RECORDAR_CONTACTO:[^\]]+\]/g, '').trim();
+      const contactName = leadNames[phone] || basePhone;
+      console.log(`[RECORDAR] ⏰ ${contactName} quiere que le recuerden: "${recordMsg}" → ${recordFecha}`);
+      if (OWNER_UID) {
+        try {
+          const agendaRef = admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda');
+          await agendaRef.add({
+            type: 'recordatorio_contacto',
+            from: basePhone,
+            fromName: contactName,
+            message: recordMsg,
+            scheduledFor: recordFecha,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'pending',
+            notifyTarget: 'contact',
+            notifyPhone: phone
+          });
+          console.log(`[RECORDAR] ✅ Recordatorio agendado para contacto ${contactName}: "${recordMsg}" → ${recordFecha}`);
+        } catch (e) {
+          console.error(`[RECORDAR] ❌ Error agendando recordatorio:`, e.message);
+        }
       }
     }
 
@@ -4633,19 +4878,36 @@ async function handleIncomingMessage(message) {
       const detected = protectionManager.detectProtectionMode(body, msgHistory);
       if (detected) {
         // Verificar si ya tiene modo configurado
-        const userSnap = await admin.firestore().collection('users')
-          .where('phone', '==', senderPhone).limit(1).get();
-        if (!userSnap.empty) {
-          const senderUid = userSnap.docs[0].id;
-          const protConfig = await admin.firestore().collection('users').doc(senderUid)
-            .collection('protection').doc('config').get();
-          const existingMode = protConfig.exists ? protConfig.data().mode : null;
-          if (!existingMode) {
+        const existingMode = conversationMetadata[effectiveTarget]?.protectionMode || null;
+        if (!existingMode) {
+          // Guardar en metadata local (funciona para cualquier contacto, no solo usuarios registrados)
+          if (!conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget] = {};
+          conversationMetadata[effectiveTarget].protectionMode = detected;
+          conversationMetadata[effectiveTarget].protectionDetectedAt = new Date().toISOString();
+
+          // También intentar guardar en Firestore si es usuario registrado
+          const userSnap = await admin.firestore().collection('users')
+            .where('phone', '==', senderPhone).limit(1).get();
+          if (!userSnap.empty) {
+            const senderUid = userSnap.docs[0].id;
             await protectionManager.activateProtectionMode(senderUid, detected, {
               detectedAutomatically: true,
               phone: senderPhone
             });
-            console.log(`[PROTECTION] 🛡️ Modo ${detected} DETECTADO automáticamente para ${senderPhone}`);
+          }
+
+          console.log(`[PROTECTION] 🛡️ Modo ${detected} DETECTADO automáticamente para ${senderPhone}`);
+
+          // Notificar al owner (en silencio, no al contacto)
+          const contactName = leadNames[effectiveTarget] || familyContacts[senderPhone]?.name || senderPhone;
+          const ownerJidProt = getOwnerSock()?.user?.id;
+          if (ownerJidProt) {
+            const ownerSelfProt = ownerJidProt.includes(':') ? ownerJidProt.split(':')[0] + '@s.whatsapp.net' : ownerJidProt;
+            const modeEmoji = detected === 'kids' ? '👶' : '👴';
+            await safeSendMessage(ownerSelfProt,
+              `${modeEmoji} Detecté que *${contactName}* podría ser ${detected === 'kids' ? 'un menor' : 'adulto mayor'}. Activé tono ${detected === 'kids' ? 'infantil protegido' : 'respetuoso y paciente'} automáticamente 🤍`,
+              { isSelfChat: true }
+            );
           }
         }
       }
@@ -5014,6 +5276,15 @@ async function handleIncomingMessage(message) {
           saveDB();
           console.log(`[WA] ✅ Auto-takeover (sin contacto): ${effectiveTarget} ${triggered ? `keyword "${triggered}"` : 'saludo'}`);
         }
+      }
+    }
+
+    // ═══ PRICE TRACKER: Detectar respuestas de tiendas trackeadas ═══
+    if (!fromMe) {
+      const storeInfo = priceTracker.identifyStoreReply(effectiveTarget, body);
+      if (storeInfo) {
+        await priceTracker.processStoreReply(effectiveTarget, body, storeInfo);
+        // Seguir procesando normalmente (el mensaje también aparece en el chat del owner)
       }
     }
 
@@ -6002,6 +6273,65 @@ app.post('/api/tenant/:uid/request-pairing-code', express.json(), async (req, re
     console.error('[PAIRING] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// POST /api/broadcast-return — MIIA ha vuelto! Envía saludo a todos los owners y agentes conectados (solo admin)
+app.post('/api/broadcast-return', express.json(), async (req, res) => {
+  // Verificar que es admin
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'No auth' });
+  const token = authHeader.replace('Bearer ', '');
+  let decodedToken;
+  try {
+    decodedToken = await admin.auth().verifyIdToken(token);
+  } catch (e) {
+    return res.status(401).json({ error: 'Token inválido' });
+  }
+  // Verificar role admin en Firestore
+  const userDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
+  if (!userDoc.exists || userDoc.data().role !== 'admin') {
+    return res.status(403).json({ error: 'Solo admin puede hacer broadcast' });
+  }
+
+  const customMessage = req.body?.message || null;
+  const defaultMsg = '¡Volví! 🎉 Estuve haciendo unas mejoritas y ya estoy lista de nuevo para vos. Te extrañé mucho 💕 ¿En qué te ayudo?';
+  const agentMsg = req.body?.agentMessage || '¡Hola! Ya estoy de vuelta y lista para trabajar juntos 💪';
+
+  const connectedTenants = tenantManager.getConnectedTenants();
+  const results = { sent: [], failed: [], total: connectedTenants.length };
+
+  for (const t of connectedTenants) {
+    try {
+      const selfNum = t.sock.user?.id?.split(':')[0]?.split('@')[0];
+      if (!selfNum) { results.failed.push({ uid: t.uid, error: 'No user ID' }); continue; }
+      const selfJid = `${selfNum}@s.whatsapp.net`;
+      const msg = t.role === 'agent' ? agentMsg : (customMessage || defaultMsg);
+      await safeSendMessage(selfJid, msg, { isSelfChat: true, skipEmoji: true });
+      results.sent.push({ uid: t.uid, role: t.role });
+      console.log(`[BROADCAST] ✅ Enviado a ${t.uid} (${t.role})`);
+    } catch (e) {
+      results.failed.push({ uid: t.uid, error: e.message });
+      console.error(`[BROADCAST] ❌ Error enviando a ${t.uid}:`, e.message);
+    }
+  }
+
+  // También enviar al owner principal (self-chat de Mariano) si no está en tenants
+  if (!results.sent.some(s => s.uid === OWNER_UID) && getOwnerSock()) {
+    try {
+      const ownerJid = getOwnerSock().user?.id;
+      if (ownerJid) {
+        const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+        await safeSendMessage(ownerSelf, customMessage || defaultMsg, { isSelfChat: true, skipEmoji: true });
+        results.sent.push({ uid: OWNER_UID, role: 'admin' });
+        console.log(`[BROADCAST] ✅ Enviado a owner principal`);
+      }
+    } catch (e) {
+      results.failed.push({ uid: OWNER_UID, error: e.message });
+    }
+  }
+
+  console.log(`[BROADCAST] 📢 MIIA ha vuelto! Enviado a ${results.sent.length}/${results.total + 1} usuarios`);
+  res.json({ success: true, ...results });
 });
 
 // POST /api/tenant/:uid/logout — Disconnect tenant WhatsApp

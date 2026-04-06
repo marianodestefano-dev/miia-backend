@@ -1361,23 +1361,37 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     sock.ev.on('chats.update', () => {});
     sock.ev.on('chats.delete', () => {});
     sock.ev.on('presence.update', () => {});
+    // ═══ LID MAP: Capturar TODOS los mapeos LID→JID de contactos ═══
+    // WhatsApp envía mensajes con LID en vez de JID real. Sin este mapa,
+    // familia y contactos conocidos se pierden (bug Alejandra sesión 14).
+    if (!tenant._lidMap) tenant._lidMap = {};
+
     sock.ev.on('contacts.upsert', (contacts) => {
-      // Capturar mapeos LID ↔ Phone de los contactos de WhatsApp
       if (tenant.onContacts) {
         try { tenant.onContacts(contacts); } catch (e) {
           console.error(`[TM:${uid}] onContacts error:`, e.message);
         }
       }
+      let lidCount = 0;
       for (const c of contacts) {
         if (c.id && c.lid) {
-          console.log(`[TM:${uid}] 📇 Contact: ${c.name || '?'} | id=${c.id} | lid=${c.lid}`);
+          const lidBase = c.lid.split(':')[0].split('@')[0];
+          tenant._lidMap[lidBase] = c.id;
+          lidCount++;
         }
       }
+      if (lidCount > 0) console.log(`[TM:${uid}] 📇 Contacts sync: ${lidCount} LID→JID mappings (total: ${Object.keys(tenant._lidMap).length})`);
     });
     sock.ev.on('contacts.update', (contacts) => {
       if (tenant.onContacts) {
         try { tenant.onContacts(contacts); } catch (e) {
           console.error(`[TM:${uid}] onContacts update error:`, e.message);
+        }
+      }
+      for (const c of contacts) {
+        if (c.id && c.lid) {
+          const lidBase = c.lid.split(':')[0].split('@')[0];
+          tenant._lidMap[lidBase] = c.id;
         }
       }
     });
@@ -1643,6 +1657,33 @@ function getConnectionMetrics() {
   return metrics;
 }
 
+/**
+ * Resolver LID a JID real usando el mapa de contactos de WhatsApp.
+ * @param {string} uid - Tenant UID
+ * @param {string} lid - LID completo (ej: 46510318301398@lid) o solo base numérica
+ * @returns {string|null} JID real (ej: 573137501884@s.whatsapp.net) o null si no hay mapeo
+ */
+function resolveLidFromContacts(uid, lid) {
+  const tenant = tenants.get(uid);
+  if (!tenant || !tenant._lidMap) return null;
+  const lidBase = lid.split(':')[0].split('@')[0];
+  return tenant._lidMap[lidBase] || null;
+}
+
+/**
+ * Obtener todos los tenants conectados (para broadcast)
+ * @returns {Array<{uid, sock, ownerUid, role}>}
+ */
+function getConnectedTenants() {
+  const result = [];
+  for (const [uid, tenant] of tenants) {
+    if (tenant.isReady && tenant.sock) {
+      result.push({ uid, sock: tenant.sock, ownerUid: tenant.ownerUid || uid, role: tenant.role || 'owner' });
+    }
+  }
+  return result;
+}
+
 module.exports = {
   initTenant,
   destroyTenant,
@@ -1654,5 +1695,7 @@ module.exports = {
   setTenantAIConfig,
   classifyContact,
   getAllTenants,
-  getConnectionMetrics
+  getConnectionMetrics,
+  resolveLidFromContacts,
+  getConnectedTenants
 };
