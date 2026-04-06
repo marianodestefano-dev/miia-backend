@@ -15,16 +15,26 @@ const _isSignalNoise = (...args) => {
     if (typeof a === 'string' && _signalFilter.test(a)) return true;
     // libsignal console.log(SessionEntry {...}) — objects with _chains, privKey, etc.
     if (a && typeof a === 'object') {
-      if ('_chains' in a || 'currentRatchet' in a || 'indexInfo' in a) return true;
-      // Buffer objects from key material — never useful in logs, potential security leak
       if (Buffer.isBuffer(a) && a.length >= 16 && a.length <= 64) return true;
-      // Objects with key-like properties containing Buffers
+      if ('_chains' in a || 'currentRatchet' in a || 'indexInfo' in a) return true;
       if ('privKey' in a || 'rootKey' in a || 'ephemeralKeyPair' in a || 'chainKey' in a) return true;
+      // B4 FIX: Deep check — Baileys passes nested objects (e.g. SessionEntry inside wrapper)
+      try {
+        const keys = Object.keys(a);
+        for (const k of keys) {
+          const v = a[k];
+          if (v && typeof v === 'object' && !Buffer.isBuffer(v)) {
+            if ('privKey' in v || 'rootKey' in v || '_chains' in v || 'currentRatchet' in v) return true;
+          }
+        }
+      } catch (_) { /* ignore non-enumerable */ }
     }
   }
   return false;
 };
+const _origWarn = console.warn.bind(console);
 console.log = (...args) => { if (_isSignalNoise(...args)) return; _origLog(...args); };
+console.warn = (...args) => { if (_isSignalNoise(...args)) return; _origWarn(...args); };
 console.error = (...args) => { if (_isSignalNoise(...args)) return; _origErr(...args); };
 
 // ═══ RESILIENCE SHIELD — Monitoreo centralizado de salud ═══
@@ -2716,7 +2726,19 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
         let emailBody = '';
         let emailSubject = 'Mensaje de MIIA';
 
-        // Caso 1: email directo — "a juan@x.com diciendo ..."
+        // Caso 0: email en CUALQUIER posición del texto — "para hacer TEST a las 10pm a frontier.loft@gmail.com"
+        const anyEmailMatch = rest.match(/([\w.-]+@[\w.-]+\.\w+)/i);
+        if (anyEmailMatch) {
+          targetEmail = anyEmailMatch[1];
+          // El body es todo el texto EXCEPTO el email y preposiciones que lo rodean
+          emailBody = rest.replace(/\s*(?:a|para|de)\s+([\w.-]+@[\w.-]+\.\w+)/i, '').trim();
+          // Si el body tiene "diciendo X" o "que X", extraer solo eso
+          const bodyClean = emailBody.match(/(?:diciendo|que|mensaje:?)\s+(.*)/is);
+          if (bodyClean) emailBody = bodyClean[1].trim();
+        }
+
+        // Caso 1: email directo al inicio — "juan@x.com diciendo ..."
+        if (!targetEmail) {
         const directEmailMatch = rest.match(/^([\w.-]+@[\w.-]+\.\w+)\s+(?:diciendo|que|mensaje:?|asunto:?)\s*(.*)/is);
         if (directEmailMatch) {
           targetEmail = directEmailMatch[1];
@@ -2755,6 +2777,7 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
             }
           }
         }
+        } // cierre if (!targetEmail) — Caso 1/2
 
         // Extraer asunto si viene con "asunto: X mensaje: Y"
         const asuntoMatch = emailBody.match(/asunto:?\s*(.+?)(?:\s+mensaje:?\s*(.+))/is);
