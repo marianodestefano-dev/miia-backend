@@ -260,12 +260,68 @@ function auditVerdad(aiMessage, hasSearchData) {
   return { pass: true, action: 'ok', auditor: 'verdad' };
 }
 
-// ══════���════════════════════════════════════════════════════════════
-// ORQUESTADOR
-// ═══════════════════════════════════════════════════════���═══════════
+// ═══════════════════════════════════════════════════════════════════
+// AUDITOR IA — Gemini Flash verifica CADA respuesta (100% coverage)
+// ═══════════════════════════════════════════════════════════════════
 
 /**
- * Ejecuta TODOS los auditores y retorna resultado consolidado
+ * Prompt para el auditor IA — Gemini Flash verifica la respuesta
+ * Diseñado para ser ultra-conciso (~300 tokens input) y rápido (~200ms)
+ */
+function buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSearchData) {
+  return `Sos un auditor de calidad. Analizá esta respuesta de una IA que se hace pasar por humana en WhatsApp.
+
+CONTEXTO:
+- Tipo de chat: ${chatType} (${chatType === 'lead' ? 'con cliente potencial — JAMÁS revelar que es IA' : chatType === 'selfchat' ? 'con su creador — puede ser informal' : 'con familiar/equipo — saben que es IA'})
+- Contacto: ${contactName || 'desconocido'}
+- Tiene datos de búsqueda real: ${hasSearchData ? 'SÍ' : 'NO'}
+- Mensaje del usuario: "${(userMessage || '').substring(0, 200)}"
+
+RESPUESTA A AUDITAR:
+"${aiMessage.substring(0, 1500)}"
+
+VERIFICAR (responder SOLO con JSON, sin markdown):
+1. ¿Confirma acciones sin tag del sistema? (ej: "ya te agendé" sin [AGENDAR_EVENTO:])
+2. ¿Se delata como IA? (solo importa si chatType=lead)
+3. ¿Inventa datos fácticos sin búsqueda real? (scores, clima, noticias, fechas de eventos)
+4. ¿Promete enviar archivos/videos que no puede?
+5. ¿Usa muletillas robóticas? ("Perfecto", "¿Hay algo más?", "No dudes en escribirme")
+6. ¿Tono inapropiado para el contexto?
+
+{"pass":true/false,"issues":["descripción corta"],"severity":"ok"|"minor"|"major"|"critical"}
+- ok: todo bien
+- minor: muletillas o tono (no bloquear, solo logear)
+- major: promesa rota o dato inventado (regenerar)
+- critical: se delata como IA con lead (veto inmediato)`;
+}
+
+/**
+ * Parsear respuesta del auditor IA
+ */
+function parseAuditResponse(text) {
+  try {
+    // Extraer JSON de la respuesta (puede venir con texto extra)
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { pass: true, issues: [], severity: 'ok' };
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      pass: !!parsed.pass,
+      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      severity: parsed.severity || 'ok',
+    };
+  } catch (e) {
+    console.warn(`[POSTPROCESS:AI] ⚠️ No se pudo parsear respuesta del auditor: ${e.message}`);
+    return { pass: true, issues: [], severity: 'ok' }; // Fail-open: si no puede parsear, dejar pasar
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ORQUESTADOR
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Ejecuta TODOS los auditores (regex) y retorna resultado consolidado.
+ * FASE 1: Solo regex, 0 IA.
  *
  * @param {string} aiMessage - Respuesta de la IA (con tags incluidos)
  * @param {object} opts
@@ -282,7 +338,7 @@ function runPostprocess(aiMessage, opts = {}) {
 
   const actionSeverity = { ok: 0, strip: 1, regenerate: 2, veto: 3 };
 
-  // Ejecutar todos los auditores
+  // Ejecutar todos los auditores regex
   const results = [
     auditPromesa(finalMessage),
     auditIdentidad(finalMessage, chatType),
@@ -295,7 +351,7 @@ function runPostprocess(aiMessage, opts = {}) {
     audits.push(result);
 
     if (!result.pass) {
-      console.warn(`[POSTPROCESS:${result.auditor.toUpperCase()}] ⚠��� ${result.reason}`);
+      console.warn(`[POSTPROCESS:${result.auditor.toUpperCase()}] ⚠️ ${result.reason}`);
 
       // Aplicar strips si corresponde
       if (result.action === 'strip' && result.strips) {
@@ -326,7 +382,6 @@ function runPostprocess(aiMessage, opts = {}) {
     finalMessage: finalMessage.trim(),
     audits,
     action: worstAction,
-    // Razón del veto/regenerate para generar fallback
     vetoReason: worstAction === 'veto'
       ? audits.filter(a => a.action === 'veto').map(a => a.reason).join('; ')
       : null,
@@ -334,6 +389,60 @@ function runPostprocess(aiMessage, opts = {}) {
       ? audits.filter(a => a.action === 'regenerate').map(a => a.reason).join('; ')
       : null,
   };
+}
+
+/**
+ * FASE 2: Auditoría IA con Gemini Flash — ejecutar SIEMPRE después del regex.
+ * Atrapa lo que el regex no puede: confirmaciones implícitas, alucinaciones sutiles,
+ * delaciones indirectas, tono inapropiado contextual.
+ *
+ * @param {string} aiMessage - Respuesta ya filtrada por regex
+ * @param {object} opts
+ * @param {string} opts.chatType
+ * @param {string} opts.contactName
+ * @param {boolean} opts.hasSearchData
+ * @param {string} opts.userMessage - Mensaje original del usuario
+ * @param {Function} opts.generateAI - Función para llamar a Gemini (inyectada desde server.js)
+ * @returns {Promise<{approved: boolean, issues: string[], severity: string, action: string}>}
+ */
+async function runAIAudit(aiMessage, opts = {}) {
+  const { chatType, contactName, hasSearchData, userMessage, generateAI } = opts;
+
+  if (!generateAI) {
+    console.warn('[POSTPROCESS:AI] ⚠️ generateAI no inyectado — saltando auditoría IA');
+    return { approved: true, issues: [], severity: 'ok', action: 'ok' };
+  }
+
+  try {
+    const prompt = buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSearchData);
+    const response = await generateAI(prompt);
+    const result = parseAuditResponse(response);
+
+    if (!result.pass) {
+      console.warn(`[POSTPROCESS:AI] 🤖 Auditor IA detectó: [${result.severity}] ${result.issues.join('; ')}`);
+    } else {
+      console.log(`[POSTPROCESS:AI] ✅ Auditor IA: OK`);
+    }
+
+    // Mapear severity a action
+    const severityToAction = {
+      ok: 'ok',
+      minor: 'ok',        // Solo logear, no bloquear
+      major: 'regenerate', // Regenerar respuesta
+      critical: 'veto',   // Veto inmediato
+    };
+
+    return {
+      approved: result.severity === 'ok' || result.severity === 'minor',
+      issues: result.issues,
+      severity: result.severity,
+      action: severityToAction[result.severity] || 'ok',
+    };
+  } catch (err) {
+    // Fail-open: si el auditor IA falla, dejar pasar (ya pasó regex)
+    console.error(`[POSTPROCESS:AI] ❌ Error en auditoría IA (fail-open): ${err.message}`);
+    return { approved: true, issues: [], severity: 'ok', action: 'ok' };
+  }
 }
 
 /**
@@ -360,7 +469,10 @@ function getFallbackMessage(vetoReason, chatType) {
 
 module.exports = {
   runPostprocess,
+  runAIAudit,
   getFallbackMessage,
+  buildAuditPrompt,
+  parseAuditResponse,
   // Exportar individuales para testing
   auditPromesa,
   auditIdentidad,

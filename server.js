@@ -102,7 +102,7 @@ const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 // ═══ CORE — Task Scheduler ═══
 const taskScheduler = require('./core/task_scheduler');
 const { runPreprocess } = require('./core/miia_preprocess');
-const { runPostprocess, getFallbackMessage } = require('./core/miia_postprocess');
+const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_postprocess');
 
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
@@ -3395,42 +3395,76 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       return;
     }
 
-    // ═══ INTENSAMENTE: POST-PROCESO — Auditar respuesta antes de enviar ═══
+    // ═══ INTENSAMENTE v2.0: POST-PROCESO — Regex + IA Audit (100% coverage) ═══
     try {
       const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : 'lead');
-      const postResult = runPostprocess(aiMessage, {
+      const postContactName = leadNames[phone] || familyContacts[basePhone]?.name || '';
+
+      // PASO 1: Auditoría REGEX (instantánea, 2ms)
+      const regexResult = runPostprocess(aiMessage, {
         chatType: postChatType,
-        contactName: leadNames[phone] || familyContacts[basePhone]?.name || '',
+        contactName: postContactName,
         hasSearchData: searchTriggered,
       });
 
-      if (!postResult.approved) {
-        if (postResult.action === 'veto') {
-          console.error(`[POSTPROCESS] 🚫 VETO: ${postResult.vetoReason}`);
-          // Intentar regenerar UNA vez con hint más estricto
-          try {
-            const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${postResult.vetoReason}. Genera una nueva respuesta que NO cometa este error. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos, di "no tengo esa info".`;
-            aiMessage = await generateAIContent(fullPrompt + strictHint, { enableSearch: searchTriggered });
-            console.log(`[POSTPROCESS] 🔄 Regeneración completada (${aiMessage?.length || 0} chars)`);
-            // Verificar de nuevo
-            const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: leadNames[phone] || '', hasSearchData: searchTriggered });
-            if (!recheck.approved) {
-              console.error(`[POSTPROCESS] 🚫 Regeneración también vetada — usando fallback`);
-              aiMessage = getFallbackMessage(postResult.vetoReason, postChatType);
-            } else {
-              aiMessage = recheck.finalMessage;
-            }
-          } catch (regenErr) {
-            console.error(`[POSTPROCESS] ❌ Error regenerando: ${regenErr.message} — usando fallback`);
-            aiMessage = getFallbackMessage(postResult.vetoReason, postChatType);
-          }
-        } else {
-          // strip o regenerate — usar el mensaje corregido
-          aiMessage = postResult.finalMessage;
+      // Aplicar correcciones del regex (strips)
+      aiMessage = regexResult.finalMessage;
+
+      // Si regex ya vetó → regenerar directo sin esperar IA
+      if (!regexResult.approved && regexResult.action === 'veto') {
+        console.error(`[POSTPROCESS:REGEX] 🚫 VETO directo: ${regexResult.vetoReason}`);
+        try {
+          const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${regexResult.vetoReason}. Genera una nueva respuesta que NO cometa este error. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos, di "no tengo esa info".`;
+          aiMessage = await generateAIContent(fullPrompt + strictHint, { enableSearch: searchTriggered });
+          const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
+          aiMessage = recheck.approved ? recheck.finalMessage : getFallbackMessage(regexResult.vetoReason, postChatType);
+        } catch (regenErr) {
+          console.error(`[POSTPROCESS] ❌ Error regenerando: ${regenErr.message}`);
+          aiMessage = getFallbackMessage(regexResult.vetoReason, postChatType);
         }
-      } else {
-        aiMessage = postResult.finalMessage;
       }
+
+      // PASO 2: Auditoría IA con Gemini Flash (100% de los mensajes, ~1-2s)
+      // Se ejecuta SIEMPRE, incluso si regex aprobó — atrapa lo que regex no puede
+      const aiAuditResult = await runAIAudit(aiMessage, {
+        chatType: postChatType,
+        contactName: postContactName,
+        hasSearchData: searchTriggered,
+        userMessage: effectiveMsg,
+        generateAI: (prompt) => generateAIContent(prompt),
+      });
+
+      if (!aiAuditResult.approved) {
+        if (aiAuditResult.action === 'veto') {
+          console.error(`[POSTPROCESS:AI] 🚫 VETO por auditor IA: ${aiAuditResult.issues.join('; ')}`);
+          // Regenerar con hint del auditor IA
+          try {
+            const aiHint = `\n\n⚠️ CORRECCIÓN DEL AUDITOR DE CALIDAD: ${aiAuditResult.issues.join('. ')}. Corregí estos problemas en tu nueva respuesta.`;
+            aiMessage = await generateAIContent(fullPrompt + aiHint, { enableSearch: searchTriggered });
+            // Re-verificar solo con regex (no loop infinito de IA)
+            const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
+            aiMessage = finalCheck.finalMessage;
+            console.log(`[POSTPROCESS:AI] 🔄 Regeneración por auditor IA completada`);
+          } catch (regenErr) {
+            console.error(`[POSTPROCESS:AI] ❌ Error regenerando: ${regenErr.message}`);
+            aiMessage = getFallbackMessage('AUDITOR_IA: ' + aiAuditResult.issues.join('; '), postChatType);
+          }
+        } else if (aiAuditResult.action === 'regenerate') {
+          console.warn(`[POSTPROCESS:AI] 🔄 Auditor IA recomienda regenerar: ${aiAuditResult.issues.join('; ')}`);
+          try {
+            const aiHint = `\n\n⚠️ MEJORA REQUERIDA: ${aiAuditResult.issues.join('. ')}. Mejorá tu respuesta corrigiendo estos puntos.`;
+            aiMessage = await generateAIContent(fullPrompt + aiHint, { enableSearch: searchTriggered });
+            const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
+            aiMessage = finalCheck.finalMessage;
+            console.log(`[POSTPROCESS:AI] 🔄 Mejora por auditor IA completada`);
+          } catch (regenErr) {
+            // Si falla la regeneración, enviar el original (ya pasó regex)
+            console.warn(`[POSTPROCESS:AI] ⚠️ Regeneración falló, enviando original: ${regenErr.message}`);
+          }
+        }
+        // minor → solo logear, no bloquear (ya se logeó arriba)
+      }
+
     } catch (postErr) {
       console.error(`[POSTPROCESS] ⚠️ Error en auditoría (no bloquea): ${postErr.message}`);
     }
