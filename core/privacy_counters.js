@@ -13,8 +13,12 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 const admin = require('firebase-admin');
-const db = admin.firestore();
-const { FieldValue } = admin.firestore;
+let _db = null;
+function db() {
+  if (!_db) _db = admin.firestore();
+  return _db;
+}
+const FieldValue = admin.firestore.FieldValue;
 
 // In-memory buffer: { uid: { messagesProcessed: N, messagesOut: N, ... } }
 const buffer = {};
@@ -68,14 +72,14 @@ async function flush() {
   const uids = Object.keys(buffer);
   if (uids.length === 0) return;
 
-  const batch = db.batch();
+  const batch = db().batch();
   let writes = 0;
 
   for (const uid of uids) {
     const data = buffer[uid];
     if (!data) continue;
 
-    const ref = db.collection('users').doc(uid).collection('stats').doc('counters');
+    const ref = db().collection('users').doc(uid).collection('stats').doc('counters');
     const update = {};
 
     // Incrementales
@@ -111,7 +115,7 @@ async function flush() {
  */
 async function getCounters(uid) {
   try {
-    const doc = await db.collection('users').doc(uid).collection('stats').doc('counters').get();
+    const doc = await db().collection('users').doc(uid).collection('stats').doc('counters').get();
     return doc.exists ? doc.data() : { messagesProcessed: 0, messagesOut: 0, contactsTotal: 0, businessesTotal: 0 };
   } catch (e) {
     console.error(`[PRIVACY-COUNTERS] ❌ getCounters(${uid}): ${e.message}`);
