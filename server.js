@@ -101,6 +101,8 @@ const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 
 // ═══ CORE — Task Scheduler ═══
 const taskScheduler = require('./core/task_scheduler');
+const { runPreprocess } = require('./core/miia_preprocess');
+const { runPostprocess, getFallbackMessage } = require('./core/miia_postprocess');
 
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
@@ -3336,9 +3338,35 @@ Nuevo resumen actualizado:`;
     }
 
     const adnStr = cerebroAbsoluto.getTrainingData();
+
+    // ═══ INTENSAMENTE: PRE-PROCESO — Enriquecer contexto sin costo IA ═══
+    let enrichedContext = '';
+    try {
+      const chatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : 'lead');
+      enrichedContext = runPreprocess({
+        messageBody: effectiveMsg,
+        contactPhone: phone,
+        contactName: leadNames[phone] || familyContacts[basePhone]?.name || basePhone,
+        agendaEvents: conversationMetadata[phone]?.agendaEvents || [],
+        affinityStage: conversationMetadata[phone]?.affinityStage,
+        affinityCount: conversationMetadata[phone]?.affinityCount,
+        lastContactDate: conversationMetadata[phone]?.lastMessageAt,
+        conversationMetadata: conversationMetadata[phone],
+        isLead: chatType === 'lead',
+        leadData: conversationMetadata[phone]?.leadProfile,
+        countryContext,
+        kidsProfiles: typeof kidsMode !== 'undefined' && kidsMode.getKidsProfiles ? kidsMode.getKidsProfiles() : null,
+        elderlyContacts: typeof elderlyContacts !== 'undefined' ? elderlyContacts : null,
+        protectionLevel: conversationMetadata[phone]?.protectionLevel,
+      });
+      if (enrichedContext) console.log(`[PREPROCESS] ✅ Contexto enriquecido (${enrichedContext.length} chars) para ${basePhone}`);
+    } catch (preErr) {
+      console.error(`[PREPROCESS] ⚠️ Error (no bloquea): ${preErr.message}`);
+    }
+
     const fullPrompt = `${activeSystemPrompt}
 
-${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}
+${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${enrichedContext}
 
 ${systemDateStr}
 
@@ -3365,6 +3393,46 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     if (!aiMessage) {
       console.error(`[MIIA] ❌ Gemini devolvió null/vacío para ${basePhone} — no se puede responder`);
       return;
+    }
+
+    // ═══ INTENSAMENTE: POST-PROCESO — Auditar respuesta antes de enviar ═══
+    try {
+      const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : 'lead');
+      const postResult = runPostprocess(aiMessage, {
+        chatType: postChatType,
+        contactName: leadNames[phone] || familyContacts[basePhone]?.name || '',
+        hasSearchData: searchTriggered,
+      });
+
+      if (!postResult.approved) {
+        if (postResult.action === 'veto') {
+          console.error(`[POSTPROCESS] 🚫 VETO: ${postResult.vetoReason}`);
+          // Intentar regenerar UNA vez con hint más estricto
+          try {
+            const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${postResult.vetoReason}. Genera una nueva respuesta que NO cometa este error. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos, di "no tengo esa info".`;
+            aiMessage = await generateAIContent(fullPrompt + strictHint, { enableSearch: searchTriggered });
+            console.log(`[POSTPROCESS] 🔄 Regeneración completada (${aiMessage?.length || 0} chars)`);
+            // Verificar de nuevo
+            const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: leadNames[phone] || '', hasSearchData: searchTriggered });
+            if (!recheck.approved) {
+              console.error(`[POSTPROCESS] 🚫 Regeneración también vetada — usando fallback`);
+              aiMessage = getFallbackMessage(postResult.vetoReason, postChatType);
+            } else {
+              aiMessage = recheck.finalMessage;
+            }
+          } catch (regenErr) {
+            console.error(`[POSTPROCESS] ❌ Error regenerando: ${regenErr.message} — usando fallback`);
+            aiMessage = getFallbackMessage(postResult.vetoReason, postChatType);
+          }
+        } else {
+          // strip o regenerate — usar el mensaje corregido
+          aiMessage = postResult.finalMessage;
+        }
+      } else {
+        aiMessage = postResult.finalMessage;
+      }
+    } catch (postErr) {
+      console.error(`[POSTPROCESS] ⚠️ Error en auditoría (no bloquea): ${postErr.message}`);
     }
 
     // Procesar etiquetas especiales
