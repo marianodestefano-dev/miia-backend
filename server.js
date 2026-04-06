@@ -8084,6 +8084,113 @@ app.delete('/api/tenant/:uid/ai-config', async (req, res) => {
   }
 });
 
+// ═══ DELETE /api/tenant/:uid/account — Owner elimina su propia cuenta ═══
+// Requiere confirmación: body.confirm === 'ELIMINAR MI CUENTA'
+app.delete('/api/tenant/:uid/account', verifyTenantAuth, express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { confirm: confirmation } = req.body || {};
+
+    // Solo el propio usuario puede eliminar su cuenta (no admin vía este endpoint)
+    if (req.user.uid !== uid) {
+      console.log(`[ACCOUNT-DELETE] ❌ Intento de eliminar cuenta ajena: ${req.user.uid} → ${uid}`);
+      return res.status(403).json({ error: 'Solo puedes eliminar tu propia cuenta' });
+    }
+
+    if (confirmation !== 'ELIMINAR MI CUENTA') {
+      return res.status(400).json({ error: 'Debes confirmar con el texto exacto: ELIMINAR MI CUENTA' });
+    }
+
+    console.log(`[ACCOUNT-DELETE] 🗑️ Iniciando eliminación de cuenta uid=${uid} (${req.user.email})`);
+
+    // 1. Destruir sesión WhatsApp del tenant
+    try {
+      await tenantManager.destroyTenant(uid);
+      console.log(`[ACCOUNT-DELETE] ✅ Sesión WhatsApp destruida`);
+    } catch (e) {
+      console.log(`[ACCOUNT-DELETE] ⚠️ No se pudo destruir sesión WA: ${e.message}`);
+    }
+
+    const userRef = admin.firestore().collection('users').doc(uid);
+
+    // 2. Eliminar subcollections del usuario (estructura multi-negocio)
+    const subcollections = [
+      'businesses', 'contact_groups', 'contact_index',
+      'personal', 'settings', 'miia_sports', 'miia_interests'
+    ];
+
+    for (const subName of subcollections) {
+      try {
+        const subSnap = await userRef.collection(subName).get();
+        if (!subSnap.empty) {
+          // Para businesses, también borrar sub-subcollections
+          if (subName === 'businesses') {
+            for (const bizDoc of subSnap.docs) {
+              const bizSubcols = ['brain', 'products', 'sessions'];
+              for (const bsc of bizSubcols) {
+                const bscSnap = await bizDoc.ref.collection(bsc).get();
+                for (const d of bscSnap.docs) await d.ref.delete();
+              }
+              // contact_rules y payment_methods son docs directos
+              try { await bizDoc.ref.collection('contact_rules').doc('rules').delete(); } catch (_) {}
+              try { await bizDoc.ref.collection('payment_methods').doc('methods').delete(); } catch (_) {}
+            }
+          }
+          // Para contact_groups, borrar contacts sub-subcollection
+          if (subName === 'contact_groups') {
+            for (const groupDoc of subSnap.docs) {
+              const contactsSnap = await groupDoc.ref.collection('contacts').get();
+              for (const d of contactsSnap.docs) await d.ref.delete();
+            }
+          }
+          // Borrar docs de la subcollection
+          for (const doc of subSnap.docs) await doc.ref.delete();
+        }
+      } catch (e) {
+        console.log(`[ACCOUNT-DELETE] ⚠️ Error borrando ${subName}: ${e.message}`);
+      }
+    }
+
+    // 3. Eliminar colecciones legacy top-level
+    const legacyCollections = ['training_products', 'training_sessions', 'contact_rules', 'payment_methods'];
+    for (const col of legacyCollections) {
+      try {
+        const docRef = admin.firestore().collection(col).doc(uid);
+        const subSnap = await docRef.collection('items').get();
+        for (const d of subSnap.docs) await d.ref.delete();
+        const sessSnap = await docRef.collection('sessions').get();
+        for (const d of sessSnap.docs) await d.ref.delete();
+        await docRef.delete();
+      } catch (_) {}
+    }
+
+    // 4. Eliminar audit_logs
+    try {
+      const logsSnap = await admin.firestore().collection('audit_logs').doc(uid).collection('logs').get();
+      for (const d of logsSnap.docs) await d.ref.delete();
+      await admin.firestore().collection('audit_logs').doc(uid).delete();
+    } catch (_) {}
+
+    // 5. Eliminar doc principal del usuario
+    await userRef.delete();
+    console.log(`[ACCOUNT-DELETE] ✅ Datos Firestore eliminados`);
+
+    // 6. Eliminar usuario de Firebase Auth
+    try {
+      await admin.auth().deleteUser(uid);
+      console.log(`[ACCOUNT-DELETE] ✅ Firebase Auth usuario eliminado`);
+    } catch (e) {
+      console.log(`[ACCOUNT-DELETE] ⚠️ No se pudo eliminar de Auth: ${e.message}`);
+    }
+
+    console.log(`[ACCOUNT-DELETE] ✅ Cuenta ${uid} (${req.user.email}) eliminada completamente`);
+    res.json({ success: true, message: 'Cuenta eliminada permanentemente. Todos tus datos han sido borrados.' });
+  } catch (e) {
+    console.error(`[ACCOUNT-DELETE] ❌ Error: ${e.message}`);
+    res.status(500).json({ error: 'Error al eliminar cuenta: ' + e.message });
+  }
+});
+
 // POST /api/tenant/:uid/export — Generate encrypted .miia backup
 app.post('/api/tenant/:uid/export', async (req, res) => {
   try {
@@ -8098,23 +8205,81 @@ app.post('/api/tenant/:uid/export', async (req, res) => {
       return res.status(429).json({ error: 'Solo puedes exportar 1 vez por semana. Próximo export disponible: ' + new Date(lastExport.getTime() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString() });
     }
 
-    // Gather all user data
-    const productsSnap = await admin.firestore().collection('training_products').doc(uid).collection('items').get();
-    const products = productsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Gather all user data (estructura multi-negocio + legacy)
+    const userRef = admin.firestore().collection('users').doc(uid);
 
-    const sessionsSnap = await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').get();
-    const sessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Businesses con sus subcollections
+    const businesses = [];
+    const bizSnap = await userRef.collection('businesses').get();
+    for (const bizDoc of bizSnap.docs) {
+      const biz = { id: bizDoc.id, ...bizDoc.data() };
+      // Products
+      const prodSnap = await bizDoc.ref.collection('products').get();
+      biz.products = prodSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Brain
+      try {
+        const brainDoc = await bizDoc.ref.collection('brain').doc('business_cerebro').get();
+        biz.brain = brainDoc.exists ? brainDoc.data() : null;
+      } catch (_) { biz.brain = null; }
+      // Sessions
+      const sessSnap = await bizDoc.ref.collection('sessions').get();
+      biz.sessions = sessSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Contact rules
+      try {
+        const crDoc = await bizDoc.ref.collection('contact_rules').doc('rules').get();
+        biz.contactRules = crDoc.exists ? crDoc.data() : {};
+      } catch (_) { biz.contactRules = {}; }
+      // Payment methods
+      try {
+        const pmDoc = await bizDoc.ref.collection('payment_methods').doc('methods').get();
+        biz.paymentMethods = pmDoc.exists ? (pmDoc.data().methods || []) : [];
+      } catch (_) { biz.paymentMethods = []; }
+      businesses.push(biz);
+    }
 
-    let contactRules = {};
+    // Contact groups con contacts
+    const contactGroups = [];
+    const groupsSnap = await userRef.collection('contact_groups').get();
+    for (const gDoc of groupsSnap.docs) {
+      const group = { id: gDoc.id, ...gDoc.data() };
+      const contactsSnap = await gDoc.ref.collection('contacts').get();
+      group.contacts = contactsSnap.docs.map(d => ({ phone: d.id, ...d.data() }));
+      contactGroups.push(group);
+    }
+
+    // Contact index
+    const indexSnap = await userRef.collection('contact_index').get();
+    const contactIndex = indexSnap.docs.map(d => ({ phone: d.id, ...d.data() }));
+
+    // Sports preferences
+    const sportsSnap = await userRef.collection('miia_sports').get();
+    const sports = sportsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // Interests
+    const interestsSnap = await userRef.collection('miia_interests').get();
+    const interests = interestsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // Settings
+    const settingsSnap = await userRef.collection('settings').get();
+    const settings = settingsSnap.docs.reduce((acc, d) => { acc[d.id] = d.data(); return acc; }, {});
+
+    // Legacy (backward compat — si no migró aún)
+    let legacyProducts = [], legacySessions = [], legacyContactRules = {}, legacyPaymentMethods = [];
     try {
-      const rulesDoc = await admin.firestore().collection('contact_rules').doc(uid).get();
-      if (rulesDoc.exists) contactRules = rulesDoc.data();
+      const lpSnap = await admin.firestore().collection('training_products').doc(uid).collection('items').get();
+      legacyProducts = lpSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch (_) {}
-
-    let paymentMethods = [];
     try {
-      const pmDoc = await admin.firestore().collection('payment_methods').doc(uid).get();
-      if (pmDoc.exists) paymentMethods = pmDoc.data().methods || [];
+      const lsSnap = await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').get();
+      legacySessions = lsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (_) {}
+    try {
+      const lrDoc = await admin.firestore().collection('contact_rules').doc(uid).get();
+      if (lrDoc.exists) legacyContactRules = lrDoc.data();
+    } catch (_) {}
+    try {
+      const lpmDoc = await admin.firestore().collection('payment_methods').doc(uid).get();
+      if (lpmDoc.exists) legacyPaymentMethods = lpmDoc.data().methods || [];
     } catch (_) {}
 
     const exportId = crypto.randomBytes(16).toString('hex');
@@ -8122,15 +8287,23 @@ app.post('/api/tenant/:uid/export', async (req, res) => {
 
     const backupData = {
       _miia_backup: true,
-      _version: '1.0',
+      _version: '2.0',
       _export_id: exportId,
       _source_uid: uid,
       _source_email: userData.email || '',
       _exported_at: now.toISOString(),
-      products,
-      sessions,
-      contactRules,
-      paymentMethods
+      profile: { name: userData.name, email: userData.email, role: userData.role, defaultBusinessId: userData.defaultBusinessId },
+      businesses,
+      contactGroups,
+      contactIndex,
+      sports,
+      interests,
+      settings,
+      // Legacy (para compatibilidad)
+      products: legacyProducts,
+      sessions: legacySessions,
+      contactRules: legacyContactRules,
+      paymentMethods: legacyPaymentMethods
     };
 
     // Encrypt with master key ONLY (not uid-bound, so any account can import)
