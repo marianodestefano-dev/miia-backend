@@ -3,22 +3,40 @@ require('dotenv').config();
 // Fix: gRPC DNS resolver for Firebase Admin SDK on Railway/Docker (Node 18)
 process.env.GRPC_DNS_RESOLVER = 'native';
 
-// Silenciar logs de libsignal (SessionEntry dumps, "Closing session", "Decrypted message with closed session")
-// Estos llenan Railway logs a 500/sec sin aportar info útil
+// ═══ B5 FIX: Interceptar STDOUT/STDERR directamente ═══
+// libsignal (C++ native) escribe directo a stdout, bypassing console.log.
+// El override de console.log/warn/error NO lo atrapa.
+// Solución: interceptar process.stdout.write y process.stderr.write.
+const _signalFilter = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair|lastRemoteEphemeralKey|previousCounter|rootKey|indexInfo|baseKey:|baseKeyType|registrationId|currentRatchet|pubKey:|privKey:|remoteIdentityKey|Decrypted message with closed|Closing open session|Failed to decrypt message|<Buffer |pendingPreKey|signedKeyId|preKeyId|closed: -1|chainType:/;
+const _origStdoutWrite = process.stdout.write.bind(process.stdout);
+const _origStderrWrite = process.stderr.write.bind(process.stderr);
+process.stdout.write = (chunk, encoding, callback) => {
+  if (typeof chunk === 'string' && _signalFilter.test(chunk)) {
+    if (typeof encoding === 'function') return encoding(); // callback was in encoding position
+    if (typeof callback === 'function') return callback();
+    return true;
+  }
+  return _origStdoutWrite(chunk, encoding, callback);
+};
+process.stderr.write = (chunk, encoding, callback) => {
+  if (typeof chunk === 'string' && _signalFilter.test(chunk)) {
+    if (typeof encoding === 'function') return encoding();
+    if (typeof callback === 'function') return callback();
+    return true;
+  }
+  return _origStderrWrite(chunk, encoding, callback);
+};
+// Mantener console.log/warn/error overrides como segunda capa de defensa
 const _origLog = console.log.bind(console);
 const _origErr = console.error.bind(console);
-const _signalFilter = /Closing session:|SessionEntry|_chains:|chainKey:|ephemeralKeyPair|lastRemoteEphemeralKey|previousCounter|rootKey|indexInfo|baseKey:|baseKeyType|registrationId|currentRatchet|pubKey:|privKey:|remoteIdentityKey|Decrypted message with closed|Closing open session|Failed to decrypt message|<Buffer /;
-// B2 FIX: Filter both string args AND stringified objects (libsignal dumps SessionEntry as objects)
-// B3 FIX: Also filter Buffer objects containing key material (privKey, rootKey, ephemeralKeyPair)
+const _origWarn = console.warn.bind(console);
 const _isSignalNoise = (...args) => {
   for (const a of args) {
     if (typeof a === 'string' && _signalFilter.test(a)) return true;
-    // libsignal console.log(SessionEntry {...}) — objects with _chains, privKey, etc.
     if (a && typeof a === 'object') {
       if (Buffer.isBuffer(a) && a.length >= 16 && a.length <= 64) return true;
       if ('_chains' in a || 'currentRatchet' in a || 'indexInfo' in a) return true;
       if ('privKey' in a || 'rootKey' in a || 'ephemeralKeyPair' in a || 'chainKey' in a) return true;
-      // B4 FIX: Deep check — Baileys passes nested objects (e.g. SessionEntry inside wrapper)
       try {
         const keys = Object.keys(a);
         for (const k of keys) {
@@ -32,7 +50,6 @@ const _isSignalNoise = (...args) => {
   }
   return false;
 };
-const _origWarn = console.warn.bind(console);
 console.log = (...args) => { if (_isSignalNoise(...args)) return; _origLog(...args); };
 console.warn = (...args) => { if (_isSignalNoise(...args)) return; _origWarn(...args); };
 console.error = (...args) => { if (_isSignalNoise(...args)) return; _origErr(...args); };
