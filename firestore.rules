@@ -1,0 +1,94 @@
+rules_version = '2';
+
+// MIIA Firestore Security Rules
+// (c) 2024-2026 Mariano De Stefano. All rights reserved.
+//
+// REGLA PRINCIPAL: Admin SDK (backend) bypasea estas rules.
+// Estas rules protegen acceso DIRECTO desde frontend (web SDK).
+//
+// PRIVACIDAD:
+//   - Cada usuario solo ve SUS datos
+//   - Admin (Mariano) NUNCA puede leer mensajes/conversaciones de otros
+//   - Admin solo ve métricas agregadas via endpoints del backend
+//   - Agentes solo ven datos del negocio asignado
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ═══ USERS — Cada usuario solo lee/escribe su propio doc ═══
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      // Sub-colecciones del usuario
+      match /{subcollection}/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Businesses del usuario
+      match /businesses/{bizId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+
+        match /{sub}/{docId} {
+          allow read, write: if request.auth != null && request.auth.uid == uid;
+        }
+      }
+
+      // Contact groups
+      match /contact_groups/{groupId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+
+        match /contacts/{phone} {
+          allow read, write: if request.auth != null && request.auth.uid == uid;
+        }
+      }
+
+      // Contact index
+      match /contact_index/{phone} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Personal data (100% privado)
+      match /personal/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Settings
+      match /settings/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Sports preferences
+      match /miia_sports/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Interests
+      match /miia_interests/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // ═══ CONTACT RULES (legacy, top-level) ═══
+    match /contact_rules/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ═══ CONVERSATIONS — NUNCA accesible desde frontend ═══
+    // Las conversaciones se manejan 100% via backend (Admin SDK)
+    // Ni el owner ni el admin pueden leerlas directamente desde el frontend
+    match /conversations/{docId} {
+      allow read, write: if false;
+    }
+
+    // ═══ AUDIT LOGS — Solo lectura por el propio usuario ═══
+    match /audit_logs/{uid}/{logId} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false; // Solo el backend escribe
+    }
+
+    // ═══ DEFAULT: Denegar todo lo que no esté explícitamente permitido ═══
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
