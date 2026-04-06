@@ -4833,22 +4833,58 @@ async function handleIncomingMessage(message) {
         console.log(`[LID-MAP] ✅ Resuelto entrante: ${phone} → ${resolved}`);
         phone = resolved;
       } else {
-        // Fallback 1: buscar pushName en el mensaje para matchear con contactos conocidos
+        // Fallback 1: buscar pushName en TODOS los contactos conocidos (leadNames + familyContacts + equipoMedilink)
+        let lidResolved = false;
         if (message.pushName) {
+          const pushLower = message.pushName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+          // 1A: Buscar en leadNames
           for (const [knownPhone, knownName] of Object.entries(leadNames || {})) {
-            if (knownName === message.pushName && knownPhone.includes('@s.whatsapp.net')) {
-              console.log(`[LID-MAP] 🔗 Matched LID via pushName: ${phone} → ${knownPhone} (${message.pushName})`);
+            if (knownName && knownName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === pushLower && knownPhone.includes('@s.whatsapp.net')) {
+              console.log(`[LID-MAP] 🔗 Matched LID via leadNames pushName: ${phone} → ${knownPhone} (${message.pushName})`);
               registerLidMapping(phone, knownPhone);
               phone = knownPhone;
+              lidResolved = true;
               break;
             }
           }
+
+          // 1B: Buscar en familyContacts (por name o fullName)
+          if (!lidResolved) {
+            for (const [baseNum, fData] of Object.entries(familyContacts || {})) {
+              const fName = (fData.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+              const fFull = (fData.fullName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+              if (fName === pushLower || fFull === pushLower || pushLower.includes(fName) || fName.includes(pushLower)) {
+                const resolvedJid = `${baseNum}@s.whatsapp.net`;
+                console.log(`[LID-MAP] 🔗 Matched LID via familyContacts: ${phone} → ${resolvedJid} (pushName="${message.pushName}" matched family="${fData.name}")`);
+                registerLidMapping(phone, resolvedJid);
+                phone = resolvedJid;
+                lidResolved = true;
+                break;
+              }
+            }
+          }
+
+          // 1C: Buscar en equipoMedilink (por name)
+          if (!lidResolved) {
+            for (const [baseNum, eData] of Object.entries(equipoMedilink || {})) {
+              if (eData.name) {
+                const eName = eData.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                if (eName === pushLower || pushLower.includes(eName) || eName.includes(pushLower)) {
+                  const resolvedJid = `${baseNum}@s.whatsapp.net`;
+                  console.log(`[LID-MAP] 🔗 Matched LID via equipoMedilink: ${phone} → ${resolvedJid} (pushName="${message.pushName}" matched equipo="${eData.name}")`);
+                  registerLidMapping(phone, resolvedJid);
+                  phone = resolvedJid;
+                  lidResolved = true;
+                  break;
+                }
+              }
+            }
+          }
         }
-        // Fallback 2: ELIMINADO — era peligroso. Mapeaba cualquier LID desconocido
-        // al primer contacto con dileAMode activo, causando que leads reales se
-        // confundan con contactos de familia. El LID se procesa como está.
-        if (phone.includes('@lid')) {
-          console.log(`[LID-MAP] ⚠️ No se pudo resolver LID: ${phone} — procesando con LID`);
+
+        if (!lidResolved && phone.includes('@lid')) {
+          console.log(`[LID-MAP] ⚠️ No se pudo resolver LID: ${phone} (pushName="${message.pushName || 'N/A'}") — procesando con LID`);
         }
       }
     }
@@ -4883,6 +4919,25 @@ async function handleIncomingMessage(message) {
 
     const baseTarget = effectiveTarget.replace(/[^0-9]/g, '');
     let isAllowed = allowedLeads.some(l => l.replace(/[^0-9]/g, '') === baseTarget) || !!familyContacts[baseTarget];
+    // SAFETY NET: Si aún es LID no resuelto, intentar match por pushName en familyContacts
+    // Esto cubre el caso donde el fallback anterior no encontró match (pushName parcial, acentos, etc.)
+    const lidPushName = message.pushName || message._baileysMsg?.pushName;
+    if (!isAllowed && effectiveTarget.includes('@lid') && lidPushName) {
+      const pn = lidPushName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      for (const [baseNum, fData] of Object.entries(familyContacts)) {
+        const fn = (fData.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const ffn = (fData.fullName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        if (fn && (pn === fn || pn === ffn || pn.includes(fn) || fn.includes(pn))) {
+          const resolvedJid = `${baseNum}@s.whatsapp.net`;
+          console.log(`[LID-MAP] 🛡️ SAFETY NET: LID ${effectiveTarget} matched family "${fData.name}" via pushName "${lidPushName}" → ${resolvedJid}`);
+          registerLidMapping(effectiveTarget, resolvedJid);
+          phone = resolvedJid;
+          effectiveTarget = resolvedJid;
+          isAllowed = true;
+          break;
+        }
+      }
+    }
     const existsInCRM = !!conversations[effectiveTarget];
 
     // NUEVO: Si no está en allowedLeads, verificar si está registrado en Firestore como usuario MIIA
@@ -5809,6 +5864,7 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
         type: baileysMsg.message?.imageMessage ? 'image' : baileysMsg.message?.audioMessage ? 'audio' : baileysMsg.message?.videoMessage ? 'video' : baileysMsg.message?.documentMessage ? 'document' : baileysMsg.message?.stickerMessage ? 'sticker' : 'chat',
         isStatus: from === 'status@broadcast',
         timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
+        pushName: baileysMsg.pushName || null,  // Para LID resolution por pushName
         _baileysMsg: baileysMsg  // Para que processMediaMessage pueda descargar media
       };
       handleIncomingMessage(adapted);
