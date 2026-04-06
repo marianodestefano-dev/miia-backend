@@ -89,6 +89,9 @@ const travelTracker = require('./services/travel_tracker');
 const tenantManager = require('./whatsapp/tenant_manager');
 const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 
+// ═══ CORE — Task Scheduler ═══
+const taskScheduler = require('./core/task_scheduler');
+
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
 const sportEngine = require('./sports/sport_engine');
@@ -457,6 +460,17 @@ function isWithinSchedule(scheduleConfig) {
   return true;
 }
 
+// ═══ TASK SCHEDULER — Inicialización ═══
+taskScheduler.initTaskScheduler({
+  notifyOwner: async (msg) => {
+    const sock = getOwnerSock();
+    if (!sock?.user?.id) return;
+    const ownerJid = sock.user.id;
+    const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+    await safeSendMessage(ownerSelf, msg, { isSelfChat: true });
+  }
+});
+
 // ═══ MOTOR DE SEGUIMIENTO AUTOMÁTICO DE LEADS ═══
 // Corre cada hora. Revisa leads sin respuesta y envía followup contextual.
 // REGLA: NUNCA enviar entre 22:00 y 10:00 hora local del owner.
@@ -558,8 +572,9 @@ async function runFollowupEngine() {
 }
 
 // Cada hora (3600000ms). Primera ejecución 2 min post-startup.
-setInterval(runFollowupEngine, 3600000);
-setTimeout(runFollowupEngine, 120000);
+// L3: Seguimiento de leads — medio, 1 verificación
+setInterval(() => taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine), 3600000);
+setTimeout(() => taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine), 120000);
 
 // ═══ AGENDA INTELIGENTE (FAMILIA + OWNER) ═══
 // Eventos proactivos: cumpleaños, recordatorios, retomar contacto, deportes (futuro)
@@ -687,8 +702,32 @@ async function runAgendaEngine() {
 }
 
 // Cada 5 min (300s) para capturar recordatorios 10min antes. Primera ejecución 3 min post-startup.
-setInterval(runAgendaEngine, 300000);
-setTimeout(runAgendaEngine, 180000);
+// L4: Agenda — alto, recordatorios no pueden fallar
+setInterval(() => taskScheduler.executeWithConcentration(4, 'agenda-engine', runAgendaEngine), 300000);
+setTimeout(() => taskScheduler.executeWithConcentration(4, 'agenda-engine', runAgendaEngine), 180000);
+
+// ═══ PROTECCIÓN: Check-in diario de contactos protegidos ═══
+// Cada hora. Verifica inactividad y alerta al owner + adultos responsables.
+async function runProtectionCheckin() {
+  if (!OWNER_UID) return;
+  try {
+    const alerts = await protectionManager.runProtectionCheckin(OWNER_UID, conversations, conversationMetadata);
+    if (alerts.length > 0) {
+      const ownerJid = getOwnerSock()?.user?.id;
+      if (ownerJid) {
+        const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+        for (const alert of alerts) {
+          await safeSendMessage(ownerSelf, alert.message, { isSelfChat: true });
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`[PROTECTION] ❌ Error en check-in:`, e.message);
+  }
+}
+// L3: Check-in protección — medio
+setInterval(() => taskScheduler.executeWithConcentration(3, 'protection-checkin', runProtectionCheckin), 3600000);
+setTimeout(() => taskScheduler.executeWithConcentration(3, 'protection-checkin', runProtectionCheckin), 600000);
 
 // ═══ SPORT ENGINE — Seguimiento deportivo en vivo ═══
 // Cada 30s (el engine internamente maneja intervalos por deporte).
@@ -725,7 +764,8 @@ setTimeout(async () => {
       getOwnerProfile: async () => null,  // TODO: cargar desde Firestore
     });
 
-    setInterval(() => sportEngine.runSportsEngine(), 30000);
+    // L3: Sport engine — medio, eventos deportivos
+    setInterval(() => taskScheduler.executeWithConcentration(3, 'sport-engine', () => sportEngine.runSportsEngine()), 30000);
     console.log('[SPORT-ENGINE] ✅ Engine deportivo iniciado (poll cada 30s)');
   } catch (err) {
     console.error('[SPORT-ENGINE] ❌ Error inicializando:', err.message);
@@ -749,7 +789,8 @@ setTimeout(async () => {
       OWNER_PHONE,
     });
 
-    setInterval(() => integrationEngine.runIntegrationEngine(), 300000); // Cada 5 min
+    // L2: Integraciones — bajo, sync periódico
+    setInterval(() => taskScheduler.executeWithConcentration(2, 'integration-engine', () => integrationEngine.runIntegrationEngine()), 300000);
     console.log('[INTEGRATIONS] ✅ Engine de integraciones iniciado (poll cada 5min)');
   } catch (err) {
     console.error('[INTEGRATIONS] ❌ Error inicializando:', err.message);
@@ -767,8 +808,8 @@ setTimeout(() => {
       ownerUid: OWNER_UID,
       getOwnerSock
     });
-    // Polling precios cada 30 min
-    setInterval(() => priceTracker.checkPrices(OWNER_UID), 1800000);
+    // L4: Polling precios cada 30 min — alto, alertas de precio importan
+    setInterval(() => taskScheduler.executeWithConcentration(4, 'price-check', () => priceTracker.checkPrices(OWNER_UID)), 1800000);
     console.log('[PRICE-TRACKER] ✅ Engine iniciado (poll cada 30min)');
   } catch (err) {
     console.error('[PRICE-TRACKER] ❌ Error inicializando:', err.message);
@@ -780,10 +821,10 @@ setTimeout(() => {
       getOwnerSock,
       ownerUid: OWNER_UID
     });
-    // Polling alertas de vuelos cada 6 horas
-    setInterval(() => travelTracker.checkFlightAlerts(OWNER_UID), 6 * 3600000);
-    // Verificar pasaporte cada semana
-    setInterval(() => travelTracker.checkPassportExpiry(OWNER_UID), 7 * 24 * 3600000);
+    // L4: Alertas de vuelos cada 6h — alto
+    setInterval(() => taskScheduler.executeWithConcentration(4, 'flight-alerts', () => travelTracker.checkFlightAlerts(OWNER_UID)), 6 * 3600000);
+    // L2: Pasaporte semanal — bajo
+    setInterval(() => taskScheduler.executeWithConcentration(2, 'passport-check', () => travelTracker.checkPassportExpiry(OWNER_UID)), 7 * 24 * 3600000);
     console.log('[TRAVEL] ✅ Engine iniciado (vuelos cada 6h, pasaporte semanal)');
   } catch (err) {
     console.error('[TRAVEL] ❌ Error inicializando:', err.message);
@@ -1009,7 +1050,8 @@ loadFromFirestore().then(loaded => {
 });
 
 // Sync periódico a Firestore cada 2 minutos (batch, no en cada cambio)
-setInterval(() => { saveToFirestore().catch(() => {}); }, 2 * 60 * 1000);
+// L1: Firestore sync — pasivo
+setInterval(() => { taskScheduler.executeWithConcentration(1, 'firestore-sync', saveToFirestore); }, 2 * 60 * 1000);
 
 // ============================================
 // HELPERS GENERALES
@@ -3110,13 +3152,13 @@ Nuevo resumen actualizado:`;
     }
 
     // ═══ PROTECCIÓN ELDERLY: Inyectar tono respetuoso si detectado ═══
-    if (conversationMetadata[effectiveTarget]?.protectionMode === 'elderly' && !isAdmin) {
+    if (conversationMetadata[phone]?.protectionMode === 'elderly' && !isAdmin) {
       activeSystemPrompt += `\n\n## MODO ADULTO MAYOR ACTIVO
 - Habla con MÁXIMO respeto. Usa "usted" si el contacto lo usa.
 - Mensajes CORTOS (máximo 2 líneas). Nada de jerga ni tecnicismos.
 - Paciencia INFINITA. Si repite algo, respondé como si fuera la primera vez.
 - Si menciona salud/malestar → preguntá con cuidado: "¿Está todo bien? ¿Necesita que avise a alguien?"
-- Si detectás confusión o desorientación → emití [ALERTA_OWNER:Posible confusión/desorientación de ${leadNames[effectiveTarget] || 'contacto'}]
+- Si detectás confusión o desorientación → emití [ALERTA_OWNER:Posible confusión/desorientación de ${leadNames[phone] || 'contacto'}]
 - NUNCA seas condescendiente. Tratalo con la dignidad de un adulto.`;
     }
 
@@ -8239,6 +8281,25 @@ async function verifyAdminToken(req, res, next) {
 }
 
 /**
+ * verifyFirebaseToken — Verifica Firebase token (sin verificar :uid param)
+ * Usado por Mini App donde el uid viene del token, no de la URL.
+ */
+async function verifyFirebaseToken(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Falta header Authorization: Bearer <token>' });
+    }
+    const idToken = authHeader.substring(7);
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    req.user = { uid: decodedToken.uid, email: decodedToken.email };
+    next();
+  } catch (e) {
+    res.status(401).json({ error: 'Unauthorized: ' + e.message });
+  }
+}
+
+/**
  * verifyTenantAuth — Verifica que el request tiene un Firebase token válido
  * y que el uid del token coincide con el :uid del endpoint O es admin.
  */
@@ -8587,6 +8648,198 @@ shield.setNotifyFunction(async (uid, message) => {
 });
 app.get('/api/health', (req, res) => res.json(shield.getHealthDashboard()));
 app.get('/api/health/unknown-errors', (req, res) => res.json(shield.getUnknownErrors()));
+app.get('/api/health/task-scheduler', (req, res) => res.json({
+  metrics: taskScheduler.getTaskMetrics(),
+  silentFailures: taskScheduler.getSilentFailures()
+}));
+
+// ═══ MINI APP / PWA — Endpoints de Protección ═══
+
+// POST /api/miniapp/location — GPS desde la Mini App (background tracking)
+app.post('/api/miniapp/location', verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { latitude, longitude, accuracy, battery, timestamp } = req.body;
+    if (!latitude || !longitude) return res.status(400).json({ error: 'latitude/longitude requeridos' });
+
+    await protectionManager.saveSharedLocation(uid, latitude, longitude, '');
+
+    // Guardar datos extra de la app (batería, accuracy)
+    await admin.firestore().collection('users').doc(uid)
+      .collection('shared_locations').doc('latest').set({
+        latitude, longitude, accuracy: accuracy || null,
+        battery: battery || null,
+        source: 'miniapp_gps',
+        updatedAt: new Date().toISOString(),
+        rawTimestamp: timestamp || null
+      }, { merge: true });
+
+    console.log(`[MINIAPP] 📍 GPS recibido de ${uid}: ${latitude}, ${longitude} (bat: ${battery || '?'}%)`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[MINIAPP] ❌ Error guardando GPS:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/miniapp/sos — Botón SOS desde la Mini App
+app.post('/api/miniapp/sos', verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { latitude, longitude, message } = req.body;
+
+    // Guardar ubicación de emergencia
+    if (latitude && longitude) {
+      await protectionManager.saveSharedLocation(uid, latitude, longitude, 'SOS');
+    }
+
+    // Log inmutable de SOS
+    await protectionManager.logProtectionEvent(uid, 'sos_triggered', {
+      latitude, longitude, message: message || 'SOS activado desde Mini App',
+      triggeredAt: new Date().toISOString()
+    });
+
+    // Notificar al owner en self-chat
+    const ownerJid = getOwnerSock()?.user?.id;
+    if (ownerJid) {
+      const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+      const locLink = latitude ? `\n📍 https://maps.google.com/?q=${latitude},${longitude}` : '';
+      await safeSendMessage(ownerSelf,
+        `🆘 *¡ALERTA SOS!*\nUn contacto protegido activó el botón de emergencia.${locLink}\n${message || ''}`,
+        { isSelfChat: true }
+      );
+    }
+
+    // Notificar adultos responsables por email
+    await protectionManager.notifyAdultsByEmail(uid,
+      '🆘 MIIA — ALERTA SOS',
+      `Se activó el botón de emergencia desde la Mini App de MIIA.\n\n${latitude ? `📍 Ubicación: https://maps.google.com/?q=${latitude},${longitude}` : 'Sin ubicación disponible'}\n\nFecha: ${new Date().toLocaleString('es-ES')}\n\nEsto es una alerta urgente del sistema de protección de MIIA.`
+    );
+
+    console.log(`[MINIAPP] 🆘 SOS activado por ${uid}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[MINIAPP] ❌ Error en SOS:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/miniapp/heartbeat — Heartbeat desde la Mini App (la app sigue viva)
+app.post('/api/miniapp/heartbeat', verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { battery, isCharging, networkType } = req.body;
+
+    await admin.firestore().collection('users').doc(uid)
+      .collection('miniapp_state').doc('heartbeat').set({
+        lastHeartbeat: new Date().toISOString(),
+        battery: battery || null,
+        isCharging: isCharging || false,
+        networkType: networkType || 'unknown'
+      }, { merge: true });
+
+    // Alertar si batería crítica (<10%)
+    if (battery && battery < 10) {
+      const ownerJid = getOwnerSock()?.user?.id;
+      if (ownerJid) {
+        const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+        await safeSendMessage(ownerSelf,
+          `🔋 *Batería crítica* — Un contacto protegido tiene ${battery}% de batería. La Mini App podría dejar de funcionar pronto.`,
+          { isSelfChat: true }
+        );
+      }
+    }
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/miniapp/fall-detected — Detección de caída (acelerómetro)
+app.post('/api/miniapp/fall-detected', verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { latitude, longitude, accelerometerData, confirmed } = req.body;
+
+    // Si confirmed=false, es pre-alerta (la app pregunta al usuario si está bien)
+    // Si confirmed=true, el usuario NO respondió en 30s → emergencia real
+    if (!confirmed) {
+      await protectionManager.logProtectionEvent(uid, 'fall_pre_alert', {
+        latitude, longitude, accelerometerData
+      });
+      return res.json({ success: true, action: 'waiting_user_confirmation' });
+    }
+
+    // Caída confirmada — emergencia
+    if (latitude && longitude) {
+      await protectionManager.saveSharedLocation(uid, latitude, longitude, 'FALL_DETECTED');
+    }
+
+    await protectionManager.logProtectionEvent(uid, 'fall_confirmed', {
+      latitude, longitude, confirmedAt: new Date().toISOString()
+    });
+
+    // Notificar owner
+    const ownerJid = getOwnerSock()?.user?.id;
+    if (ownerJid) {
+      const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+      const locLink = latitude ? `\n📍 https://maps.google.com/?q=${latitude},${longitude}` : '';
+      await safeSendMessage(ownerSelf,
+        `🚨 *¡Posible caída detectada!*\nLa Mini App detectó una caída y el usuario NO respondió en 30 segundos.${locLink}\n\n*Llamar de inmediato.*`,
+        { isSelfChat: true }
+      );
+    }
+
+    // Email a adultos
+    await protectionManager.notifyAdultsByEmail(uid,
+      '🚨 MIIA — Posible caída detectada',
+      `La Mini App de MIIA detectó una posible caída y el usuario no respondió a la verificación.\n\n${latitude ? `📍 Ubicación: https://maps.google.com/?q=${latitude},${longitude}` : 'Sin ubicación'}\n\nFecha: ${new Date().toLocaleString('es-ES')}\n\nPor favor, contacte al usuario de inmediato.\n\nMIIA — Protección Inteligente`
+    );
+
+    console.log(`[MINIAPP] 🚨 Caída confirmada para ${uid}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[MINIAPP] ❌ Error en fall-detected:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/miniapp/emergency-info — Info de emergencia para la app
+app.get('/api/miniapp/emergency-info', verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const level1 = await protectionManager.getEmergencyLevel1(uid, conversations, []);
+    res.json({ success: true, data: level1 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/miniapp/config — Config de la Mini App para este usuario
+app.get('/api/miniapp/config', verifyFirebaseToken, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const configDoc = await admin.firestore().collection('users').doc(uid)
+      .collection('protection').doc('config').get();
+    const config = configDoc.exists ? configDoc.data() : {};
+
+    res.json({
+      success: true,
+      protectionMode: config.mode || null,
+      active: config.active || false,
+      features: {
+        gpsTracking: config.locationSharing || false,
+        fallDetection: config.mode === 'elderly',
+        sosButton: true,
+        heartbeat: true,
+        geofencing: false // futuro
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 // Inyectar funciones de aprobación dinámica en tenant_message_handler

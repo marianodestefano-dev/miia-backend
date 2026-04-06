@@ -767,6 +767,89 @@ async function saveSharedLocation(uid, latitude, longitude, address = '') {
   }
 }
 
+// ═══ CHECK-IN DIARIO — Verificar inactividad de protegidos ═══
+
+/**
+ * Verificar contactos protegidos que no han interactuado en X horas
+ * Se ejecuta cada hora. Si no escriben en 12h (abuelo) o 8h (niño), alerta.
+ * @param {string} ownerUid
+ * @param {Object} conversations - { phone: [messages] }
+ * @param {Object} conversationMetadata - { phone: { protectionMode, ... } }
+ * @returns {Array} - alertas generadas
+ */
+async function runProtectionCheckin(ownerUid, conversations, conversationMetadata) {
+  const alerts = [];
+  const now = Date.now();
+
+  // Buscar contactos con modo protección activo
+  for (const [phone, meta] of Object.entries(conversationMetadata || {})) {
+    if (!meta?.protectionMode) continue;
+
+    const mode = meta.protectionMode;
+    const maxInactiveHours = mode === 'elderly' ? 12 : 8;
+    const maxInactiveMs = maxInactiveHours * 3600000;
+
+    // Buscar último mensaje del contacto
+    const msgs = conversations[phone] || [];
+    const userMsgs = msgs.filter(m => m.role === 'user');
+    const lastUserMsg = userMsgs[userMsgs.length - 1];
+
+    if (!lastUserMsg?.timestamp) continue;
+
+    const inactiveMs = now - lastUserMsg.timestamp;
+    if (inactiveMs < maxInactiveMs) continue;
+
+    // Ya alertamos hoy?
+    const lastAlertKey = `_protCheckin_${phone}`;
+    const lastAlert = meta[lastAlertKey] || 0;
+    if (now - lastAlert < 24 * 3600000) continue; // 1 alerta por día
+
+    const inactiveHours = Math.round(inactiveMs / 3600000);
+    const contactName = meta.contactName || phone;
+    const emoji = mode === 'elderly' ? '👴' : '👶';
+
+    alerts.push({
+      phone,
+      contactName,
+      mode,
+      inactiveHours,
+      message: `${emoji} *Check-in de protección*\n${contactName} lleva *${inactiveHours} horas* sin escribir.\n${mode === 'elderly' ? 'Si querés, puedo mandarle un mensaje cariñoso para saber cómo está.' : 'Verificá que todo esté bien.'}`
+    });
+
+    // Marcar que ya alertamos
+    if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+    conversationMetadata[phone][lastAlertKey] = now;
+
+    console.log(`[PROTECTION] ⏰ Check-in: ${contactName} (${mode}) inactivo ${inactiveHours}h`);
+  }
+
+  // Alertar al adulto responsable si hay config en Firestore
+  try {
+    const protectedSnap = await admin.firestore().collection('users').doc(ownerUid)
+      .collection('protection').doc('config').get();
+
+    if (protectedSnap.exists) {
+      const config = protectedSnap.data();
+      if (config.active && config.responsibleAdults?.length > 0) {
+        // Notificar adultos por email si inactividad > 24h
+        for (const alert of alerts) {
+          if (alert.inactiveHours >= 24) {
+            await notifyAdultsByEmail(
+              ownerUid,
+              `⚠️ MIIA — ${alert.contactName} sin actividad`,
+              `${alert.contactName} lleva ${alert.inactiveHours} horas sin interactuar con MIIA.\n\nÚltima actividad registrada hace más de un día.\n\nEsto es una notificación automática del sistema de protección de MIIA.`
+            );
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`[PROTECTION] ⚠️ Error en check-in Firestore: ${e.message}`);
+  }
+
+  return alerts;
+}
+
 // ═══ DATOS PARA INFORME QUINCENAL ═══
 
 /**
@@ -862,6 +945,9 @@ module.exports = {
 
   // Ubicación
   saveSharedLocation,
+
+  // Check-in diario
+  runProtectionCheckin,
 
   // Notificaciones
   notifyAdultsByEmail,
