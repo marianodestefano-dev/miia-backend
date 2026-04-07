@@ -53,49 +53,49 @@ const CONTEXT_CONFIG = {
   },
   [CONTEXTS.LEAD_RESPONSE]: {
     preferred: 'gemini',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 4096,
     description: 'Respuesta a leads — Gemini Flash (GRATIS)'
   },
   [CONTEXTS.FAMILY_CHAT]: {
     preferred: 'gemini',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 2048,
     description: 'Chat familiar — Gemini Flash (GRATIS)'
   },
   [CONTEXTS.CLASSIFICATION]: {
     preferred: 'gemini',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 256,
     description: 'Clasificación de contacto — Gemini Flash (GRATIS, rápido)'
   },
   [CONTEXTS.SPORT_MESSAGE]: {
     preferred: 'gemini',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 512,
     description: 'Mensaje deportivo — Gemini Flash (GRATIS)'
   },
   [CONTEXTS.LEARNING]: {
     preferred: 'gemini',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 2048,
     description: 'Extracción de aprendizaje — Gemini Flash (GRATIS)'
   },
   [CONTEXTS.SUMMARY]: {
     preferred: 'gemini',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 1024,
     description: 'Resumen de conversación — Gemini Flash (GRATIS)'
   },
   [CONTEXTS.GENERAL]: {
     preferred: 'gemini',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 4096,
     description: 'Uso general — Gemini Flash (GRATIS)'
@@ -212,10 +212,22 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
       continue;
     }
 
+    // Cada proveedor usa SU modelo default — NUNCA pasar modelo de Gemini a Claude ni viceversa
+    const PROVIDER_DEFAULT_MODELS = {
+      gemini: 'gemini-2.5-flash',
+      openai: 'gpt-4o-mini',
+      claude: 'claude-sonnet-4-6',
+      groq: 'llama-3.1-70b-versatile',
+      mistral: 'mistral-large-latest'
+    };
+    const modelForProvider = (provider === config.preferred)
+      ? (opts.model || config.model)  // Proveedor principal: usar modelo del contexto
+      : PROVIDER_DEFAULT_MODELS[provider] || config.model;  // Failover: usar default del proveedor
+
     const callOpts = {
       ...opts,
       maxTokens: opts.maxTokens || config.maxTokens,
-      model: opts.model || config.model
+      model: modelForProvider
     };
 
     try {
@@ -268,10 +280,19 @@ async function smartChat(context, messages, systemPrompt, ownerConfig = {}, opts
     const apiKey = getApiKey(provider, ownerConfig);
     if (!apiKey) continue;
 
+    // Cada proveedor usa SU modelo default en failover
+    const PROVIDER_DEFAULTS = {
+      gemini: 'gemini-2.5-flash', openai: 'gpt-4o-mini', claude: 'claude-sonnet-4-6',
+      groq: 'llama-3.1-70b-versatile', mistral: 'mistral-large-latest'
+    };
+    const chatModel = (provider === config.preferred)
+      ? (opts.model || config.model)
+      : PROVIDER_DEFAULTS[provider] || config.model;
+
     const callOpts = {
       ...opts,
       maxTokens: opts.maxTokens || config.maxTokens,
-      model: opts.model || config.model
+      model: chatModel
     };
 
     try {
