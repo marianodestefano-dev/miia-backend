@@ -730,7 +730,8 @@ async function runAgendaEngine() {
           continue;
         }
 
-        const response = await generateAIContent(prompt, { enableSearch });
+        const agendaGwResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, prompt, {}, { enableSearch });
+        const response = agendaGwResult.text;
         if (response && response.length > 5) {
           // Enviar recordatorio al contacto destinatario
           // FIX: Si es recordatorio al owner, usar isSelfChat:true para que Baileys use sock.user.id
@@ -3587,7 +3588,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       if (!regexResult.approved && regexResult.action === 'veto') {
         console.error(`[POSTPROCESS:REGEX] 🚫 VETO directo: ${regexResult.vetoReason}`);
         try {
-          const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${regexResult.vetoReason}. Genera una nueva respuesta que NO cometa este error. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos, di "no tengo esa info".`;
+          const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${regexResult.vetoReason}. Genera una nueva respuesta COMPLETAMENTE DIFERENTE que NO cometa este error. PROHIBIDO: empezar con "¡Hola, jefe!", decir "ya agendé" sin haber agendado, inventar fechas o eventos. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos exactos, di "no encontré el dato preciso". Respuesta máximo 2 oraciones, directa, sin preámbulos.`;
           const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + strictHint, ownerAIConfig, { enableSearch: searchTriggered });
           aiMessage = regenResult.text;
           const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
