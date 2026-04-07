@@ -1656,8 +1656,11 @@ async function safeSendMessage(target, content, options = {}) {
     return null;
   }
 
-  // ═══ MIIA EMOJI PREFIX — Aplicar emoji contextual a todo mensaje de texto ═══
-  if (typeof content === 'string' && !options.skipEmoji) {
+  // ═══ MIIA EMOJI PREFIX — Solo self-chat y grupos, NUNCA leads ═══
+  // El emoji prefix es parte de la personalidad de MIIA para el owner/familia/equipo.
+  // Los leads reciben mensajes sin emoji prefix (profesional, no asusta).
+  const isEmojiEligible = options.isSelfChat || options.isGroup || options.isFamily;
+  if (typeof content === 'string' && !options.skipEmoji && isEmojiEligible) {
     const emojiCtx = options.emojiCtx || {};
     // Timezone del owner para fechas especiales
     if (!emojiCtx.timezone) {
