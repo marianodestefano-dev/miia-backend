@@ -4997,6 +4997,51 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
     aiMessage = aiMessage.replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '').trim(); // Legacy tag — limpiar si aparece
 
+    // ═══ NEGOCIACIÓN: "Consultar con gerencia" — delay dramático ═══
+    // Tag: [NEGOCIAR_DELAY:minutos|mensaje_al_volver]
+    const negociarMatch = aiMessage.match(/\[NEGOCIAR_DELAY:(\d+)\|([^\]]+)\]/);
+    if (negociarMatch) {
+      const delayMinutos = Math.min(parseInt(negociarMatch[1]) || 4, 6); // Máx 6 minutos
+      const mensajeAlVolver = negociarMatch[2];
+      console.log(`[NEGOCIACION] ⏳ Delay de ${delayMinutos}min para ${basePhone} — volverá con: "${mensajeAlVolver.substring(0, 80)}..."`);
+      // Limpiar el tag del mensaje que se envía ahora
+      aiMessage = aiMessage.replace(/\[NEGOCIAR_DELAY:[^\]]+\]/, '').trim();
+      // Programar el mensaje de "vuelta de gerencia" con delay
+      const delayMs = delayMinutos * 60 * 1000 + Math.floor(Math.random() * 30000); // +0-30s aleatorio
+      setTimeout(async () => {
+        try {
+          console.log(`[NEGOCIACION] 🔔 Enviando respuesta post-delay a ${basePhone}: "${mensajeAlVolver.substring(0, 80)}..."`);
+          await safeSendMessage(phone, mensajeAlVolver, { isSelfChat });
+          // Si el mensaje contiene un tag de cotización, procesarlo
+          if (mensajeAlVolver.includes('[GENERAR_COTIZACION_PDF:')) {
+            // Re-procesar como si fuera una nueva respuesta de MIIA
+            await processMiiaResponse(phone, null, true);
+          }
+        } catch (e) {
+          console.error(`[NEGOCIACION] ❌ Error en delay para ${basePhone}:`, e.message);
+        }
+      }, delayMs);
+    }
+
+    // ═══ BONUS USUARIOS: Consulta al owner ═══
+    // Tag: [CONSULTAR_OWNER_BONUS:lead_name|usuarios|bonus_sugerido]
+    const bonusMatch = aiMessage.match(/\[CONSULTAR_OWNER_BONUS:([^|]+)\|(\d+)\|(\d+)\]/);
+    if (bonusMatch && OWNER_UID) {
+      const [, leadName, leadUsuarios, bonusSugerido] = bonusMatch;
+      const ownerSelf = `${OWNER_PHONE}@s.whatsapp.net`;
+      console.log(`[NEGOCIACION] 🎁 Consultando al owner sobre ${bonusSugerido} usuarios bonus para ${leadName} (${leadUsuarios} usuarios)`);
+      safeSendMessage(ownerSelf,
+        `🎁 *Consulta de MIIA — Usuarios Bonus*\n\n` +
+        `El lead *${leadName}* (${basePhone}) pidió ${leadUsuarios} usuarios.\n` +
+        `MIIA sugiere regalarle *${bonusSugerido} usuarios médicos extra* para cerrar la venta.\n\n` +
+        `¿Aprobás?\n` +
+        `• *sí* o *dale* → MIIA le ofrece los ${bonusSugerido} extras\n` +
+        `• *no* → MIIA sigue sin bonus`,
+        { isSelfChat: true, skipEmoji: true }
+      ).catch(() => {});
+      aiMessage = aiMessage.replace(/\[CONSULTAR_OWNER_BONUS:[^\]]+\]/, '').trim();
+    }
+
     // ═══ CONFIG AGENDA PRIMERA VEZ: Si no hay schedule_config, MIIA pregunta ═══
     const hasAgendaTag = aiMessage.includes('[AGENDAR_EVENTO:') || aiMessage.includes('[SOLICITAR_TURNO:');
     if (hasAgendaTag && OWNER_UID) {

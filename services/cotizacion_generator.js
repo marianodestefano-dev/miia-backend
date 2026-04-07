@@ -223,24 +223,31 @@ function calcularCotizacion(params) {
     incluirFactura   = true,
     bolsaFactura     = null,
     incluirRecetaAR  = false,
-    modalidad: modalidadParam = 'mensual'
+    modalidad: modalidadParam = 'mensual',
+    descuentoCustom = null,   // Descuento dinámico (MIIA negocia: 10-30% según contexto)
+    usuariosBonus   = 0,      // Usuarios médicos gratis (estrategia de retención)
   } = params;
 
   // España (EUR) → SOLO modalidad anual
   const modalidad = (moneda === 'EUR') ? 'anual' : modalidadParam;
 
-  // Descuento por modalidad: mensual 30%, semestral 15%, anual 20%
-  const DESCUENTOS = { mensual: 30, semestral: 15, anual: 20 };
-  const descuento = DESCUENTOS[modalidad] || 30;
+  // Descuento: si MIIA envió uno custom, usarlo (validado con tope)
+  // Topes: mensual=30%, semestral=15%, anual=20%
+  const DESCUENTOS_TOPE = { mensual: 30, semestral: 15, anual: 20 };
+  const tope = DESCUENTOS_TOPE[modalidad] || 30;
+  const descuento = descuentoCustom ? Math.min(descuentoCustom, tope) : tope;
 
   // Multiplicador de meses según modalidad
   // EUR ya tiene precios anuales en PRECIOS, no multiplicar de nuevo
   const MESES = { mensual: 1, semestral: 6, anual: 12 };
   const multiplicador = (moneda === 'EUR') ? 1 : (MESES[modalidad] || 1);
 
-  console.log(`[COTIZ-DEBUG] calcularCotizacion recibió: moneda=${moneda}, usuarios=${usuarios}, modalidad=${modalidad}, descuento=${descuento}, multiplicador=${multiplicador}`);
+  // Usuarios bonus: se suman al total pero NO se cobran (regalo de retención)
+  const totalUsuarios = usuarios + (usuariosBonus || 0);
+  console.log(`[COTIZ-DEBUG] calcularCotizacion: moneda=${moneda}, usuarios=${usuarios}${usuariosBonus ? `+${usuariosBonus} bonus` : ''}, modalidad=${modalidad}, descuento=${descuento}%${descuentoCustom ? ' (custom)' : ''}, multiplicador=${multiplicador}`);
   if (!PRECIOS[moneda]) throw new Error(`Moneda no soportada: ${moneda}`);
 
+  // Solo cobrar los usuarios pagos, no los bonus
   const nAdic = Math.max(0, usuarios - 1);
   const pct   = descuento / 100;
   // Fórmula: citasMes = citas TOTALES del lead (no por usuario)
@@ -292,7 +299,7 @@ function calcularCotizacion(params) {
     planes[lbl].totalSinPromo = planes[lbl].subtotal + bolsasTotal + ivaSinPromo;
   }
 
-  return { planes, bolsas, bolsasTotal, nAdic, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR: recetaTotal, moneda, modalidad, multiplicador };
+  return { planes, bolsas, bolsasTotal, nAdic, totalUsuarios, usuariosBonus: usuariosBonus || 0, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR: recetaTotal, moneda, modalidad, multiplicador };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -415,7 +422,7 @@ function buildHTML(params) {
   const calc  = calcularCotizacion(params);
   console.log(`[COTIZ-DEBUG] calcularCotizacion completado`);
   console.log(`[COTIZ-DEBUG] calc.bolsas =`, calc.bolsas ? Object.keys(calc.bolsas) : 'undefined');
-  const { planes, bolsas, nAdic, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR } = calc;
+  const { planes, bolsas, nAdic, totalUsuarios, usuariosBonus, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR } = calc;
   const { esencial: es, pro, titanium: ti } = planes;
   const p     = PRECIOS[moneda];
   console.log(`[COTIZ-DEBUG] PRECIOS[${moneda}] =`, p ? 'OK' : 'UNDEFINED');
@@ -713,8 +720,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
         <td class="td-price">${fmt(pro.precAdic * nAdic, moneda)}</td>
         <td class="td-price">${fmt(ti.precAdic * nAdic, moneda)}</td>
       </tr>` : ''}
+      ${usuariosBonus > 0 ? `
+      <tr class="row-even" style="background:#e8f5e9">
+        <td class="td-desc">🎁 USUARIOS MÉDICOS BONUS &#215; ${usuariosBonus} <span class="bdg" style="background:#4caf50;color:#fff">GRATIS</span>
+          <span class="td-sub">Total: ${totalUsuarios} usuarios médicos (${params.usuarios} pagos + ${usuariosBonus} bonificados)</span></td>
+        <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
+        <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
+        <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
+      </tr>` : ''}
       <tr class="row-disc">
-        <td class="td-desc">DESCUENTO PROMO ${modalidad.toUpperCase()} (Ahorro del &#8722;${descuento}%) <span class="bdg">&#8722;${descuento}%</span></td>
+        <td class="td-desc">DESCUENTO ${descuento < (({'mensual':30,'semestral':15,'anual':20})[modalidad]||30) ? 'ESPECIAL' : 'PROMO'} ${modalidad.toUpperCase()} (Ahorro del &#8722;${descuento}%) <span class="bdg">&#8722;${descuento}%</span></td>
         <td class="td-price">&#8722; ${fmt(es.descuento, moneda)}</td>
         <td class="td-price">&#8722; ${fmt(pro.descuento, moneda)}</td>
         <td class="td-price">&#8722; ${fmt(ti.descuento, moneda)}</td>
