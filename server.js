@@ -128,6 +128,7 @@ const outreachEngine = require('./core/outreach_engine');
 const miiaOutfit = require('./core/miia_outfit');
 const contentSafety = require('./core/content_safety_shield');
 const featureAnnouncer = require('./core/feature_announcer');
+const tenantLogger = require('./core/tenant_logger');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -1618,6 +1619,7 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
         console.log(`[GEMINI-SEARCH] 🔍 Búsquedas: ${grounding.webSearchQueries.join(' | ')}`);
       }
       shield.recordSuccess(shield.SYSTEMS.GEMINI);
+      tenantLogger.tmetric(OWNER_UID, 'ai_call', { tokensEstimated: Math.round(text.length / 4) });
       return text;
     }
     const isRetryable = response.status === 503 || response.status === 429;
@@ -2159,6 +2161,7 @@ async function processOutreachInBackground(queue, reportFn) {
 
 async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = false) {
   const basePhone = phone.split('@')[0];
+  const _pmrStartMs = Date.now();
   console.log(`[MIIA-RESPONSE-DEBUG] phone=${phone}, basePhone=${basePhone}`);
   try {
     if (!conversations[phone]) conversations[phone] = [];
@@ -5819,9 +5822,14 @@ REGLAS:
       conversationMetadata[phone].pendingLearningQuestions = [];
     }
 
+    // ═══ MÉTRICA: Mensaje procesado exitosamente ═══
+    const _pmrType = isSelfChat ? 'owner' : (isFamilyContact ? 'family' : 'lead');
+    tenantLogger.tmetric(OWNER_UID, 'message_processed', { type: _pmrType, responseMs: Date.now() - _pmrStartMs });
+
   } catch (err) {
     console.error(`[MIIA] ❌ Error en processMiiaResponse para ${phone}:`, err.message);
     console.error(`[MIIA] ❌ Stack:`, err.stack);
+    tenantLogger.terror(OWNER_UID, 'MIIA', `Error en processMiiaResponse para ${phone.split('@')[0]}`, err);
   }
 }
 
@@ -6142,6 +6150,7 @@ async function handleIncomingMessage(message) {
     // 🛡️ SAFETY: Si la imagen/video fue bloqueada por Content Safety Shield
     if (mediaContext && mediaContext._safetyBlocked) {
       console.warn(`[MEDIA:SAFETY] 🚫 Media de ${message.from} bloqueada (level=${mediaContext._safetyLevel})`);
+      tenantLogger.tmetric(OWNER_UID, mediaContext._safetyLevel === 'critical' ? 'safety_critical' : 'safety_blocked');
       const targetPhone = message.fromMe ? (message.to || message.from) : message.from;
       if (mediaContext._safetyMessage) {
         try { await safeSendMessage(targetPhone, mediaContext._safetyMessage); } catch (_) {}
@@ -7662,12 +7671,15 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   } : {};
   const tenant = tenantManager.initTenant(uid, apiKeyToUse, io, {}, tenantOptions);
   console.log(`[INIT] ✅ WhatsApp iniciado para ${uid}. Checking role...`);
+  tenantLogger.tmetric(uid, 'whatsapp_connected');
+  tenantLogger.registerTenantName(uid, uid);
 
   // Cargar cerebro compartido si es miembro de una empresa
   try {
     const userDoc = await admin.firestore().collection('users').doc(uid).get();
     if (userDoc.exists) {
       const userData = userDoc.data();
+      tenantLogger.registerTenantName(uid, userData.name || userData.email || uid);
       if (userData.role === 'owner_member') {
         tenant.isOwnerMember = true;
         console.log(`[TM:${uid}] 🧠 Cerebro compartido activado (owner_member)`);
@@ -9971,6 +9983,27 @@ app.get('/api/admin/privacy-stats', verifyAdminToken, async (req, res) => {
   }
 });
 
+// ── Tenant Health — Semáforo por cliente ─────────────────────────────────
+app.get('/api/admin/tenant-health', verifyAdminToken, async (req, res) => {
+  try {
+    const health = tenantLogger.getAllTenantsHealth();
+    res.json({ tenants: health, timestamp: Date.now() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/tenant-health/:uid', verifyAdminToken, async (req, res) => {
+  try {
+    const health = tenantLogger.getTenantHealth(req.params.uid);
+    if (!health) return res.status(404).json({ error: 'Tenant no encontrado o sin métricas' });
+    const history = await tenantLogger.getTenantHistory(req.params.uid, parseInt(req.query.days) || 7);
+    res.json({ current: health, history, timestamp: Date.now() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Admin Support Chat (Gemini) ──────────────────────────────────────────
 app.post('/api/admin/support-chat', express.json(), async (req, res) => {
   // Auth inline (verifyAdminToken is defined below)
@@ -10844,6 +10877,7 @@ biweeklyReport.setReportDependencies({
 server.listen(PORT, () => {
   privacyCounters.startAutoFlush();
   auditLogger.startAutoFlush();
+  tenantLogger.startAutoFlush();
   // Inicializar Content Safety Shield
   try {
     const { callGeminiVision } = require('./ai/gemini_client');
