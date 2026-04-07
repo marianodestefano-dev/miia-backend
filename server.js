@@ -1021,9 +1021,9 @@ function maybeAddTypo(text) {
   if (!text || text.length < 5) return text;
   let result = text;
 
-  // 15% de probabilidad: primera letra en minúscula (como escribe la gente real en WhatsApp)
+  // 7% de probabilidad: primera letra en minúscula (como escribe la gente real en WhatsApp)
   // NO aplicar si empieza con emoji, URL, nombre propio después de salto de línea, o tag [
-  if (Math.random() < 0.15 && /^[A-ZÁÉÍÓÚÑ]/.test(result) && !result.startsWith('[') && !result.startsWith('http')) {
+  if (Math.random() < 0.07 && /^[A-ZÁÉÍÓÚÑ]/.test(result) && !result.startsWith('[') && !result.startsWith('http')) {
     result = result[0].toLowerCase() + result.slice(1);
   }
 
