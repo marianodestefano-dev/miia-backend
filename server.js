@@ -125,6 +125,7 @@ const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
 const miiaInvocation = require('./core/miia_invocation');
 const outreachEngine = require('./core/outreach_engine');
+const miiaOutfit = require('./core/miia_outfit');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -2795,27 +2796,122 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         return;
       }
 
-      // ═══ OUTREACH HANDLER — Owner envía screenshot de leads + "hacete cargo" ═══
+      // Detectar si el mensaje tiene imagen (usado por outfit + image analysis)
       const hasImage = !!(msg?.message?.imageMessage || msg?.message?.viewOnceMessage?.message?.imageMessage || msg?.message?.viewOnceMessageV2?.message?.imageMessage);
-      if (outreachEngine.isOutreachCommand(effectiveMsg, hasImage)) {
-        console.log(`[OUTREACH] 🚀 Comando de outreach detectado en self-chat`);
-        await safeSendMessage(phone, `📊 Dame un momento mientras analizo la imagen y extraigo los leads...`, { isSelfChat: true, skipEmoji: true });
 
+      // ═══ OUTFIT MODE — Asesor de moda personal con Vision ═══
+      const outfitCmd = miiaOutfit.detectOutfitCommand(effectiveMsg, hasImage);
+      if (outfitCmd.isOutfit) {
+        console.log(`[OUTFIT] 👗 Comando detectado: ${outfitCmd.type}`);
         try {
-          // Extraer imagen del mensaje
-          const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
-          if (imageMsg && sock) {
+          const wardrobeRef = db.collection('users').doc(OWNER_UID).collection('miia_wardrobe');
+          const prefsRef = db.collection('users').doc(OWNER_UID).collection('miia_outfit_prefs').doc('prefs');
+
+          if (outfitCmd.type === 'add_garment' && hasImage) {
+            await safeSendMessage(phone, `👗 Analizando la prenda...`, { isSelfChat: true, skipEmoji: true });
+            const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
             const imageBuffer = await downloadMediaMessage(msg, 'buffer', {});
-
-            // Enviar a Gemini Vision para extraer leads
-            const visionPrompt = outreachEngine.buildScreenshotParserPrompt();
+            const visionPrompt = miiaOutfit.buildGarmentAnalysisPrompt();
             const { callGeminiVision } = require('./ai/gemini_client');
             let visionResponse;
             if (typeof callGeminiVision === 'function') {
               visionResponse = await callGeminiVision(imageBuffer, visionPrompt);
             } else {
-              // Fallback: convertir a base64 y usar en prompt multimodal
+              visionResponse = await generateAIContent(visionPrompt, {
+                images: [{ mimeType: 'image/png', data: imageBuffer.toString('base64') }],
+              });
+            }
+            const garments = miiaOutfit.parseGarmentAnalysis(visionResponse);
+            if (garments.length === 0) {
+              await safeSendMessage(phone, `🤷‍♀️ No pude identificar prendas en la foto. ¿Podés enviarla de nuevo más de cerca?`, { isSelfChat: true, skipEmoji: true });
+              return;
+            }
+            for (const g of garments) {
+              g.addedAt = new Date().toISOString();
+              await wardrobeRef.add(g);
+            }
+            const confirmMsg = miiaOutfit.formatGarmentSaved(garments);
+            await safeSendMessage(phone, confirmMsg, { isSelfChat: true, skipEmoji: true });
+            console.log(`[OUTFIT] ✅ ${garments.length} prenda(s) guardada(s) en guardarropa`);
+            return;
+
+          } else if (outfitCmd.type === 'opinion' && hasImage) {
+            await safeSendMessage(phone, `🔍 Analizando tu outfit...`, { isSelfChat: true, skipEmoji: true });
+            const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
+            const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+            const imageBuffer = await downloadMediaMessage(msg, 'buffer', {});
+            // Cargar guardarropa para contexto
+            const wardrobeSnap = await wardrobeRef.get();
+            const wardrobe = wardrobeSnap.docs.map(d => d.data());
+            const visionPrompt = miiaOutfit.buildOutfitOpinionPrompt(wardrobe);
+            const { callGeminiVision } = require('./ai/gemini_client');
+            let visionResponse;
+            if (typeof callGeminiVision === 'function') {
+              visionResponse = await callGeminiVision(imageBuffer, visionPrompt);
+            } else {
+              visionResponse = await generateAIContent(visionPrompt, {
+                images: [{ mimeType: 'image/png', data: imageBuffer.toString('base64') }],
+              });
+            }
+            const opinion = miiaOutfit.parseOutfitOpinion(visionResponse);
+            const formatted = miiaOutfit.formatOutfitOpinion(opinion);
+            await safeSendMessage(phone, formatted, { isSelfChat: true, skipEmoji: true });
+            console.log(`[OUTFIT] ✅ Opinión enviada (rating: ${opinion.rating || '?'}/10)`);
+            return;
+
+          } else if (outfitCmd.type === 'suggest') {
+            await safeSendMessage(phone, `🤔 Pensando en opciones...`, { isSelfChat: true, skipEmoji: true });
+            const wardrobeSnap = await wardrobeRef.get();
+            const wardrobe = wardrobeSnap.docs.map(d => d.data());
+            if (wardrobe.length === 0) {
+              await safeSendMessage(phone, `👗 Tu guardarropa está vacío. Enviame fotos de tu ropa con "guardar" para que las registre.`, { isSelfChat: true, skipEmoji: true });
+              return;
+            }
+            const prefsSnap = await prefsRef.get();
+            const prefs = prefsSnap.exists ? prefsSnap.data() : {};
+            const suggestionPrompt = miiaOutfit.buildOutfitSuggestionPrompt(outfitCmd.occasion, wardrobe, prefs, null);
+            const suggestion = await generateAIContent(suggestionPrompt);
+            await safeSendMessage(phone, suggestion, { isSelfChat: true, skipEmoji: true });
+            console.log(`[OUTFIT] ✅ Sugerencia enviada (ocasión: ${outfitCmd.occasion || 'general'})`);
+            return;
+
+          } else if (outfitCmd.type === 'view_wardrobe') {
+            const wardrobeSnap = await wardrobeRef.get();
+            const wardrobe = wardrobeSnap.docs.map(d => d.data());
+            const summary = miiaOutfit.formatWardrobeSummary(wardrobe);
+            await safeSendMessage(phone, summary, { isSelfChat: true, skipEmoji: true });
+            console.log(`[OUTFIT] 📋 Guardarropa mostrado (${wardrobe.length} prendas)`);
+            return;
+          }
+        } catch (outfitErr) {
+          console.error(`[OUTFIT] ❌ Error:`, outfitErr.message);
+          await safeSendMessage(phone, `❌ Error con el modo outfit: ${outfitErr.message}`, { isSelfChat: true, skipEmoji: true });
+          return;
+        }
+      }
+
+      // ═══ IMAGE ANALYSIS HANDLER — Owner envía imagen con texto ═══
+      // MIIA analiza CUALQUIER imagen (CRM, Excel, lista, chat, etc.)
+      // SIEMPRE pregunta al owner qué hacer antes de actuar
+      const imageCommand = outreachEngine.isImageCommand(effectiveMsg, hasImage);
+      if (imageCommand.isCommand) {
+        console.log(`[IMAGE-ANALYSIS] 🔍 Imagen + comando detectado en self-chat (type: ${imageCommand.type})`);
+        await safeSendMessage(phone, `🔍 Dame un momento mientras analizo la imagen...`, { isSelfChat: true, skipEmoji: true });
+
+        try {
+          const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
+          if (imageMsg && sock) {
+            const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+            const imageBuffer = await downloadMediaMessage(msg, 'buffer', {});
+
+            // Enviar a Gemini Vision para análisis GENÉRICO
+            const visionPrompt = outreachEngine.buildScreenshotAnalysisPrompt();
+            const { callGeminiVision } = require('./ai/gemini_client');
+            let visionResponse;
+            if (typeof callGeminiVision === 'function') {
+              visionResponse = await callGeminiVision(imageBuffer, visionPrompt);
+            } else {
               const base64Image = imageBuffer.toString('base64');
               visionResponse = await generateAIContent(visionPrompt, {
                 images: [{ mimeType: 'image/png', data: base64Image }],
@@ -2823,49 +2919,72 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
             }
 
             if (!visionResponse) {
-              await safeSendMessage(phone, `❌ No pude leer la imagen. ¿Podés enviarla de nuevo con mejor resolución?`, { isSelfChat: true, skipEmoji: true });
+              await safeSendMessage(phone, `❌ No pude analizar la imagen. ¿Podés enviarla de nuevo?`, { isSelfChat: true, skipEmoji: true });
               return;
             }
 
-            // Parsear leads
-            const { leads, errors } = outreachEngine.parseScreenshotResponse(visionResponse);
+            // Parsear análisis
+            const analysis = outreachEngine.parseScreenshotResponse(visionResponse);
 
-            if (leads.length === 0) {
-              await safeSendMessage(phone, `❌ No encontré leads en la imagen.${errors.length > 0 ? ` Errores: ${errors.join(', ')}` : ''}`, { isSelfChat: true, skipEmoji: true });
-              return;
+            // Si es outreach explícito Y hay contactos → preguntar con opciones de outreach
+            if (imageCommand.type === 'outreach' && analysis.leads.length > 0) {
+              const confirmMsg = outreachEngine.buildAnalysisConfirmation(analysis);
+              await safeSendMessage(phone, confirmMsg, { isSelfChat: true, skipEmoji: true });
+
+              // Guardar la cola PENDIENTE (no procesarla aún — esperar confirmación del owner)
+              const queue = outreachEngine.createOutreachQueue(OWNER_UID, analysis.leads);
+              queue.status = 'awaiting_confirmation';
+              // La confirmación se maneja cuando el owner responde "contactalos", "dale", etc.
+              // (procesado en el flujo normal de self-chat como instrucción)
+              console.log(`[IMAGE-ANALYSIS] 📋 Cola creada en espera de confirmación: ${queue.id} — ${analysis.leads.length} leads`);
+            } else {
+              // Para cualquier otro tipo → mostrar análisis y preguntar
+              const confirmMsg = outreachEngine.buildAnalysisConfirmation(analysis);
+              await safeSendMessage(phone, confirmMsg, { isSelfChat: true, skipEmoji: true });
             }
-
-            // Reporte de lo encontrado
-            const countrySummary = {};
-            for (const lead of leads) {
-              const c = lead.country?.name || 'Desconocido';
-              countrySummary[c] = (countrySummary[c] || 0) + 1;
-            }
-            const countryStr = Object.entries(countrySummary).map(([c, n]) => `${n} de ${c}`).join(', ');
-            await safeSendMessage(phone,
-              `📋 Encontré *${leads.length} leads*: ${countryStr}.\n${errors.length > 0 ? `⚠️ ${errors.length} no pude leerlos.\n` : ''}¿Arranco con todos?`,
-              { isSelfChat: true, skipEmoji: true });
-
-            // Crear cola y esperar confirmación (por ahora auto-arrancar)
-            const queue = outreachEngine.createOutreachQueue(OWNER_UID, leads);
-
-            // Procesar en background
-            const reportFn = async (text) => {
-              await safeSendMessage(phone, text, { isSelfChat: true, skipEmoji: true });
-            };
-
-            // No bloquear — procesar async
-            processOutreachInBackground(queue, reportFn).catch(err => {
-              console.error(`[OUTREACH] ❌ Error en procesamiento background:`, err.message);
-            });
           } else {
-            await safeSendMessage(phone, `⚠️ No pude detectar la imagen. Enviá el screenshot como imagen (no como documento).`, { isSelfChat: true, skipEmoji: true });
+            await safeSendMessage(phone, `⚠️ No pude detectar la imagen. Enviá como imagen (no como documento).`, { isSelfChat: true, skipEmoji: true });
           }
-        } catch (outreachErr) {
-          console.error(`[OUTREACH] ❌ Error procesando comando de outreach:`, outreachErr.message);
-          await safeSendMessage(phone, `❌ Error procesando: ${outreachErr.message}`, { isSelfChat: true, skipEmoji: true });
+        } catch (imgErr) {
+          console.error(`[IMAGE-ANALYSIS] ❌ Error analizando imagen:`, imgErr.message);
+          await safeSendMessage(phone, `❌ Error analizando la imagen: ${imgErr.message}`, { isSelfChat: true, skipEmoji: true });
         }
         return;
+      }
+
+      // ═══ OUTREACH CONFIRMATION — Owner confirma contactar leads ═══
+      // Cuando el owner responde "contactalos", "dale", "arranca" después del análisis
+      const outreachQueue = outreachEngine.getActiveQueue(OWNER_UID);
+      if (outreachQueue && outreachQueue.status === 'awaiting_confirmation') {
+        const confirmPatterns = /\b(contactalos|contactalas|dale|arranca|si|s[ií]|hazlo|mandales|escr[ií]beles|go|vamos|procede)\b/i;
+        const cancelPatterns = /\b(no|nada|cancel[áa]|para|dejalo|dejalos|olvidate|olvid[áa])\b/i;
+
+        if (confirmPatterns.test(effectiveMsg)) {
+          console.log(`[OUTREACH] ✅ Owner confirmó outreach — procesando ${outreachQueue.leads.length} leads`);
+          outreachQueue.status = 'pending'; // Listo para procesar
+          const reportFn = async (text) => {
+            await safeSendMessage(phone, text, { isSelfChat: true, skipEmoji: true });
+          };
+          processOutreachInBackground(outreachQueue, reportFn).catch(err => {
+            console.error(`[OUTREACH] ❌ Error en procesamiento:`, err.message);
+          });
+          return;
+        }
+
+        if (cancelPatterns.test(effectiveMsg)) {
+          outreachQueue.status = 'cancelled';
+          console.log(`[OUTREACH] ❌ Owner canceló outreach`);
+          await safeSendMessage(phone, `OK, no hago nada con esos contactos.`, { isSelfChat: true, skipEmoji: true });
+          return;
+        }
+
+        // Si responde "guardalos" → guardar sin contactar
+        if (/\b(guard[áa]los|guardalos|guard[áa]las|guardalas|solo\s+guard)/i.test(effectiveMsg)) {
+          console.log(`[OUTREACH] 💾 Owner pidió guardar leads sin contactar`);
+          await safeSendMessage(phone, `✅ Guardé ${outreachQueue.leads.length} leads sin contactarlos. Están registrados para cuando quieras.`, { isSelfChat: true, skipEmoji: true });
+          outreachQueue.status = 'saved';
+          return;
+        }
       }
 
       // ═══ "RESPONDELE" HANDLER — Owner pide enviar mensaje a contacto notificado ═══

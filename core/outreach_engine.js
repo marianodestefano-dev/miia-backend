@@ -1,18 +1,18 @@
 'use strict';
 
 /**
- * OUTREACH_ENGINE.JS — Motor de contacto proactivo de leads desde screenshots
+ * OUTREACH_ENGINE.JS — Motor de contacto proactivo de leads desde screenshots/imágenes
  *
  * STANDARD: Google + Amazon + Apple + NASA (fail loudly, exhaustive logging, zero silent failures)
  *
- * FLUJO:
- *   1. Owner envía screenshot de HubSpot/CRM por WhatsApp + "hacete cargo"
- *   2. Gemini Vision extrae leads: nombre, teléfono, estado, país
- *   3. MIIA valida, clasifica por país, construye cola de envíos
- *   4. Cola procesa con delay aleatorio (anti-ban WhatsApp)
- *   5. MIIA envía mensaje personalizado + documento CO/OP + sigue conversación
+ * FLUJO GENÉRICO (NO atado a HubSpot ni a ningún CRM):
+ *   1. Owner envía screenshot/imagen de CUALQUIER fuente (CRM, Excel, papel, chat, etc.)
+ *   2. Gemini Vision analiza la imagen y extrae lo que encuentra
+ *   3. MIIA PREGUNTA al owner qué quiere hacer con eso (NUNCA actúa sin confirmación)
+ *   4. Owner confirma → MIIA ejecuta (contactar leads, guardar datos, etc.)
+ *   5. Cola procesa con delay aleatorio (anti-ban WhatsApp)
  *   6. Follow-up automático al día siguiente si no respondieron
- *   7. Reportes al owner en self-chat
+ *   7. Reportes al owner en self-chat EN PARALELO con conversaciones activas
  *
  * TAGS INTERNOS (NUNCA visibles al lead):
  *   [ENVIAR_PLAN:esencial] → envía imagen Plan Esencial
@@ -110,39 +110,69 @@ const activeQueues = new Map(); // ownerUid → queue
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Prompt para Gemini Vision: extraer leads de un screenshot de CRM/HubSpot
+ * Prompt para Gemini Vision: análisis GENÉRICO de imagen
+ * NO asume que es HubSpot ni ningún CRM específico.
+ * Primero identifica QUÉ hay en la imagen, luego extrae datos.
+ *
  * @returns {string}
  */
-function buildScreenshotParserPrompt() {
-  return `Analiza esta imagen de un CRM o sistema de gestión de leads.
-Extrae TODOS los contactos/leads visibles en formato JSON.
+function buildScreenshotAnalysisPrompt() {
+  return `Analiza esta imagen a fondo. Puede ser CUALQUIER cosa: una tabla de CRM, una hoja de Excel, una captura de WhatsApp, una lista escrita a mano, una base de datos, un email, o algo completamente diferente.
 
-Por cada contacto encontrado, devuelve:
+PASO 1: Identifica qué tipo de contenido es:
+- "contacts_list" → Lista de contactos/leads con nombres y teléfonos
+- "data_table" → Tabla con datos (sin teléfonos necesariamente)
+- "conversation" → Captura de un chat/conversación
+- "document" → Documento, factura, PDF, etc.
+- "other" → Cualquier otra cosa
+
+PASO 2: Extrae la información estructurada.
+
+Devuelve en JSON:
 {
-  "name": "Nombre completo del contacto",
-  "phone": "Número de teléfono con código de país (formato: +57XXXXXXXXXX)",
-  "state": "Estado del lead (ej: 'HQL', 'Llamar', 'No asiste', 'Envio WP', etc.)",
-  "extra": "Cualquier dato adicional visible (empresa, email, cargo, especialidad, etc.)"
+  "type": "contacts_list|data_table|conversation|document|other",
+  "source": "Nombre del sistema si lo reconoces (HubSpot, Excel, WhatsApp, etc.) o 'desconocido'",
+  "summary": "Descripción breve de lo que ves en 1-2 líneas",
+  "contacts": [
+    {
+      "name": "Nombre si existe",
+      "phone": "Teléfono con código de país si existe (+57XXXXXXXXXX)",
+      "state": "Estado/etiqueta si existe",
+      "extra": "Cualquier dato adicional (empresa, email, cargo, etc.)"
+    }
+  ],
+  "raw_data": "Si no son contactos, describe los datos que ves como texto libre",
+  "actionable": true/false,
+  "suggested_actions": ["Qué podría hacer con esta información — hasta 3 sugerencias"]
 }
 
 REGLAS:
-- Los números deben incluir el código de país. Si no tiene +, inferirlo del formato.
-- Si el número tiene paréntesis o guiones, limpiarlos: +57(312)561-8404 → +573125618404
-- Si hay columnas adicionales (email, empresa, fecha), incluirlas en "extra".
-- Si no puedes leer algún dato, pon null.
-- Devuelve SOLO el JSON array, sin texto adicional.
-
-Devuelve un JSON array: [{ "name": "...", "phone": "...", "state": "...", "extra": "..." }, ...]`;
+- Si hay teléfonos, incluir código de país. Limpiar paréntesis/guiones.
+- Si NO hay contactos, "contacts" será un array vacío.
+- "actionable" = true si hay algo concreto que se pueda hacer (contactar, guardar, enviar).
+- "suggested_actions" son sugerencias de lo que se podría hacer con la info.
+- Devuelve SOLO el JSON, sin texto adicional.`;
 }
 
 /**
- * Parsear la respuesta de Gemini Vision y limpiar teléfonos
+ * Prompt legacy para extraer solo leads (backward compatible)
+ * @returns {string}
+ */
+function buildScreenshotParserPrompt() {
+  return buildScreenshotAnalysisPrompt();
+}
+
+/**
+ * Parsear la respuesta genérica de Gemini Vision
+ * Maneja tanto el formato nuevo (con type/source/summary) como el viejo (array directo)
+ *
  * @param {string} rawResponse - Respuesta cruda de Gemini
- * @returns {{ leads: object[], errors: string[] }}
+ * @returns {{ type: string, source: string, summary: string, leads: object[], rawData: string, actionable: boolean, suggestedActions: string[], errors: string[] }}
  */
 function parseScreenshotResponse(rawResponse) {
   const errors = [];
   let leads = [];
+  let analysis = { type: 'other', source: 'desconocido', summary: '', rawData: '', actionable: false, suggestedActions: [] };
 
   try {
     // Extraer JSON del response (puede venir envuelto en markdown ```json ... ```)
@@ -152,54 +182,121 @@ function parseScreenshotResponse(rawResponse) {
       jsonStr = jsonMatch[1];
     }
 
-    // Intentar parsear array directamente
     const parsed = JSON.parse(jsonStr.trim());
-    if (!Array.isArray(parsed)) {
-      errors.push('La respuesta de Vision no es un array');
-      return { leads, errors };
-    }
 
-    for (const item of parsed) {
-      const lead = {
-        name: item.name || 'Sin nombre',
-        phone: cleanPhoneNumber(item.phone),
-        state: normalizeState(item.state),
-        extra: item.extra || null,
-        country: null,
-        document: null,
-        strategy: null,
-      };
-
-      // Validar teléfono
-      if (!lead.phone || lead.phone.length < 8) {
-        errors.push(`Teléfono inválido para ${lead.name}: "${item.phone}"`);
-        continue;
+    // Formato nuevo (objeto con type/source/contacts) o legacy (array directo)
+    if (Array.isArray(parsed)) {
+      // Legacy: array directo de contactos
+      analysis.type = 'contacts_list';
+      analysis.source = 'desconocido';
+      analysis.actionable = true;
+      for (const item of parsed) {
+        processContactItem(item, leads, errors);
       }
+    } else if (parsed && typeof parsed === 'object') {
+      // Formato nuevo: objeto con metadata
+      analysis.type = parsed.type || 'other';
+      analysis.source = parsed.source || 'desconocido';
+      analysis.summary = parsed.summary || '';
+      analysis.rawData = parsed.raw_data || '';
+      analysis.actionable = parsed.actionable || false;
+      analysis.suggestedActions = parsed.suggested_actions || [];
 
-      // Clasificar país
-      const countryInfo = detectCountry(lead.phone);
-      lead.country = countryInfo;
-      lead.document = countryInfo?.document || 'OP';
-
-      // Asignar estrategia
-      lead.strategy = STRATEGY_BY_STATE[lead.state] || STRATEGY_BY_STATE['nuevo'];
-
-      // Estado de outreach
-      lead.status = 'pending';
-      lead.sentAt = null;
-      lead.followups = 0;
-      lead.responded = false;
-
-      leads.push(lead);
+      // Procesar contactos si existen
+      if (parsed.contacts && Array.isArray(parsed.contacts)) {
+        for (const item of parsed.contacts) {
+          processContactItem(item, leads, errors);
+        }
+      }
     }
 
-    console.log(`[OUTREACH] 📊 Screenshot parseado: ${leads.length} leads extraídos, ${errors.length} errores`);
+    console.log(`[OUTREACH] 📊 Imagen analizada: type=${analysis.type}, source=${analysis.source}, ${leads.length} contactos, ${errors.length} errores`);
   } catch (e) {
     errors.push(`Error parseando JSON de Vision: ${e.message}`);
     console.error(`[OUTREACH] ❌ Error parseando screenshot:`, e.message);
   }
 
-  return { leads, errors };
+  return { ...analysis, leads, errors };
+}
+
+/**
+ * Procesar un item de contacto del parseo (helper interno)
+ */
+function processContactItem(item, leads, errors) {
+  const lead = {
+    name: item.name || 'Sin nombre',
+    phone: cleanPhoneNumber(item.phone),
+    state: normalizeState(item.state),
+    extra: item.extra || null,
+    country: null,
+    document: null,
+    strategy: null,
+  };
+
+  if (!lead.phone || lead.phone.length < 8) {
+    errors.push(`Teléfono inválido para ${lead.name}: "${item.phone}"`);
+    return;
+  }
+
+  const countryInfo = detectCountry(lead.phone);
+  lead.country = countryInfo;
+  lead.document = countryInfo?.document || 'OP';
+  lead.strategy = STRATEGY_BY_STATE[lead.state] || STRATEGY_BY_STATE['nuevo'];
+  lead.status = 'pending';
+  lead.sentAt = null;
+  lead.followups = 0;
+  lead.responded = false;
+
+  leads.push(lead);
+}
+
+/**
+ * Construir mensaje de confirmación al owner con lo que MIIA encontró en la imagen
+ * MIIA SIEMPRE pregunta antes de actuar.
+ *
+ * @param {object} analysis - Resultado de parseScreenshotResponse
+ * @returns {string} Mensaje para el owner
+ */
+function buildAnalysisConfirmation(analysis) {
+  const { type, source, summary, leads, rawData, actionable, suggestedActions, errors } = analysis;
+
+  let msg = '';
+
+  if (type === 'contacts_list' && leads.length > 0) {
+    // Resumen de contactos encontrados
+    const countrySummary = {};
+    for (const lead of leads) {
+      const c = lead.country?.name || 'Desconocido';
+      countrySummary[c] = (countrySummary[c] || 0) + 1;
+    }
+    const countryStr = Object.entries(countrySummary).map(([c, n]) => `${n} de ${c}`).join(', ');
+
+    msg = `📊 *Analicé la imagen*${source !== 'desconocido' ? ` (${source})` : ''}\n\n`;
+    msg += `Encontré *${leads.length} contactos*: ${countryStr}.\n`;
+    if (errors.length > 0) msg += `⚠️ ${errors.length} no pude leerlos.\n`;
+    msg += `\n¿Qué querés que haga?\n`;
+    msg += `• *contactalos* → les escribo presentándome\n`;
+    msg += `• *guardalos* → los guardo como leads sin contactar\n`;
+    msg += `• *nada* → no hago nada\n`;
+    if (suggestedActions.length > 0) {
+      msg += `\n💡 También podría: ${suggestedActions.join(', ')}`;
+    }
+  } else if (type === 'data_table') {
+    msg = `📊 *Analicé la imagen*${source !== 'desconocido' ? ` (${source})` : ''}\n\n`;
+    msg += summary ? `${summary}\n\n` : '';
+    msg += rawData ? `Datos: ${rawData.substring(0, 500)}\n\n` : '';
+    msg += `¿Qué querés que haga con esto?`;
+  } else if (type === 'conversation') {
+    msg = `💬 *Vi una conversación*${source !== 'desconocido' ? ` (${source})` : ''}\n\n`;
+    msg += summary || 'No pude extraer detalles.';
+    msg += `\n\n¿Querés que haga algo con esto?`;
+  } else {
+    msg = `🔍 *Analicé la imagen*\n\n`;
+    msg += summary || 'Vi algo pero no estoy segura de qué querés que haga.';
+    msg += `\n\n¿Me explicás qué necesitás?`;
+  }
+
+  return msg;
 }
 
 /**
@@ -549,17 +646,18 @@ function getActiveQueue(ownerUid) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Detecta si el owner está pidiendo outreach proactivo
- * "hacete cargo" / "preséntate" / "contactalos" + imagen
+ * Detecta si el owner envía una imagen con instrucción que requiere análisis.
+ * Puede ser outreach proactivo, análisis de datos, o cualquier cosa con imagen.
+ * MIIA siempre pregunta antes de actuar.
  *
  * @param {string} message
  * @param {boolean} hasImage - Si el mensaje viene con una imagen
- * @returns {boolean}
+ * @returns {{ isCommand: boolean, type: 'outreach'|'analyze'|'none' }}
  */
-function isOutreachCommand(message, hasImage) {
-  if (!message) return false;
-  if (!hasImage) return false; // Requiere imagen
+function isImageCommand(message, hasImage) {
+  if (!hasImage) return { isCommand: false, type: 'none' };
 
+  // Si hay imagen + comando explícito de outreach
   const outreachPatterns = [
     /\b(hac[ée]te\s+cargo|hazte\s+cargo)\b/i,
     /\b(pres[ée]ntate|presentate)\b/i,
@@ -569,10 +667,40 @@ function isOutreachCommand(message, hasImage) {
     /\b(m[áa]nda(le)?s?\s+(un\s+)?mensaje)\b/i,
   ];
 
-  for (const pattern of outreachPatterns) {
-    if (pattern.test(message)) return true;
+  if (message) {
+    for (const pattern of outreachPatterns) {
+      if (pattern.test(message)) return { isCommand: true, type: 'outreach' };
+    }
   }
-  return false;
+
+  // Si hay imagen + texto que pide análisis
+  const analyzePatterns = [
+    /\b(anali[zs][áa]|analiza|revisa|fijate|mir[áa]|mira)\b/i,
+    /\b(qu[ée]\s+(es|hay|ves|tiene)|que\s+onda)\b/i,
+    /\b(extra[ée]|sac[áa]|dame)\s+(los|la|el|dato)/i,
+  ];
+
+  if (message) {
+    for (const pattern of analyzePatterns) {
+      if (pattern.test(message)) return { isCommand: true, type: 'analyze' };
+    }
+  }
+
+  // Si hay imagen + CUALQUIER texto → analizar (MIIA preguntará qué hacer)
+  if (message && message.trim().length > 0) {
+    return { isCommand: true, type: 'analyze' };
+  }
+
+  // Solo imagen sin texto → es un "mensaje suelto", aplica regla de mensajes sueltos
+  return { isCommand: false, type: 'none' };
+}
+
+/**
+ * @deprecated Use isImageCommand instead
+ */
+function isOutreachCommand(message, hasImage) {
+  const result = isImageCommand(message, hasImage);
+  return result.isCommand && result.type === 'outreach';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -598,8 +726,13 @@ module.exports = {
   // Tags
   extractPlanTags,
 
+  // Análisis genérico
+  buildScreenshotAnalysisPrompt,
+  buildAnalysisConfirmation,
+
   // Detección
-  isOutreachCommand,
+  isImageCommand,
+  isOutreachCommand, // deprecated, use isImageCommand
   buildOutreachPrompt,
 
   // Constantes (para testing/config)
