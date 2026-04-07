@@ -2833,6 +2833,64 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         if (foundFamily) {
           const [familyPhone, familyInfo] = foundFamily;
           const targetSerialized = familyPhone.includes('@') ? familyPhone : `${familyPhone}@s.whatsapp.net`;
+
+          // ═══ DETECCIÓN TEMPORAL: si el mensaje implica hora futura → agendar, NO enviar ahora ═══
+          // Ejemplo: "dile a ale que me espere, a las 9am mañana" → agendar recordatorio
+          const temporalMatch = realMessage.match(/(?:a\s+(?:las?\s+)?(\d{1,2})\s*(?::(\d{2}))?\s*(am|pm|hs|hrs)?.*?(mañana|pasado\s*mañana|lunes|martes|miércoles|jueves|viernes|sábado|domingo))/i);
+          if (temporalMatch) {
+            let hour = parseInt(temporalMatch[1]);
+            const ampm = (temporalMatch[3] || '').toLowerCase();
+            if (ampm === 'pm' && hour < 12) hour += 12;
+            if (ampm === 'am' && hour === 12) hour = 0;
+            const dayWord = temporalMatch[4].toLowerCase().trim();
+
+            // Calcular fecha target
+            const { localNow: _tNow } = getOwnerLocalNow();
+            let targetDate = new Date(_tNow);
+            if (dayWord === 'mañana') {
+              targetDate.setDate(targetDate.getDate() + 1);
+            } else if (dayWord.startsWith('pasado')) {
+              targetDate.setDate(targetDate.getDate() + 2);
+            } else {
+              // Día de la semana
+              const days = { domingo: 0, lunes: 1, martes: 2, miércoles: 3, miercoles: 3, jueves: 4, viernes: 5, sábado: 6, sabado: 6 };
+              const targetDay = days[dayWord] ?? -1;
+              if (targetDay >= 0) {
+                const currentDay = targetDate.getDay();
+                let diff = targetDay - currentDay;
+                if (diff <= 0) diff += 7;
+                targetDate.setDate(targetDate.getDate() + diff);
+              }
+            }
+            targetDate.setHours(hour, parseInt(temporalMatch[2] || '0'), 0, 0);
+
+            // Agendar como recordatorio "dile a" en vez de enviar ahora
+            const dateStr = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`;
+            const agendaItem = {
+              reason: `Enviar mensaje a ${familyInfo.name}: "${realMessage}"`,
+              scheduledFor: targetDate.toISOString(),
+              scheduledForLocal: `${dateStr} ${String(hour).padStart(2, '0')}:${String(parseInt(temporalMatch[2] || '0')).padStart(2, '0')}`,
+              createdAt: new Date().toISOString(),
+              status: 'pending',
+              type: 'dile_a_programado',
+              contactPhone: targetSerialized,
+              contactName: familyInfo.name,
+              remindContact: true,
+              originalMessage: realMessage
+            };
+            try {
+              const agendaRef = admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda');
+              await agendaRef.add(agendaItem);
+              console.log(`[DILE A] 📅 Mensaje programado para ${familyInfo.name} el ${dateStr} a las ${hour}:00`);
+              await safeSendMessage(phone, `📅 Anotado — le escribo a ${familyInfo.name} el ${dayWord} a las ${hour}:${String(parseInt(temporalMatch[2] || '0')).padStart(2, '0')}`, { isSelfChat: true });
+            } catch (agErr) {
+              console.error(`[DILE A] ❌ Error agendando:`, agErr.message);
+              await safeSendMessage(phone, `❌ No pude agendar el mensaje para ${familyInfo.name}: ${agErr.message}`, { isSelfChat: true });
+            }
+            return;
+          }
+          // ═══ FIN DETECCIÓN TEMPORAL — si no hay hora futura, enviar inmediato como siempre ═══
+
           try {
             // Sistema de stages: obtener nivel de confianza con este contacto
             const trustInfo = getAffinityToneForPrompt(targetSerialized, userProfile.name || 'Mariano');
@@ -4722,6 +4780,26 @@ REGLAS:
         actionFeedback.recordActionResult(phone, 'mover', false, `Error moviendo evento: ${e.message}`);
       }
       aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
+    }
+
+    // ═══ TAG [PROPONER_HORARIO:duración] — MIIA propone slots libres del Calendar ═══
+    const proponerMatch = aiMessage.match(/\[PROPONER_HORARIO(?::(\d+))?\]/);
+    if (proponerMatch) {
+      const duration = parseInt(proponerMatch[1]) || 60;
+      aiMessage = aiMessage.replace(/\[PROPONER_HORARIO(?::\d+)?\]/g, '').trim();
+      try {
+        const proposals = await proposeCalendarSlot(OWNER_UID, duration, 5);
+        if (proposals.length > 0) {
+          const slotsText = proposals.map((p, i) => `${i + 1}. ${p.display}`).join('\n');
+          aiMessage += `\n\n📅 *Horarios disponibles (${duration} min):*\n${slotsText}\n\n¿Cuál te queda mejor?`;
+          console.log(`[PROPONER_HORARIO] ✅ ${proposals.length} slots propuestos`);
+        } else {
+          aiMessage += '\n\n📅 No encontré horarios libres en los próximos días. ¿Querés que busque más adelante?';
+          console.log(`[PROPONER_HORARIO] ⚠️ Sin slots disponibles`);
+        }
+      } catch (propErr) {
+        console.error(`[PROPONER_HORARIO] ❌ Error:`, propErr.message);
+      }
     }
 
     // Detectar tag de intención de compra
@@ -10549,7 +10627,93 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
   return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink, meetLink, mode };
 }
 
+/**
+ * proposeCalendarSlot — Busca el próximo hueco libre en Calendar y propone horarios.
+ * @param {string} uid - UID del owner
+ * @param {number} durationMinutes - Duración deseada en minutos (default: 60)
+ * @param {number} daysAhead - Cuántos días buscar (default: 3)
+ * @returns {Promise<Array<{date: string, start: string, end: string}>>} Slots libres
+ */
+async function proposeCalendarSlot(uid, durationMinutes = 60, daysAhead = 3) {
+  const proposals = [];
+  const schedCfg = await getScheduleConfig(uid);
+  const tz = schedCfg?.timezone || 'America/Bogota';
+  const workStart = schedCfg?.workStartHour || 9;
+  const workEnd = schedCfg?.workEndHour || 18;
+
+  for (let d = 0; d < daysAhead; d++) {
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + d);
+    // Skip weekends if owner has weekendMode
+    const day = targetDate.getDay();
+    if (day === 0 || day === 6) continue;
+
+    const dateStr = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`;
+    try {
+      const avail = await checkCalendarAvailability(dateStr, uid);
+      // Filter free slots that fit the requested duration
+      for (const slot of avail.freeSlots) {
+        const [startStr] = slot.split(' - ');
+        const startHour = parseInt(startStr);
+        if (startHour < workStart || startHour + Math.ceil(durationMinutes / 60) > workEnd) continue;
+        proposals.push({
+          date: dateStr,
+          start: `${String(startHour).padStart(2, '0')}:00`,
+          end: `${String(startHour + Math.ceil(durationMinutes / 60)).padStart(2, '0')}:00`,
+          display: `${dateStr} de ${startHour}:00 a ${startHour + Math.ceil(durationMinutes / 60)}:00`
+        });
+        if (proposals.length >= 5) break; // Max 5 proposals
+      }
+    } catch (e) {
+      console.warn(`[GCAL] ⚠️ Error checking availability for ${dateStr}:`, e.message);
+    }
+    if (proposals.length >= 5) break;
+  }
+  console.log(`[GCAL] 📋 Propuestas de horario: ${proposals.length} slots en ${daysAhead} días`);
+  return proposals;
+}
+
+/**
+ * detectCalendarSystem — Auto-detecta el sistema de calendario del owner.
+ * Basado en su email de registro.
+ * @param {string} email - Email del usuario
+ * @returns {string} 'google' | 'outlook' | 'unknown'
+ */
+function detectCalendarSystem(email) {
+  if (!email) return 'unknown';
+  const domain = email.split('@')[1]?.toLowerCase() || '';
+  // Google domains
+  if (domain === 'gmail.com' || domain === 'googlemail.com' || domain.endsWith('.google.com')) return 'google';
+  // Microsoft domains
+  if (['outlook.com', 'hotmail.com', 'live.com', 'msn.com'].includes(domain)) return 'outlook';
+  // Workspace/custom domains — check if they use Google Workspace (MX records would be ideal, but for now default to asking)
+  // For enterprise domains, the owner should configure in Conexiones
+  return 'unknown';
+}
+
 // Endpoints para que el dashboard/MIIA consulte/cree citas
+app.get('/api/calendar/propose', requireRole('owner', 'agent'), async (req, res) => {
+  try {
+    const duration = parseInt(req.query.duration) || 60;
+    const days = parseInt(req.query.days) || 3;
+    const proposals = await proposeCalendarSlot(req.user.uid, duration, days);
+    res.json({ proposals });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/calendar/detect-system', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const userDoc = await admin.firestore().collection('users').doc(req.user.uid).get();
+    const email = userDoc.data()?.email || req.user.email || '';
+    const system = detectCalendarSystem(email);
+    res.json({ email, system, supported: system === 'google' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/calendar/availability', requireRole('owner', 'agent'), async (req, res) => {
   try {
     const { date } = req.query;

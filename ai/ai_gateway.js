@@ -4,9 +4,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Router inteligente que decide qué modelo/proveedor usar según contexto.
 // ESTRATEGIA HÍBRIDA (Opción B + Tier System):
-// - Admin audit → Claude Opus 4.6 (premium)
-// - Owner self-chat → Claude Opus 4.6 (premium)
+// - Admin audit → Claude Sonnet 4.6 (calidad suficiente, 80% ahorro vs Opus)
+// - Owner self-chat → Claude Sonnet 4.6 (calidad + economía)
 // - Todo lo demás → Gemini Flash (GRATIS, 18 keys en pool)
+// - OWNER KEY PRIORITY: si el owner tiene su propia Gemini key → usarla primero
 // - OPUS MAX ($149/mes): TODO pasa por Opus
 // - Failover: Gemini → OpenAI → Claude (nunca sin respuesta)
 //
@@ -32,17 +33,18 @@ const CONTEXTS = {
 
 // ═══════════════════════════════════════════════════════════════════
 // ESTRATEGIA HÍBRIDA:
-// - OWNER_CHAT + ADMIN_AUDIT → Claude Opus 4.6 (premium, ~$19-25/mes)
+// - OWNER_CHAT + ADMIN_AUDIT → Claude Sonnet 4.6 (~$6-12/mes vs $40+ con Opus)
+// - Si owner tiene su Gemini key → priorizar esa (costo $0 para MIIA)
 // - TODO lo demás → Gemini Flash (GRATIS, 18 keys de respaldo en pool)
 // - Failover: si Gemini falla → OpenAI → Claude (nunca sin respuesta)
 // ═══════════════════════════════════════════════════════════════════
 const CONTEXT_CONFIG = {
   [CONTEXTS.ADMIN_AUDIT]: {
     preferred: 'claude',
-    model: 'claude-opus-4-6',
+    model: 'claude-sonnet-4-6',
     fallbacks: ['openai', 'gemini'],
     maxTokens: 8192,
-    description: 'Auditoría profunda — Claude Opus (premium)'
+    description: 'Auditoría — Claude Sonnet 4.6 (calidad suficiente, 80% ahorro vs Opus)'
   },
   [CONTEXTS.OWNER_CHAT]: {
     preferred: 'claude',
@@ -246,7 +248,11 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
         console.log(`[AI-GW] ✅ ${provider} OK (${latencyMs}ms) [ctx: ${context}]`);
       }
 
-      return { text: result, provider, failedOver, latencyMs };
+      // Track si estamos usando backup de MIIA (owner tenía key pero falló)
+      const usedOwnerKey = (i === 0 && ownerConfig?.aiApiKey && ownerConfig?.aiProvider === provider);
+      const usedMiiaBackup = failedOver && ownerConfig?.aiApiKey && !usedOwnerKey;
+
+      return { text: result, provider, failedOver, latencyMs, usedMiiaBackup };
     } catch (err) {
       providerMetrics[provider].failures++;
       console.error(`[AI-GW] ❌ ${provider} falló [ctx: ${context}]: ${err.message}`);
@@ -256,7 +262,7 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
 
   const latencyMs = Date.now() - startTime;
   console.error(`[AI-GW] 🔴 TODOS los proveedores fallaron [ctx: ${context}] (${latencyMs}ms)`);
-  return { text: null, provider: 'none', failedOver: true, latencyMs };
+  return { text: null, provider: 'none', failedOver: true, latencyMs, usedMiiaBackup: false };
 }
 
 /**

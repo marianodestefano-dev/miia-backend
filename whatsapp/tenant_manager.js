@@ -229,7 +229,7 @@ console.error = function(...args) {
       const tenantPhone = tenant.phone || '';
       // Check if the error contains this tenant's phone number
       if (tenantPhone && errorStr.includes(tenantPhone)) {
-        handleCryptoError(uid, tenant);
+        handleCryptoError(uid, tenant, errorStr);
         matched = true;
         break;
       }
@@ -238,7 +238,7 @@ console.error = function(...args) {
     if (!matched) {
       const activeTenants = [...tenants.entries()].filter(([, t]) => t._sessionApis);
       if (activeTenants.length === 1) {
-        handleCryptoError(activeTenants[0][0], activeTenants[0][1]);
+        handleCryptoError(activeTenants[0][0], activeTenants[0][1], errorStr);
       } else if (activeTenants.length > 1) {
         // Cannot determine which tenant — log but do NOT cascade to all
         originalConsoleError.apply(console, [`[TM] ⚠️ Crypto error detected but cannot attribute to specific tenant (${activeTenants.length} active). Skipping recovery cascade.`]);
@@ -250,17 +250,20 @@ console.error = function(...args) {
 
 /**
  * Handle a crypto error for a specific tenant.
+ * STRATEGY: Per-contact purge FIRST (surgical), global purge only after escalation.
  * Counts errors in 30s windows. At threshold → triggers smart recovery.
+ * @param {string} errorStr - Optional: the error string to extract JID from
  */
-function handleCryptoError(uid, tenant) {
+function handleCryptoError(uid, tenant, errorStr = '') {
   if (!tenantCryptoErrors.has(uid)) {
-    tenantCryptoErrors.set(uid, { count: 0, windowStart: Date.now() });
+    tenantCryptoErrors.set(uid, { count: 0, windowStart: Date.now(), contactPurges: new Set() });
   }
   const tracker = tenantCryptoErrors.get(uid);
   const now = Date.now();
   if (now - tracker.windowStart > 30000) {
     tracker.count = 0;
     tracker.windowStart = now;
+    tracker.contactPurges = new Set();
   }
   tracker.count++;
 
@@ -270,12 +273,28 @@ function handleCryptoError(uid, tenant) {
     console.log(`[TM:${uid}] 🛡️ Creds writes BLOCKED (crypto error detected)`);
   }
 
+  // ═══ PER-CONTACT PURGE: Extract JID from error and purge ONLY that contact's keys ═══
+  // This preserves crypto state with all OTHER contacts (surgical vs nuclear)
+  if (tracker.count <= 5 && tenant._sessionApis?.purgeSessionKeysForContact && errorStr) {
+    // Try to extract JID from error string (patterns: "1234567890@s.whatsapp.net", "1234567890:123@")
+    const jidMatch = errorStr.match(/(\d{10,15})(?::\d+)?@/);
+    if (jidMatch && !tracker.contactPurges.has(jidMatch[1])) {
+      const contactJid = jidMatch[1];
+      tracker.contactPurges.add(contactJid);
+      tenant._sessionApis.purgeSessionKeysForContact(contactJid + '@s.whatsapp.net')
+        .then(purged => {
+          if (purged > 0) console.log(`[TM:${uid}] 🎯 Per-contact purge: ${purged} keys for ${contactJid}`);
+        })
+        .catch(e => console.error(`[TM:${uid}] Per-contact purge error:`, e.message));
+    }
+  }
+
   if (tracker.count === 1 || tracker.count === 5 || tracker.count === 10) {
-    console.log(`[TM:${uid}] 🔐 Crypto error ${tracker.count}/10 in window`);
+    console.log(`[TM:${uid}] 🔐 Crypto error ${tracker.count}/10 in window (per-contact purges: ${tracker.contactPurges.size})`);
   }
 
   if (tracker.count === 10) {
-    console.log(`[TM:${uid}] ⚠️ 10 crypto errors in 30s — triggering smart recovery...`);
+    console.log(`[TM:${uid}] ⚠️ 10 crypto errors in 30s — per-contact purges (${tracker.contactPurges.size}) insufficient, triggering GLOBAL recovery...`);
     tenantCryptoErrors.delete(uid);
     smartSessionRecovery(uid, tenant).catch(e =>
       console.error(`[TM:${uid}] Smart recovery error:`, e.message)
@@ -642,12 +661,12 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
   try {
     const clientId = `tenant-${uid}`;
     const { state, saveCreds, blockCredsWrites, unblockCredsWrites, purgeSessionKeys,
-            restoreIdentityFromBackup, recordHealth, getHealth, getIdentityHash, getCredsVersion
+            purgeSessionKeysForContact, restoreIdentityFromBackup, recordHealth, getHealth, getIdentityHash, getCredsVersion
     } = await useFirestoreAuthState(clientId);
 
     // Store fortress APIs on tenant for smart recovery access
     tenant._sessionApis = {
-      blockCredsWrites, unblockCredsWrites, purgeSessionKeys,
+      blockCredsWrites, unblockCredsWrites, purgeSessionKeys, purgeSessionKeysForContact,
       restoreIdentityFromBackup, recordHealth, getHealth,
       getIdentityHash, getCredsVersion
     };

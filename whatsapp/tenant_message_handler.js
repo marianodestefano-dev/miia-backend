@@ -981,6 +981,21 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     console.log(`${logPrefix} ✅ ${aiResult.provider} OK (${aiResult.latencyMs}ms)`);
   }
 
+  // Notificar al owner si MIIA usó sus keys de backup (el owner tiene su propia key pero falló)
+  if (aiResult.usedMiiaBackup && isSelfChat) {
+    const backupNotice = `⚡ Tu IA (${aiProvider}) no respondió, usé mi respaldo (${aiResult.provider}). Revisá tu cuota en tu proveedor.`;
+    console.log(`${logPrefix} 📢 Notificando al owner: usamos backup MIIA`);
+    // Se enviará después de la respuesta principal (no bloquea)
+    setTimeout(async () => {
+      try {
+        const selfJid = tenantState.sock?.user?.id;
+        if (tenantState.sock && selfJid) {
+          await tenantState.sock.sendMessage(selfJid, { text: backupNotice });
+        }
+      } catch (e) { console.error(`${logPrefix} Error notificando backup:`, e.message); }
+    }, 3000);
+  }
+
   // Si TODOS los proveedores fallaron
   if (!aiMessage || !aiMessage.trim()) {
     if (aiResult.provider === 'none') {

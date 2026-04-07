@@ -546,6 +546,7 @@ function cleanResidualTags(aiMessage) {
     .replace(/\[CONSULTAR_AGENDA\]/g, '')
     .replace(/\[CANCELAR_EVENTO:[^\]]*\]/g, '')
     .replace(/\[MOVER_EVENTO:[^\]]*\]/g, '')
+    .replace(/\[PROPONER_HORARIO(?::\d+)?\]/g, '')
     .trim();
 }
 

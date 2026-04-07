@@ -304,6 +304,44 @@ async function useFirestoreAuthState(clientId) {
     }
   }
 
+  // ═══ Layer 6b: Purge session keys for a SPECIFIC contact (per-JID recovery) ═══
+  // Instead of purging ALL keys (nuclear), only purge sender-key and session docs
+  // that match a specific JID. This preserves crypto state with all OTHER contacts.
+
+  async function purgeSessionKeysForContact(jid) {
+    if (!jid) return 0;
+    try {
+      const keysSnap = await docRef.collection('keys').get();
+      if (keysSnap.empty) return 0;
+
+      // Normalize JID: strip :device suffix and @s.whatsapp.net
+      const baseJid = jid.split(':')[0].split('@')[0];
+      let deleted = 0;
+      const batch = db.batch();
+
+      for (const doc of keysSnap.docs) {
+        // Sender keys and sessions include the JID in the doc ID
+        // Patterns: "sender-key-{jid}", "session-{jid}", or contain the phone number
+        const docId = doc.id;
+        if (docId.includes(baseJid) || docId.includes(`sender-key-${baseJid}`) || docId.includes(`session-${baseJid}`)) {
+          batch.delete(doc.ref);
+          deleted++;
+        }
+      }
+
+      if (deleted > 0) {
+        await batch.commit();
+        console.log(`[BAILEYS-STORE:${clientId}] 🎯 Purged ${deleted} keys for contact ${baseJid} (other contacts PRESERVED)`);
+      } else {
+        console.log(`[BAILEYS-STORE:${clientId}] No keys found for contact ${baseJid}`);
+      }
+      return deleted;
+    } catch (e) {
+      console.error(`[BAILEYS-STORE:${clientId}] Error purging keys for contact:`, e.message);
+      return 0;
+    }
+  }
+
   // ═══ Layer 5: Health tracking ═══
 
   async function recordHealth(status, details) {
@@ -423,6 +461,7 @@ async function useFirestoreAuthState(clientId) {
     blockCredsWrites,
     unblockCredsWrites,
     purgeSessionKeys,
+    purgeSessionKeysForContact,
     restoreIdentityFromBackup,
     recordHealth,
     getHealth,
