@@ -216,16 +216,28 @@ async function checkStalePendingEvents(db, ownerUid, safeSendMessage, ownerPhone
 
     for (const doc of staleSnap.docs) {
       const data = doc.data();
+
+      // Datos corruptos (sin reason o scheduledFor válido) → limpiar directo
+      if (!data.reason || !data.scheduledFor) {
+        await doc.ref.update({ status: 'expired', expiredAt: now.toISOString(), _corruptData: true });
+        console.warn(`[INTEGRITY:STALE] 🗑️ Evento corrupto limpiado (id=${doc.id}, reason=${data.reason}, scheduledFor=${data.scheduledFor})`);
+        continue;
+      }
+
       const scheduledDate = new Date(data.scheduledFor);
+      if (isNaN(scheduledDate.getTime())) {
+        await doc.ref.update({ status: 'expired', expiredAt: now.toISOString(), _corruptData: true });
+        console.warn(`[INTEGRITY:STALE] 🗑️ Evento con fecha inválida limpiado (id=${doc.id})`);
+        continue;
+      }
+
       const hoursOld = (now - scheduledDate) / (1000 * 60 * 60);
 
       if (hoursOld > MAX_PENDING_AGE_HOURS) {
-        // Marcar como expirado
         await doc.ref.update({ status: 'expired', expiredAt: now.toISOString() });
-        console.warn(`[INTEGRITY:STALE] ⏰ Evento expirado (${Math.round(hoursOld)}h): "${data.reason}" del ${data.scheduledForLocal}`);
+        console.warn(`[INTEGRITY:STALE] ⏰ Evento expirado (${Math.round(hoursOld)}h): "${data.reason}" del ${data.scheduledForLocal || '?'}`);
       } else if (hoursOld > 1) {
-        // Evento pasó hace >1h y sigue pendiente — avisar al owner
-        console.warn(`[INTEGRITY:STALE] ⚠️ Evento pendiente pasado (${Math.round(hoursOld)}h): "${data.reason}" del ${data.scheduledForLocal}`);
+        console.warn(`[INTEGRITY:STALE] ⚠️ Evento pendiente pasado (${Math.round(hoursOld)}h): "${data.reason}" del ${data.scheduledForLocal || '?'}`);
       }
     }
   } catch (err) {
@@ -239,28 +251,26 @@ async function checkStalePendingEvents(db, ownerUid, safeSendMessage, ownerPhone
 async function checkCalendarSync(db, ownerUid, safeSendMessage, ownerPhone) {
   try {
     const agendaRef = db.collection('users').doc(ownerUid).collection('miia_agenda');
+    // Query simple (sin índice compuesto): solo calendarSynced, filtrar en código
     const recentSnap = await agendaRef
       .where('calendarSynced', '==', true)
-      .where('calendarVerified', '==', null) // Solo los no verificados aún
-      .orderBy('createdAt', 'desc')
-      .limit(5)
+      .limit(20)
       .get();
 
     if (recentSnap.empty) return;
 
+    // Filtrar en código: solo los no verificados aún
+    const unverified = recentSnap.docs.filter(d => !d.data().calendarVerified);
+    if (unverified.length === 0) return;
+
     // Por ahora marcar como verificados (cuando haya Calendar API list, hacer verify real)
     // TODO: Llamar a Google Calendar API para confirmar que el evento existe
-    for (const doc of recentSnap.docs) {
+    for (const doc of unverified.slice(0, 5)) {
       await doc.ref.update({ calendarVerified: true, verifiedAt: new Date().toISOString() });
       console.log(`[INTEGRITY:CALENDAR] ✅ Evento marcado como verificado: "${doc.data().reason}"`);
     }
   } catch (err) {
-    // calendarVerified puede no existir como campo indexado — ignorar silenciosamente
-    if (err.code === 9 || err.message?.includes('index')) {
-      console.log('[INTEGRITY:CALENDAR] ℹ️ Index no disponible para calendarVerified — saltando verificación');
-    } else {
-      console.error(`[INTEGRITY:CALENDAR] ❌ Error: ${err.message}`);
-    }
+    console.error(`[INTEGRITY:CALENDAR] ❌ Error: ${err.message}`);
   }
 }
 

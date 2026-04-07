@@ -2996,10 +2996,26 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         const recentMsgs = (conversations[phone] || []).slice(-10);
         const alertMsg = recentMsgs.find(m => m.role === 'assistant' && /Alguien te escribi[oó]/.test(m.content));
         if (alertMsg) {
-          const phoneMatch = alertMsg.content.match(/\+(\d{10,18})/);
-          if (phoneMatch) {
-            const leadPhone = phoneMatch[1];
-            const leadJid = leadPhone.includes('@') ? leadPhone : `${leadPhone}@s.whatsapp.net`;
+          // PRIORIDAD 1: Usar _contactJid guardado (JID real, funciona con LIDs)
+          // PRIORIDAD 2: Extraer número del texto de la alerta (fallback)
+          let contactJid = alertMsg._contactJid || null;
+          let leadPhone = '';
+
+          if (contactJid) {
+            leadPhone = contactJid.split('@')[0];
+            console.log(`[RESPONDELE] 🎯 Usando _contactJid guardado: ${contactJid}`);
+          } else {
+            // Fallback: extraer del texto "Número: +XXXX" o "LID:XXXX"
+            const phoneMatch = alertMsg.content.match(/Número:\s*\+?(LID:)?(\d{10,18})/);
+            if (phoneMatch) {
+              leadPhone = phoneMatch[2];
+              const isLid = !!phoneMatch[1];
+              contactJid = isLid ? `${leadPhone}@lid` : `${leadPhone}@s.whatsapp.net`;
+              console.log(`[RESPONDELE] 📋 Extraído del texto: ${contactJid} (isLid=${isLid})`);
+            }
+          }
+
+          if (contactJid && leadPhone) {
             const leadMsgMatch = alertMsg.content.match(/Mensaje:\s*"([^"]+)"/);
             const leadOriginalMsg = leadMsgMatch?.[1] || '';
 
@@ -3020,16 +3036,21 @@ REGLAS:
             try {
               const responseMsg = await generateAIContent(respondPrompt);
               if (responseMsg) {
-                // Intentar resolver LID si existe
-                let sendJid = leadJid;
-                const lidEntry = Object.entries(lidToPhone).find(([, v]) => v === leadJid);
-                if (lidEntry) sendJid = lidEntry[0] + '@lid';
-                // También buscar por LID directo si el número es un LID
-                const lidJid = `${leadPhone}@lid`;
+                // Construir lista de JIDs a intentar (contactJid + alternativas)
+                const jidsToTry = [contactJid];
+                // Si es LID, intentar también resolver a @s.whatsapp.net
+                if (contactJid.includes('@lid')) {
+                  const resolved = resolveLid(contactJid);
+                  if (resolved !== contactJid) jidsToTry.unshift(resolved); // prioridad al resuelto
+                  jidsToTry.push(`${leadPhone}@s.whatsapp.net`); // fallback
+                } else {
+                  // Si es @s.whatsapp.net, intentar también por LID
+                  jidsToTry.push(`${leadPhone}@lid`);
+                }
 
                 // Enviar al lead
                 let sent = false;
-                for (const targetJid of [leadJid, lidJid]) {
+                for (const targetJid of jidsToTry) {
                   try {
                     await safeSendMessage(targetJid, responseMsg.trim());
                     console.log(`[RESPONDELE] ✅ Mensaje enviado a ${targetJid}: "${responseMsg.substring(0, 60)}..."`);
@@ -3047,9 +3068,9 @@ REGLAS:
                 }
 
                 if (sent) {
-                  await safeSendMessage(phone, `✅ Listo, le escribí al +${leadPhone}.`);
+                  await safeSendMessage(phone, `✅ Listo, le escribí al contacto.`, { isSelfChat: true, skipEmoji: true });
                 } else {
-                  await safeSendMessage(phone, `⚠️ No pude enviar el mensaje al +${leadPhone}. Puede que el número tenga un formato distinto. Intentá con "dile a +${leadPhone} [tu mensaje]".`);
+                  await safeSendMessage(phone, `⚠️ No pude enviar el mensaje. El número puede tener un formato distinto. Intentá con "dile a +${leadPhone} [tu mensaje]".`, { isSelfChat: true, skipEmoji: true });
                 }
                 return;
               }
@@ -6582,7 +6603,16 @@ async function handleIncomingMessage(message) {
         console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${displayPhone}${pushName ? ` (${pushName})` : ''}. Sin keywords. body="${(body||'').substring(0,60)}"`);
         // Notificar al owner con número real + pushName si disponible
         const alertMsg = buildUnknownContactAlert(displayPhone, body, pushName);
-        safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, alertMsg, { isSelfChat: true }).catch(() => {});
+        // GUARDAR alerta en conversations del self-chat para que "respondele" la encuentre
+        const ownerSelfJid = `${OWNER_PHONE}@s.whatsapp.net`;
+        if (!conversations[ownerSelfJid]) conversations[ownerSelfJid] = [];
+        conversations[ownerSelfJid].push({
+          role: 'assistant',
+          content: alertMsg,
+          timestamp: Date.now(),
+          _contactJid: effectiveTarget, // JID original del contacto (puede ser LID)
+        });
+        safeSendMessage(ownerSelfJid, alertMsg, { isSelfChat: true }).catch(() => {});
       }
       return;
     }
@@ -6791,7 +6821,9 @@ async function handleIncomingMessage(message) {
       const _ohLocal = new Date(new Date().toLocaleString('en-US', { timeZone: _ohTz }));
       const _ohTime = `${_ohLocal.getHours()}:${String(_ohLocal.getMinutes()).padStart(2, '0')}`;
       const _ohSchedule = automationSettings?.schedule || {};
-      console.log(`[WA] Fuera de horario para ${effectiveTarget} (${_ohTime} ${_ohTz}, schedule: ${_ohSchedule.start || '?'}-${_ohSchedule.end || '?'}, days: ${JSON.stringify(_ohSchedule.days || [])}). Mensaje guardado, respuesta diferida.`);
+      // GUARDAR en nightPendingLeads para responder cuando entre en horario
+      nightPendingLeads.add(effectiveTarget);
+      console.log(`[WA] Fuera de horario para ${effectiveTarget} (${_ohTime} ${_ohTz}, schedule: ${_ohSchedule.start || '?'}-${_ohSchedule.end || '?'}, days: ${JSON.stringify(_ohSchedule.days || [])}). Pendiente registrado (${nightPendingLeads.size} total).`);
       return;
     }
 
@@ -7843,19 +7875,20 @@ async function processMorningWakeup() {
     if (!getOwnerSock() || !getOwnerStatus().isReady) return;
     if (nightPendingLeads.size === 0) return;
 
-    const { localNow: bogotaNow } = getOwnerLocalNow();
-    const h         = bogotaNow.getHours();
-    const min       = bogotaNow.getMinutes();
-    const todayStr  = bogotaNow.toLocaleDateString('es-ES');
+    // Verificar si AHORA estamos en horario — si sí, procesar los pendientes
+    const scheduleConfig = await getScheduleConfig(OWNER_UID);
+    const nowInSchedule = isWithinSchedule(scheduleConfig);
+    const nowInAutoResponse = isWithinAutoResponseSchedule();
 
-    // Ventana: 6:00–6:30 AM Bogotá, una vez por día
-    if (h !== 6 || min > 30 || morningWakeupDone === todayStr) return;
+    if (!nowInSchedule && !nowInAutoResponse) {
+      // Seguimos fuera de horario — no procesar aún
+      return;
+    }
 
-    morningWakeupDone = todayStr;
     const pendingCopy = [...nightPendingLeads];
     nightPendingLeads.clear();
 
-    console.log(`[WAKE UP] Procesando ${pendingCopy.length} leads pendientes nocturnos...`);
+    console.log(`[WAKE UP] ✅ En horario — procesando ${pendingCopy.length} leads pendientes...`);
 
     for (const pendingPhone of pendingCopy) {
       // Delay aleatorio entre leads: 30s–3min para parecer humano
@@ -7865,14 +7898,14 @@ async function processMorningWakeup() {
         const lastMsg = (conversations[pendingPhone] || []).slice(-1)[0];
         if (lastMsg && lastMsg.role === 'user') {
           await processMiiaResponse(pendingPhone, lastMsg.content, true);
-          console.log(`[WAKE UP] Respondido a ${pendingPhone}`);
+          console.log(`[WAKE UP] ✅ Respondido a ${pendingPhone}`);
         }
       } catch (e) {
-        console.error(`[WAKE UP] Error procesando ${pendingPhone}:`, e.message);
+        console.error(`[WAKE UP] ❌ Error procesando ${pendingPhone}:`, e.message);
       }
     }
   } catch (e) {
-    console.error('[WAKE UP] Error general:', e.message);
+    console.error('[WAKE UP] ❌ Error general:', e.message);
   }
 }
 
