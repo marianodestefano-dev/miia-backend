@@ -3,13 +3,29 @@
 // (c) 2024-2026 Mariano De Stefano. All rights reserved.
 // ════════════════════════════════════════════════════════════════════════════
 // REEMPLAZA el polling constante (30s sport, 5min integrations, 30min prices).
-// NUEVO DISEÑO:
-//   1. 10:00 AM (hora owner) → consulta del día: deportes, precios, integraciones
-//   2. Si hay evento HOY → agenda timer interno para arrancar polling en vivo
-//   3. Durante evento → polling real (60s fútbol, 15s F1, etc.)
-//   4. Post-evento → para polling, resumen, silencio
 //
-// De ~3,200 polls/día → 2 consultas (10AM + 3PM) + polls solo durante eventos vivos
+// DISEÑO INTELIGENTE:
+//   1. 10:00 AM (hora owner) → consulta del día: deportes, precios, integraciones, vuelos
+//   2. 3:00 PM → refuerzo para eventos de tarde/noche
+//   3. Si hay evento HOY → agenda timer interno para arrancar polling EN VIVO a la hora exacta
+//   4. Durante evento → polling real según deporte (ver tabla abajo)
+//   5. Post-evento → detiene polling, resumen final, silencio
+//   6. ON-DEMAND → si el usuario pregunta ("¿cómo va Boca?"), chequeo inmediato
+//
+// ═══ POLLING EN VIVO POR DEPORTE ═══
+//   Fútbol:    60s  × ~2h    = ~120 polls/partido    (Gemini Search $0)
+//   F1:        15s  × ~2h    = ~480 polls/carrera     (OpenF1 $0)
+//   Tenis:     90s  × ~2.5h  = ~100 polls/partido     (Gemini Search $0)
+//   NBA:       60s  × ~2.5h  = ~150 polls/partido     (Gemini Search $0)
+//   MLB:       90s  × ~3h    = ~120 polls/partido     (MLB Stats $0)
+//   UFC:       120s × ~4h    = ~120 polls/card         (Gemini Search $0)
+//   Rugby:     60s  × ~1.5h  = ~90 polls/partido      (Gemini Search $0)
+//   Boxeo:     120s × ~1h    = ~30 polls/pelea         (Gemini Search $0)
+//   Golf:      300s × ~5h    = ~60 polls/ronda         (Gemini Search $0)
+//   Ciclismo:  300s × ~5h    = ~60 polls/etapa         (Gemini Search $0)
+//
+// ANTES: ~3,200 polls/día (sport 30s + integrations 5min + prices 30min + travel 6h)
+// AHORA: 2 briefings + polls SOLO durante eventos vivos + on-demand
 // ════════════════════════════════════════════════════════════════════════════
 
 'use strict';
@@ -213,6 +229,58 @@ function clearActiveTimers() {
 }
 
 /**
+ * Consulta ON-DEMAND — cuando el usuario pregunta algo ("¿cómo va Boca?", "¿bajó el precio?")
+ * Ejecuta el chequeo AHORA sin esperar al briefing.
+ * @param {string} type - 'sport' | 'price' | 'integration' | 'all'
+ * @returns {Promise<Object>} Resultado de la consulta
+ */
+async function onDemandCheck(type = 'all') {
+  console.log(`[MORNING-BRIEFING] 🔍 Consulta ON-DEMAND: ${type}`);
+  const results = {};
+
+  if (type === 'sport' || type === 'all') {
+    try {
+      if (_deps?.sportEngine?.runSportsEngine) {
+        await _deps.sportEngine.runSportsEngine();
+        results.sport = 'checked';
+        console.log('[MORNING-BRIEFING] ⚽ Sport check on-demand completado');
+      }
+    } catch (e) {
+      console.error(`[MORNING-BRIEFING] ❌ On-demand sport: ${e.message}`);
+      results.sport = 'error';
+    }
+  }
+
+  if (type === 'price' || type === 'all') {
+    try {
+      if (_deps?.priceTracker?.checkPrices) {
+        await _deps.priceTracker.checkPrices(_ownerUid);
+        results.price = 'checked';
+        console.log('[MORNING-BRIEFING] 💰 Price check on-demand completado');
+      }
+    } catch (e) {
+      console.error(`[MORNING-BRIEFING] ❌ On-demand price: ${e.message}`);
+      results.price = 'error';
+    }
+  }
+
+  if (type === 'integration' || type === 'all') {
+    try {
+      if (_deps?.integrationEngine?.runIntegrationEngine) {
+        await _deps.integrationEngine.runIntegrationEngine();
+        results.integration = 'checked';
+        console.log('[MORNING-BRIEFING] 📱 Integration check on-demand completado');
+      }
+    } catch (e) {
+      console.error(`[MORNING-BRIEFING] ❌ On-demand integration: ${e.message}`);
+      results.integration = 'error';
+    }
+  }
+
+  return results;
+}
+
+/**
  * Forzar briefing (para testing o comando manual).
  */
 async function forceBriefing() {
@@ -249,6 +317,7 @@ function stop() {
 
 module.exports = {
   init,
+  onDemandCheck,
   forceBriefing,
   healthCheck,
   stop
