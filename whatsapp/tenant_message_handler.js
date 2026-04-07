@@ -39,8 +39,12 @@ const {
 const {
   buildOwnerSelfChatPrompt, buildOwnerFamilyPrompt,
   buildOwnerLeadPrompt, buildEquipoPrompt, buildGroupPrompt,
+  buildInvokedPrompt, buildOutreachLeadPrompt,
   buildADN, buildVademecum, resolveProfile, DEFAULT_OWNER_PROFILE
 } = require('../core/prompt_builder');
+
+const miiaInvocation = require('../core/miia_invocation');
+const outreachEngine = require('../core/outreach_engine');
 
 const aiGateway = require('../ai/ai_gateway');
 const promptCache = require('../ai/prompt_cache');
@@ -672,6 +676,10 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     console.log(`${logPrefix} 🟢 MIIA activada para ${basePhone} (trigger "Hola MIIA")`);
   }
 
+  // Detección de invocación MIIA (3-way conversation)
+  const isInvoc = miiaInvocation.isInvocation(messageBody);
+  const isMiiaInvoked = miiaInvocation.isInvoked(phone);
+
   const gateDecision = shouldMiiaRespond({
     isSelfChat,
     isGroup,
@@ -679,12 +687,63 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     miiaActive: !!ctx.miiaActive[phone],
     isHolaMiia,
     isChauMiia,
+    isInvocation: isInvoc,
+    isMiiaInvoked,
     messageBody,
     businessKeywords,
     basePhone,
   });
 
   console.log(`${logPrefix} 🚪 CONTACT-GATE: respond=${gateDecision.respond}, reason=${gateDecision.reason}, action=${gateDecision.action || 'none'}`);
+
+  // Acción: invocación de MIIA (3-way mode)
+  if (gateDecision.action === 'invocation') {
+    const contactName = ctx.leadNames[phone] || ctx.familyContacts?.[basePhone]?.name || null;
+    const isKnown = !!contactName;
+    miiaInvocation.activateInvocation(phone, isSelfChat ? 'owner' : 'contact', { contactName, knownContact: isKnown });
+
+    // Auto-retiro callback
+    miiaInvocation.touchInteraction(phone, async (retirePhone) => {
+      try {
+        await sendTenantMessage(tenantState, retirePhone, `Bueno, los dejo que sigan charlando 😊 Si me necesitan: *MIIA ven*! 👋`);
+      } catch (e) { console.error(`${logPrefix} ❌ Auto-retiro error:`, e.message); }
+    });
+
+    const ownerName = ctx.ownerProfile?.shortName || ctx.ownerProfile?.name || 'tu owner';
+    const prompt = buildInvokedPrompt({
+      ownerName,
+      contactName,
+      isFirstTime: !isKnown,
+      pendingIntroduction: !isKnown,
+      scope: null,
+      contactRelation: null,
+      invokedBy: isSelfChat ? 'owner' : 'contact',
+      ownerProfile: ctx.ownerProfile,
+      stageInfo: '',
+    });
+
+    try {
+      const result = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, prompt, tenantState.aiConfig || {});
+      if (result?.text) {
+        ctx.conversations[phone].push({ role: 'assistant', content: result.text.trim(), timestamp: Date.now() });
+        await sendTenantMessage(tenantState, phone, result.text.trim());
+      }
+    } catch (e) {
+      console.error(`${logPrefix} ❌ Error en invocación:`, e.message);
+      const fallback = isKnown ? `¡Hola! Acá estoy 😊 ¿En qué los ayudo?` : `¡Hola ${ownerName}! ¿Me querés presentar a alguien? 😊`;
+      await sendTenantMessage(tenantState, phone, fallback);
+    }
+    return;
+  }
+
+  // Acción: despedida de invocación
+  if (gateDecision.action === 'invocation_farewell') {
+    miiaInvocation.deactivateInvocation(phone, 'farewell');
+    const farewell = `¡Fue un gusto! Si me necesitan: *MIIA ven* 😊👋`;
+    ctx.conversations[phone].push({ role: 'assistant', content: farewell, timestamp: Date.now() });
+    await sendTenantMessage(tenantState, phone, farewell);
+    return;
+  }
 
   // Acción: farewell (Chau MIIA)
   if (gateDecision.action === 'farewell') {
@@ -1086,6 +1145,16 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
   // 11c. Tag de suscripción
   aiMessage = processSubscriptionTag(aiMessage, phone, ctx.subscriptionState);
+
+  // 11d-pre. Tags de plan (interno, NUNCA visible al lead)
+  {
+    const { cleanText, plans } = outreachEngine.extractPlanTags(aiMessage);
+    if (plans.length > 0) {
+      aiMessage = cleanText;
+      console.log(`${logPrefix} 🏷️ Plan tags detectados: ${plans.join(', ')} — envío de imágenes pendiente de configuración por tenant`);
+      // TODO: Implementar envío de imágenes de plan para tenants (requiere media storage por tenant)
+    }
+  }
 
   // 11d. Limpiar tags residuales (correo maestro, cotización sin procesar, etc.)
   aiMessage = cleanResidualTags(aiMessage);

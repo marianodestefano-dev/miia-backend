@@ -123,6 +123,8 @@ function matchesBusinessKeywords(messageBody, businessKeywords) {
  * @param {boolean} opts.miiaActive - Si MIIA está activa para este contacto (trigger previo)
  * @param {boolean} opts.isHolaMiia - Si el mensaje contiene "Hola MIIA"
  * @param {boolean} opts.isChauMiia - Si el mensaje contiene "Chau MIIA"
+ * @param {boolean} opts.isInvocation - Si el mensaje es una invocación de MIIA ("MIIA estás?", "MIIA ven")
+ * @param {boolean} opts.isMiiaInvoked - Si MIIA está actualmente invocada en este chat (3-way mode)
  * @param {string} opts.messageBody - Cuerpo del mensaje
  * @param {string[]} opts.businessKeywords - Keywords del negocio del owner
  * @param {string} opts.basePhone - Teléfono base del contacto
@@ -130,14 +132,15 @@ function matchesBusinessKeywords(messageBody, businessKeywords) {
  * @returns {{
  *   respond: boolean,
  *   reason: string,
- *   action?: 'notify_owner'|'farewell'|'none',
+ *   action?: 'notify_owner'|'farewell'|'invocation'|'invocation_farewell'|'none',
  *   matchedKeyword?: string
  * }}
  */
 function shouldMiiaRespond(opts) {
   const {
     isSelfChat, isGroup, contactType, miiaActive,
-    isHolaMiia, isChauMiia, messageBody, businessKeywords, basePhone
+    isHolaMiia, isChauMiia, isInvocation, isMiiaInvoked,
+    messageBody, businessKeywords, basePhone
   } = opts;
 
   // ═══ PASO 1: Self-chat → SIEMPRE responder ═══
@@ -155,7 +158,24 @@ function shouldMiiaRespond(opts) {
     return { respond: false, reason: 'contact_ignored', action: 'none' };
   }
 
-  // ═══ PASO 3b: "Chau MIIA" → despedirse y desactivar ═══
+  // ═══ PASO 3b: MIIA INVOCADA (3-way mode) — Tiene prioridad ═══
+  // Si MIIA fue invocada en un chat ("MIIA estás?"), responde a todo hasta que la despidan
+  if (isInvocation) {
+    console.log(`[CONTACT-GATE] 🎤 Invocación de MIIA detectada por ${basePhone}`);
+    return { respond: true, reason: 'invocation', action: 'invocation' };
+  }
+
+  if (isMiiaInvoked) {
+    // MIIA está activa en modo invocado — despedida especial
+    if (isChauMiia) {
+      console.log(`[CONTACT-GATE] 👋 Despedida de MIIA invocada por ${basePhone}`);
+      return { respond: true, reason: 'invocation_farewell', action: 'invocation_farewell' };
+    }
+    // Cualquier mensaje mientras MIIA está invocada → responder (dentro de scope)
+    return { respond: true, reason: 'miia_invoked', action: 'none' };
+  }
+
+  // ═══ PASO 3c: "Chau MIIA" → despedirse y desactivar ═══
   if (isChauMiia) {
     return { respond: true, reason: 'farewell', action: 'farewell' };
   }

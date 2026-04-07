@@ -94,7 +94,7 @@ const cerebroAbsoluto = require('./data/cerebro_absoluto');
 const confidenceEngine = require('./core/confidence_engine');
 const messageLogic = require('./core/message_logic');
 const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping } = require('./core/miia_emoji');
-const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt } = require('./core/prompt_builder');
+const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
 
@@ -123,6 +123,9 @@ const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_
 const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
 const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
+const miiaInvocation = require('./core/miia_invocation');
+const outreachEngine = require('./core/outreach_engine');
+const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
 const contactClassifier = require('./core/contact_classifier');
@@ -1686,6 +1689,49 @@ async function generateAIContentEmergency(prompt, { enableSearch = false } = {})
   return null;
 }
 
+// ═══ PLAN IMAGE SENDER — Envía imágenes de planes (tag interno, lead NUNCA ve el tag) ═══
+const PLAN_IMAGE_PATHS = {
+  esencial: 'Plan Esencial.jpeg',
+  pro: 'Plan PRO.png',
+  titanium: 'Plan Titanium.png',
+};
+
+async function sendPlanImage(targetJid, planKey) {
+  if (!sock) {
+    console.error(`[PLAN-IMAGE] ❌ No hay socket de WhatsApp activo`);
+    return;
+  }
+
+  // Plan images
+  if (PLAN_IMAGE_PATHS[planKey]) {
+    const path = require('path');
+    const fs = require('fs');
+    const imgPath = path.resolve(__dirname, '..', PLAN_IMAGE_PATHS[planKey]);
+
+    if (!fs.existsSync(imgPath)) {
+      console.error(`[PLAN-IMAGE] ❌ Imagen no encontrada: ${imgPath}`);
+      return;
+    }
+
+    const imageBuffer = fs.readFileSync(imgPath);
+    const mimeType = imgPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+    await sock.sendMessage(targetJid, {
+      image: imageBuffer,
+      mimetype: mimeType,
+    });
+    console.log(`[PLAN-IMAGE] ✅ Imagen de plan "${planKey}" enviada a ${targetJid}`);
+    return;
+  }
+
+  // Presentación PDF
+  if (planKey.startsWith('presentacion_')) {
+    const docType = planKey.replace('presentacion_', '').toUpperCase();
+    console.log(`[PLAN-IMAGE] 📄 Envío de presentación ${docType} pendiente de configurar ruta del PDF`);
+    // TODO: Configurar rutas de PDFs de presentación CO/OP cuando Mariano los suba
+  }
+}
+
 // safeSendMessage: envío seguro con delay humano
 async function safeSendMessage(target, content, options = {}) {
   if (isSystemPaused) {
@@ -2071,6 +2117,33 @@ function getPromoVigencia() {
   return { vigencia, cupos };
 }
 
+// ═══ OUTREACH BACKGROUND PROCESSOR ═══
+async function processOutreachInBackground(queue, reportFn) {
+  console.log(`[OUTREACH] 🏗️ Iniciando procesamiento en background: ${queue.leads.length} leads`);
+
+  await outreachEngine.processOutreachQueue(
+    queue,
+    // sendMessageFn
+    async (jid, text) => { await safeSendMessage(jid, text); },
+    // sendMediaFn
+    async (jid, mediaKey, caption) => {
+      // Enviar documento de presentación
+      if (mediaKey.startsWith('PRESENTACION_')) {
+        // TODO: Configurar rutas de PDFs cuando Mariano los suba
+        console.log(`[OUTREACH] 📄 Presentación ${mediaKey} — pendiente configurar archivo`);
+      }
+    },
+    // generateAIFn
+    async (prompt) => { return await generateAIContent(prompt); },
+    // ownerProfile
+    userProfile,
+    // reportFn
+    reportFn,
+    // opts
+    {}
+  );
+}
+
 // ============================================
 // MOTOR DE INTELIGENCIA SOBERANA MIIA
 // ============================================
@@ -2292,6 +2365,182 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         } catch (apptErr) {
           console.error(`[TURNO] ❌ Error procesando aprobación:`, apptErr.message);
         }
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MIIA INVOCACIÓN — Conversación de 3 (MIIA + Owner + Contacto)
+    // Detecta "MIIA estás?", "MIIA ven", etc. + despedida + scope + auto-retiro
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (!isSelfChat && !phone.endsWith('@g.us')) {
+      const isInvoc = miiaInvocation.isInvocation(effectiveMsg);
+      const isFarewellInvoc = miiaInvocation.isFarewell(effectiveMsg);
+      const currentlyInvoked = miiaInvocation.isInvoked(phone);
+
+      // ── Invocación nueva ──
+      if (isInvoc && !currentlyInvoked) {
+        const basePhone = phone.split('@')[0];
+        const contactData = familyContacts[basePhone] || {};
+        const isKnown = !!contactData.name || !!conversationMetadata[phone]?.dileAContact;
+        const contactName = contactData.name || conversationMetadata[phone]?.dileAContact || null;
+
+        miiaInvocation.activateInvocation(phone, isFromMe ? 'owner' : 'contact', {
+          contactName,
+          knownContact: isKnown,
+        });
+
+        // Auto-retiro callback
+        miiaInvocation.touchInteraction(phone, async (retirePhone, retireName) => {
+          try {
+            const autoRetireMsg = `Bueno, los dejo que sigan charlando 😊 Si me necesitan, ya saben: *MIIA ven*! 👋`;
+            await safeSendMessage(retirePhone, autoRetireMsg);
+            console.log(`[INVOCATION] ⏰ Auto-retiro enviado a ${retirePhone}`);
+          } catch (e) {
+            console.error(`[INVOCATION] ❌ Error en auto-retiro:`, e.message);
+          }
+        });
+
+        // Generar respuesta de entrada
+        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const invokedPrompt = buildInvokedPrompt({
+          ownerName: userProfile.shortName || userProfile.name || 'Mariano',
+          contactName,
+          isFirstTime: !isKnown,
+          pendingIntroduction: !isKnown,
+          scope: null,
+          contactRelation: null,
+          invokedBy: isFromMe ? 'owner' : 'contact',
+          ownerProfile: userProfile,
+          stageInfo,
+        });
+
+        try {
+          const invocResponse = await generateAIContent(invokedPrompt);
+          if (invocResponse) {
+            await safeSendMessage(phone, invocResponse.trim());
+          }
+        } catch (e) {
+          console.error(`[INVOCATION] ❌ Error generando respuesta de entrada:`, e.message);
+          const fallback = isKnown
+            ? `¡Hola! Acá estoy 😊 ¿En qué los ayudo?`
+            : `¡Hola ${userProfile.shortName || ''}! ¿Me querés presentar a alguien? 😊`;
+          await safeSendMessage(phone, fallback);
+        }
+        return;
+      }
+
+      // ── Despedida de invocación ──
+      if (isFarewellInvoc && currentlyInvoked) {
+        miiaInvocation.deactivateInvocation(phone, 'farewell');
+        const invState = miiaInvocation.getInvocationState(phone);
+        const contactName = invState?.contactName || 'chicos';
+        try {
+          const farewellPrompt = `Sos MIIA. Te despiden de una conversación de 3. Despedite brevemente de ambos (el owner y ${contactName}). Recordá que pueden invocarte con "MIIA ven". Máx 2 líneas, natural.`;
+          const farewell = await generateAIContent(farewellPrompt);
+          await safeSendMessage(phone, farewell?.trim() || `¡Fue un gusto! Si me necesitan: *MIIA ven* 😊👋`);
+        } catch (e) {
+          await safeSendMessage(phone, `¡Chauu! Si me necesitan: *MIIA ven* 😊👋`);
+        }
+        return;
+      }
+
+      // ── MIIA invocada y recibe mensaje → procesar con scope ──
+      if (currentlyInvoked) {
+        miiaInvocation.touchInteraction(phone, async (retirePhone) => {
+          try {
+            await safeSendMessage(retirePhone, `Bueno, los dejo que sigan charlando 😊 Si me necesitan: *MIIA ven*! 👋`);
+          } catch (e) { console.error(`[INVOCATION] ❌ Auto-retiro error:`, e.message); }
+        });
+
+        const invState = miiaInvocation.getInvocationState(phone);
+
+        // Detectar si el owner está dando scope
+        if (isFromMe) {
+          const newScope = miiaInvocation.detectScope(effectiveMsg);
+          if (newScope) {
+            miiaInvocation.setScope(phone, newScope);
+          }
+
+          // Detectar si el owner está presentando al contacto
+          if (invState.pendingIntroduction) {
+            const { relation, name } = miiaInvocation.detectRelationship(effectiveMsg);
+            if (relation || name) {
+              miiaInvocation.setContactInfo(phone, name, relation);
+
+              // Crear grupo si no existe y agregar contacto
+              const basePhoneClean = phone.split('@')[0];
+              const groupName = relation || 'amigos';
+              if (relation === 'familia') {
+                familyContacts[basePhoneClean] = { name: name || 'Contacto', emoji: '💕' };
+              }
+
+              console.log(`[INVOCATION] 📇 Contacto ${name || basePhoneClean} registrado como ${groupName}`);
+            }
+          }
+        }
+
+        // Detectar oportunidad de autoventa
+        if (!isFromMe) {
+          const autoventa = miiaInvocation.detectAutoventaOpportunity(effectiveMsg);
+          if (autoventa.interested) {
+            console.log(`[INVOCATION] 💰 Autoventa oportunidad: ${autoventa.trigger} de ${phone}`);
+          }
+
+          // Extraer learnings del contacto
+          const learnings = miiaInvocation.extractContactLearnings(effectiveMsg);
+          if (learnings.length > 0) {
+            console.log(`[INVOCATION] 📝 Learnings del contacto ${phone}: ${learnings.join(', ')}`);
+          }
+        }
+
+        // Generar respuesta con prompt de invocación
+        const updatedState = miiaInvocation.getInvocationState(phone);
+        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const invokedPrompt = buildInvokedPrompt({
+          ownerName: userProfile.shortName || userProfile.name || 'Mariano',
+          contactName: updatedState?.contactName || null,
+          isFirstTime: false,
+          pendingIntroduction: updatedState?.pendingIntroduction || false,
+          scope: updatedState?.scope || null,
+          contactRelation: updatedState?.contactRelation || null,
+          invokedBy: isFromMe ? 'owner' : 'contact',
+          ownerProfile: userProfile,
+          stageInfo,
+        });
+
+        // Incluir mensaje actual en el historial para contexto
+        if (!conversations[phone]) conversations[phone] = [];
+        conversations[phone].push({
+          role: isFromMe ? 'user' : 'user',
+          content: `[${isFromMe ? (userProfile.shortName || 'Owner') : (updatedState?.contactName || 'Contacto')}]: ${effectiveMsg}`,
+          timestamp: Date.now()
+        });
+
+        try {
+          const msgs = conversations[phone].slice(-10).map(m => ({ role: m.role, content: m.content }));
+          const response = await generateAIContent(invokedPrompt + '\n\n[HISTORIAL RECIENTE]\n' + msgs.map(m => m.content).join('\n'));
+
+          if (response) {
+            // Extraer tags de plan (internos, nunca visibles)
+            const { cleanText, plans } = outreachEngine.extractPlanTags(response);
+
+            await safeSendMessage(phone, cleanText.trim());
+
+            // Enviar imágenes de plan si hay tags
+            for (const plan of plans) {
+              try {
+                await sendPlanImage(phone, plan);
+              } catch (e) {
+                console.error(`[INVOCATION] ⚠️ Error enviando plan ${plan}:`, e.message);
+              }
+            }
+
+            conversations[phone].push({ role: 'assistant', content: cleanText.trim(), timestamp: Date.now() });
+          }
+        } catch (e) {
+          console.error(`[INVOCATION] ❌ Error generando respuesta invocada:`, e.message);
+        }
+        return;
       }
     }
 
@@ -2543,6 +2792,79 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       const classResult = await contactClassifier.tryClassifyFromOwnerMessage(OWNER_UID, effectiveMsg, ownerBusinesses);
       if (classResult.handled) {
         await safeSendMessage(phone, classResult.response);
+        return;
+      }
+
+      // ═══ OUTREACH HANDLER — Owner envía screenshot de leads + "hacete cargo" ═══
+      const hasImage = !!(msg?.message?.imageMessage || msg?.message?.viewOnceMessage?.message?.imageMessage || msg?.message?.viewOnceMessageV2?.message?.imageMessage);
+      if (outreachEngine.isOutreachCommand(effectiveMsg, hasImage)) {
+        console.log(`[OUTREACH] 🚀 Comando de outreach detectado en self-chat`);
+        await safeSendMessage(phone, `📊 Dame un momento mientras analizo la imagen y extraigo los leads...`, { isSelfChat: true, skipEmoji: true });
+
+        try {
+          // Extraer imagen del mensaje
+          const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
+          if (imageMsg && sock) {
+            const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+            const imageBuffer = await downloadMediaMessage(msg, 'buffer', {});
+
+            // Enviar a Gemini Vision para extraer leads
+            const visionPrompt = outreachEngine.buildScreenshotParserPrompt();
+            const { callGeminiVision } = require('./ai/gemini_client');
+            let visionResponse;
+            if (typeof callGeminiVision === 'function') {
+              visionResponse = await callGeminiVision(imageBuffer, visionPrompt);
+            } else {
+              // Fallback: convertir a base64 y usar en prompt multimodal
+              const base64Image = imageBuffer.toString('base64');
+              visionResponse = await generateAIContent(visionPrompt, {
+                images: [{ mimeType: 'image/png', data: base64Image }],
+              });
+            }
+
+            if (!visionResponse) {
+              await safeSendMessage(phone, `❌ No pude leer la imagen. ¿Podés enviarla de nuevo con mejor resolución?`, { isSelfChat: true, skipEmoji: true });
+              return;
+            }
+
+            // Parsear leads
+            const { leads, errors } = outreachEngine.parseScreenshotResponse(visionResponse);
+
+            if (leads.length === 0) {
+              await safeSendMessage(phone, `❌ No encontré leads en la imagen.${errors.length > 0 ? ` Errores: ${errors.join(', ')}` : ''}`, { isSelfChat: true, skipEmoji: true });
+              return;
+            }
+
+            // Reporte de lo encontrado
+            const countrySummary = {};
+            for (const lead of leads) {
+              const c = lead.country?.name || 'Desconocido';
+              countrySummary[c] = (countrySummary[c] || 0) + 1;
+            }
+            const countryStr = Object.entries(countrySummary).map(([c, n]) => `${n} de ${c}`).join(', ');
+            await safeSendMessage(phone,
+              `📋 Encontré *${leads.length} leads*: ${countryStr}.\n${errors.length > 0 ? `⚠️ ${errors.length} no pude leerlos.\n` : ''}¿Arranco con todos?`,
+              { isSelfChat: true, skipEmoji: true });
+
+            // Crear cola y esperar confirmación (por ahora auto-arrancar)
+            const queue = outreachEngine.createOutreachQueue(OWNER_UID, leads);
+
+            // Procesar en background
+            const reportFn = async (text) => {
+              await safeSendMessage(phone, text, { isSelfChat: true, skipEmoji: true });
+            };
+
+            // No bloquear — procesar async
+            processOutreachInBackground(queue, reportFn).catch(err => {
+              console.error(`[OUTREACH] ❌ Error en procesamiento background:`, err.message);
+            });
+          } else {
+            await safeSendMessage(phone, `⚠️ No pude detectar la imagen. Enviá el screenshot como imagen (no como documento).`, { isSelfChat: true, skipEmoji: true });
+          }
+        } catch (outreachErr) {
+          console.error(`[OUTREACH] ❌ Error procesando comando de outreach:`, outreachErr.message);
+          await safeSendMessage(phone, `❌ Error procesando: ${outreachErr.message}`, { isSelfChat: true, skipEmoji: true });
+        }
         return;
       }
 
@@ -4095,6 +4417,20 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         }
       } catch (e) { console.error('[COBROS] Error enviando QR:', e.message); }
     }
+    // ── TAG [ENVIAR_PLAN:X] — Envía imagen de plan al lead (interno, NUNCA visible) ──
+    {
+      const { cleanText, plans } = outreachEngine.extractPlanTags(aiMessage);
+      if (plans.length > 0) {
+        aiMessage = cleanText;
+        // Enviar imágenes de plan en background (no bloquear la respuesta de texto)
+        for (const planKey of plans) {
+          sendPlanImage(phone, planKey).catch(e => {
+            console.error(`[PLAN-IMAGE] ⚠️ Error enviando plan "${planKey}" a ${phone}:`, e.message);
+          });
+        }
+      }
+    }
+
     // ── TAGS DE APRENDIZAJE (3 nuevos + 1 legacy) ──────────────────────────────
     // [APRENDIZAJE_NEGOCIO:texto]  → cerebro_absoluto (negocio, compartido)
     // [APRENDIZAJE_PERSONAL:texto] → datos personales privados de Mariano
