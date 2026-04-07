@@ -12,6 +12,7 @@
  */
 
 const { resolveProfile, COTIZACION_PROTOCOL } = require('./prompt_builder');
+const miiaPersonality = require('./miia_personality');
 
 // ═══════════════════════════════════════════════════════════════════
 // MÓDULOS — Funciones puras, cada una retorna un bloque de prompt
@@ -515,6 +516,15 @@ function assemblePrompt(opts) {
   }
   if (!loaded.includes('core_rules')) {
     divergences.push('CRITICO: core_rules no cargado');
+  }
+
+  // 4b. Inyectar PERSONALIDAD de MIIA (ADN Emocional)
+  // Detectar tema del mensaje para cargar opiniones relevantes
+  const detectedTopic = miiaPersonality.detectTopic(messageBody);
+  const personalityBlock = miiaPersonality.buildPersonalityPrompt(chatType, detectedTopic, ctx.contactPrefs);
+  if (personalityBlock) {
+    blocks.push(personalityBlock);
+    loaded.push('mod_personality');
   }
 
   // 5. Ensamblar prompt final
