@@ -138,10 +138,41 @@ function getMiiaEmoji(message, ctx = {}) {
   if (ctx.trigger === 'teaching') return '👩‍🏫';
   if (ctx.trigger === 'error') return '🤦‍♀️';
 
-  // ═══ PRIORIDAD 5: Tema del mensaje ═══
+  // ═══ PRIORIDAD 5: Trigger de contexto específico ═══
+
+  // Sport → 🤵‍♀️ (MIIA relatora elegante)
+  if (ctx.trigger === 'sport') return '🤵‍♀️';
+
+  // Work Office → 👩‍💻 (agenda, mail, recordatorios, tareas de oficina)
+  if (ctx.trigger === 'general_work' || ctx.topic === 'office') return '👩‍💻';
+
+  // Work Street → 👩‍💼 (price tracker, travel, noticias, clima, delivery, transporte)
+  if (ctx.trigger === 'street' || ctx.topic === 'street') return '👩‍💼';
+
+  // ═══ PRIORIDAD 6: Tema del mensaje (auto-detectado) ═══
 
   if (ctx.topic === 'music') return '👩‍🎤';
   if (ctx.topic === 'food') return '👩‍🍳';
+  if (ctx.topic === 'health' || ctx.topic === 'gym') return '🧘‍♀️';
+  if (ctx.topic === 'travel') return '🧳';
+  if (ctx.topic === 'weather') return '🌦️';
+  if (ctx.topic === 'news') return '📰';
+  if (ctx.topic === 'price') return '🛒';
+  if (ctx.topic === 'delivery') return '🛵';
+  if (ctx.topic === 'transport') return '🚗';
+  if (ctx.topic === 'finance') return '📊';
+  if (ctx.topic === 'study') return '📚';
+  if (ctx.topic === 'gaming') return '🎮';
+  if (ctx.topic === 'photo') return '📸';
+  if (ctx.topic === 'art') return '🎨';
+  if (ctx.topic === 'tech') return '⚙️';
+  if (ctx.topic === 'pet') return '🐾';
+  if (ctx.topic === 'baby') return '👶';
+  if (ctx.topic === 'party') return '🎉';
+  if (ctx.topic === 'love') return '💕';
+  if (ctx.topic === 'sleep') return '😴';
+  if (ctx.topic === 'coffee') return '☕';
+  if (ctx.topic === 'alcohol') return '🍷';
 
   if (ctx.topic === 'cinema') {
     switch (ctx.cinemaSub) {
@@ -154,9 +185,6 @@ function getMiiaEmoji(message, ctx = {}) {
       default: return '🦹‍♀️'; // default cine
     }
   }
-
-  if (ctx.trigger === 'business' || ctx.topic === 'work') return '👩‍💼';
-  if (ctx.trigger === 'general_work') return '👩‍💻';
 
   // ═══ DEFAULT ═══
   return DEFAULT_EMOJI;
@@ -253,18 +281,44 @@ function detectMessageTopic(message, extraCtx = {}) {
   if (!message || typeof message !== 'string') return { topic: 'general' };
   const lower = message.toLowerCase();
 
+  // ─── STREET (👩‍💼): precio, vuelo, clima, noticias, delivery, transporte ───
+  if (/precio|oferta|descuento|promo|stock|tienda|comprar|producto|mercado/i.test(lower)) return { topic: 'price' };
+  if (/vuelo|avion|aeropuerto|pasaje|boarding|escala|reserva.*hotel/i.test(lower)) return { topic: 'travel' };
+  if (/clima|lluvia|tormenta|sol|nublado|temperatura|calor|fr[ií]o|pron[oó]stico/i.test(lower)) return { topic: 'weather' };
+  if (/noticia|titular|periódico|periodico|diario|actualidad|prensa/i.test(lower)) return { topic: 'news' };
+  if (/rappi|pedidosya|pedidos\s*ya|delivery|domicilio|pedir\s+comida/i.test(lower)) return { topic: 'delivery' };
+  if (/uber|didi|taxi|cabify|transporte|viaje.*auto|llegada|conductor/i.test(lower)) return { topic: 'transport' };
+  if (/acci[oó]n|bolsa|cripto|bitcoin|inversi[oó]n|dolar|divisa|mercado.*valor/i.test(lower)) return { topic: 'finance' };
+
+  // ─── OFFICE (👩‍💻): agenda, mail, recordatorio ───
+  if (/agenda|reuni[oó]n|cita|mail|correo|email|recordatorio|tarea|pendiente|deadline/i.test(lower)) return { topic: 'office' };
+
+  // ─── Temas de vida ───
   if (/spotify|playlist|cancion|album|disco|musica|lanzamiento.*(single|ep)|artista/i.test(lower)) return { topic: 'music' };
   if (/receta|cocinar?|ingrediente|almuerzo|cena|comida|plato/i.test(lower)) return { topic: 'food' };
+  if (/ejercicio|entrena|gym|gimnasio|correr|running|yoga|cardio|dieta|nutri/i.test(lower)) return { topic: 'health' };
+  if (/estudiar|examen|parcial|tarea.*escuela|universidad|materia|clase/i.test(lower)) return { topic: 'study' };
+  if (/juego|gaming|ps[45]|xbox|nintendo|gamer|fortnite|minecraft/i.test(lower)) return { topic: 'gaming' };
+  if (/foto|selfie|c[aá]mara|instagram|filtro/i.test(lower)) return { topic: 'photo' };
+  if (/pintar|dibujar|arte|museo|exposici/i.test(lower)) return { topic: 'art' };
+  if (/programar|c[oó]digo|app|software|bug|server|api|base\s*de\s*datos/i.test(lower)) return { topic: 'tech' };
+  if (/perro|gato|mascota|veterinari|cachorro|gatito/i.test(lower)) return { topic: 'pet' };
+  if (/beb[eé]|embaraz|pañal|pediatr|nene|nena/i.test(lower)) return { topic: 'baby' };
+  if (/fiesta|cumplea|celebra|brindis|evento.*social/i.test(lower)) return { topic: 'party' };
+  if (/te amo|te quiero|novio|novia|pareja|aniversario|coraz[oó]n/i.test(lower)) return { topic: 'love' };
+  if (/dormir|sue[ñn]o|insomnio|siesta|cansad[ao]|descansar/i.test(lower)) return { topic: 'sleep' };
+  if (/caf[eé]|cappuccino|latte|espresso|cafeter[ií]a/i.test(lower)) return { topic: 'coffee' };
+  if (/vino|cerveza|trago|cocktail|whisky|birra|alcohol|bar\b/i.test(lower)) return { topic: 'alcohol' };
 
+  // ─── Cine/Series ───
   if (/netflix|hbo|prime\s*video|amazon\s*prime|\bprime\b.*peli|\bserie\b|pelicula|estreno|temporada/i.test(lower)) {
-    // Detectar subgénero
     if (/ciencia ficci[oó]n|sci.?fi|super.?hero|marvel|dc|avenger/i.test(lower)) return { topic: 'cinema', cinemaSub: 'scifi' };
     if (/terror|horror|miedo|zombie/i.test(lower)) return { topic: 'cinema', cinemaSub: 'terror' };
     if (/thriller|policial|detective|crimen/i.test(lower)) return { topic: 'cinema', cinemaSub: 'thriller' };
     if (/suspenso|misterio|intriga/i.test(lower)) return { topic: 'cinema', cinemaSub: 'suspense' };
     if (/acci[oó]n|explosion|persecuci/i.test(lower)) return { topic: 'cinema', cinemaSub: 'action' };
     if (/roman[tc]|amor|comedia rom/i.test(lower)) return { topic: 'cinema', cinemaSub: 'romance' };
-    return { topic: 'cinema', cinemaSub: 'scifi' }; // default cine
+    return { topic: 'cinema', cinemaSub: 'scifi' };
   }
 
   return { topic: 'general' };

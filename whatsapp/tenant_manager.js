@@ -704,34 +704,67 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
     // Heartbeat: mantiene el socket vivo para Railway con tráfico WS real
     // FIX: NO usar sendPresenceUpdate('available') — genera notificación visible
-    // al owner cada 3 min (suena/vibra el teléfono). Usar query de bajo nivel.
+    // al owner cada 3 min (suena/vibra el teléfono). Usar ping WS nativo.
     tenant._heartbeat = setInterval(async () => {
       if (!tenant.isReady || !tenant.sock) return;
       try {
-        // fetchStatus genera tráfico WS real sin cambiar presencia visible
-        // Alternativa: sock.query() con IQ stanza de bajo nivel
-        if (tenant.sock.ws && tenant.sock.ws.readyState === 1) {
-          // Enviar ping WS nativo (bajo nivel, sin generar notificación)
-          tenant.sock.ws.ping();
+        const ws = tenant.sock.ws;
+        if (ws && typeof ws.ping === 'function') {
+          const wsState = ws.readyState;
+          if (wsState === 1) {
+            // Socket OPEN → ping WS nativo
+            ws.ping();
+            tenant._lastSocketActivity = Date.now();
+          } else if (wsState === undefined) {
+            // Railway proxy: readyState puede ser undefined pero socket funcional
+            // Intentar ping igual — si falla, el catch lo maneja
+            try {
+              ws.ping();
+              tenant._lastSocketActivity = Date.now();
+            } catch (_) {
+              // ping falló → socket no funcional, no actualizar actividad
+            }
+          }
+          // wsState 0 (CONNECTING), 2 (CLOSING), 3 (CLOSED) → no hacer nada
+        } else if (tenant.sock && !ws) {
+          // sock existe pero sin ws → socket en transición, actualizar actividad
+          // para evitar watchdog falso positivo durante reconexión
           tenant._lastSocketActivity = Date.now();
         }
       } catch (e) {
-        // Si falla, el watchdog lo detectará
         console.warn(`[TM:${uid}] ⚠️ Heartbeat ping failed: ${e.message}`);
       }
     }, 180000); // Cada 3 minutos
 
-    // Watchdog: detecta zombie y reconecta (offset 90s para intercalar con heartbeat)
+    // Watchdog: detecta socket REALMENTE muerto y reconecta
+    // Umbral: 15 min sin actividad (antes era 7 — causaba reconexiones innecesarias)
+    // Condición: readyState debe ser explícitamente NO-OPEN (2 o 3), no undefined
     setTimeout(() => {
     tenant._watchdog = setInterval(() => {
       if (!tenant.isReady) return;
       const silentMinutes = (Date.now() - tenant._lastSocketActivity) / 60000;
-      if (silentMinutes > 7 && tenant.sock?.ws) {
-        const wsState = tenant.sock.ws.readyState;
-        // WebSocket states: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
-        if (wsState !== 1 || wsState === undefined) {
+      if (silentMinutes > 15 && tenant.sock) {
+        const ws = tenant.sock.ws;
+        const wsState = ws?.readyState;
+        // Solo reconectar si: no tiene ws, o readyState es CLOSING(2)/CLOSED(3)
+        // readyState undefined en Railway proxy = puede estar OK → NO reconectar
+        const isDead = !ws || wsState === 2 || wsState === 3;
+        if (isDead) {
           if (tenant._reconnecting) return; // Anti-cascada
-          console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket zombie detectado (ws.readyState=${wsState}, silent ${Math.round(silentMinutes)}min). Forzando reconexión...`);
+          console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket muerto (ws=${ws ? 'exists' : 'null'}, readyState=${wsState}, silent ${Math.round(silentMinutes)}min). Reconectando...`);
+          tenant._reconnecting = true;
+          try { tenant.sock.end(undefined); } catch (_) {}
+          tenant.sock = null;
+          tenant.isReady = false;
+          tenant._initializing = true;
+          setTimeout(() => {
+            tenant._reconnecting = false;
+            startBaileysConnection(uid, tenant, ioInstance);
+          }, 5000);
+        } else if (silentMinutes > 30) {
+          // 30 min sin actividad con readyState undefined → algo anda mal, reconectar
+          if (tenant._reconnecting) return;
+          console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket inactivo 30+ min (readyState=${wsState}). Reconectando por precaución...`);
           tenant._reconnecting = true;
           try { tenant.sock.end(undefined); } catch (_) {}
           tenant.sock = null;
@@ -743,7 +776,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           }, 5000);
         }
       }
-    }, 180000); // Cada 3 minutos
+    }, 300000); // Cada 5 minutos (antes 3 — muy agresivo)
     }, 90000); // Offset 90s para intercalar con heartbeat
 
     // ─── Connection updates (QR, auth, ready) ───

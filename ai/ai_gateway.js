@@ -46,10 +46,10 @@ const CONTEXT_CONFIG = {
   },
   [CONTEXTS.OWNER_CHAT]: {
     preferred: 'claude',
-    model: 'claude-opus-4-6',
+    model: 'claude-sonnet-4-6',
     fallbacks: ['gemini', 'openai'],
     maxTokens: 4096,
-    description: 'Self-chat del owner — Claude Opus (premium)'
+    description: 'Self-chat del owner — Claude Sonnet 4.6 (calidad + economía)'
   },
   [CONTEXTS.LEAD_RESPONSE]: {
     preferred: 'gemini',
