@@ -2838,13 +2838,8 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
             const imageBuffer = await downloadMediaMessage(rawBaileys, 'buffer', {});
 
-            // 🛡️ CONTENT SAFETY CHECK — Obligatorio antes de procesar cualquier imagen
-            const safetyResult = await contentSafety.checkContentSafety(imageBuffer, { source: 'outfit_add', phone, uid: OWNER_UID });
-            if (!safetyResult.allowed) {
-              console.warn(`[OUTFIT:SAFETY] 🚫 Imagen bloqueada (level=${safetyResult.level})`);
-              if (safetyResult.message) await safeSendMessage(phone, safetyResult.message, { isSelfChat: true, skipEmoji: true });
-              return;
-            }
+            // 🛡️ Self-chat del owner → skip safety check (es su propia foto)
+            console.log(`[OUTFIT:SAFETY] ℹ️ Self-chat del owner — safety check skipped`);
 
             const visionPrompt = miiaOutfit.buildGarmentAnalysisPrompt();
             const { callGeminiVision } = require('./ai/gemini_client');
@@ -2877,13 +2872,8 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
             const imageBuffer = await downloadMediaMessage(rawBaileys, 'buffer', {});
 
-            // 🛡️ CONTENT SAFETY CHECK — Obligatorio antes de procesar cualquier imagen
-            const safetyResult = await contentSafety.checkContentSafety(imageBuffer, { source: 'outfit_opinion', phone, uid: OWNER_UID });
-            if (!safetyResult.allowed) {
-              console.warn(`[OUTFIT:SAFETY] 🚫 Imagen bloqueada (level=${safetyResult.level})`);
-              if (safetyResult.message) await safeSendMessage(phone, safetyResult.message, { isSelfChat: true, skipEmoji: true });
-              return;
-            }
+            // 🛡️ Self-chat del owner → skip safety check (es su propia foto)
+            console.log(`[OUTFIT:SAFETY] ℹ️ Self-chat del owner — safety check skipped`);
 
             // Cargar guardarropa para contexto
             const wardrobeSnap = await wardrobeRef.get();
@@ -2981,13 +2971,8 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
             const imageBuffer = await downloadMediaMessage(rawBaileys, 'buffer', {});
 
-            // 🛡️ CONTENT SAFETY CHECK — Obligatorio antes de procesar cualquier imagen
-            const safetyResult = await contentSafety.checkContentSafety(imageBuffer, { source: 'image_analysis', phone, uid: OWNER_UID });
-            if (!safetyResult.allowed) {
-              console.warn(`[IMAGE-ANALYSIS:SAFETY] 🚫 Imagen bloqueada (level=${safetyResult.level})`);
-              if (safetyResult.message) await safeSendMessage(phone, safetyResult.message, { isSelfChat: true, skipEmoji: true });
-              return;
-            }
+            // 🛡️ Self-chat del owner → skip safety check (es su propia foto)
+            console.log(`[IMAGE-ANALYSIS:SAFETY] ℹ️ Self-chat del owner — safety check skipped`);
 
             // Enviar a Gemini Vision para análisis GENÉRICO
             const visionPrompt = outreachEngine.buildScreenshotAnalysisPrompt();
@@ -3518,6 +3503,10 @@ REGLAS:
         }
       }
       await safeSendMessage(phone, `✅ Me presenté con ${enviados}/${phones.length} miembros del equipo. Les envié el video de la langosta 🦞`, { isSelfChat: true, skipEmoji: true });
+      // Marcar que la presentación ya se hizo (para no recordar más)
+      try {
+        await db.collection('users').doc(OWNER_UID).collection('miia_flags').doc('team_presentation').set({ done: true, doneAt: new Date().toISOString(), sentTo: enviados });
+      } catch (_) {}
       console.log(`[EQUIPO:PRESENTACIÓN] ✅ Presentación completa (${enviados}/${phones.length})`);
       return;
     }
@@ -3544,7 +3533,14 @@ REGLAS:
         }
       }
       console.log(`[EQUIPO] ✅ Mensaje enviado al equipo (${enviados}/${phones.length})`);
-      // No enviar confirmación al self-chat
+
+      // Recordar la presentación con video langosta si aún no se hizo
+      try {
+        const presentDoc = await db.collection('users').doc(OWNER_UID).collection('miia_flags').doc('team_presentation').get();
+        if (!presentDoc.exists || !presentDoc.data()?.done) {
+          await safeSendMessage(phone, `✅ Mensaje enviado a ${enviados} miembros del equipo.\n\n💡 ¿Ya me presentaste al equipo? Si querés que les mande mi presentación con el video motivacional de la langosta 🦞, decime "presentate al equipo".`, { isSelfChat: true, skipEmoji: true });
+        }
+      } catch (_) {}
       return;
     }
 

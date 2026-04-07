@@ -177,8 +177,8 @@ function detectOutfitCommand(message, hasImage) {
       return { isOutfit: true, type: 'add_garment' };
     }
 
-    // Imagen + "qué opinas" / "cómo me queda" → opinión
-    if (/\b(qu[ée]\s+opin|c[óo]mo\s+me\s+queda|qu[ée]\s+tal|como\s+se\s+ve|me\s+queda\s+bien|qu[ée]\s+te\s+parece|outfit|look)\b/i.test(msgLower)) {
+    // Imagen + "qué opinas" / "me queda" / "cómo se ve" → opinión
+    if (/\b(qu[ée]\s+opin|me\s+queda|c[óo]mo\s+me\s+queda|qu[ée]\s+tal|como\s+se\s+ve|qu[ée]\s+te\s+parece|outfit|look|este\s+color|esta\s+ropa|esta\s+remera|esta\s+camisa|este\s+pantalon|combina|queda\s+bien|va\s+bien|pinta|facha)\b/i.test(msgLower)) {
       return { isOutfit: true, type: 'opinion' };
     }
   }
