@@ -129,6 +129,7 @@ const miiaOutfit = require('./core/miia_outfit');
 const contentSafety = require('./core/content_safety_shield');
 const featureAnnouncer = require('./core/feature_announcer');
 const tenantLogger = require('./core/tenant_logger');
+const gmailIntegration = require('./integrations/gmail_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -2930,6 +2931,38 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         } catch (outfitErr) {
           console.error(`[OUTFIT] ❌ Error:`, outfitErr.message);
           await safeSendMessage(phone, `❌ Error con el modo outfit: ${outfitErr.message}`, { isSelfChat: true, skipEmoji: true });
+          return;
+        }
+      }
+
+      // ═══ GMAIL INTEGRATION — Lectura y gestión de emails ═══
+      const gmailCmd = gmailIntegration.detectGmailCommand(effectiveMsg);
+      if (gmailCmd.isGmail) {
+        console.log(`[GMAIL] 📬 Comando detectado en self-chat: ${gmailCmd.type}`);
+        try {
+          if (gmailCmd.type === 'check' || gmailCmd.type === 'delete_spam') {
+            await safeSendMessage(phone, `📬 Revisando tu correo...`, { isSelfChat: true, skipEmoji: true });
+            const generateAIForGmail = async (prompt) => {
+              const result = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, prompt, ownerAIConfig);
+              return result.text;
+            };
+            const result = await gmailIntegration.runFullEmailCheck(OWNER_UID, getOAuth2Client, {
+              generateAI: generateAIForGmail,
+              ownerContext: { name: userProfile.name || 'owner' },
+              autoDeleteSpam: true,
+            });
+            await safeSendMessage(phone, result.message, { isSelfChat: true, skipEmoji: true });
+            console.log(`[GMAIL] ✅ Check completo enviado al owner`);
+          } else if (gmailCmd.type === 'track') {
+            await safeSendMessage(phone, `📌 Para trackear una respuesta, decime el asunto o de quién esperás respuesta.`, { isSelfChat: true, skipEmoji: true });
+          }
+          return;
+        } catch (gmailErr) {
+          console.error(`[GMAIL] ❌ Error:`, gmailErr.message);
+          const errMsg = /no conectado|googleTokens/i.test(gmailErr.message)
+            ? `📬 No tengo acceso a tu correo. Necesitás reconectar Google desde el Dashboard (Conexiones → Google) para incluir permisos de Gmail.`
+            : `❌ Error revisando emails: ${gmailErr.message}`;
+          await safeSendMessage(phone, errMsg, { isSelfChat: true, skipEmoji: true });
           return;
         }
       }
@@ -11017,6 +11050,49 @@ server.listen(PORT, () => {
   } catch (safetyErr) {
     console.error(`[SAFETY-SHIELD] ❌ Error inicializando: ${safetyErr.message} — Shield funcionará en modo FAIL-SAFE`);
   }
+  // ═══ GMAIL CRON — Check periódico de emails (cada 15 min) ═══
+  setInterval(async () => {
+    if (!OWNER_UID || !OWNER_PHONE) return;
+    try {
+      const gmailConfigDoc = await admin.firestore()
+        .collection('users').doc(OWNER_UID)
+        .collection('miia_gmail').doc('config').get();
+      const gmailConfig = gmailConfigDoc.exists ? gmailConfigDoc.data() : {};
+      if (!gmailConfig.enabled) return; // Gmail no activado
+
+      // Solo check si pasaron >15 min desde el último
+      const lastCheck = gmailConfig.lastCheck ? new Date(gmailConfig.lastCheck) : new Date(0);
+      if (Date.now() - lastCheck.getTime() < gmailIntegration.GMAIL_CHECK_INTERVAL_MS) return;
+
+      // Solo en horario activo (8am-22pm)
+      const hour = new Date().getHours();
+      if (hour < 8 || hour >= 22) return;
+
+      console.log(`[GMAIL:CRON] 🔄 Check periódico de emails...`);
+      const generateAIForGmail = async (prompt) => {
+        const result = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, prompt, ownerAIConfig);
+        return result.text;
+      };
+      const result = await gmailIntegration.runFullEmailCheck(OWNER_UID, getOAuth2Client, {
+        generateAI: generateAIForGmail,
+        autoDeleteSpam: true,
+      });
+
+      // Solo notificar si hay algo relevante (no spam puro o vacío)
+      if (result.summary.important > 0 || result.summary.personal > 0 || result.summary.doubtful > 0) {
+        await safeSendMessage(OWNER_PHONE, result.message, { isSelfChat: true, skipEmoji: true });
+        console.log(`[GMAIL:CRON] ✅ Notificación enviada al owner`);
+      } else if (result.summary.spam > 0) {
+        console.log(`[GMAIL:CRON] 🗑️ Solo spam detectado (${result.summary.spam}) — eliminado silenciosamente`);
+      }
+    } catch (cronErr) {
+      // No romper el servidor por error de Gmail
+      if (!/googleTokens|no conectado/i.test(cronErr.message)) {
+        console.error(`[GMAIL:CRON] ❌ Error: ${cronErr.message}`);
+      }
+    }
+  }, gmailIntegration.GMAIL_CHECK_INTERVAL_MS);
+
   console.log('\n🚀 ═══ SERVIDOR INICIADO ═══');
   console.log(`📡 Puerto: ${PORT}`);
   console.log(`🌐 URL del backend: http://localhost:${PORT}`);
@@ -11472,7 +11548,12 @@ app.get('/api/auth/google', (req, res) => {
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: ['https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/calendar.readonly'],
+    scope: [
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.modify',
+    ],
     state: uid  // pasamos uid para recuperarlo en el callback
   });
   res.redirect(url);
@@ -11491,8 +11572,8 @@ app.get('/api/auth/google/callback', async (req, res) => {
       calendarEnabled: true,
       googleCalendarId: 'primary'
     }, { merge: true });
-    console.log(`[GCAL] Google Calendar conectado para uid=${uid}`);
-    res.send('<html><body style="background:#0f0f0f;color:#fff;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><div style="text-align:center"><h2>✅ Google Calendar conectado</h2><p>Ya podés cerrar esta ventana y volver al Dashboard.</p></div></body></html>');
+    console.log(`[GOOGLE] ✅ Google Calendar + Gmail conectado para uid=${uid}`);
+    res.send('<html><body style="background:#0f0f0f;color:#fff;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;"><div style="text-align:center"><h2>✅ Google Calendar + Gmail conectados</h2><p>MIIA ahora puede gestionar tu agenda y tu correo.</p><p>Ya podés cerrar esta ventana.</p></div></body></html>');
   } catch (e) {
     console.error('[GCAL] OAuth error:', e.message);
     res.status(500).send('Error conectando Google Calendar: ' + e.message);
@@ -11536,6 +11617,63 @@ app.post('/api/calendar/disconnect', requireRole('owner', 'agent'), async (req, 
       calendarEnabled: false
     }, { merge: true });
     res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GMAIL API ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/gmail/status', requireRole('owner', 'agent'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const doc = await admin.firestore().collection('users').doc(uid).get();
+    const data = doc.exists ? doc.data() : {};
+    const gmailConfigDoc = await admin.firestore()
+      .collection('users').doc(uid)
+      .collection('miia_gmail').doc('config').get();
+    const gmailConfig = gmailConfigDoc.exists ? gmailConfigDoc.data() : {};
+    res.json({
+      connected: !!(data.googleTokens),
+      enabled: !!gmailConfig.enabled,
+      lastCheck: gmailConfig.lastCheck || null,
+      lastSummary: gmailConfig.lastSummary || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/gmail/check', requireRole('owner', 'agent'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const generateAIForGmail = async (prompt) => {
+      const result = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, prompt, ownerAIConfig);
+      return result.text;
+    };
+    const result = await gmailIntegration.runFullEmailCheck(uid, getOAuth2Client, {
+      generateAI: generateAIForGmail,
+      autoDeleteSpam: true,
+    });
+    res.json(result);
+  } catch (e) {
+    console.error(`[GMAIL:API] ❌ Error en /api/gmail/check: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/gmail/enable', requireRole('owner', 'agent'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { enabled } = req.body;
+    await admin.firestore()
+      .collection('users').doc(uid)
+      .collection('miia_gmail').doc('config')
+      .set({ enabled: !!enabled }, { merge: true });
+    console.log(`[GMAIL] ${enabled ? '✅ Activado' : '🔴 Desactivado'} para uid=${uid.substring(0, 8)}`);
+    res.json({ ok: true, enabled: !!enabled });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
