@@ -38,6 +38,23 @@ const ACTION_CONFIRMATIONS = [
     requiredTag: /\[GENERAR_COTIZACION_PDF:/ },
 ];
 
+// Frases que exponen mecánica interna de MIIA (PELIGROSO con leads)
+const INTERNAL_MECHANICS_PATTERNS = [
+  /\bel backend\b/i,
+  /\bel sistema (?:emite|procesa|intercepta|genera|detecta|clasifica)\b/i,
+  /\btags? del sistema\b/i,
+  /\btags? intern(?:os?|as?)\b/i,
+  /\bel motor de IA\b/i,
+  /\bel servidor\b/i,
+  /\bel procesamiento\b/i,
+  /\bfirestore\b/i,
+  /\bbaileys\b/i,
+  /\bla API\b/i,
+  /\bel prompt\b/i,
+  /\bel cron\b/i,
+  /\bel pipeline\b/i,
+];
+
 // Frases que delatan a MIIA como IA
 const AI_REVEAL_PATTERNS = [
   /\bsoy una? (?:inteligencia artificial|IA|AI|bot|programa|software|modelo de lenguaje|asistente virtual)\b/i,
@@ -236,6 +253,29 @@ function auditAprendizaje(aiMessage, chatType) {
 }
 
 /**
+ * MIIA MECÁNICA INTERNA — ¿Expone detalles técnicos al usuario?
+ * Peligroso con leads: revela que es IA/sistema automatizado
+ */
+function auditMecanicaInterna(aiMessage, chatType) {
+  // Solo importa con leads y contactos externos — familia/owner saben
+  if (chatType === 'selfchat' || chatType === 'family' || chatType === 'equipo') {
+    return { pass: true, action: 'ok', auditor: 'mecanica' };
+  }
+
+  for (const pattern of INTERNAL_MECHANICS_PATTERNS) {
+    if (pattern.test(aiMessage)) {
+      return {
+        pass: false,
+        reason: `MECÁNICA INTERNA EXPUESTA: Respuesta contiene "${aiMessage.match(pattern)?.[0]}" — revela sistema automatizado`,
+        action: 'regenerate',
+        auditor: 'mecanica',
+      };
+    }
+  }
+  return { pass: true, action: 'ok', auditor: 'mecanica' };
+}
+
+/**
  * MIIA VERDAD — ¿Contiene afirmaciones fácticas sin respaldo?
  * NOTA: Este es el único auditor que PODRÍA necesitar IA en casos sospechosos.
  * Por ahora, solo detecta patrones regex. En futuro, escalar a IA verify.
@@ -365,6 +405,7 @@ function runPostprocess(aiMessage, opts = {}) {
   const results = [
     auditPromesa(finalMessage, { contactPhone: opts.contactPhone, contactName }),
     auditIdentidad(finalMessage, chatType),
+    auditMecanicaInterna(finalMessage, chatType),
     auditTono(finalMessage, contactName),
     auditAprendizaje(finalMessage, chatType),
     auditVerdad(finalMessage, hasSearchData),
@@ -498,6 +539,10 @@ function getFallbackMessage(vetoReason, chatType) {
     // MIIA alucinó datos
     return '🤷‍♀️ No tengo esa info confirmada ahora, dejame averiguar.';
   }
+  if (/MECÁNICA/.test(vetoReason)) {
+    // MIIA expuso mecánica interna — regenerar con tono humano
+    return 'Dejame verificar eso y te cuento.';
+  }
   return 'Dame un momento, estoy procesando tu mensaje.';
 }
 
@@ -510,6 +555,7 @@ module.exports = {
   // Exportar individuales para testing
   auditPromesa,
   auditIdentidad,
+  auditMecanicaInterna,
   auditTono,
   auditAprendizaje,
   auditVerdad,

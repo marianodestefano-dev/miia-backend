@@ -210,16 +210,19 @@ function shouldMiiaRespond(opts) {
  * @param {string} messageBody - Lo que escribió
  * @returns {string} Mensaje para el self-chat del owner
  */
-function buildUnknownContactAlert(basePhone, messageBody) {
+function buildUnknownContactAlert(basePhone, messageBody, pushName) {
   const preview = (messageBody || '').substring(0, 200);
+  const nameLine = pushName ? `Nombre: *${pushName}*\n` : '';
   return `📱 *Alguien te escribió*\n\n` +
+    `${nameLine}` +
     `Número: +${basePhone}\n` +
     `Mensaje: "${preview}"\n\n` +
-    `MIIA no respondió porque no detectó palabras de tu negocio.\n\n` +
+    `No respondí porque no detecté palabras de tu negocio.\n\n` +
     `¿Quién es? Respondé:\n` +
     `• *amigo* → lo agrego a amigos\n` +
     `• *familia* → lo agrego a familia\n` +
     `• *lead* → lo agrego como lead de tu negocio\n` +
+    `• *respondele* → le escribo presentándome\n` +
     `• *ignorar* → no le respondo nunca más`;
 }
 

@@ -164,7 +164,7 @@ function _flushSkipCounters(uid) {
   }
   _skipCounters._lastFlush = now;
 }
-const DEDUP_TTL = 600000; // 10 minutes
+const DEDUP_TTL = 1800000; // 30 minutes — sobrevivir ciclos de reconexión Bad MAC
 const DEDUP_CLEANUP_INTERVAL = 60000; // cleanup every 60s
 
 setInterval(() => {

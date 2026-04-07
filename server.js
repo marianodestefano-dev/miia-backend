@@ -351,7 +351,7 @@ let sentMessageIds = new Set();
 let lastAiSentBody = {};
 let lastMessageKey = {};    // 🔧 Para self-chat: guardar message.key más reciente por contacto
 let miiaPausedUntil = 0;
-let trainingData = '';
+// trainingData vive SOLO en cerebroAbsoluto (fuente única de verdad) — NO duplicar aquí
 let leadSummaries = {};
 let conversationMetadata = {};
 let isProcessing = {};
@@ -789,8 +789,12 @@ setTimeout(() => {
     },
     safeSendMessage,
     ownerPhone: OWNER_PHONE,
+    appendLearning: (text, source) => {
+      cerebroAbsoluto.appendLearning(text, source);
+      saveDB(); // Persistir inmediatamente al cerebro
+    },
   });
-  console.log('[INTEGRITY] 🚀 Integrity Engine wired — polling cada 5 min con Gemini Flash ($0)');
+  console.log('[INTEGRITY] 🚀 Integrity Engine wired — polling 5min + ADN Learning Vivo cada 1h (8am-8pm)');
 }, 60000); // 1 min post-startup
 
 // ═══ PROTECCIÓN: Check-in diario de contactos protegidos ═══
@@ -1135,7 +1139,19 @@ async function saveToFirestore() {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    console.log('[FIRESTORE] ✅ Datos persistidos correctamente');
+    // ═══ FIX GAP 1: trainingData AHORA se persiste a Firestore ═══
+    // Railway es efímero: db.json se borra en cada deploy.
+    // Sin esto, TODO lo aprendido se perdía. SIEMPRE ES SIEMPRE.
+    const currentTrainingData = cerebroAbsoluto.getTrainingData();
+    if (currentTrainingData) {
+      await ref.doc('training_data').set({
+        content: currentTrainingData,
+        length: currentTrainingData.length,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+
+    console.log(`[FIRESTORE] ✅ Datos persistidos correctamente (training: ${currentTrainingData?.length || 0} chars)`);
   } catch (e) {
     console.error('[FIRESTORE] ❌ Error guardando:', e.message);
   }
@@ -1182,6 +1198,21 @@ async function loadFromFirestore() {
       if (d.userProfile) Object.assign(userProfile, d.userProfile);
       if (d.flaggedBots) Object.assign(flaggedBots, d.flaggedBots);
       if (d.keywordsSet) keywordsSet = d.keywordsSet;
+    }
+
+    // ═══ FIX GAP 1: Cargar trainingData desde Firestore ═══
+    // Si db.json se perdió en el deploy, Firestore tiene la verdad.
+    // Merge: si db.json tiene datos más recientes, combinar ambos.
+    const trainingDoc = await ref.doc('training_data').get();
+    if (trainingDoc.exists) {
+      const fsTraining = trainingDoc.data().content || '';
+      const localTraining = cerebroAbsoluto.getTrainingData() || '';
+      if (fsTraining.length > localTraining.length) {
+        cerebroAbsoluto.setTrainingData(fsTraining);
+        console.log(`[FIRESTORE] 🧬 TrainingData restaurado desde Firestore (${fsTraining.length} chars > local ${localTraining.length} chars)`);
+      } else if (localTraining.length > 0) {
+        console.log(`[FIRESTORE] 🧬 TrainingData local más completo (${localTraining.length} chars) — conservando local`);
+      }
     }
 
     console.log('[FIRESTORE] ✅ Datos cargados desde Firestore (sobrevivió deploy)');
@@ -2425,6 +2456,57 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       return;
     }
 
+    // ═══ FIX GAP 5: Comando para OLVIDAR aprendizaje ═══
+    // "miia olvidá que X" / "olvidar: X" / "borra: X" / "eliminar aprendizaje: X"
+    const forgetMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:olvid[aá]|olvidar|borra|borrar|eliminar aprendizaje)[:\s]+(.+)/is);
+    if (isAdmin && forgetMatch) {
+      const toForget = forgetMatch[1].trim().toLowerCase();
+      const currentData = cerebroAbsoluto.getTrainingData();
+      // Buscar líneas que contengan lo que quiere olvidar
+      const lines = currentData.split('\n');
+      const filtered = lines.filter(line => !line.toLowerCase().includes(toForget));
+      const removedCount = lines.length - filtered.length;
+      if (removedCount > 0) {
+        cerebroAbsoluto.setTrainingData(filtered.join('\n'));
+        saveDB();
+        console.log(`[FORGET] 🗑️ Owner pidió olvidar "${toForget}" — ${removedCount} líneas eliminadas del cerebro`);
+        await safeSendMessage(phone, `🗑️ Listo, eliminé ${removedCount} línea(s) de mi memoria que mencionaban "${toForget.substring(0, 50)}". Olvidado para siempre.`);
+      } else {
+        await safeSendMessage(phone, `🤔 No encontré nada en mi memoria sobre "${toForget.substring(0, 50)}". ¿Querés que busque con otras palabras?`);
+      }
+      // También limpiar de contact_preferences/affinities si aplica
+      try {
+        const prefsSnap = await admin.firestore().collection('users').doc(OWNER_UID)
+          .collection('contact_preferences').get();
+        for (const doc of prefsSnap.docs) {
+          const data = doc.data();
+          const entries = Object.entries(data);
+          let changed = false;
+          for (const [k, v] of entries) {
+            if (typeof v === 'string' && v.toLowerCase().includes(toForget)) {
+              await doc.ref.update({ [k]: admin.firestore.FieldValue.delete() });
+              changed = true;
+              console.log(`[FORGET] 🗑️ Eliminado de contact_preferences/${doc.id}: ${k}`);
+            }
+          }
+        }
+        const affsSnap = await admin.firestore().collection('users').doc(OWNER_UID)
+          .collection('contact_affinities').get();
+        for (const doc of affsSnap.docs) {
+          const data = doc.data();
+          for (const [k, v] of Object.entries(data)) {
+            if (typeof v === 'string' && v.toLowerCase().includes(toForget)) {
+              await doc.ref.update({ [k]: admin.firestore.FieldValue.delete() });
+              console.log(`[FORGET] 🗑️ Eliminado de contact_affinities/${doc.id}: ${k}`);
+            }
+          }
+        }
+      } catch (forgetErr) {
+        console.warn(`[FORGET] ⚠️ Error limpiando Firestore: ${forgetErr.message}`);
+      }
+      return;
+    }
+
     // Comando humanizer toggle: "desactivar humanizador" / "activar humanizador"
     if (isAdmin && effectiveMsg) {
       const lower = effectiveMsg.toLowerCase();
@@ -2462,6 +2544,79 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       if (classResult.handled) {
         await safeSendMessage(phone, classResult.response);
         return;
+      }
+
+      // ═══ "RESPONDELE" HANDLER — Owner pide enviar mensaje a contacto notificado ═══
+      // Detecta: "respondele", "envíaselo", "preséntate", "contéstale", "escríbele"
+      // en contexto de una notificación reciente "Alguien te escribió" en el historial
+      const respondeleMatch = effectiveMsg.match(/(?:respond[eéi]le|env[ií]a(?:selo|le)|pres[eé]ntate|cont[eé]sta(?:le)?|escr[ií]bele|mand[aá]le|atiend[eé]l[eo]|respond[eéi](?:le)?.*contacto)/i);
+      if (respondeleMatch) {
+        // Buscar en historial reciente una notificación "Alguien te escribió" con número
+        const recentMsgs = (conversations[phone] || []).slice(-10);
+        const alertMsg = recentMsgs.find(m => m.role === 'assistant' && /Alguien te escribi[oó]/.test(m.content));
+        if (alertMsg) {
+          const phoneMatch = alertMsg.content.match(/\+(\d{10,18})/);
+          if (phoneMatch) {
+            const leadPhone = phoneMatch[1];
+            const leadJid = leadPhone.includes('@') ? leadPhone : `${leadPhone}@s.whatsapp.net`;
+            const leadMsgMatch = alertMsg.content.match(/Mensaje:\s*"([^"]+)"/);
+            const leadOriginalMsg = leadMsgMatch?.[1] || '';
+
+            // Generar respuesta como MIIA representando al owner
+            const ownerName = userProfile.name || 'el equipo';
+            const businessName = userProfile.businessName || '';
+            const respondPrompt = `Sos MIIA, la asistente de ${ownerName}${businessName ? ` de ${businessName}` : ''}.
+Un contacto desconocido escribió: "${leadOriginalMsg}"
+${effectiveMsg.includes('preséntate') || effectiveMsg.includes('presentate') ? `Tu jefe te pide que te presentes como si fueras un asesor de ${businessName || 'su negocio'} y preguntes en qué podés ayudar.` : `Tu jefe te pide: "${effectiveMsg}"`}
+
+REGLAS:
+- Máx 3 líneas, cálido y profesional
+- JAMÁS decir que sos IA
+- JAMÁS mencionar "me pidieron", "mi jefe", "el owner"
+- Presentate con el nombre del negocio si lo tenés
+- Preguntá en qué podés ayudar`;
+
+            try {
+              const responseMsg = await generateAIContent(respondPrompt);
+              if (responseMsg) {
+                // Intentar resolver LID si existe
+                let sendJid = leadJid;
+                const lidEntry = Object.entries(lidToPhone).find(([, v]) => v === leadJid);
+                if (lidEntry) sendJid = lidEntry[0] + '@lid';
+                // También buscar por LID directo si el número es un LID
+                const lidJid = `${leadPhone}@lid`;
+
+                // Enviar al lead
+                let sent = false;
+                for (const targetJid of [leadJid, lidJid]) {
+                  try {
+                    await safeSendMessage(targetJid, responseMsg.trim());
+                    console.log(`[RESPONDELE] ✅ Mensaje enviado a ${targetJid}: "${responseMsg.substring(0, 60)}..."`);
+                    // Registrar en conversations para contexto futuro
+                    if (!conversations[targetJid]) conversations[targetJid] = [];
+                    conversations[targetJid].push({ role: 'assistant', content: responseMsg.trim(), timestamp: Date.now() });
+                    // Agregar como lead permitido
+                    if (!allowedLeads.includes(targetJid)) allowedLeads.push(targetJid);
+                    sent = true;
+                    saveDB();
+                    break;
+                  } catch (sendErr) {
+                    console.warn(`[RESPONDELE] ⚠️ Fallo enviando a ${targetJid}: ${sendErr.message}`);
+                  }
+                }
+
+                if (sent) {
+                  await safeSendMessage(phone, `✅ Listo, le escribí al +${leadPhone}.`);
+                } else {
+                  await safeSendMessage(phone, `⚠️ No pude enviar el mensaje al +${leadPhone}. Puede que el número tenga un formato distinto. Intentá con "dile a +${leadPhone} [tu mensaje]".`);
+                }
+                return;
+              }
+            } catch (genErr) {
+              console.error(`[RESPONDELE] ❌ Error generando respuesta: ${genErr.message}`);
+            }
+          }
+        }
       }
     }
 
@@ -3733,9 +3888,45 @@ Nuevo resumen actualizado:`;
       console.error(`[ACTION-FEEDBACK] ⚠️ Error (no bloquea): ${fbErr.message}`);
     }
 
+    // ═══ FIX GAP 2+6: Per-contact memory — cargar lo que MIIA sabe de ESTE contacto ═══
+    let contactMemoryStr = '';
+    if (!isSelfChat) {
+      try {
+        const contactId = (leadNames[phone] || basePhone).replace(/[\/\.#$\[\]]/g, '_').substring(0, 100);
+        const [prefDoc, affDoc] = await Promise.all([
+          admin.firestore().collection('users').doc(OWNER_UID)
+            .collection('contact_preferences').doc(contactId).get().catch(() => null),
+          admin.firestore().collection('users').doc(OWNER_UID)
+            .collection('contact_affinities').doc(contactId).get().catch(() => null),
+        ]);
+        const parts = [];
+        if (prefDoc?.exists) {
+          const pd = prefDoc.data();
+          const prefs = Object.entries(pd)
+            .filter(([k]) => !['contactName', 'updatedAt', 'source', 'consolidated'].includes(k))
+            .map(([k, v]) => `${k}: ${v}`);
+          if (prefs.length > 0) parts.push(`Preferencias: ${prefs.join(', ')}`);
+        }
+        if (affDoc?.exists) {
+          const ad = affDoc.data();
+          const affs = Object.entries(ad)
+            .filter(([k]) => !['contactName', 'updatedAt', 'source', 'consolidated'].includes(k))
+            .map(([k, v]) => `${k}: ${v}`);
+          if (affs.length > 0) parts.push(`Afinidades: ${affs.join(', ')}`);
+        }
+        if (parts.length > 0) {
+          contactMemoryStr = `\n\n[LO QUE SÉ DE ${(leadNames[phone] || basePhone).toUpperCase()}]:\n${parts.join('\n')}\nUsa esta info para personalizar tu respuesta de forma natural. NO menciones que "lo tenías guardado".`;
+          console.log(`[CONTACT-MEMORY] 📝 ${contactId}: ${parts.length} datos inyectados al prompt`);
+        }
+      } catch (memErr) {
+        // Fail silently — no bloquear por esto
+        console.warn(`[CONTACT-MEMORY] ⚠️ Error cargando: ${memErr.message}`);
+      }
+    }
+
     const fullPrompt = `${activeSystemPrompt}
 
-${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${enrichedContext}${feedbackContext}
+${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${contactMemoryStr}${enrichedContext}${feedbackContext}
 
 ${systemDateStr}
 
@@ -4333,6 +4524,19 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           } catch (calErr) {
             console.warn(`[AGENDA] ⚠️ Google Calendar no disponible: ${calErr.message}. Guardando en Firestore.`);
             actionFeedback.recordActionResult(phone, 'agendar', true, `"${razon}" guardado en Firestore (Calendar no conectado)`);
+
+            // ═══ FIX: Informar al owner CÓMO resolver (sentido común) ═══
+            if (/no conectado|no tokens|googleTokens/i.test(calErr.message)) {
+              try {
+                await safeSendMessage(ownerJid,
+                  `⚠️ *Google Calendar no está conectado*\n\n` +
+                  `Agendé "${razon}" el ${fecha} en mi base de datos, pero NO pude sincronizarlo con tu Google Calendar.\n\n` +
+                  `👉 Para conectarlo, andá a tu *Dashboard → Conexiones → Google Calendar* y aprobá los permisos.\n` +
+                  `Una vez conectado, todos tus eventos se sincronizan automáticamente. 📅`,
+                  {}
+                );
+              } catch (_) {}
+            }
           }
 
           // 2. Guardar en Firestore
@@ -4631,11 +4835,13 @@ REGLAS:
       }
     }
 
-    // ═══ TAG [CANCELAR_EVENTO:razón|fecha|modo] — Cancelar evento del owner ═══
+    // ═══ TAG [CANCELAR_EVENTO] / [ELIMINAR_EVENTO] (alias) — Cancelar evento del owner ═══
+    // [ELIMINAR_EVENTO] es un tag inventado por la IA a veces — tratarlo como CANCELAR
     // modo: avisar (default) | reagendar | silencioso
     //   avisar    → cancela + notifica al contacto que fue cancelado
     //   reagendar → cancela + MIIA pregunta al contacto cuándo puede reagendar
     //   silencioso → cancela sin notificar al contacto
+    aiMessage = aiMessage.replace(/\[ELIMINAR_EVENTO:/g, '[CANCELAR_EVENTO:');
     const cancelMatch = aiMessage.match(/\[CANCELAR_EVENTO:([^\]]+)\]/);
     if (cancelMatch && isSelfChat) {
       const parts = cancelMatch[1].split('|').map(p => p.trim());
@@ -5907,10 +6113,20 @@ async function handleIncomingMessage(message) {
       if (message._baileysMsg?._silentDigest) {
         console.log(`[SILENT-DIGEST] 📋 Contacto no-allowed registrado: ${effectiveTarget} body="${(body||'').substring(0,40)}"`);
       } else {
-        const baseTarget = effectiveTarget.split('@')[0];
-        console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${baseTarget}. Sin keywords. body="${(body||'').substring(0,60)}"`);
-        // Notificar al owner: alguien escribió sin keyword match
-        const alertMsg = buildUnknownContactAlert(baseTarget, body);
+        // ═══ FIX: Resolver LID a número real ANTES de notificar al owner ═══
+        let displayPhone = effectiveTarget.split('@')[0];
+        const pushName = message._baileysMsg?.pushName || message.pushName || '';
+        if (effectiveTarget.includes('@lid')) {
+          const resolved = resolveLid(effectiveTarget);
+          if (resolved !== effectiveTarget) {
+            displayPhone = resolved.split('@')[0];
+          } else {
+            displayPhone = `LID:${displayPhone} (número no resuelto aún)`;
+          }
+        }
+        console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${displayPhone}${pushName ? ` (${pushName})` : ''}. Sin keywords. body="${(body||'').substring(0,60)}"`);
+        // Notificar al owner con número real + pushName si disponible
+        const alertMsg = buildUnknownContactAlert(displayPhone, body, pushName);
         safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, alertMsg, { isSelfChat: true }).catch(() => {});
       }
       return;
@@ -6116,7 +6332,11 @@ async function handleIncomingMessage(message) {
 
     // BLINDAJE: No responder fuera del horario configurado (leads solamente, familia/self-chat siempre pasan)
     if (!isSelfChatMIIA && !isFamily && !isEquipo && !isWithinAutoResponseSchedule()) {
-      console.log(`[WA] Fuera de horario para ${effectiveTarget}. Mensaje guardado, respuesta diferida.`);
+      const _ohTz = getTimezoneForCountry(getCountryFromPhone(OWNER_PHONE || ''));
+      const _ohLocal = new Date(new Date().toLocaleString('en-US', { timeZone: _ohTz }));
+      const _ohTime = `${_ohLocal.getHours()}:${String(_ohLocal.getMinutes()).padStart(2, '0')}`;
+      const _ohSchedule = automationSettings?.schedule || {};
+      console.log(`[WA] Fuera de horario para ${effectiveTarget} (${_ohTime} ${_ohTz}, schedule: ${_ohSchedule.start || '?'}-${_ohSchedule.end || '?'}, days: ${JSON.stringify(_ohSchedule.days || [])}). Mensaje guardado, respuesta diferida.`);
       return;
     }
 

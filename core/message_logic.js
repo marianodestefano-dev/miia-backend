@@ -540,14 +540,34 @@ function processSubscriptionTag(aiMessage, phone, subscriptionState) {
  * @returns {string}
  */
 function cleanResidualTags(aiMessage) {
-  return aiMessage
+  let cleaned = aiMessage
     .replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '')
     .replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '')
     .replace(/\[CONSULTAR_AGENDA\]/g, '')
     .replace(/\[CANCELAR_EVENTO:[^\]]*\]/g, '')
+    .replace(/\[ELIMINAR_EVENTO:[^\]]*\]/g, '')  // Alias inventado por IA → strip
     .replace(/\[MOVER_EVENTO:[^\]]*\]/g, '')
     .replace(/\[PROPONER_HORARIO(?::\d+)?\]/g, '')
-    .trim();
+    .replace(/\[AGENDAR_EVENTO:[^\]]*\]/g, '')
+    .replace(/\[APRENDIZAJE_(?:NEGOCIO|PERSONAL|DUDOSO|PENDIENTE):[^\]]*\]/g, '')
+    .replace(/\[GUARDAR_(?:APRENDIZAJE|NOTA):[^\]]*\]/g, '')
+    .replace(/\[LEAD_QUIERE_COMPRAR\]/g, '')
+    .replace(/\[MSG_SPLIT\]/g, '')
+    .replace(/\[ENVIAR_CORREO:[^\]]*\]/g, '');
+
+  // ═══ UNIVERSAL TAG STRIPPER — NUNCA mostrar tags crudos al usuario ═══
+  // Atrapa CUALQUIER tag con formato [ALGO_ALGO:...] o [ALGO_ALGO] que no fue procesado
+  // Esto es la última línea de defensa: si la IA inventa un tag que no existe,
+  // se elimina silenciosamente en vez de mostrarse al usuario
+  const residualTags = cleaned.match(/\[[A-Z][A-Z_]+(?::[^\]]+)?\]/g);
+  if (residualTags) {
+    for (const tag of residualTags) {
+      console.warn(`[CLEAN_TAGS] ⚠️ Tag residual eliminado (no procesado): ${tag.substring(0, 80)}`);
+      cleaned = cleaned.replace(tag, '');
+    }
+  }
+
+  return cleaned.trim();
 }
 
 /**

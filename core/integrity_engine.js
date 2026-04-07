@@ -23,6 +23,11 @@ const MAX_CONVERSATIONS_PER_POLL = 20;   // No sobrecargar
 const LOOKBACK_MINUTES = 10;             // Revisar últimos 10 min de conversaciones
 const MAX_PENDING_AGE_HOURS = 48;        // Alertar si pendiente >48h
 
+// ═══ ADN LEARNING VIVO — Reemplaza el mining muerto de cerebro_absoluto ═══
+const ADN_CONSOLIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hora
+const ADN_ACTIVE_HOURS = { start: 8, end: 20 };       // 8am-8pm
+let lastAdnConsolidation = 0;
+
 // Regex para detectar promesas en mensajes de MIIA
 const PROMISE_PATTERNS = [
   // Agenda
@@ -171,6 +176,19 @@ async function runIntegrityPoll(deps) {
     // ─── PASO 3: Gemini Flash — análisis profundo (si hay generateAI) ───
     if (generateAI) {
       await runGeminiAudit(db, ownerUid, generateAI, safeSendMessage, ownerPhone, lookbackTime);
+    }
+
+    // ─── PASO 4: ADN LEARNING VIVO — Consolidación horaria (8am-8pm) ───
+    // Reemplaza el mining muerto de cerebro_absoluto.
+    // Lee preferencias/afinidades acumuladas → genera bloque de ADN → appendLearning.
+    // Los datos son PERMANENTES — solo se borran si el owner lo pide explícitamente.
+    const currentHour = new Date().getHours();
+    const timeSinceLastConsolidation = Date.now() - lastAdnConsolidation;
+    if (generateAI && deps.appendLearning &&
+        currentHour >= ADN_ACTIVE_HOURS.start && currentHour < ADN_ACTIVE_HOURS.end &&
+        timeSinceLastConsolidation >= ADN_CONSOLIDATION_INTERVAL_MS) {
+      await consolidateADNLearning(db, ownerUid, generateAI, deps.appendLearning);
+      lastAdnConsolidation = Date.now();
     }
 
     console.log(`[INTEGRITY] ✅ Poll completo — promesas: ${engineState.promisesDetected} detectadas, ${engineState.promisesBroken} rotas, prefs: ${engineState.preferencesLearned}`);
@@ -418,6 +436,139 @@ async function verifyCalendarEvent(listCalendarEvents, uid, dateStr, reason, ret
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// PASO 4: ADN LEARNING VIVO — Consolidación horaria al cerebro
+// Reemplaza el mining muerto de cerebro_absoluto (getChats() no existe en Baileys)
+//
+// FLUJO:
+// 1. Gemini (cada 5min) → detecta prefs/afinidades → guarda en Firestore
+// 2. consolidateADNLearning (cada 1h, 8am-8pm) → lee Firestore → genera resumen
+//    → appendLearning al cerebro → se inyecta al prompt → MIIA aprende
+//
+// PERMANENCIA: Los datos en Firestore son PERMANENTES.
+// Solo se borran si el owner lo pide explícitamente ("MIIA olvidá que X").
+// appendLearning acumula en trainingData → persiste en db.json + Firestore.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Consolida preferencias y afinidades acumuladas en un bloque de ADN
+ * que se inyecta al cerebro de MIIA via appendLearning.
+ */
+async function consolidateADNLearning(db, ownerUid, generateAI, appendLearning) {
+  try {
+    console.log('[ADN-VIVO] 🧬 Iniciando consolidación horaria de ADN...');
+
+    // 1. Leer preferencias acumuladas (sin consolidar)
+    const prefsSnap = await db.collection('users').doc(ownerUid)
+      .collection('contact_preferences')
+      .where('consolidated', '==', false)
+      .limit(50)
+      .get()
+      .catch(() => {
+        // Si falla por falta de index, leer todas y filtrar
+        return db.collection('users').doc(ownerUid)
+          .collection('contact_preferences')
+          .limit(50)
+          .get();
+      });
+
+    // 2. Leer afinidades acumuladas
+    const affsSnap = await db.collection('users').doc(ownerUid)
+      .collection('contact_affinities')
+      .where('consolidated', '==', false)
+      .limit(50)
+      .get()
+      .catch(() => {
+        return db.collection('users').doc(ownerUid)
+          .collection('contact_affinities')
+          .limit(50)
+          .get();
+      });
+
+    // Filtrar no consolidadas en memoria (por si el index no existe)
+    const newPrefs = [];
+    const newAffs = [];
+    const docsToMark = [];
+
+    for (const doc of (prefsSnap?.docs || [])) {
+      const data = doc.data();
+      if (data.consolidated === true) continue; // Ya consolidada
+      newPrefs.push({ id: doc.id, ...data });
+      docsToMark.push(doc.ref);
+    }
+
+    for (const doc of (affsSnap?.docs || [])) {
+      const data = doc.data();
+      if (data.consolidated === true) continue;
+      newAffs.push({ id: doc.id, ...data });
+      docsToMark.push(doc.ref);
+    }
+
+    if (newPrefs.length === 0 && newAffs.length === 0) {
+      console.log('[ADN-VIVO] ℹ️ Sin datos nuevos para consolidar');
+      return;
+    }
+
+    // 3. Construir contexto para Gemini
+    const prefsText = newPrefs.map(p => {
+      const fields = Object.entries(p)
+        .filter(([k]) => !['id', 'contactName', 'updatedAt', 'source', 'consolidated'].includes(k))
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(', ');
+      return `${p.contactName || p.id}: ${fields}`;
+    }).join('\n');
+
+    const affsText = newAffs.map(a => {
+      const fields = Object.entries(a)
+        .filter(([k]) => !['id', 'contactName', 'updatedAt', 'source', 'consolidated'].includes(k))
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(', ');
+      return `${a.contactName || a.id}: ${fields}`;
+    }).join('\n');
+
+    const consolidationPrompt = `Sos el motor de aprendizaje de MIIA, una asistente de WhatsApp.
+Tenés nuevos datos sobre contactos del owner. Consolidá esta información en UN SOLO bloque conciso de aprendizaje que MIIA pueda usar para personalizar conversaciones futuras.
+
+PREFERENCIAS NUEVAS:
+${prefsText || '(ninguna)'}
+
+AFINIDADES NUEVAS:
+${affsText || '(ninguna)'}
+
+REGLAS:
+- Escribí en segunda persona dirigido a MIIA ("Tu contacto Juan es hincha de Boca")
+- Máximo 5 líneas, ultra conciso
+- Solo datos ÚTILES para personalizar (no repetir lo obvio)
+- Si un contacto tiene múltiples datos, consolidar en una línea
+- Formato: "- [Nombre]: [dato1], [dato2], [dato3]"
+
+Respondé SOLO con el bloque de texto, sin explicaciones.`;
+
+    const adnBlock = await generateAI(consolidationPrompt);
+
+    if (adnBlock && adnBlock.trim().length > 10) {
+      // 4. Inyectar al cerebro de MIIA — PERMANENTE
+      appendLearning(adnBlock.trim(), 'ADN_VIVO');
+      console.log(`[ADN-VIVO] 🧬 ✅ Consolidación exitosa — ${newPrefs.length} prefs + ${newAffs.length} affs → cerebro`);
+      console.log(`[ADN-VIVO] 📝 Bloque: ${adnBlock.substring(0, 200)}...`);
+      engineState.preferencesLearned += newPrefs.length + newAffs.length;
+
+      // 5. Marcar como consolidadas (NO borrar — datos permanentes)
+      const batch = db.batch();
+      for (const ref of docsToMark) {
+        batch.update(ref, { consolidated: true, consolidatedAt: new Date().toISOString() });
+      }
+      await batch.commit();
+      console.log(`[ADN-VIVO] 📌 ${docsToMark.length} docs marcados como consolidados`);
+    } else {
+      console.warn('[ADN-VIVO] ⚠️ Gemini no generó bloque válido — reintentando en próxima hora');
+    }
+
+  } catch (err) {
+    console.error(`[ADN-VIVO] ❌ Error en consolidación: ${err.message}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // INIT & EXPORTS
 // ═══════════════════════════════════════════════════════════════════
 
@@ -470,6 +621,8 @@ module.exports = {
   getIntegrityStats,
   // Capa 4: Calendar verify
   verifyCalendarEvent,
+  // Capa 5: ADN Learning Vivo
+  consolidateADNLearning,
   // Para testing
   PROMISE_PATTERNS,
   PREFERENCE_PATTERNS,

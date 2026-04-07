@@ -198,8 +198,10 @@ function getMiiaEmoji(message, ctx = {}) {
  */
 function applyMiiaEmoji(message, ctx = {}) {
   if (!message || typeof message !== 'string') return message;
-  // No aplicar a mensajes que ya tienen emoji prefix
-  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u.test(message.substring(0, 4))) {
+  // No aplicar a mensajes que YA tienen el formato MIIA emoji prefix (emoji + ":" o emoji + " :")
+  // El check anterior era demasiado agresivo: cualquier emoji al inicio bloqueaba.
+  // Ahora solo detecta el patrón MIIA específico: emoji seguido de ":"
+  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*\s*:/u.test(message.substring(0, 10))) {
     return message;
   }
   const emoji = getMiiaEmoji(message, ctx);

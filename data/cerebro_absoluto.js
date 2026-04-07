@@ -292,9 +292,32 @@ async function processADNMinerCron() {
  */
 function appendLearning(text, source) {
   if (!text || !text.trim()) return;
+
+  // ═══ FIX GAP 4: Dedup — no agregar si ya existe contenido idéntico o muy similar ═══
+  const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ');
+  // Buscar si ya existe una línea con contenido sustancialmente igual (>80% de las palabras)
+  const existingLines = trainingData.toLowerCase();
+  if (existingLines.includes(normalized)) {
+    console.log(`[CEREBRO] ⏭️ Aprendizaje duplicado exacto, saltando: "${text.substring(0, 60)}..."`);
+    return;
+  }
+  // Check por similitud de palabras clave (evitar "Juan hincha Boca" x10 con variaciones)
+  const keywords = normalized.split(' ').filter(w => w.length > 3);
+  if (keywords.length >= 3) {
+    const keyPattern = keywords.slice(0, 4).join('.*');
+    try {
+      const regex = new RegExp(keyPattern, 'i');
+      if (regex.test(existingLines)) {
+        console.log(`[CEREBRO] ⏭️ Aprendizaje similar ya existe (keywords match), saltando: "${text.substring(0, 60)}..."`);
+        return;
+      }
+    } catch (_) { /* regex inválida — ignorar y guardar */ }
+  }
+
   const stamp = new Date().toLocaleDateString('es-ES');
   const src   = (source || 'MANUAL').toUpperCase().replace(/\s+/g, '_');
   trainingData += `\n\n[APRENDIZAJE ${src} — ${stamp}]\n${text.trim()}\n`;
+  console.log(`[CEREBRO] 🧬 Aprendizaje guardado (${source}): "${text.substring(0, 80)}..." — total: ${trainingData.length} chars`);
   if (_onTrainingUpdate) _onTrainingUpdate(trainingData);
 }
 
