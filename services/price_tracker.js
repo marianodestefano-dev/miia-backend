@@ -359,11 +359,77 @@ async function stopTracking(trackId, ownerUid) {
   }
 }
 
+/**
+ * Consulta el estado de las averiguaciones con tiendas.
+ * Cuando el owner pregunta "¿averiguaste algo?" / "¿qué pasó con mi producto?"
+ * MIIA le muestra qué hizo (WhatsApp/email enviados) y si hubo respuesta.
+ *
+ * @param {string} ownerUid
+ * @returns {Promise<string>} Mensaje formateado para WhatsApp
+ */
+async function getStoreInquiryStatus(ownerUid) {
+  try {
+    const tracksSnap = await admin.firestore()
+      .collection('users').doc(ownerUid)
+      .collection('price_tracks')
+      .where('status', '==', 'active')
+      .limit(10)
+      .get();
+
+    if (tracksSnap.empty) return '📦 No tenés productos en seguimiento activo.';
+
+    let msg = '📦 *Estado de tus productos:*\n\n';
+    let hasInquiries = false;
+
+    for (const doc of tracksSnap.docs) {
+      const track = doc.data();
+      msg += `▸ *${track.productName}*\n`;
+      msg += `  💰 ${track.currency || '$'} ${track.currentPrice?.toLocaleString() || 'N/A'}`;
+      if (track.stock) msg += ` — Stock: ${track.stock}`;
+      msg += '\n';
+
+      // ¿Contactamos a la tienda?
+      if (track.storeWhatsApp || track.storeEmail) {
+        hasInquiries = true;
+        if (track.storeWhatsApp) {
+          msg += `  📱 WhatsApp enviado a ${track.storeWhatsApp}`;
+          if (track.storeReplied) {
+            msg += ` ✅ *RESPONDIERON*: "${(track.storeReplyPreview || '').substring(0, 80)}..."`;
+          } else {
+            msg += ` ⏳ Sin respuesta aún`;
+          }
+          msg += '\n';
+        }
+        if (track.storeEmail) {
+          msg += `  📧 Email enviado a ${track.storeEmail}`;
+          if (track.emailReplied) {
+            msg += ` ✅ *RESPONDIERON*`;
+          } else {
+            msg += ` ⏳ Sin respuesta — mirá tu bandeja de salida del ${track.emailSentAt ? new Date(track.emailSentAt).toLocaleDateString('es-ES') : 'hoy'}`;
+          }
+          msg += '\n';
+        }
+      }
+      msg += '\n';
+    }
+
+    if (!hasInquiries) {
+      msg += '💡 Para que consulte disponibilidad a una tienda, decime "seguí este producto: [URL]"';
+    }
+
+    return msg;
+  } catch (e) {
+    console.error(`[PRICE-TRACKER] ❌ Error en getStoreInquiryStatus: ${e.message}`);
+    return '❌ Error consultando el estado de tus productos.';
+  }
+}
+
 module.exports = {
   initPriceTracker,
   trackProduct,
   checkPrices,
   stopTracking,
   identifyStoreReply,
-  processStoreReply
+  processStoreReply,
+  getStoreInquiryStatus
 };

@@ -140,6 +140,8 @@ const businessesRouter = require('./routes/businesses');
 const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
+const ownerMemory = require('./core/owner_memory');
+const linkTracker = require('./core/link_tracker');
 const ttsEngine = require('./voice/tts_engine');
 const kidsMode = require('./voice/kids_mode');
 
@@ -895,6 +897,7 @@ setTimeout(() => {
     console.log('[MORNING-BRIEFING] ⏭️ OWNER_UID no disponible, briefing desactivado');
     return;
   }
+  const firestoreInstance = admin.firestore();
   morningBriefing.init(OWNER_UID, {
     sportEngine,
     integrationEngine,
@@ -904,7 +907,10 @@ setTimeout(() => {
     isWithinSchedule,
     safeSendMessage,
     OWNER_PHONE,
+    firestore: firestoreInstance,
   });
+  ownerMemory.init(OWNER_UID, firestoreInstance);
+  linkTracker.init(OWNER_UID, firestoreInstance, ownerMemory);
 }, 480000); // 8 min post-startup (después de que todos los engines estén listos)
 
 // ═══ MODO FINDE — Check cada 30min si preguntar al owner (P3.4) ═══
@@ -949,6 +955,7 @@ setInterval(async () => {
 
 let morningWakeupDone   = '';        // evita repetir el despertar en el mismo día
 let morningBriefingDone = '';        // evita repetir el briefing en el mismo día
+let _pendingOwnerConfirm = null;     // Confirmación pendiente del owner (cambio permanente)
 let briefingPendingApproval = [];    // novedades regulatorias esperando aprobación de Mariano
 const MIIA_CIERRE = `\n\n_Si quieres seguir hablando, responde *HOLA MIIA*. Si prefieres terminar, escribe *CHAU MIIA*._`;
 
@@ -2511,6 +2518,104 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
           }
           await safeSendMessage(phone, msg);
         }
+        return;
+      }
+    }
+
+    // ═══ OWNER MEMORY + BRIEFING CONFIG — Self-chat commands ═══
+    // Confirmación, gustos, familia, trabajo, rutinas, alertas, briefings, ciudad
+    if (isAdmin && effectiveMsg) {
+      const briefLower = effectiveMsg.toLowerCase().trim();
+
+      // ─── CONFIRMACIÓN DE CAMBIO PENDIENTE ───
+      // Si MIIA preguntó "¿Confirmo que...?" y el owner responde sí/no
+      if (_pendingOwnerConfirm && _pendingOwnerConfirm.ownerUid === OWNER_UID) {
+        if (briefLower === 'sí' || briefLower === 'si' || briefLower === 'yes' || briefLower === 'dale' || briefLower === 'ok' || briefLower === 'confirmo') {
+          const pending = _pendingOwnerConfirm;
+          _pendingOwnerConfirm = null;
+
+          if (pending.type === 'briefing_hour') {
+            const ok = await morningBriefing.updateBriefingHour(pending.briefingType, pending.hour);
+            await safeSendMessage(phone, ok
+              ? `✅ Listo. Briefing de ${pending.briefingType} a las ${pending.hour}:00. Guardado para siempre 🔒`
+              : `❌ Error guardando. Intentá de nuevo.`);
+          } else if (pending.type === 'city') {
+            await morningBriefing.updateOwnerCity(pending.city);
+            await safeSendMessage(phone, `✅ Ciudad guardada: ${pending.city}. Te mando el clima todos los días 🌤️🔒`);
+          } else if (pending.type === 'owner_memory') {
+            await ownerMemory.save(pending.category, pending.key, pending.value, pending.rawText);
+            await safeSendMessage(phone, `✅ Guardado para siempre 🔒`);
+          }
+          return;
+        } else if (briefLower === 'no' || briefLower === 'nah' || briefLower === 'cancelar') {
+          _pendingOwnerConfirm = null;
+          await safeSendMessage(phone, `👌 Cancelado.`);
+          return;
+        }
+        // Si no es ni sí ni no, limpiar el pending y seguir procesando normalmente
+        _pendingOwnerConfirm = null;
+      }
+
+      // ─── BRIEFING HORARIOS ───
+      const briefingMatch = briefLower.match(/^(?:miia\s+)?briefing\s+(clima|noticias|deportes|vuelos)\s+a\s+las?\s+(\d{1,2})/i);
+      if (briefingMatch) {
+        const type = briefingMatch[1];
+        const hour = parseInt(briefingMatch[2], 10);
+        if (hour < 0 || hour > 23) {
+          await safeSendMessage(phone, `❌ Hora inválida. Usá un número entre 0 y 23.`);
+        } else {
+          _pendingOwnerConfirm = { ownerUid: OWNER_UID, type: 'briefing_hour', briefingType: type, hour };
+          await safeSendMessage(phone, `¿Confirmo cambiar el briefing de *${type}* a las *${hour}:00*? Esto queda guardado para siempre 🔒 (sí/no)`);
+        }
+        return;
+      }
+
+      // ─── CIUDAD ───
+      const cityMatch = briefLower.match(/^(?:miia\s+)?(?:mi ciudad es|vivo en|estoy en)\s+(.+)/i);
+      if (cityMatch) {
+        const city = cityMatch[1].trim();
+        _pendingOwnerConfirm = { ownerUid: OWNER_UID, type: 'city', city };
+        await safeSendMessage(phone, `¿Confirmo que tu ciudad es *${city}*? Esto queda guardado para siempre 🔒 (sí/no)`);
+        return;
+      }
+
+      // ─── MIS COSAS / QUÉ SABÉS DE MÍ ───
+      if (briefLower.match(/^(?:miia\s+)?(?:mis\s+cosas|que\s+sab[eé]s\s+de\s+m[ií]|mi\s+perfil|mis\s+datos|mis\s+gustos|mis\s+briefings?|mis\s+recordatorios|mis\s+alertas|qué\s+recordás)$/i)) {
+        const memoryMsg = await ownerMemory.formatForWhatsApp();
+        const schedule = await morningBriefing.getBriefingSchedule();
+        let briefMsg = `\n📋 *Briefings:*\n`;
+        briefMsg += `  🌤️ Clima: ${schedule.climaHour}:00\n`;
+        briefMsg += `  📰 Noticias: ${schedule.noticiasHour}:00\n`;
+        briefMsg += `  ⚽ Deportes+Precios: ${schedule.deportesHour}:00\n`;
+        briefMsg += `  ✈️ Vuelos: ${schedule.vuelosHour}:00\n`;
+        briefMsg += `  📍 Ciudad: ${schedule.city || '(no configurada)'}\n`;
+        await safeSendMessage(phone, memoryMsg + briefMsg);
+        return;
+      }
+
+      // ─── DETECCIÓN AUTOMÁTICA DE PREFERENCIAS ───
+      // "me gusta X", "soy vegetariano", "mi hijo se llama X", etc.
+      const detected = ownerMemory.detectPreference(effectiveMsg);
+      if (detected) {
+        _pendingOwnerConfirm = {
+          ownerUid: OWNER_UID,
+          type: 'owner_memory',
+          category: detected.category,
+          key: detected.key,
+          value: detected.value,
+          rawText: effectiveMsg
+        };
+        await safeSendMessage(phone, detected.confirmMsg);
+        return;
+      }
+    }
+
+    // ═══ PRICE TRACKER — "¿averiguaste algo?" / "estado de mis productos" ═══
+    if (isAdmin && effectiveMsg) {
+      const priceLower = effectiveMsg.toLowerCase().trim();
+      if (priceLower.match(/^(?:miia\s+)?(?:averiguaste\s+algo|que\s+pas[oó]\s+con\s+mi\s+producto|estado\s+(?:de\s+)?mis\s+productos|mis\s+productos|que\s+averiguaste)/i)) {
+        const statusMsg = await priceTracker.getStoreInquiryStatus(OWNER_UID);
+        await safeSendMessage(phone, statusMsg);
         return;
       }
     }
@@ -9524,6 +9629,21 @@ shield.setNotifyFunction(async (uid, message) => {
     console.error(`[SHIELD-NOTIFY] Error: ${e.message}`);
   }
 });
+// ═══ LINK TRACKER — Redirect endpoint para detectar clicks ═══
+app.get('/r/:uid/:trackId', async (req, res) => {
+  try {
+    const result = await linkTracker.registerClick(req.params.uid, req.params.trackId);
+    if (result?.originalUrl) {
+      console.log(`[LINK-TRACKER] 🔄 Redirect: ${req.params.trackId} → ${result.originalUrl}`);
+      return res.redirect(302, result.originalUrl);
+    }
+    res.status(404).send('Link no encontrado');
+  } catch (e) {
+    console.error(`[LINK-TRACKER] ❌ Error en redirect: ${e.message}`);
+    res.status(500).send('Error');
+  }
+});
+
 app.get('/api/health', (req, res) => res.json(shield.getHealthDashboard()));
 app.get('/api/health/unknown-errors', (req, res) => res.json(shield.getUnknownErrors()));
 app.get('/api/health/task-scheduler', (req, res) => res.json({
