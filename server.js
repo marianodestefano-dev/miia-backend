@@ -130,6 +130,7 @@ const contentSafety = require('./core/content_safety_shield');
 const featureAnnouncer = require('./core/feature_announcer');
 const tenantLogger = require('./core/tenant_logger');
 const gmailIntegration = require('./integrations/gmail_integration');
+const googleTasks = require('./integrations/google_tasks_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -2957,6 +2958,50 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         }
       }
 
+      // ═══ GOOGLE TASKS HANDLER — Owner gestiona tareas vía self-chat ═══
+      const tasksCmd = googleTasks.detectTasksCommand(effectiveMsg);
+      if (tasksCmd) {
+        console.log(`[TASKS] 📋 Comando detectado en self-chat: ${tasksCmd.action}`);
+        try {
+          if (tasksCmd.action === 'list') {
+            await safeSendMessage(phone, `📋 Buscando tus tareas...`, { isSelfChat: true, skipEmoji: true });
+            const tasks = await googleTasks.listTasks(OWNER_UID, getOAuth2Client, admin);
+            const msg = googleTasks.formatTasksList(tasks);
+            await safeSendMessage(phone, msg, { isSelfChat: true, skipEmoji: true });
+          } else if (tasksCmd.action === 'create') {
+            const result = await googleTasks.createTask(OWNER_UID, getOAuth2Client, admin, {
+              title: tasksCmd.params.title,
+              dueDate: tasksCmd.params.dateHint || null,
+              notes: 'Creada desde WhatsApp vía MIIA'
+            });
+            await safeSendMessage(phone, `✅ Tarea creada: *${result.title}*${result.due ? ` 📅 ${new Date(result.due).toLocaleDateString('es-ES')}` : ''}`, { isSelfChat: true, skipEmoji: true });
+          } else if (tasksCmd.action === 'complete') {
+            const result = await googleTasks.completeTask(OWNER_UID, getOAuth2Client, admin, { titleMatch: tasksCmd.params.titleMatch });
+            if (result) {
+              await safeSendMessage(phone, `✅ Tarea completada: *${result.title}* 🎉`, { isSelfChat: true, skipEmoji: true });
+            } else {
+              await safeSendMessage(phone, `⚠️ No encontré esa tarea. Decime "mis tareas" para ver la lista.`, { isSelfChat: true, skipEmoji: true });
+            }
+          } else if (tasksCmd.action === 'delete') {
+            const result = await googleTasks.deleteTask(OWNER_UID, getOAuth2Client, admin, { titleMatch: tasksCmd.params.titleMatch });
+            if (result) {
+              await safeSendMessage(phone, `🗑️ Tarea eliminada.`, { isSelfChat: true, skipEmoji: true });
+            } else {
+              await safeSendMessage(phone, `⚠️ No encontré esa tarea.`, { isSelfChat: true, skipEmoji: true });
+            }
+          }
+          console.log(`[TASKS] ✅ Comando ${tasksCmd.action} ejecutado`);
+          return;
+        } catch (tasksErr) {
+          console.error(`[TASKS] ❌ Error:`, tasksErr.message);
+          const errMsg = /no conectado|googleTokens/i.test(tasksErr.message)
+            ? `📋 No tengo acceso a Google Tasks. Necesitás reconectar Google desde el Dashboard (Conexiones → Google).`
+            : `❌ Error con tareas: ${tasksErr.message}`;
+          await safeSendMessage(phone, errMsg, { isSelfChat: true, skipEmoji: true });
+          return;
+        }
+      }
+
       // ═══ IMAGE ANALYSIS HANDLER — Owner envía imagen con texto ═══
       // MIIA analiza CUALQUIER imagen (CRM, Excel, lista, chat, etc.)
       // SIEMPRE pregunta al owner qué hacer antes de actuar
@@ -3085,40 +3130,80 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       //   escribile, escríbele, mandále, mándale, atiéndelo, dale responde, dale contestá
       const respondeleMatch = effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
       if (respondeleMatch) {
-        // Buscar en historial reciente una notificación "Alguien te escribió" (últimos 20 msgs, máx 2 horas)
+        // PRIORIDAD 1: Buscar alerta "Alguien te escribió" en historial reciente
         const twoHoursAgo = Date.now() - 7200000;
         const recentMsgs = (conversations[phone] || []).slice(-20).filter(m => !m.timestamp || m.timestamp > twoHoursAgo);
         const alertMsg = recentMsgs.find(m => m.role === 'assistant' && /Alguien te escribi[oó]/.test(m.content));
-        if (alertMsg) {
-          // PRIORIDAD 1: Usar _contactJid guardado (JID real, funciona con LIDs)
-          // PRIORIDAD 2: Extraer número del texto de la alerta (fallback)
-          let contactJid = alertMsg._contactJid || null;
-          let leadPhone = '';
 
+        let contactJid = null;
+        let leadPhone = '';
+        let leadOriginalMsg = '';
+
+        if (alertMsg) {
+          // Caso 1: Hay alerta — extraer JID de ahí
+          contactJid = alertMsg._contactJid || null;
           if (contactJid) {
             leadPhone = contactJid.split('@')[0];
             console.log(`[RESPONDELE] 🎯 Usando _contactJid guardado: ${contactJid}`);
           } else {
-            // Fallback: extraer del texto "Número: +XXXX" o "LID:XXXX"
             const phoneMatch = alertMsg.content.match(/Número:\s*\+?(LID:)?(\d{10,18})/);
             if (phoneMatch) {
               leadPhone = phoneMatch[2];
               const isLid = !!phoneMatch[1];
               contactJid = isLid ? `${leadPhone}@lid` : `${leadPhone}@s.whatsapp.net`;
-              console.log(`[RESPONDELE] 📋 Extraído del texto: ${contactJid} (isLid=${isLid})`);
+              console.log(`[RESPONDELE] 📋 Extraído de alerta: ${contactJid} (isLid=${isLid})`);
             }
           }
+          const leadMsgMatch = alertMsg.content.match(/Mensaje:\s*"([^"]+)"/);
+          leadOriginalMsg = leadMsgMatch?.[1] || '';
+        }
 
-          if (contactJid && leadPhone) {
-            const leadMsgMatch = alertMsg.content.match(/Mensaje:\s*"([^"]+)"/);
-            const leadOriginalMsg = leadMsgMatch?.[1] || '';
+        // PRIORIDAD 2: Extraer número directamente del mensaje del owner
+        // Soporta: "respondele a +573163937365", "respondele a 573163937365", "respondele al 3163937365"
+        if (!contactJid) {
+          const directPhoneMatch = effectiveMsg.match(/\+?(\d{7,18})/);
+          if (directPhoneMatch) {
+            leadPhone = directPhoneMatch[1];
+            // Si no empieza con código de país (menos de 10 dígitos), intentar agregar código del owner
+            if (leadPhone.length < 10) {
+              const ownerCountry = phone.split('@')[0].substring(0, 2);
+              leadPhone = ownerCountry + leadPhone;
+            }
+            contactJid = `${leadPhone}@s.whatsapp.net`;
+            console.log(`[RESPONDELE] 📱 Número extraído directo del mensaje: ${contactJid}`);
+          }
 
-            // Generar respuesta como MIIA representando al owner
-            const ownerName = userProfile.name || 'el equipo';
-            const businessName = userProfile.businessName || '';
-            const respondPrompt = `Sos MIIA, la asistente de ${ownerName}${businessName ? ` de ${businessName}` : ''}.
-Un contacto desconocido escribió: "${leadOriginalMsg}"
-${effectiveMsg.includes('preséntate') || effectiveMsg.includes('presentate') ? `Tu jefe te pide que te presentes como si fueras un asesor de ${businessName || 'su negocio'} y preguntes en qué podés ayudar.` : `Tu jefe te pide: "${effectiveMsg}"`}
+          // PRIORIDAD 3: Buscar por nombre en mensajes recientes del owner (quoted reply o contexto)
+          if (!contactJid) {
+            // Buscar en mensajes recientes de otros contactos (no self-chat)
+            const ownerJid = phone;
+            const nameInMsg = effectiveMsg.replace(respondeleMatch[0], '').replace(/^[\s,a]+/i, '').trim();
+            if (nameInMsg) {
+              // Buscar en conversations un contacto cuyo nombre matchee
+              for (const [convJid, msgs] of Object.entries(conversations)) {
+                if (convJid === ownerJid || !convJid.includes('@')) continue;
+                const lastMsg = msgs.slice(-5).find(m => m.role === 'user');
+                if (lastMsg && lastMsg._pushName && lastMsg._pushName.toLowerCase().includes(nameInMsg.toLowerCase())) {
+                  contactJid = convJid;
+                  leadPhone = convJid.split('@')[0];
+                  leadOriginalMsg = lastMsg.content || '';
+                  console.log(`[RESPONDELE] 👤 Encontrado por nombre "${nameInMsg}" → ${contactJid}`);
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        if (contactJid && leadPhone) {
+          // Generar respuesta como MIIA representando al owner
+          const ownerName = userProfile.name || 'el equipo';
+          const businessName = userProfile.businessName || '';
+          // Extraer instrucción específica del owner (lo que viene después del número/nombre)
+          const instruccion = effectiveMsg.replace(respondeleMatch[0], '').replace(/\+?\d{7,18}/, '').replace(/^[\s,a]+/i, '').trim();
+          const respondPrompt = `Sos MIIA, la asistente de ${ownerName}${businessName ? ` de ${businessName}` : ''}.
+${leadOriginalMsg ? `Un contacto escribió: "${leadOriginalMsg}"` : 'Un contacto te escribió anteriormente.'}
+${effectiveMsg.includes('preséntate') || effectiveMsg.includes('presentate') ? `Tu jefe te pide que te presentes como si fueras un asesor de ${businessName || 'su negocio'} y preguntes en qué podés ayudar.` : instruccion ? `Tu jefe te pide: "${instruccion}"` : `Tu jefe te pide que le respondas de forma profesional y preguntes en qué podés ayudar.`}
 
 REGLAS:
 - Máx 3 líneas, cálido y profesional
@@ -3127,50 +3212,45 @@ REGLAS:
 - Presentate con el nombre del negocio si lo tenés
 - Preguntá en qué podés ayudar`;
 
-            try {
-              const responseMsg = await generateAIContent(respondPrompt);
-              if (responseMsg) {
-                // Construir lista de JIDs a intentar (contactJid + alternativas)
-                const jidsToTry = [contactJid];
-                // Si es LID, intentar también resolver a @s.whatsapp.net
-                if (contactJid.includes('@lid')) {
-                  const resolved = resolveLid(contactJid);
-                  if (resolved !== contactJid) jidsToTry.unshift(resolved); // prioridad al resuelto
-                  jidsToTry.push(`${leadPhone}@s.whatsapp.net`); // fallback
-                } else {
-                  // Si es @s.whatsapp.net, intentar también por LID
-                  jidsToTry.push(`${leadPhone}@lid`);
-                }
-
-                // Enviar al lead
-                let sent = false;
-                for (const targetJid of jidsToTry) {
-                  try {
-                    await safeSendMessage(targetJid, responseMsg.trim());
-                    console.log(`[RESPONDELE] ✅ Mensaje enviado a ${targetJid}: "${responseMsg.substring(0, 60)}..."`);
-                    // Registrar en conversations para contexto futuro
-                    if (!conversations[targetJid]) conversations[targetJid] = [];
-                    conversations[targetJid].push({ role: 'assistant', content: responseMsg.trim(), timestamp: Date.now() });
-                    // Agregar como lead permitido
-                    if (!allowedLeads.includes(targetJid)) allowedLeads.push(targetJid);
-                    sent = true;
-                    saveDB();
-                    break;
-                  } catch (sendErr) {
-                    console.warn(`[RESPONDELE] ⚠️ Fallo enviando a ${targetJid}: ${sendErr.message}`);
-                  }
-                }
-
-                if (sent) {
-                  await safeSendMessage(phone, `✅ Listo, le escribí al contacto.`, { isSelfChat: true, skipEmoji: true });
-                } else {
-                  await safeSendMessage(phone, `⚠️ No pude enviar el mensaje. El número puede tener un formato distinto. Intentá con "dile a +${leadPhone} [tu mensaje]".`, { isSelfChat: true, skipEmoji: true });
-                }
-                return;
+          try {
+            const responseMsg = await generateAIContent(respondPrompt);
+            if (responseMsg) {
+              // Construir lista de JIDs a intentar (contactJid + alternativas)
+              const jidsToTry = [contactJid];
+              if (contactJid.includes('@lid')) {
+                const resolved = resolveLid(contactJid);
+                if (resolved !== contactJid) jidsToTry.unshift(resolved);
+                jidsToTry.push(`${leadPhone}@s.whatsapp.net`);
+              } else {
+                jidsToTry.push(`${leadPhone}@lid`);
               }
-            } catch (genErr) {
-              console.error(`[RESPONDELE] ❌ Error generando respuesta: ${genErr.message}`);
+
+              // Enviar al lead
+              let sent = false;
+              for (const targetJid of jidsToTry) {
+                try {
+                  await safeSendMessage(targetJid, responseMsg.trim());
+                  console.log(`[RESPONDELE] ✅ Mensaje enviado a ${targetJid}: "${responseMsg.substring(0, 60)}..."`);
+                  if (!conversations[targetJid]) conversations[targetJid] = [];
+                  conversations[targetJid].push({ role: 'assistant', content: responseMsg.trim(), timestamp: Date.now() });
+                  if (!allowedLeads.includes(targetJid)) allowedLeads.push(targetJid);
+                  sent = true;
+                  saveDB();
+                  break;
+                } catch (sendErr) {
+                  console.warn(`[RESPONDELE] ⚠️ Fallo enviando a ${targetJid}: ${sendErr.message}`);
+                }
+              }
+
+              if (sent) {
+                await safeSendMessage(phone, `✅ Listo, le escribí al contacto.`, { isSelfChat: true, skipEmoji: true });
+              } else {
+                await safeSendMessage(phone, `⚠️ No pude enviar el mensaje. El número puede tener un formato distinto. Intentá con "dile a +${leadPhone} [tu mensaje]".`, { isSelfChat: true, skipEmoji: true });
+              }
+              return;
             }
+          } catch (genErr) {
+            console.error(`[RESPONDELE] ❌ Error generando respuesta: ${genErr.message}`);
           }
         }
       }
@@ -4233,13 +4313,13 @@ Nuevo resumen actualizado:`;
     const countryCode3 = basePhone.substring(0, 3);
     let countryContext = '';
     if (!familyInfo) {
-      if (countryCode === '57') countryContext = '🌍 El lead es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el lead los trae; si tiene SIIGO + Titanium → facturador electrónico $0.';
-      else if (countryCode === '52') countryContext = '🌍 El lead es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD.';
-      else if (countryCode === '56') countryContext = '🌍 El lead es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD.';
-      else if (countryCode === '54') countryContext = '🌍 El lead es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el lead es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD.';
-      else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD.';
-      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
-      else countryContext = '🌍 El lead es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
+      if (countryCode === '57') countryContext = '🌍 El lead es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el lead los trae; si tiene SIIGO + Titanium → facturador electrónico $0. 🗣️ DIALECTO: Usá TÚ (tuteo colombiano). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "listo", "dale", "claro que sí", "con mucho gusto".';
+      else if (countryCode === '52') countryContext = '🌍 El lead es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo mexicano). Decí "cuéntame", "platícame", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "órale", "sale", "claro", "con gusto".';
+      else if (countryCode === '56') countryContext = '🌍 El lead es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo chileno). Decí "cuéntame", "dime". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "dale", "ya", "perfecto".';
+      else if (countryCode === '54') countryContext = '🌍 El lead es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el lead es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá VOS (voseo rioplatense). Decí "contame", "decime", "mirá", "fijate". Expresiones: "dale", "genial", "bárbaro".';
+      else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo caribeño). Decí "cuéntame", "dime". NUNCA "contame" ni "decime". Expresiones: "claro", "perfecto", "con gusto".';
+      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo español). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). NUNCA usar "vos". Expresiones: "vale", "genial", "perfecto", "estupendo".';
+      else countryContext = '🌍 El lead es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (español neutro). Decí "cuéntame", "dime". NUNCA "contame" ni "decime" (eso es argentino). Tono profesional neutro.';
     }
 
     // Construcción del system prompt
@@ -5004,6 +5084,56 @@ REGLAS:
           console.log(`[RECORDAR] ✅ Recordatorio agendado para contacto ${contactName}: "${recordMsg}" → ${recordFecha}`);
         } catch (e) {
           console.error(`[RECORDAR] ❌ Error agendando recordatorio:`, e.message);
+        }
+      }
+    }
+
+    // ── TAG [CREAR_TAREA:título|fecha|notas] — MIIA crea tarea en Google Tasks ──
+    const taskTag = googleTasks.parseTaskTag(aiMessage);
+    if (taskTag) {
+      aiMessage = aiMessage.replace(taskTag.rawTag, '').trim();
+      console.log(`[TASKS-TAG] 📋 Creando tarea: "${taskTag.title}" fecha=${taskTag.dueDate}`);
+      if (OWNER_UID) {
+        try {
+          const result = await googleTasks.createTask(OWNER_UID, getOAuth2Client, admin, {
+            title: taskTag.title,
+            dueDate: taskTag.dueDate,
+            notes: taskTag.notes || 'Creada por MIIA'
+          });
+          console.log(`[TASKS-TAG] ✅ Tarea creada: id=${result.id}`);
+        } catch (e) {
+          console.error(`[TASKS-TAG] ❌ Error creando tarea:`, e.message);
+        }
+      }
+    }
+
+    // ── TAG [LISTAR_TAREAS] — MIIA lista tareas pendientes ──
+    if (googleTasks.parseListTasksTag(aiMessage)) {
+      aiMessage = aiMessage.replace(/\[LISTAR_TAREAS\]/g, '').trim();
+      console.log(`[TASKS-TAG] 📋 Listando tareas`);
+      if (OWNER_UID) {
+        try {
+          const tasks = await googleTasks.listTasks(OWNER_UID, getOAuth2Client, admin);
+          const formattedTasks = googleTasks.formatTasksList(tasks);
+          // Enviar la lista al self-chat del owner
+          const ownerPhone = userProfile?.whatsapp_number || RESET_ALLOWED_PHONES[1];
+          await safeSendMessage(`${ownerPhone}@s.whatsapp.net`, formattedTasks, { isSelfChat: true, skipEmoji: true });
+        } catch (e) {
+          console.error(`[TASKS-TAG] ❌ Error listando tareas:`, e.message);
+        }
+      }
+    }
+
+    // ── TAG [COMPLETAR_TAREA:título] — MIIA completa una tarea ──
+    const completeTag = googleTasks.parseCompleteTaskTag(aiMessage);
+    if (completeTag) {
+      aiMessage = aiMessage.replace(completeTag.rawTag, '').trim();
+      console.log(`[TASKS-TAG] ✅ Completando tarea: "${completeTag.titleMatch}"`);
+      if (OWNER_UID) {
+        try {
+          await googleTasks.completeTask(OWNER_UID, getOAuth2Client, admin, { titleMatch: completeTag.titleMatch });
+        } catch (e) {
+          console.error(`[TASKS-TAG] ❌ Error completando tarea:`, e.message);
         }
       }
     }
@@ -11582,6 +11712,7 @@ app.get('/api/auth/google', (req, res) => {
       'https://www.googleapis.com/auth/calendar.readonly',
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/tasks',
     ],
     state: uid  // pasamos uid para recuperarlo en el callback
   });
