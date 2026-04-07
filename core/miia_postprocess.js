@@ -1,7 +1,10 @@
 'use strict';
 
+const { attemptAutoRepair } = require('./integrity_engine');
+
 /**
- * MIIA POST-PROCESS v1.0 — Auditoría de respuesta ANTES de enviar al usuario
+ * MIIA POST-PROCESS v1.1 — Auditoría de respuesta ANTES de enviar al usuario
+ * v1.1: Integra auto-repair del Integrity Engine (Capa 2)
  *
  * 5 auditores que validan la respuesta de la IA sin costo extra:
  * - auditPromesa: Detecta confirmaciones de acciones sin tag correspondiente
@@ -67,15 +70,35 @@ const BOT_CLOSERS = [
 
 /**
  * MIIA PROMESA — ¿Confirma una acción sin haberla ejecutado?
+ * v1.1: Intenta auto-repair antes de vetar (Capa 2 del Integrity Engine)
  */
-function auditPromesa(aiMessage) {
+function auditPromesa(aiMessage, opts = {}) {
+  const { contactPhone, contactName } = opts;
+
   for (const rule of ACTION_CONFIRMATIONS) {
     const confirmsAction = rule.phrases.some(p => p.test(aiMessage));
     if (confirmsAction) {
       const hasTag = rule.requiredTag.test(aiMessage);
       if (!hasTag) {
-        // Buscar cuál frase matcheó para el log
         const matchedPhrase = rule.phrases.find(p => p.test(aiMessage));
+        const actionType = rule.requiredTag.source.includes('AGENDAR') ? 'agendar'
+          : rule.requiredTag.source.includes('CORREO') ? 'email'
+          : rule.requiredTag.source.includes('CANCELAR') ? 'cancelar'
+          : rule.requiredTag.source.includes('MOVER') ? 'mover' : 'otro';
+
+        // CAPA 2: Intentar auto-repair antes de vetar
+        const repairedTag = attemptAutoRepair(aiMessage, actionType, contactPhone, contactName);
+        if (repairedTag) {
+          console.log(`[POSTPROCESS:PROMESA] 🔧 Auto-repair exitoso: ${repairedTag}`);
+          return {
+            pass: true,
+            action: 'repair',
+            auditor: 'promesa',
+            repairedTag,
+            reason: `Auto-repair: faltaba tag, reconstruido como ${repairedTag}`,
+          };
+        }
+
         return {
           pass: false,
           reason: `PROMESA ROTA: Dice "${aiMessage.match(matchedPhrase)?.[0] || 'acción confirmada'}" pero NO emitió tag ${rule.requiredTag.source}`,
@@ -340,15 +363,25 @@ function runPostprocess(aiMessage, opts = {}) {
 
   // Ejecutar todos los auditores regex
   const results = [
-    auditPromesa(finalMessage),
+    auditPromesa(finalMessage, { contactPhone: opts.contactPhone, contactName }),
     auditIdentidad(finalMessage, chatType),
     auditTono(finalMessage, contactName),
     auditAprendizaje(finalMessage, chatType),
     auditVerdad(finalMessage, hasSearchData),
   ];
 
+  let repairedTags = [];
+
   for (const result of results) {
     audits.push(result);
+
+    // Auto-repair: inyectar tag reconstruido
+    if (result.action === 'repair' && result.repairedTag) {
+      finalMessage = result.repairedTag + ' ' + finalMessage;
+      repairedTags.push(result.repairedTag);
+      console.log(`[POSTPROCESS:REPAIR] 🔧 Tag inyectado: ${result.repairedTag}`);
+      continue; // No es falla — fue reparado
+    }
 
     if (!result.pass) {
       console.warn(`[POSTPROCESS:${result.auditor.toUpperCase()}] ⚠️ ${result.reason}`);
@@ -382,6 +415,7 @@ function runPostprocess(aiMessage, opts = {}) {
     finalMessage: finalMessage.trim(),
     audits,
     action: worstAction,
+    repairedTags,
     vetoReason: worstAction === 'veto'
       ? audits.filter(a => a.action === 'veto').map(a => a.reason).join('; ')
       : null,

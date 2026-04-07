@@ -120,6 +120,7 @@ const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 const taskScheduler = require('./core/task_scheduler');
 const { runPreprocess } = require('./core/miia_preprocess');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_postprocess');
+const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
 const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
 const rateLimiter = require('./core/rate_limiter');
@@ -767,6 +768,30 @@ async function runAgendaEngine() {
 // L4: Agenda — alto, recordatorios no pueden fallar
 setInterval(() => taskScheduler.executeWithConcentration(4, 'agenda-engine', runAgendaEngine), 300000);
 setTimeout(() => taskScheduler.executeWithConcentration(4, 'agenda-engine', runAgendaEngine), 180000);
+
+// ═══ INTEGRITY ENGINE — Verificación de promesas, preferencias, afinidades ═══
+// Cada 5 min via Gemini Flash ($0). Detecta promesas rotas, aprende gustos/preferencias de contactos.
+setTimeout(() => {
+  if (!OWNER_UID) return;
+  startIntegrityEngine({
+    ownerUid: OWNER_UID,
+    generateAI: async (prompt) => {
+      try {
+        const { callGemini } = require('./ai/gemini_client');
+        const gemKey = process.env.GEMINI_API_KEY;
+        if (!gemKey) return '';
+        const result = await callGemini(gemKey, prompt, { model: 'gemini-2.0-flash' });
+        return result || '';
+      } catch (e) {
+        console.error(`[INTEGRITY] ❌ Gemini Flash error: ${e.message}`);
+        return '';
+      }
+    },
+    safeSendMessage,
+    ownerPhone: OWNER_PHONE,
+  });
+  console.log('[INTEGRITY] 🚀 Integrity Engine wired — polling cada 5 min con Gemini Flash ($0)');
+}, 60000); // 1 min post-startup
 
 // ═══ PROTECCIÓN: Check-in diario de contactos protegidos ═══
 // Cada hora. Verifica inactividad y alerta al owner + adultos responsables.
@@ -4276,6 +4301,26 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
               meetLink = calResult.meetLink || null;
               console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode}${meetLink ? ` meet=${meetLink}` : ''}`);
               actionFeedback.recordActionResult(phone, 'agendar', true, `"${razon}" agendado el ${fecha} para ${contactName} — Calendar OK`);
+
+              // CAPA 4: Verificar asíncronamente que el evento realmente existe en Calendar
+              verifyCalendarEvent(
+                async (uid, dateStr) => {
+                  try {
+                    const calClient = await getCalendarClient(uid);
+                    if (!calClient) return [];
+                    const res = await calClient.events.list({
+                      calendarId: userProfile.googleCalendarId || 'primary',
+                      timeMin: new Date(dateStr + 'T00:00:00').toISOString(),
+                      timeMax: new Date(dateStr + 'T23:59:59').toISOString(),
+                      maxResults: 20, singleEvents: true, orderBy: 'startTime',
+                    });
+                    return (res.data.items || []).map(e => ({ summary: e.summary }));
+                  } catch { return []; }
+                },
+                OWNER_UID, fecha.split('T')[0], razon
+              ).then(verified => {
+                if (!verified) console.error(`[INTEGRITY:VERIFY] ❌ Evento "${razon}" NO confirmado en Calendar post-creación`);
+              }).catch(() => {});
             }
           } catch (calErr) {
             console.warn(`[AGENDA] ⚠️ Google Calendar no disponible: ${calErr.message}. Guardando en Firestore.`);
