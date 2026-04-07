@@ -4506,7 +4506,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
 
     // ═══ STRIP: Links de Google Search (Gemini a veces envía URLs de búsqueda literales) ═══
-    if (/https?:\/\/(www\.)?google\.com\/search/i.test(aiMessage)) {
+    // Solo para leads/familia — el owner en self-chat puede pedir links
+    if (!isSelfChat && /https?:\/\/(www\.)?google\.com\/search/i.test(aiMessage)) {
       console.warn(`[MIIA] ⚠️ Strip Google Search URL de respuesta a ${basePhone}`);
       aiMessage = aiMessage.replace(/https?:\/\/(www\.)?google\.com\/search[^\s\])"]*/gi, '[búsqueda interna]');
     }
