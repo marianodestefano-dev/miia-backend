@@ -2977,7 +2977,7 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
 
         try {
           const imageMsg = rawBaileys?.message?.imageMessage || rawBaileys?.message?.viewOnceMessage?.message?.imageMessage || rawBaileys?.message?.viewOnceMessageV2?.message?.imageMessage;
-          if (imageMsg && sock) {
+          if (imageMsg && rawBaileys) {
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
             const imageBuffer = await downloadMediaMessage(rawBaileys, 'buffer', {});
 
@@ -3486,6 +3486,39 @@ REGLAS:
       } else {
         await safeSendMessage(phone, `🤔 No entendí la fecha. Probá con formato: "pasaporte vence en diciembre 2027"`);
       }
+      return;
+    }
+
+    // ═══ PRESENTACIÓN MIIA AL EQUIPO — One-shot con video langosta ═══
+    // Trigger: "presenta miia al equipo" / "preséntate al equipo" / "presentate al equipo medilink"
+    const presentarEquipoMatch = effectiveMsg && /(?:presenta(?:te)?|preséntate|presentá(?:te)?)\s+(?:miia\s+)?(?:al?\s+)?equipo(?:\s+medilink)?/i.test(effectiveMsg);
+    if (isAdmin && presentarEquipoMatch) {
+      console.log(`[EQUIPO:PRESENTACIÓN] 🎬 Mariano activó presentación de MIIA al equipo`);
+      const phones = Object.keys(equipoMedilink);
+      if (phones.length === 0) {
+        await safeSendMessage(phone, `No tengo miembros del equipo registrados. Primero agregá contactos al equipo.`, { isSelfChat: true, skipEmoji: true });
+        return;
+      }
+
+      let enviados = 0;
+      for (const num of phones) {
+        const target = `${num}@s.whatsapp.net`;
+        try {
+          const nombreMiembro = equipoMedilink[num].name || leadNames[target] || 'compañero';
+
+          // Mensaje de presentación + frase motivacional de la langosta
+          const presentMsg = `¡Hola ${nombreMiembro}! 👋\n\nSoy *MIIA*, la asistente inteligente de Medilink. Mariano me pidió que me presente con el equipo.\n\nÉl dice que *todos nosotros somos como langostas*: para crecer, primero hay que soltar el caparazón viejo — lo cómodo, lo que ya no sirve — y quedarse vulnerable un momento. Pero es justamente en esa incomodidad donde se da el verdadero crecimiento. 🦞\n\nMirá este video, vale la pena:\nhttps://www.youtube.com/watch?v=aGcB3fYEiyY\n\nVamos a hacer grandes cosas juntos. Estoy acá para ayudarlos en lo que necesiten.`;
+
+          await safeSendMessage(target, presentMsg);
+          enviados++;
+          // Delay entre mensajes para no parecer bot
+          await new Promise(r => setTimeout(r, 3000 + Math.floor(Math.random() * 3000)));
+        } catch (e) {
+          console.error(`[EQUIPO:PRESENTACIÓN] ❌ Error enviando a ${num}:`, e.message);
+        }
+      }
+      await safeSendMessage(phone, `✅ Me presenté con ${enviados}/${phones.length} miembros del equipo. Les envié el video de la langosta 🦞`, { isSelfChat: true, skipEmoji: true });
+      console.log(`[EQUIPO:PRESENTACIÓN] ✅ Presentación completa (${enviados}/${phones.length})`);
       return;
     }
 
@@ -11064,9 +11097,9 @@ server.listen(PORT, () => {
       const lastCheck = gmailConfig.lastCheck ? new Date(gmailConfig.lastCheck) : new Date(0);
       if (Date.now() - lastCheck.getTime() < gmailIntegration.GMAIL_CHECK_INTERVAL_MS) return;
 
-      // Solo en horario activo (8am-22pm)
+      // Solo en horario activo (10am-22pm)
       const hour = new Date().getHours();
-      if (hour < 8 || hour >= 22) return;
+      if (hour < 10 || hour >= 22) return;
 
       console.log(`[GMAIL:CRON] 🔄 Check periódico de emails...`);
       const generateAIForGmail = async (prompt) => {

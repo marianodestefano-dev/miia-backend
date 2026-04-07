@@ -30,7 +30,7 @@ const { google } = require('googleapis');
 // CONSTANTES
 // ═══════════════════════════════════════════════════════════════
 
-const GMAIL_CHECK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutos
+const GMAIL_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hora
 const MAX_EMAILS_PER_CHECK = 20;
 const SPAM_AUTO_DELETE = true;
 
