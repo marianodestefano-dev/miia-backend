@@ -139,6 +139,7 @@ const promptCache = require('./ai/prompt_cache');
 const businessesRouter = require('./routes/businesses');
 const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
+const morningBriefing = require('./core/morning_briefing');
 const ttsEngine = require('./voice/tts_engine');
 const kidsMode = require('./voice/kids_mode');
 
@@ -823,9 +824,8 @@ setTimeout(async () => {
       getOwnerProfile: async () => null,  // TODO: cargar desde Firestore
     });
 
-    // L3: Sport engine — medio, eventos deportivos
-    setInterval(() => taskScheduler.executeWithConcentration(3, 'sport-engine', () => sportEngine.runSportsEngine()), 30000);
-    console.log('[SPORT-ENGINE] ✅ Engine deportivo iniciado (poll cada 30s)');
+    // Sport engine inicializado — polling controlado por Morning Briefing (10AM + 3PM)
+    console.log('[SPORT-ENGINE] ✅ Engine deportivo inicializado (polling controlado por Morning Briefing)');
   } catch (err) {
     console.error('[SPORT-ENGINE] ❌ Error inicializando:', err.message);
   }
@@ -848,9 +848,8 @@ setTimeout(async () => {
       OWNER_PHONE,
     });
 
-    // L2: Integraciones — bajo, sync periódico
-    setInterval(() => taskScheduler.executeWithConcentration(2, 'integration-engine', () => integrationEngine.runIntegrationEngine()), 300000);
-    console.log('[INTEGRATIONS] ✅ Engine de integraciones iniciado (poll cada 5min)');
+    // Integraciones inicializadas — polling controlado por Morning Briefing (10AM + 3PM)
+    console.log('[INTEGRATIONS] ✅ Engine de integraciones inicializado (polling controlado por Morning Briefing)');
   } catch (err) {
     console.error('[INTEGRATIONS] ❌ Error inicializando:', err.message);
   }
@@ -867,9 +866,8 @@ setTimeout(() => {
       ownerUid: OWNER_UID,
       getOwnerSock
     });
-    // L4: Polling precios cada 30 min — alto, alertas de precio importan
-    setInterval(() => taskScheduler.executeWithConcentration(4, 'price-check', () => priceTracker.checkPrices(OWNER_UID)), 1800000);
-    console.log('[PRICE-TRACKER] ✅ Engine iniciado (poll cada 30min)');
+    // Precios inicializados — polling controlado por Morning Briefing (10AM + 3PM)
+    console.log('[PRICE-TRACKER] ✅ Engine inicializado (polling controlado por Morning Briefing)');
   } catch (err) {
     console.error('[PRICE-TRACKER] ❌ Error inicializando:', err.message);
   }
@@ -880,15 +878,34 @@ setTimeout(() => {
       getOwnerSock,
       ownerUid: OWNER_UID
     });
-    // L4: Alertas de vuelos cada 6h — alto
-    setInterval(() => taskScheduler.executeWithConcentration(4, 'flight-alerts', () => travelTracker.checkFlightAlerts(OWNER_UID)), 6 * 3600000);
-    // L2: Pasaporte semanal — bajo
+    // Travel inicializado — vuelos chequeados por Morning Briefing (10AM + 3PM)
+    // Pasaporte: semanal, lo mantenemos independiente
     setInterval(() => taskScheduler.executeWithConcentration(2, 'passport-check', () => travelTracker.checkPassportExpiry(OWNER_UID)), 7 * 24 * 3600000);
-    console.log('[TRAVEL] ✅ Engine iniciado (vuelos cada 6h, pasaporte semanal)');
+    console.log('[TRAVEL] ✅ Engine inicializado (vuelos en Morning Briefing, pasaporte semanal)');
   } catch (err) {
     console.error('[TRAVEL] ❌ Error inicializando:', err.message);
   }
 }, 420000); // 7 min post-startup
+
+// ═══ MORNING BRIEFING — Reemplaza TODOS los pollings constantes ═══
+// 10:00 AM + 3:00 PM (hora owner): deportes, precios, integraciones, vuelos
+// Eventos deportivos en vivo → polling solo durante el evento
+setTimeout(() => {
+  if (!OWNER_UID) {
+    console.log('[MORNING-BRIEFING] ⏭️ OWNER_UID no disponible, briefing desactivado');
+    return;
+  }
+  morningBriefing.init(OWNER_UID, {
+    sportEngine,
+    integrationEngine,
+    priceTracker,
+    travelTracker,
+    getScheduleConfig,
+    isWithinSchedule,
+    safeSendMessage,
+    OWNER_PHONE,
+  });
+}, 480000); // 8 min post-startup (después de que todos los engines estén listos)
 
 // ═══ MODO FINDE — Check cada 30min si preguntar al owner (P3.4) ═══
 setInterval(async () => {
