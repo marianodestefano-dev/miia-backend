@@ -20,7 +20,7 @@ function register(sportType, adapterInstance) {
     console.warn(`[SPORT-REGISTRY] Adapter '${sportType}' ya registrado, sobreescribiendo`);
   }
   adapters.set(sportType, adapterInstance);
-  console.log(`[SPORT-REGISTRY] ✅ Registrado: ${sportType} (${adapterInstance.displayName})`);
+  // Log individual eliminado — se resume todo en loadAll()
 }
 
 /**
@@ -94,7 +94,8 @@ function loadAll() {
     }
   }
 
-  console.log(`[SPORT-REGISTRY] Carga completa: ${loaded} OK, ${failed} fallidos de ${ADAPTERS_TO_LOAD.length}`);
+  const sportNames = Array.from(adapters.values()).map(a => a.displayName).join(', ');
+  console.log(`[SPORT-REGISTRY] ✅ ${loaded} deportes cargados${failed ? `, ${failed} fallidos` : ''}: ${sportNames}`);
 }
 
 // Cargar todos al inicializar el módulo

@@ -232,10 +232,24 @@ function shouldMiiaRespond(opts) {
  */
 function buildUnknownContactAlert(basePhone, messageBody, pushName) {
   const preview = (messageBody || '').substring(0, 200);
-  const nameLine = pushName ? `Nombre: *${pushName}*\n` : '';
+
+  // Formatear nombre y número de forma amigable
+  // Si el número contiene "LID:" es un identificador interno — ocultarlo al owner
+  const isLid = basePhone.includes('LID:') || basePhone.includes('lid');
+  let contactLine;
+  if (pushName && isLid) {
+    // Tenemos nombre pero no número real → mostrar nombre prominente
+    contactLine = `Nombre: *${pushName}*\nNúmero: _pendiente de resolver_`;
+  } else if (pushName && !isLid) {
+    contactLine = `Nombre: *${pushName}*\nNúmero: +${basePhone}`;
+  } else if (!isLid) {
+    contactLine = `Número: +${basePhone}`;
+  } else {
+    contactLine = `Contacto nuevo (número pendiente de resolver)`;
+  }
+
   return `📱 *Alguien te escribió*\n\n` +
-    `${nameLine}` +
-    `Número: +${basePhone}\n` +
+    `${contactLine}\n` +
     `Mensaje: "${preview}"\n\n` +
     `No respondí porque no detecté palabras de tu negocio.\n\n` +
     `¿Quién es? Respondé:\n` +

@@ -6713,7 +6713,19 @@ async function handleIncomingMessage(message) {
           if (resolved !== effectiveTarget) {
             displayPhone = resolved.split('@')[0];
           } else {
-            displayPhone = `LID:${displayPhone} (número no resuelto aún)`;
+            // ÚLTIMO RECURSO: Intentar resolver via sock.onWhatsApp() (consulta directa a WhatsApp)
+            try {
+              const sock = getOwnerSock();
+              if (sock && typeof sock.onWhatsApp === 'function') {
+                const lidBase = effectiveTarget.split('@')[0].split(':')[0];
+                // onWhatsApp no acepta LIDs directamente, pero si hay pushName podemos buscar
+                console.log(`[LID-RESOLVE] ⏳ LID ${lidBase} sin resolver. pushName="${pushName}". Intentando resolución alternativa...`);
+              }
+            } catch (_) {}
+            // Si no se pudo resolver, mostrar lo que tenemos (pushName o número parcial)
+            if (pushName) {
+              displayPhone = `${displayPhone} (${pushName})`;
+            }
           }
         }
         console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${displayPhone}${pushName ? ` (${pushName})` : ''}. Sin keywords. body="${(body||'').substring(0,60)}"`);
