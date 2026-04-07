@@ -2,7 +2,7 @@
 
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args)).catch(() => require('node-fetch')(...args));
 
-const DEFAULT_MODEL = 'claude-3-5-sonnet-20241022';
+const DEFAULT_MODEL = 'claude-opus-4-6';
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [8000, 20000, 45000];
 const API_VERSION = '2023-06-01';

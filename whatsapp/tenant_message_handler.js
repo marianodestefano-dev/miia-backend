@@ -42,13 +42,16 @@ const {
   buildADN, buildVademecum, resolveProfile, DEFAULT_OWNER_PROFILE
 } = require('../core/prompt_builder');
 
-const { callAI } = require('../ai/ai_client');
+const aiGateway = require('../ai/ai_gateway');
+const promptCache = require('../ai/prompt_cache');
 const {
   shouldMiiaRespond, matchesBusinessKeywords, getOwnerBusinessKeywords,
   buildUnknownContactAlert
 } = require('../core/contact_gate');
 const rateLimiter = require('../core/rate_limiter');
 const humanDelay = require('../core/human_delay');
+const contactClassifier = require('../core/contact_classifier');
+const weekendMode = require('../core/weekend_mode');
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
@@ -344,7 +347,14 @@ Mensaje del contacto: "${messageBody.substring(0, 500)}"
 
 Responde SOLO con el nombre exacto del negocio que mejor corresponda, o "NINGUNO" si no es claro.`;
 
-      const aiResult = await callAI(aiProvider, aiApiKey, classifyPrompt, []);
+      const classifyResult = await aiGateway.smartCall(
+        aiGateway.CONTEXTS.CLASSIFICATION,
+        classifyPrompt,
+        { aiProvider, aiApiKey },
+        { maxTokens: 256 }
+      );
+      const aiResult = classifyResult.text;
+      if (classifyResult.failedOver) console.log(`${logPrefix} 🔄 PASO 4: Clasificación usó failover → ${classifyResult.provider}`);
       const matchedBiz = businesses.find(b => aiResult && aiResult.toLowerCase().includes(b.name.toLowerCase()));
       if (matchedBiz) {
         console.log(`${logPrefix} 📇 PASO 4: IA match → "${matchedBiz.name}"`);
@@ -373,6 +383,7 @@ Responde SOLO con el nombre exacto del negocio que mejor corresponda, o "NINGUNO
   }
 
   await saveContactIndex(ownerUid, basePhone, { type: 'pending', name: '' });
+  contactClassifier.addPendingClassification(ownerUid, basePhone, messageBody.substring(0, 200));
   return { type: 'lead', businessId: defaultBizId, businessName: businesses[0]?.name || 'Mi Negocio' };
 }
 
@@ -710,6 +721,16 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: '' });
   }
 
+  // ── PASO 7f: Modo finde — leads reciben respuesta automática si owner activó "finde off" ──
+  if (contactType === 'lead' && !isSelfChat) {
+    const weekendCheck = weekendMode.isWeekendBlocked(ctx.ownerUid);
+    if (weekendCheck.blocked) {
+      console.log(`${logPrefix} 🏖️ MODO FINDE activo → respuesta automática a lead ${basePhone}`);
+      await sendTenantMessage(tenantState, phone, weekendCheck.autoResponse);
+      return;
+    }
+  }
+
   // GATE FINAL: si no debe responder → silencio total
   if (!gateDecision.respond) {
     console.log(`${logPrefix} 🤫 MIIA NO EXISTE para ${basePhone} (${gateDecision.reason}). Silencio total.`);
@@ -915,7 +936,7 @@ ${history}
 
 MIIA, genera tu respuesta breve, estratégica y humana:`;
 
-  // ── PASO 10: Llamar a la IA ──
+  // ── PASO 10: Llamar a la IA via AI Gateway (P5.3 — failover cross-provider) ──
   const aiProvider = ctx.ownerProfile.aiProvider || 'gemini';
   const aiApiKey = ctx.ownerProfile.aiApiKey || process.env.GEMINI_API_KEY;
 
@@ -924,51 +945,63 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     return;
   }
 
-  console.log(`${logPrefix} 🤖 Llamando a ${aiProvider} para ${basePhone} (selfChat=${isSelfChat}, type=${contactType}, promptLen=${fullPrompt.length})...`);
+  // Determinar contexto de IA para router inteligente
+  const aiContext = isSelfChat
+    ? aiGateway.CONTEXTS.OWNER_CHAT
+    : contactType === 'lead'
+      ? aiGateway.CONTEXTS.LEAD_RESPONSE
+      : (contactType === 'familia' || contactType === 'group')
+        ? aiGateway.CONTEXTS.FAMILY_CHAT
+        : aiGateway.CONTEXTS.GENERAL;
 
-  let aiMessage;
-  try {
-    aiMessage = await callAI(aiProvider, aiApiKey, fullPrompt);
-  } catch (e) {
-    console.error(`${logPrefix} ❌ Error llamando a ${aiProvider} para ${basePhone}:`, e.message);
-    const em = e.message.toLowerCase();
+  console.log(`${logPrefix} 🤖 AI Gateway: ctx=${aiContext}, provider=${aiProvider}, prompt=${fullPrompt.length} chars, phone=${basePhone}`);
 
-    // ═══ EMERGENCY BACKUP: Si falla por quota/keys agotadas, intentar con backup pool ═══
-    if (em.includes('agotada') || em.includes('429') || em.includes('quota') || em.includes('rate') || em.includes('credit') || em.includes('billing') || em.includes('balance')) {
-      console.warn(`${logPrefix} 🛡️ Intentando con backup keys de emergencia...`);
-      try {
-        // callAI con gemini usará el keyPool que incluye backup keys
-        aiMessage = await callAI('gemini', null, fullPrompt);
-      } catch (backupErr) {
-        console.error(`${logPrefix} ❌ Backup keys también fallaron: ${backupErr.message}`);
-      }
-
-      // Si el backup también falló, notificar al usuario
-      if (!aiMessage) {
-        const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${aiProvider}) no tiene créditos o saldo disponible.\n\nSolución: Cargá saldo en la cuenta de ${aiProvider === 'claude' ? 'console.anthropic.com' : aiProvider === 'openai' ? 'platform.openai.com' : 'aistudio.google.com'} → Billing.\n\nMientras tanto, podés cambiar a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
-        try {
-          const selfJid = tenantState.sock?.user?.id;
-          if (tenantState.sock && selfJid) {
-            await tenantState.sock.sendMessage(selfJid, { text: alertMsg });
-            console.log(`${logPrefix} ✅ Notificación de billing enviada al owner`);
-          }
-        } catch (notifyErr) {
-          console.error(`${logPrefix} ❌ Error notificando billing al owner:`, notifyErr.message);
-        }
-        return;
-      }
-      console.log(`${logPrefix} ✅ Backup key de emergencia exitosa para ${basePhone}`);
-    } else {
-      return;
-    }
+  // P5.5: Intentar prompt cache para el system prompt (no el historial)
+  const cacheKey = `${contactType}_${classification?.businessId || 'default'}`;
+  const cachedSystemPrompt = promptCache.get(promptCache.TTL.SYSTEM_PROMPT ? 'SYSTEM_PROMPT' : 'GENERAL', ownerUid, cacheKey);
+  if (cachedSystemPrompt) {
+    console.log(`${logPrefix} ⚡ PROMPT-CACHE HIT para ${cacheKey}`);
+  } else if (activeSystemPrompt) {
+    promptCache.set('SYSTEM_PROMPT', ownerUid, activeSystemPrompt, cacheKey);
   }
 
+  let aiMessage;
+  const aiResult = await aiGateway.smartCall(
+    aiContext,
+    fullPrompt,
+    { aiProvider, aiApiKey },
+    {}
+  );
+
+  aiMessage = aiResult.text;
+
+  if (aiResult.failedOver) {
+    console.warn(`${logPrefix} 🔄 FAILOVER: ${aiProvider} → ${aiResult.provider} (${aiResult.latencyMs}ms)`);
+  } else {
+    console.log(`${logPrefix} ✅ ${aiResult.provider} OK (${aiResult.latencyMs}ms)`);
+  }
+
+  // Si TODOS los proveedores fallaron
   if (!aiMessage || !aiMessage.trim()) {
-    console.warn(`${logPrefix} ⚠️ Respuesta VACÍA de ${aiProvider} para ${basePhone}. No se envía nada.`);
+    if (aiResult.provider === 'none') {
+      console.error(`${logPrefix} 🔴 TODOS los proveedores IA fallaron para ${basePhone}`);
+      const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTodos los proveedores de IA fallaron.\n\nSolución: Verificá tu saldo en ${aiProvider === 'claude' ? 'console.anthropic.com' : aiProvider === 'openai' ? 'platform.openai.com' : 'aistudio.google.com'} → Billing.\n\nO cambiá de proveedor desde tu dashboard → Conexiones → Inteligencia Artificial.`;
+      try {
+        const selfJid = tenantState.sock?.user?.id;
+        if (tenantState.sock && selfJid) {
+          await tenantState.sock.sendMessage(selfJid, { text: alertMsg });
+          console.log(`${logPrefix} ✅ Notificación de error IA enviada al owner`);
+        }
+      } catch (notifyErr) {
+        console.error(`${logPrefix} ❌ Error notificando al owner:`, notifyErr.message);
+      }
+    } else {
+      console.warn(`${logPrefix} ⚠️ Respuesta VACÍA de ${aiResult.provider} para ${basePhone}. No se envía nada.`);
+    }
     return;
   }
 
-  console.log(`${logPrefix} ✅ Respuesta ${aiProvider} recibida (${aiMessage.length} chars) para ${basePhone}`);
+  console.log(`${logPrefix} ✅ Respuesta IA recibida via ${aiResult.provider} (${aiMessage.length} chars, ${aiResult.latencyMs}ms) para ${basePhone}`);
 
   // ── PASO 11: Procesar tags de IA ──
 

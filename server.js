@@ -100,7 +100,7 @@ const interMiia = require('./core/inter_miia');
 
 // ═══ AI — Clientes y adaptadores IA ═══
 const { callGemini, callGeminiChat } = require('./ai/gemini_client');
-const { callAI, callAIChat, PROVIDER_LABELS } = require('./ai/ai_client');
+const { PROVIDER_LABELS } = require('./ai/ai_client');
 
 // ═══ SERVICES — Servicios externos ═══
 const cotizacionGenerator = require('./services/cotizacion_generator');
@@ -124,6 +124,16 @@ const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
+const contactClassifier = require('./core/contact_classifier');
+const slotPrivacy = require('./core/slot_privacy');
+const weekendMode = require('./core/weekend_mode');
+const probadita = require('./core/probadita');
+const numberMigration = require('./core/number_migration');
+const privacyReport = require('./core/privacy_report');
+const auditLogger = require('./core/audit_logger');
+const waGateway = require('./whatsapp/whatsapp_gateway');
+const aiGateway = require('./ai/ai_gateway');
+const promptCache = require('./ai/prompt_cache');
 
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
@@ -872,6 +882,46 @@ setTimeout(() => {
     console.error('[TRAVEL] ❌ Error inicializando:', err.message);
   }
 }, 420000); // 7 min post-startup
+
+// ═══ MODO FINDE — Check cada 30min si preguntar al owner (P3.4) ═══
+setInterval(async () => {
+  if (!OWNER_UID || !OWNER_PHONE) return;
+  const tz = messageLogic.getTimezoneForCountry(messageLogic.getCountryFromPhone(OWNER_PHONE));
+  if (weekendMode.shouldAskWeekendQuestion(OWNER_UID, tz)) {
+    const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
+    const question = weekendMode.getWeekendQuestion();
+    weekendMode.markAsked(OWNER_UID);
+    try {
+      const waSock = tenantManager.getTenantClient(OWNER_UID);
+      if (waSock) {
+        await waSock.sendMessage(ownerJid, { text: question });
+        console.log(`[WEEKEND] 📨 Pregunta modo finde enviada al owner`);
+      }
+    } catch (e) {
+      console.error(`[WEEKEND] ❌ Error enviando pregunta finde:`, e.message);
+    }
+  }
+}, 1800000); // cada 30min
+
+// ═══ INFORME PRIVACIDAD SEMESTRAL — Check diario (P3.7) ═══
+setInterval(async () => {
+  if (!OWNER_UID || !OWNER_PHONE) return;
+  const tz = messageLogic.getTimezoneForCountry(messageLogic.getCountryFromPhone(OWNER_PHONE));
+  if (privacyReport.shouldSendReport(tz)) {
+    try {
+      const report = await privacyReport.generateReport(OWNER_UID);
+      const text = privacyReport.formatForWhatsApp(report);
+      const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
+      const waSock2 = tenantManager.getTenantClient(OWNER_UID);
+      if (waSock2) {
+        await waSock2.sendMessage(ownerJid, { text });
+        console.log(`[PRIVACY-REPORT] 📊 Informe semestral enviado al owner`);
+      }
+    } catch (e) {
+      console.error(`[PRIVACY-REPORT] ❌ Error enviando informe:`, e.message);
+    }
+  }
+}, 3600000); // cada hora (shouldSendReport filtra: solo 1ro ene/jul 9-10am)
 
 let morningWakeupDone   = '';        // evita repetir el despertar en el mismo día
 let morningBriefingDone = '';        // evita repetir el briefing en el mismo día
@@ -2329,6 +2379,29 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         if (OWNER_UID) await admin.firestore().collection('users').doc(OWNER_UID).update({ humanizer_enabled: true });
         _humanizerCache = { value: true, ts: Date.now() };
         await safeSendMessage(phone, '✅ Humanizador activado. Incluiré pausas variables y pequeños errores tipográficos ocasionales.');
+        return;
+      }
+    }
+
+    // ═══ CLASIFICACIÓN DE CONTACTOS (self-chat, P3.1) ═══
+    if (isAdmin && effectiveMsg) {
+      // "finde off" / "finde on" — Modo finde (P3.4)
+      const _weekendTz = messageLogic.getTimezoneForCountry(messageLogic.getCountryFromPhone(OWNER_PHONE || ''));
+      const weekendResult = weekendMode.processWeekendResponse(OWNER_UID, effectiveMsg, _weekendTz);
+      if (weekendResult.handled) {
+        await safeSendMessage(phone, weekendResult.response);
+        return;
+      }
+
+      // Clasificar contactos pendientes: "amigo", "familia", "medilink", "5491155 es amigo", "mover X a Y"
+      const ownerBusinesses = [];
+      try {
+        const bizSnap = await admin.firestore().collection('users').doc(OWNER_UID).collection('businesses').get();
+        bizSnap.forEach(d => ownerBusinesses.push({ id: d.id, ...d.data() }));
+      } catch (_) {}
+      const classResult = await contactClassifier.tryClassifyFromOwnerMessage(OWNER_UID, effectiveMsg, ownerBusinesses);
+      if (classResult.handled) {
+        await safeSendMessage(phone, classResult.response);
         return;
       }
     }
@@ -7396,6 +7469,158 @@ Segunda línea: si es UTIL escribe una versión mejorada y concisa del conocimie
 app.use('/api/tenant/:uid', businessesRouter);
 
 // ============================================
+// P3 — SLOTS, PRIVACY, WEEKEND, MIGRATION, REPORTS
+// ============================================
+
+// ── Slots CRUD (P3.2) ──
+app.get('/api/tenant/:uid/slots', async (req, res) => {
+  try {
+    const slots = await slotPrivacy.getSlots(req.params.uid);
+    res.json(slots);
+  } catch (e) {
+    console.error(`[SLOTS] Error listing:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/tenant/:uid/slots', express.json(), async (req, res) => {
+  try {
+    const slot = await slotPrivacy.createSlot(req.params.uid, req.body);
+    res.json(slot);
+  } catch (e) {
+    console.error(`[SLOTS] Error creating:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/tenant/:uid/slots/:slotId', express.json(), async (req, res) => {
+  try {
+    await slotPrivacy.updateSlotPrivacy(req.params.uid, req.params.slotId, req.body);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(`[SLOTS] Error updating:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/tenant/:uid/slots/:slotId', async (req, res) => {
+  try {
+    await slotPrivacy.deleteSlot(req.params.uid, req.params.slotId);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(`[SLOTS] Error deleting:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Weekend mode estado (P3.4) ──
+app.get('/api/tenant/:uid/weekend-mode', (req, res) => {
+  res.json(weekendMode.getWeekendState(req.params.uid));
+});
+
+app.post('/api/tenant/:uid/weekend-mode', express.json(), (req, res) => {
+  const tz = req.body.timezone || 'America/Bogota';
+  const result = weekendMode.processWeekendResponse(req.params.uid, req.body.action || 'finde off', tz);
+  res.json(result);
+});
+
+// ── Probadita stats (P3.5) ──
+app.get('/api/tenant/:uid/probadita/stats', async (req, res) => {
+  try {
+    const stats = await probadita.getStats(req.params.uid);
+    res.json(stats);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Number migration (P3.6) ──
+app.post('/api/tenant/:uid/migrate-number', express.json(), async (req, res) => {
+  try {
+    const { oldPhone, newPhone } = req.body;
+    if (!oldPhone || !newPhone) return res.status(400).json({ error: 'oldPhone y newPhone requeridos' });
+    console.log(`[API] 🔄 Migración de número solicitada: ${oldPhone} → ${newPhone} (uid: ${req.params.uid})`);
+
+    // Paso 1: Notificar contactos
+    const sendFn = async (jid, msg) => {
+      // Usar el tenant manager para enviar desde el número viejo
+      const migSock = tenantManager.getTenantClient(req.params.uid);
+      if (migSock) {
+        await migSock.sendMessage(jid, { text: msg });
+      }
+    };
+    const step1 = await numberMigration.startMigration(req.params.uid, oldPhone, newPhone, sendFn);
+
+    // Paso 2: Migrar datos Firestore
+    const step2 = await numberMigration.migrateFirestoreData(req.params.uid);
+
+    // Paso 3: Log de auditoría
+    await numberMigration.logMigration(req.params.uid);
+
+    res.json({ success: true, step1, step2, message: 'Migración completada. Reconectá WhatsApp con el nuevo número.' });
+  } catch (e) {
+    console.error(`[API] ❌ Migración error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/tenant/:uid/migrate-number/status', (req, res) => {
+  const state = numberMigration.getMigrationState(req.params.uid);
+  res.json(state || { status: 'none' });
+});
+
+// ── Privacy report (P3.7) ──
+app.get('/api/tenant/:uid/privacy-report', async (req, res) => {
+  try {
+    const report = await privacyReport.generateReport(req.params.uid);
+    res.json(report);
+  } catch (e) {
+    console.error(`[PRIVACY-REPORT] ❌ API error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/tenant/:uid/privacy-reports', async (req, res) => {
+  try {
+    const reports = await privacyReport.listReports(req.params.uid);
+    res.json(reports);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Audit logs (P4.1 + P4.2) ──
+app.get('/api/tenant/:uid/audit-logs', async (req, res) => {
+  try {
+    const { type, limit } = req.query;
+    const logs = await auditLogger.getAccessLogs(req.params.uid, {
+      type: type || undefined,
+      limit: parseInt(limit) || 50
+    });
+    auditLogger.logAccess(req.params.uid, {
+      type: auditLogger.ACCESS_TYPES.VIEW_PRIVACY_REPORT,
+      actor: req.params.uid,
+      actorRole: 'owner',
+      resource: '/audit-logs'
+    });
+    res.json(logs);
+  } catch (e) {
+    console.error(`[AUDIT] ❌ API error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/tenant/:uid/audit-summary', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 30;
+    const summary = await auditLogger.getAccessSummary(req.params.uid, days);
+    res.json(summary);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================
 // TRAINING ENDPOINTS — Products, Contact Rules, Sessions, Test
 // (Legacy — redirigen al defaultBusinessId para backward compat)
 // ============================================
@@ -8002,20 +8227,24 @@ app.post('/api/tenant/:uid/ai-test', express.json(), async (req, res) => {
     }
 
     const testPrompt = 'Responde únicamente con la palabra "OK" si puedes leer este mensaje.';
-    const startTime = Date.now();
-    const response = await callAI(provider, apiKey.trim(), testPrompt);
-    const latency = Date.now() - startTime;
+    const testResult = await aiGateway.smartCall(
+      aiGateway.CONTEXTS.GENERAL,
+      testPrompt,
+      { aiProvider: provider, aiApiKey: apiKey.trim() },
+      { maxTokens: 64 }
+    );
 
-    if (!response) {
+    if (!testResult.text) {
       return res.status(400).json({ error: 'No se recibió respuesta del proveedor. Verifica tu API key.' });
     }
 
     res.json({
       success: true,
-      provider,
+      provider: testResult.provider,
       providerLabel: PROVIDER_LABELS[provider],
-      response: response.substring(0, 100),
-      latencyMs: latency
+      response: testResult.text.substring(0, 100),
+      latencyMs: testResult.latencyMs,
+      failedOver: testResult.failedOver
     });
   } catch (err) {
     console.error('[AI-TEST] Error:', err.message);
@@ -8089,7 +8318,7 @@ app.delete('/api/tenant/:uid/ai-config', async (req, res) => {
 
 // ═══ DELETE /api/tenant/:uid/account — Owner elimina su propia cuenta ═══
 // Requiere confirmación: body.confirm === 'ELIMINAR MI CUENTA'
-app.delete('/api/tenant/:uid/account', verifyTenantAuth, express.json(), async (req, res) => {
+app.delete('/api/tenant/:uid/account', verifyTenantAuth, auditLogger.auditMiddleware(auditLogger.ACCESS_TYPES.DELETE_ACCOUNT), express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
     const { confirm: confirmation } = req.body || {};
@@ -8195,7 +8424,7 @@ app.delete('/api/tenant/:uid/account', verifyTenantAuth, express.json(), async (
 });
 
 // POST /api/tenant/:uid/export — Generate encrypted .miia backup
-app.post('/api/tenant/:uid/export', async (req, res) => {
+app.post('/api/tenant/:uid/export', auditLogger.auditMiddleware(auditLogger.ACCESS_TYPES.EXPORT_DATA), async (req, res) => {
   try {
     const { uid } = req.params;
 
@@ -9256,6 +9485,11 @@ app.get('/api/health/rate-limiter', (req, res) => res.json({
   adminLevel: rateLimiter.getLevel('admin'),
 }));
 
+// ═══ P5 HEALTH ENDPOINTS ═══
+app.get('/api/health/wa-gateway', (req, res) => res.json(waGateway.healthCheck()));
+app.get('/api/health/ai-gateway', (req, res) => res.json(aiGateway.healthCheck()));
+app.get('/api/health/prompt-cache', (req, res) => res.json(promptCache.healthCheck()));
+
 // ═══ MINI APP / PWA — Endpoints de Protección ═══
 
 // POST /api/miniapp/location — GPS desde la Mini App (background tracking)
@@ -9468,6 +9702,7 @@ biweeklyReport.setReportDependencies({
 
 server.listen(PORT, () => {
   privacyCounters.startAutoFlush();
+  auditLogger.startAutoFlush();
   console.log('\n🚀 ═══ SERVIDOR INICIADO ═══');
   console.log(`📡 Puerto: ${PORT}`);
   console.log(`🌐 URL del backend: http://localhost:${PORT}`);

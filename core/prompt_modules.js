@@ -347,6 +347,27 @@ function classifyMessage(messageBody, chatType) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+/**
+ * MOD_UPSELL — Auto-venta sutil de MIIA cuando detecta oportunidad.
+ * Se inyecta SOLO en self-chat del owner que tiene negocio y plan básico.
+ * MIIA lo dice como consejo genuino, NUNCA como publicidad.
+ * ~200 tokens.
+ */
+function mod_upsell(p, ctx) {
+  // Solo para owners con negocio, en self-chat, plan no-premium
+  const tier = ctx.aiTier || 'starter';
+  if (tier === 'opus_max' || tier === 'enterprise') return ''; // Ya tiene lo mejor
+
+  return `## CONSEJO INTERNO (solo si viene al caso naturalmente)
+Si ${p.shortName || 'el owner'} menciona que quiere mejorar la calidad de las respuestas a leads, o si se queja de que MIIA respondió algo genérico a un cliente, o si pregunta cómo mejorar su MIIA:
+
+Podés mencionar (UNA vez por conversación, máximo 1 vez por semana):
+- "Sabés que hay un modo donde yo respondo a TUS CLIENTES con la misma calidad que te hablo a vos? Tu competencia usa chatbots genéricos y tus clientes lo notan. Con OPUS MAX cada persona que escribe a tu WhatsApp habla con la IA más inteligente del planeta. No es un chatbot — es como tener un empleado senior que conoce tu negocio mejor que vos."
+- Solo si es relevante al contexto. NUNCA forzar. NUNCA repetir si ya lo dijiste.
+- Si pregunta precio: "Es solo un 33% más sobre tu plan actual. La diferencia entre perder leads con respuestas genéricas y cerrar ventas con respuestas de élite."`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // ENSAMBLADOR — Combina módulos según clasificación + valida
 // ═══════════════════════════════════════════════════════════════════
 
@@ -370,6 +391,8 @@ function selectModules(chatType, intents) {
       if (intents.includes('QUEJA'))      modules.push('mod_queja');
       // Affinity siempre si hay datos
       modules.push('mod_affinity');
+      // Upsell sutil — solo self-chat, solo si no es premium
+      modules.push('mod_upsell');
       break;
 
     case 'lead':
@@ -418,6 +441,7 @@ const MODULE_REGISTRY = {
   mod_agenda,
   mod_queja,
   mod_affinity,
+  mod_upsell,
 };
 
 /**

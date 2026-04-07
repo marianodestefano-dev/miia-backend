@@ -238,8 +238,113 @@ router.put('/businesses/:bizId/brain', express.json(), async (req, res) => {
       updatedAt: new Date().toISOString()
     });
     console.log(`[BIZ] Cerebro actualizado para biz=${bizId}`);
+    // Invalidar prompt cache para este owner
+    try { require('../ai/prompt_cache').invalidateOwner(uid); } catch (_) {}
+
+    // ═══ OPUS CEREBRO: Regenerar artefactos premium en background ═══
+    // Opus piensa 1 vez (~$0.03) → Flash ejecuta 1000 veces gratis
+    (async () => {
+      try {
+        const opusCerebro = require('../ai/opus_cerebro');
+        // Cargar datos completos del negocio
+        const bizDoc = await bizRef(uid, bizId).get();
+        const bizData = bizDoc.exists ? { ...bizDoc.data(), cerebro: content || '' } : { cerebro: content || '' };
+        // Cargar productos
+        const prodSnap = await bizRef(uid, bizId).collection('products').get();
+        bizData.products = prodSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Cargar contact rules y payment methods
+        try {
+          const crDoc = await bizRef(uid, bizId).collection('config').doc('contact_rules').get();
+          if (crDoc.exists) bizData.contactRules = crDoc.data();
+        } catch (_) {}
+        try {
+          const pmDoc = await bizRef(uid, bizId).collection('config').doc('payment_methods').get();
+          if (pmDoc.exists) bizData.paymentMethods = pmDoc.data();
+        } catch (_) {}
+        // Cargar owner profile
+        const userDoc = await userRef(uid).get();
+        const ownerProfile = userDoc.exists ? userDoc.data() : {};
+        const ownerConfig = { aiProvider: ownerProfile.aiProvider, aiApiKey: ownerProfile.aiApiKey };
+
+        // Generar cerebro premium (o fallback si Opus falla)
+        const premiumCerebro = await opusCerebro.generateOrFallback(uid, bizData, ownerProfile, ownerConfig);
+
+        // Guardar en Firestore
+        await bizRef(uid, bizId).collection('brain').doc('opus_cerebro').set({
+          ...premiumCerebro,
+          updatedAt: new Date().toISOString()
+        });
+        console.log(`[BIZ] 🧠 Opus Cerebro guardado para biz=${bizId} (fallback: ${premiumCerebro._meta?.isFallback || false})`);
+      } catch (err) {
+        console.error(`[BIZ] ⚠️ Error generando Opus Cerebro para biz=${bizId}: ${err.message}`);
+        // No falla el request — el cerebro crudo ya se guardó
+      }
+    })();
+
     res.json({ success: true });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Opus Cerebro (cerebro premium generado por Opus) ─────────────────────
+
+router.get('/businesses/:bizId/opus-cerebro', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const doc = await bizRef(uid, bizId).collection('brain').doc('opus_cerebro').get();
+    if (!doc.exists) return res.json({ exists: false, message: 'Opus Cerebro no generado aún. Guarda el cerebro del negocio para generarlo.' });
+    res.json({ exists: true, ...doc.data() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/businesses/:bizId/regenerate-cerebro', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const opusCerebro = require('../ai/opus_cerebro');
+
+    // Cargar todo
+    const bizDoc = await bizRef(uid, bizId).get();
+    if (!bizDoc.exists) return res.status(404).json({ error: 'Negocio no encontrado' });
+    const bizData = { ...bizDoc.data() };
+
+    const brainDoc = await bizRef(uid, bizId).collection('brain').doc('business_cerebro').get();
+    bizData.cerebro = brainDoc.exists ? brainDoc.data().content : '';
+
+    const prodSnap = await bizRef(uid, bizId).collection('products').get();
+    bizData.products = prodSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    try {
+      const crDoc = await bizRef(uid, bizId).collection('config').doc('contact_rules').get();
+      if (crDoc.exists) bizData.contactRules = crDoc.data();
+    } catch (_) {}
+    try {
+      const pmDoc = await bizRef(uid, bizId).collection('config').doc('payment_methods').get();
+      if (pmDoc.exists) bizData.paymentMethods = pmDoc.data();
+    } catch (_) {}
+
+    const userDoc = await userRef(uid).get();
+    const ownerProfile = userDoc.exists ? userDoc.data() : {};
+    const ownerConfig = { aiProvider: ownerProfile.aiProvider, aiApiKey: ownerProfile.aiApiKey };
+
+    console.log(`[BIZ] 🧠 Regeneración manual de Opus Cerebro para biz=${bizId}`);
+    const premiumCerebro = await opusCerebro.generateOrFallback(uid, bizData, ownerProfile, ownerConfig);
+
+    await bizRef(uid, bizId).collection('brain').doc('opus_cerebro').set({
+      ...premiumCerebro,
+      updatedAt: new Date().toISOString()
+    });
+
+    res.json({
+      success: true,
+      isFallback: premiumCerebro._meta?.isFallback || false,
+      generatedBy: premiumCerebro._meta?.generatedBy || 'unknown',
+      estimatedCost: premiumCerebro._meta?.estimatedCost || '$0'
+    });
+  } catch (e) {
+    console.error(`[BIZ] Error regenerando Opus Cerebro:`, e.message);
     res.status(500).json({ error: e.message });
   }
 });
