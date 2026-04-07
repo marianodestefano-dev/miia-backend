@@ -275,8 +275,9 @@ function buildAnalysisConfirmation(analysis) {
     msg += `Encontré *${leads.length} contactos*: ${countryStr}.\n`;
     if (errors.length > 0) msg += `⚠️ ${errors.length} no pude leerlos.\n`;
     msg += `\n¿Qué querés que haga?\n`;
-    msg += `• *contactalos* → les escribo presentándome\n`;
-    msg += `• *guardalos* → los guardo como leads sin contactar\n`;
+    msg += `• *contactalos* → les escribo ahora presentándome\n`;
+    msg += `• *mañana* → los guardo y mañana te recuerdo\n`;
+    msg += `• *guardalos* → los guardo sin contactar\n`;
     msg += `• *nada* → no hago nada\n`;
     if (suggestedActions.length > 0) {
       msg += `\n💡 También podría: ${suggestedActions.join(', ')}`;
@@ -417,7 +418,7 @@ async function processOutreachQueue(queue, sendMessageFn, sendMediaFn, generateA
   const businessName = ownerProfile?.businessName || 'nuestro negocio';
 
   console.log(`[OUTREACH] 🚀 Iniciando procesamiento de cola ${queue.id} — ${queue.leads.length} leads`);
-  await reportFn(`📤 Iniciando contacto con ${queue.leads.length} leads. Te voy avisando...`);
+  await reportFn(`📤 Dale, voy a contactar a ${queue.leads.length} personas. Te voy avisando...`);
 
   for (let i = 0; i < queue.leads.length; i++) {
     const lead = queue.leads[i];
@@ -486,12 +487,12 @@ async function processOutreachQueue(queue, sendMessageFn, sendMediaFn, generateA
   queue.status = 'completed';
 
   // Resumen final
-  const summary = `📊 *Resumen de outreach*\n\n` +
-    `Total: ${queue.stats.total} leads\n` +
+  const summary = `📊 *Listo! Ya les escribí*\n\n` +
+    `Total: ${queue.stats.total} personas\n` +
     `Contactados: ${queue.stats.sent}\n` +
     `Fallidos: ${queue.stats.failed}\n` +
-    `Saltados (ya existían): ${queue.leads.filter(l => l.status === 'skipped').length}\n\n` +
-    `Los que no respondan, les hago follow-up mañana. ¿Dale?`;
+    `Saltados (ya los tenía): ${queue.leads.filter(l => l.status === 'skipped').length}\n\n` +
+    `Los que no respondan, les vuelvo a escribir mañana. ¿Dale?`;
 
   await reportFn(summary);
   console.log(`[OUTREACH] 🏁 Cola ${queue.id} completada — sent=${queue.stats.sent}, failed=${queue.stats.failed}`);

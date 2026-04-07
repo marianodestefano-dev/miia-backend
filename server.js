@@ -126,6 +126,8 @@ const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } =
 const miiaInvocation = require('./core/miia_invocation');
 const outreachEngine = require('./core/outreach_engine');
 const miiaOutfit = require('./core/miia_outfit');
+const contentSafety = require('./core/content_safety_shield');
+const featureAnnouncer = require('./core/feature_announcer');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -502,7 +504,13 @@ async function getScheduleConfig(uid) {
 
 function isWithinSchedule(scheduleConfig) {
   if (!scheduleConfig) return true; // sin config → siempre activo
-  const tz = scheduleConfig.timezone || 'America/Bogota';
+  // Timezone: usar config del owner, o auto-detectar por teléfono del owner, o fallback Bogotá
+  let tz = scheduleConfig.timezone;
+  if (!tz && OWNER_PHONE) {
+    const country = messageLogic.getCountryFromPhone(OWNER_PHONE);
+    tz = messageLogic.getTimezoneForCountry(country);
+  }
+  tz = tz || 'America/Bogota';
   const now = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
   const day = now.getDay(); // 0=dom, 1=lun...
   const h = now.getHours();
@@ -512,9 +520,9 @@ function isWithinSchedule(scheduleConfig) {
   // Chequear día activo
   if (scheduleConfig.activeDays && !scheduleConfig.activeDays.includes(day)) return false;
 
-  // Chequear horario
-  const start = scheduleConfig.startTime || '09:00';
-  const end = scheduleConfig.endTime || '21:00';
+  // Chequear horario — default 7:00-19:00 (hora LOCAL del país del owner)
+  const start = scheduleConfig.startTime || '07:00';
+  const end = scheduleConfig.endTime || '19:00';
   if (currentTime < start || currentTime >= end) return false;
 
   return true;
@@ -1037,7 +1045,7 @@ let automationSettings = {
   additionalPersona: '',
   lastUpdate: new Date().toISOString(),
   tokenLimit: 500000,
-  schedule: { start: '09:00', end: '21:00', days: [1, 2, 3, 4, 5, 6, 7] }
+  schedule: { start: '07:00', end: '19:00', days: [1, 2, 3, 4, 5, 6, 7] }
 };
 
 // ============================================
@@ -2774,6 +2782,14 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       }
     }
 
+    // ═══ "QUÉ PODÉS HACER" — Listar todas las capacidades de MIIA ═══
+    if (isAdmin && effectiveMsg && featureAnnouncer.isCapabilitiesQuery(effectiveMsg)) {
+      const capMsg = featureAnnouncer.buildCapabilitiesMessage();
+      await safeSendMessage(phone, capMsg, { isSelfChat: true, skipEmoji: true });
+      console.log(`[FEATURES] 📋 Capacidades listadas para el owner`);
+      return;
+    }
+
     // ═══ CLASIFICACIÓN DE CONTACTOS (self-chat, P3.1) ═══
     if (isAdmin && effectiveMsg) {
       // "finde off" / "finde on" — Modo finde (P3.4)
@@ -2797,7 +2813,12 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       }
 
       // Detectar si el mensaje tiene imagen (usado por outfit + image analysis)
-      const hasImage = !!(msg?.message?.imageMessage || msg?.message?.viewOnceMessage?.message?.imageMessage || msg?.message?.viewOnceMessageV2?.message?.imageMessage);
+      // FIX CRÍTICO: 'msg' no existe en processMiiaResponse — usar lastMessageKey[phone]._baileysMsg
+      const rawBaileys = lastMessageKey[phone]?._baileysMsg || lastMessageKey[phone]?._data || null;
+      const hasImage = !!(rawBaileys?.message?.imageMessage || rawBaileys?.message?.viewOnceMessage?.message?.imageMessage || rawBaileys?.message?.viewOnceMessageV2?.message?.imageMessage);
+      if (!rawBaileys && conversations[phone]?.length > 0) {
+        console.log(`[HIM-TRACE] ℹ️ rawBaileys no disponible para ${phone} — comandos de imagen deshabilitados este turno`);
+      }
 
       // ═══ OUTFIT MODE — Asesor de moda personal con Vision ═══
       const outfitCmd = miiaOutfit.detectOutfitCommand(effectiveMsg, hasImage);
@@ -2809,9 +2830,18 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
 
           if (outfitCmd.type === 'add_garment' && hasImage) {
             await safeSendMessage(phone, `👗 Analizando la prenda...`, { isSelfChat: true, skipEmoji: true });
-            const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
+            const imageMsg = rawBaileys.message?.imageMessage || rawBaileys.message?.viewOnceMessage?.message?.imageMessage || rawBaileys.message?.viewOnceMessageV2?.message?.imageMessage;
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-            const imageBuffer = await downloadMediaMessage(msg, 'buffer', {});
+            const imageBuffer = await downloadMediaMessage(rawBaileys, 'buffer', {});
+
+            // 🛡️ CONTENT SAFETY CHECK — Obligatorio antes de procesar cualquier imagen
+            const safetyResult = await contentSafety.checkContentSafety(imageBuffer, { source: 'outfit_add', phone, uid: OWNER_UID });
+            if (!safetyResult.allowed) {
+              console.warn(`[OUTFIT:SAFETY] 🚫 Imagen bloqueada (level=${safetyResult.level})`);
+              if (safetyResult.message) await safeSendMessage(phone, safetyResult.message, { isSelfChat: true, skipEmoji: true });
+              return;
+            }
+
             const visionPrompt = miiaOutfit.buildGarmentAnalysisPrompt();
             const { callGeminiVision } = require('./ai/gemini_client');
             let visionResponse;
@@ -2838,9 +2868,18 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
 
           } else if (outfitCmd.type === 'opinion' && hasImage) {
             await safeSendMessage(phone, `🔍 Analizando tu outfit...`, { isSelfChat: true, skipEmoji: true });
-            const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
+            const imageMsg = rawBaileys.message?.imageMessage || rawBaileys.message?.viewOnceMessage?.message?.imageMessage || rawBaileys.message?.viewOnceMessageV2?.message?.imageMessage;
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-            const imageBuffer = await downloadMediaMessage(msg, 'buffer', {});
+            const imageBuffer = await downloadMediaMessage(rawBaileys, 'buffer', {});
+
+            // 🛡️ CONTENT SAFETY CHECK — Obligatorio antes de procesar cualquier imagen
+            const safetyResult = await contentSafety.checkContentSafety(imageBuffer, { source: 'outfit_opinion', phone, uid: OWNER_UID });
+            if (!safetyResult.allowed) {
+              console.warn(`[OUTFIT:SAFETY] 🚫 Imagen bloqueada (level=${safetyResult.level})`);
+              if (safetyResult.message) await safeSendMessage(phone, safetyResult.message, { isSelfChat: true, skipEmoji: true });
+              return;
+            }
+
             // Cargar guardarropa para contexto
             const wardrobeSnap = await wardrobeRef.get();
             const wardrobe = wardrobeSnap.docs.map(d => d.data());
@@ -2900,10 +2939,18 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         await safeSendMessage(phone, `🔍 Dame un momento mientras analizo la imagen...`, { isSelfChat: true, skipEmoji: true });
 
         try {
-          const imageMsg = msg.message?.imageMessage || msg.message?.viewOnceMessage?.message?.imageMessage || msg.message?.viewOnceMessageV2?.message?.imageMessage;
+          const imageMsg = rawBaileys?.message?.imageMessage || rawBaileys?.message?.viewOnceMessage?.message?.imageMessage || rawBaileys?.message?.viewOnceMessageV2?.message?.imageMessage;
           if (imageMsg && sock) {
             const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-            const imageBuffer = await downloadMediaMessage(msg, 'buffer', {});
+            const imageBuffer = await downloadMediaMessage(rawBaileys, 'buffer', {});
+
+            // 🛡️ CONTENT SAFETY CHECK — Obligatorio antes de procesar cualquier imagen
+            const safetyResult = await contentSafety.checkContentSafety(imageBuffer, { source: 'image_analysis', phone, uid: OWNER_UID });
+            if (!safetyResult.allowed) {
+              console.warn(`[IMAGE-ANALYSIS:SAFETY] 🚫 Imagen bloqueada (level=${safetyResult.level})`);
+              if (safetyResult.message) await safeSendMessage(phone, safetyResult.message, { isSelfChat: true, skipEmoji: true });
+              return;
+            }
 
             // Enviar a Gemini Vision para análisis GENÉRICO
             const visionPrompt = outreachEngine.buildScreenshotAnalysisPrompt();
@@ -2973,27 +3020,52 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
 
         if (cancelPatterns.test(effectiveMsg)) {
           outreachQueue.status = 'cancelled';
-          console.log(`[OUTREACH] ❌ Owner canceló outreach`);
-          await safeSendMessage(phone, `OK, no hago nada con esos contactos.`, { isSelfChat: true, skipEmoji: true });
+          console.log(`[OUTREACH] ❌ Owner canceló`);
+          await safeSendMessage(phone, `OK, no hago nada con esas personas.`, { isSelfChat: true, skipEmoji: true });
           return;
         }
 
-        // Si responde "guardalos" → guardar sin contactar
+        // Si responde "mañana" / "después" / "mañana trabajá con ellos" → guardar para próximo día hábil
+        if (/\b(ma[ñn]ana|despu[eé]s|luego|m[aá]s\s+tarde)\s*(trabaj[aá]|contact[aá]|escrib[ií]|mand[aá]|habl[aá])?/i.test(effectiveMsg)) {
+          console.log(`[OUTREACH] ⏰ Owner pidió programar para después — ${outreachQueue.leads.length} personas guardadas`);
+          outreachQueue.status = 'scheduled';
+          outreachQueue.scheduledFor = 'next_business_day';
+          outreachQueue.scheduledAt = new Date().toISOString();
+          // Persistir en Firestore
+          try {
+            await db.collection('users').doc(OWNER_UID)
+              .collection('outreach_queue').doc('scheduled')
+              .set({
+                leads: outreachQueue.leads.map(l => ({ name: l.name, phone: l.phone, status: l.status, strategy: l.strategy?.name })),
+                scheduledFor: 'next_business_day',
+                savedAt: new Date().toISOString(),
+                leadCount: outreachQueue.leads.length,
+              });
+          } catch (schedErr) {
+            console.error(`[OUTREACH] ❌ Error guardando schedule en Firestore: ${schedErr.message}`);
+          }
+          await safeSendMessage(phone, `📋 Guardé ${outreachQueue.leads.length} personas. Mañana a las 9am te recuerdo para que me digas "dale" y los contacto.`, { isSelfChat: true, skipEmoji: true });
+          return;
+        }
+
+        // Si responde "guardalos" → guardar sin contactar ni programar
         if (/\b(guard[áa]los|guardalos|guard[áa]las|guardalas|solo\s+guard)/i.test(effectiveMsg)) {
-          console.log(`[OUTREACH] 💾 Owner pidió guardar leads sin contactar`);
-          await safeSendMessage(phone, `✅ Guardé ${outreachQueue.leads.length} leads sin contactarlos. Están registrados para cuando quieras.`, { isSelfChat: true, skipEmoji: true });
+          console.log(`[OUTREACH] 💾 Owner pidió guardar sin contactar`);
+          await safeSendMessage(phone, `✅ Guardé ${outreachQueue.leads.length} personas sin contactarlos. Están registrados para cuando quieras.`, { isSelfChat: true, skipEmoji: true });
           outreachQueue.status = 'saved';
           return;
         }
       }
 
       // ═══ "RESPONDELE" HANDLER — Owner pide enviar mensaje a contacto notificado ═══
-      // Detecta: "respondele", "envíaselo", "preséntate", "contéstale", "escríbele"
-      // en contexto de una notificación reciente "Alguien te escribió" en el historial
-      const respondeleMatch = effectiveMsg.match(/(?:respond[eéi]le|env[ií]a(?:selo|le)|pres[eé]ntate|cont[eé]sta(?:le)?|escr[ií]bele|mand[aá]le|atiend[eé]l[eo]|respond[eéi](?:le)?.*contacto)/i);
+      // Detecta TODAS las variantes de "responde" en español (tú, vos, usted, con/sin acento):
+      //   responde, respondé, respóndele, respondele, respondale, contestale, contéstale,
+      //   escribile, escríbele, mandále, mándale, atiéndelo, dale responde, dale contestá
+      const respondeleMatch = effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
       if (respondeleMatch) {
-        // Buscar en historial reciente una notificación "Alguien te escribió" con número
-        const recentMsgs = (conversations[phone] || []).slice(-10);
+        // Buscar en historial reciente una notificación "Alguien te escribió" (últimos 20 msgs, máx 2 horas)
+        const twoHoursAgo = Date.now() - 7200000;
+        const recentMsgs = (conversations[phone] || []).slice(-20).filter(m => !m.timestamp || m.timestamp > twoHoursAgo);
         const alertMsg = recentMsgs.find(m => m.role === 'assistant' && /Alguien te escribi[oó]/.test(m.content));
         if (alertMsg) {
           // PRIORIDAD 1: Usar _contactJid guardado (JID real, funciona con LIDs)
@@ -5838,6 +5910,40 @@ async function processMediaMessage(message) {
     return { text: null, mediaType };
   }
 
+  // 🛡️ CONTENT SAFETY CHECK — Para imágenes y videos, verificar contenido antes de procesar
+  if (mediaType === 'image' || mediaType === 'video') {
+    try {
+      const imageBuffer = Buffer.from(media.data, 'base64');
+      const senderPhone = message.from || '';
+      const safetyResult = await contentSafety.checkContentSafety(imageBuffer, {
+        source: 'media_processing',
+        phone: senderPhone,
+        uid: OWNER_UID || '',
+      });
+      if (!safetyResult.allowed) {
+        console.warn(`[MEDIA:SAFETY] 🚫 ${mediaType} bloqueado de ${senderPhone.split('@')[0]} (level=${safetyResult.level})`);
+        // Retornar un texto descriptivo para que el handler pueda informar
+        return {
+          text: null,
+          mediaType,
+          _safetyBlocked: true,
+          _safetyLevel: safetyResult.level,
+          _safetyMessage: safetyResult.message,
+        };
+      }
+    } catch (safetyErr) {
+      // FAIL-SAFE: Si el check falla, bloquear por precaución
+      console.error(`[MEDIA:SAFETY] ❌ Error en safety check — FAIL-SAFE → bloqueando: ${safetyErr.message}`);
+      return {
+        text: null,
+        mediaType,
+        _safetyBlocked: true,
+        _safetyLevel: 'error',
+        _safetyMessage: contentSafety.SAFETY_MESSAGES?.error_fallback || 'Error verificando imagen.',
+      };
+    }
+  }
+
   const prompt = getMediaPrompt(media.mimetype);
   if (!prompt) {
     console.log(`[MEDIA] Tipo no soportado: ${media.mimetype}`);
@@ -6031,6 +6137,16 @@ async function handleIncomingMessage(message) {
       mediaContext = await processMediaMessage(message);
     } catch (e) {
       console.error(`[MEDIA] Error procesando ${msgType} de ${message.from}:`, e.message);
+    }
+
+    // 🛡️ SAFETY: Si la imagen/video fue bloqueada por Content Safety Shield
+    if (mediaContext && mediaContext._safetyBlocked) {
+      console.warn(`[MEDIA:SAFETY] 🚫 Media de ${message.from} bloqueada (level=${mediaContext._safetyLevel})`);
+      const targetPhone = message.fromMe ? (message.to || message.from) : message.from;
+      if (mediaContext._safetyMessage) {
+        try { await safeSendMessage(targetPhone, mediaContext._safetyMessage); } catch (_) {}
+      }
+      return; // No procesar nada más de este mensaje
     }
 
     if (mediaContext && mediaContext.text) {
@@ -10716,6 +10832,18 @@ biweeklyReport.setReportDependencies({
 server.listen(PORT, () => {
   privacyCounters.startAutoFlush();
   auditLogger.startAutoFlush();
+  // Inicializar Content Safety Shield
+  try {
+    const { callGeminiVision } = require('./ai/gemini_client');
+    contentSafety.init({
+      admin,
+      callGeminiVision: typeof callGeminiVision === 'function' ? callGeminiVision : null,
+      generateAIContent,
+      ownerPhone: OWNER_PHONE,
+    });
+  } catch (safetyErr) {
+    console.error(`[SAFETY-SHIELD] ❌ Error inicializando: ${safetyErr.message} — Shield funcionará en modo FAIL-SAFE`);
+  }
   console.log('\n🚀 ═══ SERVIDOR INICIADO ═══');
   console.log(`📡 Puerto: ${PORT}`);
   console.log(`🌐 URL del backend: http://localhost:${PORT}`);
@@ -10886,6 +11014,19 @@ server.listen(PORT, () => {
                   generateAIContent,
                   appendLearning: cerebroAbsoluto.appendLearning
                 });
+
+                // Feature Announcer — anunciar novedades 60s después de conectar
+                featureAnnouncer.init(admin);
+                setTimeout(async () => {
+                  try {
+                    const ownerSelf = `${connectedNumber}@s.whatsapp.net`;
+                    await featureAnnouncer.checkAndAnnounce(OWNER_UID, async (msg) => {
+                      await safeSendMessage(ownerSelf, msg, { isSelfChat: true, skipEmoji: true });
+                    });
+                  } catch (announceErr) {
+                    console.error(`[FEATURE-ANNOUNCER] ❌ Error en anuncio post-conexión: ${announceErr.message}`);
+                  }
+                }, 60000); // Esperar 60s para no spamear al conectar
               }
             } : {
               // Tenant no-owner: verificar número al conectar
