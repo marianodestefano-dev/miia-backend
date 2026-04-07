@@ -1016,11 +1016,28 @@ async function isHumanizerEnabled() {
   return _humanizerCache.value;
 }
 
-// Micro-humanizer: 2% de mensajes llevan un typo (swap 2 chars adyacentes) para parecer humano
+// Micro-humanizer v2: typo 2% + minúscula inicial ~15% — para parecer más humano
 function maybeAddTypo(text) {
-  if (Math.random() > 0.02 || text.length < 10) return text;
-  const pos = Math.floor(Math.random() * (text.length - 2)) + 1;
-  return text.slice(0, pos) + text[pos + 1] + text[pos] + text.slice(pos + 2);
+  if (!text || text.length < 5) return text;
+  let result = text;
+
+  // 15% de probabilidad: primera letra en minúscula (como escribe la gente real en WhatsApp)
+  // NO aplicar si empieza con emoji, URL, nombre propio después de salto de línea, o tag [
+  if (Math.random() < 0.15 && /^[A-ZÁÉÍÓÚÑ]/.test(result) && !result.startsWith('[') && !result.startsWith('http')) {
+    result = result[0].toLowerCase() + result.slice(1);
+  }
+
+  // 2% de probabilidad: swap de 2 caracteres adyacentes (typo sutil)
+  if (Math.random() < 0.02 && result.length > 10) {
+    // Buscar posición que NO esté dentro de un tag [...] ni URL
+    const safeZone = result.replace(/\[[^\]]*\]/g, m => ' '.repeat(m.length)); // mask tags
+    const pos = Math.floor(Math.random() * (safeZone.length - 3)) + 1;
+    if (safeZone[pos] !== ' ' && safeZone[pos + 1] !== ' ') {
+      result = result.slice(0, pos) + result[pos + 1] + result[pos] + result.slice(pos + 2);
+    }
+  }
+
+  return result;
 }
 let subscriptionState = {};          // { phone: { estado: 'asked'|'collecting'|'notified', data: {} } }
 const MSG_SUSCRIPCION =

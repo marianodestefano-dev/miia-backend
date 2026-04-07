@@ -1,0 +1,7 @@
+[deploy]
+# Zero-downtime deploys: Railway mantiene el container viejo corriendo
+# hasta que el nuevo pase el healthcheck. MIIA nunca se queda muda durante deploys.
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
