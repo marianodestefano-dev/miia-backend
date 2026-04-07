@@ -18,9 +18,17 @@ const MAX_RETRIES = 3;
 
 /**
  * Extract text from a Gemini API response body.
+ * With google_search, Gemini returns multiple parts — concatenate text parts.
  */
 function extractText(data) {
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const text = parts.filter(p => p.text).map(p => p.text).join('');
+  // Log grounding metadata if present (google_search results)
+  const grounding = data?.candidates?.[0]?.groundingMetadata;
+  if (grounding?.webSearchQueries?.length) {
+    console.log(`[GEMINI-SEARCH] 🔍 Búsquedas: ${grounding.webSearchQueries.join(' | ')}`);
+  }
+  return text || null;
 }
 
 /**
@@ -45,7 +53,8 @@ async function callGemini(apiKey, prompt, opts = {}) {
   const retries = opts.retries ?? MAX_RETRIES;
   const url = buildUrl(apiKey, model);
   const payload = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }]
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    ...(opts.enableSearch && { tools: [{ google_search: {} }] })
   };
 
   for (let attempt = 0; attempt <= retries; attempt++) {

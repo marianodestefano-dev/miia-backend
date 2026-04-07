@@ -691,6 +691,12 @@ async function runAgendaEngine() {
 
     for (const doc of pendingSnap.docs) {
       const evt = doc.data();
+      // Guardia: si no tiene contactPhone, no se puede enviar — marcar como error y seguir
+      if (!evt.contactPhone) {
+        console.error(`[AGENDA] ❌ Evento ${doc.id} sin contactPhone — no se puede enviar. Datos: reason="${evt.reason}", contactName="${evt.contactName}"`);
+        await doc.ref.update({ status: 'error', error: 'contactPhone undefined' });
+        continue;
+      }
       // Resolver destinatario: 'self' = recordatorio al owner
       const isOwnerReminder = evt.contactPhone === 'self' || evt.contactPhone === OWNER_PHONE;
       const phone = isOwnerReminder
@@ -3534,18 +3540,31 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     const searchTriggered = isCirculoCercano;
     if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Search activo — ${isSelfChat ? 'self-chat' : isFamilyContact ? 'familia' : isAdmin ? 'admin' : 'equipo'}`);
 
-    console.log(`[MIIA] Llamando a Gemini para ${basePhone} (isAdmin=${isAdmin}, isSelfChat=${isSelfChat}, search=${searchTriggered}, apiKey=${GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY_HERE' ? 'OK' : 'NO CONFIGURADA'})...`);
+    // ═══ AI GATEWAY — Routing inteligente por contexto ═══
+    // Self-chat/Admin → Claude Opus (premium) | Familia → Gemini Flash | Leads → Gemini Flash
+    // Failover automático: Gemini → OpenAI → Claude (nunca sin respuesta)
+    const aiContext = isSelfChat || isAdmin
+      ? aiGateway.CONTEXTS.OWNER_CHAT
+      : isFamilyContact || contactTypes[phone] === 'equipo'
+        ? aiGateway.CONTEXTS.FAMILY_CHAT
+        : aiGateway.CONTEXTS.LEAD_RESPONSE;
+
+    // ownerConfig: aiTier/aiProvider/aiApiKey del owner (Firestore). Default = standard tier.
+    const ownerAIConfig = {
+      aiTier: userProfile.aiTier || 'standard',
+      aiProvider: userProfile.aiProvider || null,
+      aiApiKey: userProfile.aiApiKey || null,
+    };
+
+    console.log(`[MIIA] 🧠 AI Gateway: ctx=${aiContext}, tier=${ownerAIConfig.aiTier}, search=${searchTriggered} — ${basePhone}`);
     let aiMessage;
-    try {
-      aiMessage = await generateAIContent(fullPrompt, { enableSearch: searchTriggered });
-    } catch (primaryErr) {
-      console.warn(`[MIIA] ⚠️ Primary keys fallaron: ${primaryErr.message} — intentando EMERGENCY backup...`);
-      aiMessage = await generateAIContentEmergency(fullPrompt, { enableSearch: searchTriggered });
-    }
-    console.log(`[MIIA] ✅ Respuesta Gemini recibida, longitud: ${aiMessage?.length || 0}`);
+    const gwResult = await aiGateway.smartCall(aiContext, fullPrompt, ownerAIConfig, { enableSearch: searchTriggered });
+    aiMessage = gwResult.text;
+    if (gwResult.failedOver) console.warn(`[MIIA] 🔄 Failover activado: provider final = ${gwResult.provider} (${gwResult.latencyMs}ms)`);
+    else console.log(`[MIIA] ✅ ${gwResult.provider} OK (${gwResult.latencyMs}ms), longitud: ${aiMessage?.length || 0}`);
 
     if (!aiMessage) {
-      console.error(`[MIIA] ❌ Gemini devolvió null/vacío para ${basePhone} — no se puede responder`);
+      console.error(`[MIIA] ❌ AI Gateway: TODOS los proveedores fallaron para ${basePhone} — no se puede responder`);
       return;
     }
 
@@ -3569,7 +3588,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         console.error(`[POSTPROCESS:REGEX] 🚫 VETO directo: ${regexResult.vetoReason}`);
         try {
           const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${regexResult.vetoReason}. Genera una nueva respuesta que NO cometa este error. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos, di "no tengo esa info".`;
-          aiMessage = await generateAIContent(fullPrompt + strictHint, { enableSearch: searchTriggered });
+          const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + strictHint, ownerAIConfig, { enableSearch: searchTriggered });
+          aiMessage = regenResult.text;
           const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
           aiMessage = recheck.approved ? recheck.finalMessage : getFallbackMessage(regexResult.vetoReason, postChatType);
         } catch (regenErr) {
@@ -3585,7 +3605,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         contactName: postContactName,
         hasSearchData: searchTriggered,
         userMessage: effectiveMsg,
-        generateAI: (prompt) => generateAIContent(prompt),
+        generateAI: (prompt) => aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, prompt, ownerAIConfig).then(r => r.text),
       });
 
       if (!aiAuditResult.approved) {
@@ -3594,11 +3614,17 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           // Regenerar con hint del auditor IA
           try {
             const aiHint = `\n\n⚠️ CORRECCIÓN DEL AUDITOR DE CALIDAD: ${aiAuditResult.issues.join('. ')}. Corregí estos problemas en tu nueva respuesta.`;
-            aiMessage = await generateAIContent(fullPrompt + aiHint, { enableSearch: searchTriggered });
-            // Re-verificar solo con regex (no loop infinito de IA)
+            const auditRegenResult = await aiGateway.smartCall(aiContext, fullPrompt + aiHint, ownerAIConfig, { enableSearch: searchTriggered });
+            aiMessage = auditRegenResult.text;
+            // Re-verificar con regex — si TAMBIÉN falla, usar fallback seguro (NUNCA enviar mensaje vetado)
             const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
-            aiMessage = finalCheck.finalMessage;
-            console.log(`[POSTPROCESS:AI] 🔄 Regeneración por auditor IA completada`);
+            if (!finalCheck.approved && finalCheck.action === 'veto') {
+              console.error(`[POSTPROCESS:AI] 🚫 Regeneración del auditor TAMBIÉN vetada por regex: ${finalCheck.vetoReason} — usando fallback seguro`);
+              aiMessage = getFallbackMessage(finalCheck.vetoReason, postChatType);
+            } else {
+              aiMessage = finalCheck.finalMessage;
+              console.log(`[POSTPROCESS:AI] 🔄 Regeneración por auditor IA completada — regex: ${finalCheck.approved ? 'OK' : 'warnings'}`);
+            }
           } catch (regenErr) {
             console.error(`[POSTPROCESS:AI] ❌ Error regenerando: ${regenErr.message}`);
             aiMessage = getFallbackMessage('AUDITOR_IA: ' + aiAuditResult.issues.join('; '), postChatType);
@@ -3607,10 +3633,17 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           console.warn(`[POSTPROCESS:AI] 🔄 Auditor IA recomienda regenerar: ${aiAuditResult.issues.join('; ')}`);
           try {
             const aiHint = `\n\n⚠️ MEJORA REQUERIDA: ${aiAuditResult.issues.join('. ')}. Mejorá tu respuesta corrigiendo estos puntos.`;
-            aiMessage = await generateAIContent(fullPrompt + aiHint, { enableSearch: searchTriggered });
+            const improveResult = await aiGateway.smartCall(aiContext, fullPrompt + aiHint, ownerAIConfig, { enableSearch: searchTriggered });
+            aiMessage = improveResult.text;
+            // Re-verificar con regex — si TAMBIÉN falla, usar fallback seguro (NUNCA enviar mensaje vetado)
             const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
-            aiMessage = finalCheck.finalMessage;
-            console.log(`[POSTPROCESS:AI] 🔄 Mejora por auditor IA completada`);
+            if (!finalCheck.approved && finalCheck.action === 'veto') {
+              console.error(`[POSTPROCESS:AI] 🚫 Mejora del auditor TAMBIÉN vetada por regex: ${finalCheck.vetoReason} — usando fallback seguro`);
+              aiMessage = getFallbackMessage(finalCheck.vetoReason, postChatType);
+            } else {
+              aiMessage = finalCheck.finalMessage;
+              console.log(`[POSTPROCESS:AI] 🔄 Mejora por auditor IA completada — regex: ${finalCheck.approved ? 'OK' : 'warnings'}`);
+            }
           } catch (regenErr) {
             // Si falla la regeneración, enviar el original (ya pasó regex)
             console.warn(`[POSTPROCESS:AI] ⚠️ Regeneración falló, enviando original: ${regenErr.message}`);
