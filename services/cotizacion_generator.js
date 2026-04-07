@@ -887,19 +887,11 @@ async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
     .replace(/_+/g, '_')                                // No duplicar guiones bajos
     .replace(/^_|_$/g, '');                             // No empezar/terminar con _
 
-  const promo        = getPromoVigencia();
   const modalidad    = (params.moneda === 'EUR') ? 'anual' : (params.modalidad || 'mensual');
-  const DESCUENTOS_CAPTION = { mensual: 30, semestral: 15, anual: 20 };
-  const descPct      = DESCUENTOS_CAPTION[modalidad] || 30;
 
-  // Caption dinámico — Gemini genera el texto antes del tag y lo enviamos por separado
-  // Aquí solo va el caption del documento (más corto y directo)
-  const caption =
-`Aquí va tu cotización Medilink personalizada.
-
-Promoción activa: *${descPct}% de descuento ${modalidad}* hasta el ${promo.vigencia} (${promo.cupos} cupos disponibles).
-
-Para agendar una demo: https://meetings.hubspot.com/marianodestefano/demomedilink`;
+  // Caption del documento — breve, sin texto hardcodeado de promo ni demo
+  // MIIA ya se encarga de comunicar promos y demos con sentido común según el contexto
+  const caption = `Cotización personalizada — ${params.usuarios || 1} usuario(s), modalidad ${modalidad}.`;
 
   // Generar el PDF
   const buffer = await generarPDF(params);

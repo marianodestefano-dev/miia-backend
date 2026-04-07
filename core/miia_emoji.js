@@ -196,14 +196,33 @@ function getMiiaEmoji(message, ctx = {}) {
  * @param {Object} ctx - Contexto (ver getMiiaEmoji)
  * @returns {string} Mensaje con emoji prefix
  */
+// Emojis oficiales de MIIA — solo estos cuentan como "ya tiene prefix"
+const MIIA_OFFICIAL_EMOJIS = new Set([
+  '🙍‍♀️', '🙎‍♀️', '👸', '🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️',
+  '🦸‍♀️', '👰‍♀️', '🤦‍♀️', '💆‍♀️', '🙇‍♀️',
+  '🧛‍♀️', '🎅', '🤱',
+  '👩‍⚖️', '👩‍🔧', '🤷‍♀️', '💁‍♀️', '🙋‍♀️', '👩‍🎓', '👩‍🏫',
+  '🤵‍♀️', '👩‍💻', '👩‍💼',
+  '👩‍🎤', '👩‍🍳', '🧘‍♀️', '🧳', '🌦️', '📰', '🛒', '🛵', '🚗',
+  '📊', '📚', '🎮', '📸', '🎨', '⚙️', '🐾', '👶', '🎉', '💕',
+  '😴', '☕', '🍷', '🦹‍♀️', '🧟‍♀️', '👮‍♀️', '🕵️‍♀️', '🥷', '🧖‍♀️',
+]);
+
 function applyMiiaEmoji(message, ctx = {}) {
   if (!message || typeof message !== 'string') return message;
-  // No aplicar a mensajes que YA tienen el formato MIIA emoji prefix (emoji + ":" o emoji + " :")
-  // El check anterior era demasiado agresivo: cualquier emoji al inicio bloqueaba.
-  // Ahora solo detecta el patrón MIIA específico: emoji seguido de ":"
-  if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*\s*:/u.test(message.substring(0, 10))) {
-    return message;
+
+  // Si la IA generó un emoji random al inicio seguido de ":", QUITARLO y poner el correcto
+  // Solo respetar si es un emoji OFICIAL de MIIA
+  const emojiPrefixMatch = message.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)\s*:\s*/u);
+  if (emojiPrefixMatch) {
+    const existingEmoji = emojiPrefixMatch[1];
+    if (MIIA_OFFICIAL_EMOJIS.has(existingEmoji)) {
+      return message; // Ya tiene un emoji oficial de MIIA, no tocar
+    }
+    // Emoji random de Gemini → quitar y reemplazar con el correcto
+    message = message.substring(emojiPrefixMatch[0].length);
   }
+
   const emoji = getMiiaEmoji(message, ctx);
   if (!emoji) return message; // Sleep mode: sin prefijo
   return `${emoji}: ${message}`;

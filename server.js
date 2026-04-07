@@ -4505,6 +4505,12 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       return;
     }
 
+    // ═══ STRIP: Links de Google Search (Gemini a veces envía URLs de búsqueda literales) ═══
+    if (/https?:\/\/(www\.)?google\.com\/search/i.test(aiMessage)) {
+      console.warn(`[MIIA] ⚠️ Strip Google Search URL de respuesta a ${basePhone}`);
+      aiMessage = aiMessage.replace(/https?:\/\/(www\.)?google\.com\/search[^\s\])"]*/gi, '[búsqueda interna]');
+    }
+
     // ═══ INTENSAMENTE v2.0: POST-PROCESO — Regex + IA Audit (100% coverage) ═══
     try {
       const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : 'lead');
@@ -4913,7 +4919,29 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           console.log(`[COTIZ] JSON detectado: ${jsonStr.substring(0, 300)}`);
           const cotizData = JSON.parse(jsonStr);
           console.log(`[COTIZ] Datos parseados:`, { pais: cotizData.pais, moneda: cotizData.moneda, usuarios: cotizData.usuarios });
-          // VALIDACIÓN: España/EUR → SOLO modalidad anual (server-side enforcement)
+          // VALIDACIÓN SERVER-SIDE: Forzar moneda correcta según país del lead
+          // La IA a veces ignora el mapping y pone USD para todos
+          const PAIS_MONEDA_MAP = {
+            'COLOMBIA': 'COP', 'CHILE': 'CLP', 'MEXICO': 'MXN',
+            'ESPAÑA': 'EUR', 'ESPANA': 'EUR',
+            'REPUBLICA_DOMINICANA': 'USD', 'ARGENTINA': 'USD', 'INTERNACIONAL': 'USD',
+          };
+          // Auto-detectar país por prefijo telefónico del lead si la IA no lo puso bien
+          if (!cotizData.pais || cotizData.pais === 'INTERNACIONAL') {
+            const leadPrefix = basePhone.substring(0, 4);
+            if (leadPrefix.startsWith('57')) cotizData.pais = 'COLOMBIA';
+            else if (leadPrefix.startsWith('56')) cotizData.pais = 'CHILE';
+            else if (leadPrefix.startsWith('52')) cotizData.pais = 'MEXICO';
+            else if (leadPrefix.startsWith('54')) cotizData.pais = 'ARGENTINA';
+            else if (leadPrefix.startsWith('34')) cotizData.pais = 'ESPAÑA';
+            else if (/^1(809|829|849)/.test(basePhone)) cotizData.pais = 'REPUBLICA_DOMINICANA';
+          }
+          const expectedMoneda = PAIS_MONEDA_MAP[cotizData.pais];
+          if (expectedMoneda && cotizData.moneda !== expectedMoneda) {
+            console.warn(`[COTIZ-FIX] ⚠️ Moneda incorrecta: IA dijo ${cotizData.moneda} para ${cotizData.pais}. Forzando ${expectedMoneda}.`);
+            cotizData.moneda = expectedMoneda;
+          }
+          // España/EUR → SOLO modalidad anual (server-side enforcement)
           if (cotizData.moneda === 'EUR' && cotizData.modalidad !== 'anual') {
             console.warn(`[COTIZ-WARN] España detectada pero modalidad=${cotizData.modalidad}. Forzando anual.`);
             cotizData.modalidad = 'anual';
