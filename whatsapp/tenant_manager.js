@@ -276,14 +276,35 @@ function handleCryptoError(uid, tenant, errorStr = '') {
   // ═══ PER-CONTACT PURGE: Extract JID from error and purge ONLY that contact's keys ═══
   // This preserves crypto state with all OTHER contacts (surgical vs nuclear)
   if (tracker.count <= 5 && tenant._sessionApis?.purgeSessionKeysForContact && errorStr) {
-    // Try to extract JID from error string (patterns: "1234567890@s.whatsapp.net", "1234567890:123@")
-    const jidMatch = errorStr.match(/(\d{10,15})(?::\d+)?@/);
-    if (jidMatch && !tracker.contactPurges.has(jidMatch[1])) {
-      const contactJid = jidMatch[1];
+    // Extract JID from error — multiple patterns:
+    // 1. Standard: "1234567890:123@s.whatsapp.net" or "1234567890@s.whatsapp.net"
+    // 2. LID: "136417472712832.90 [as awaitable]" — 15-18 digit LIDs in stack trace
+    // 3. Session cipher: "at async 136417472712832.90" — LID in function name
+    let contactJid = null;
+
+    // Pattern 1: Standard JID with @
+    const jidMatch = errorStr.match(/(\d{10,18})(?:[:.]\d+)?@/);
+    if (jidMatch) {
+      contactJid = jidMatch[1];
+    }
+
+    // Pattern 2: LID in stack trace (e.g., "136417472712832.90 [as awaitable]")
+    if (!contactJid) {
+      const lidMatch = errorStr.match(/(?:async|at)\s+(\d{12,18})\.\d+/);
+      if (lidMatch) {
+        contactJid = lidMatch[1];
+        console.log(`[TM:${uid}] 🔍 LID detectado en error: ${contactJid}`);
+      }
+    }
+
+    if (contactJid && !tracker.contactPurges.has(contactJid)) {
       tracker.contactPurges.add(contactJid);
-      tenant._sessionApis.purgeSessionKeysForContact(contactJid + '@s.whatsapp.net')
+      // Purge con @s.whatsapp.net Y @lid (LIDs usan ambos sufijos)
+      const purgeJid = contactJid.length > 15 ? contactJid + '@lid' : contactJid + '@s.whatsapp.net';
+      tenant._sessionApis.purgeSessionKeysForContact(purgeJid)
         .then(purged => {
           if (purged > 0) console.log(`[TM:${uid}] 🎯 Per-contact purge: ${purged} keys for ${contactJid}`);
+          else console.log(`[TM:${uid}] 🔍 Per-contact purge: 0 keys found for ${contactJid} (may use different key format)`);
         })
         .catch(e => console.error(`[TM:${uid}] Per-contact purge error:`, e.message));
     }
@@ -1060,7 +1081,14 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       tenant._lastSocketActivity = Date.now(); // Watchdog: mensaje recibido = socket vivo
       for (const msg of messages) {
-        const b = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+        const _m = msg.message || {};
+        const b = _m.conversation || _m.extendedTextMessage?.text || _m.imageMessage?.caption || _m.videoMessage?.caption
+          || _m.viewOnceMessage?.message?.imageMessage?.caption || _m.viewOnceMessage?.message?.videoMessage?.caption
+          || _m.viewOnceMessageV2?.message?.imageMessage?.caption || _m.listResponseMessage?.title
+          || _m.buttonsResponseMessage?.selectedDisplayText || _m.documentMessage?.caption
+          || _m.documentWithCaptionMessage?.message?.documentMessage?.caption
+          || _m.ephemeralMessage?.message?.conversation || _m.ephemeralMessage?.message?.extendedTextMessage?.text
+          || '';
         const f = msg.key.remoteJid;
         const fm = msg.key.fromMe;
         const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
@@ -1119,27 +1147,67 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           continue; // Las reacciones no se procesan como mensajes normales
         }
 
-        const body = msg.message?.conversation
-          || msg.message?.extendedTextMessage?.text
-          || msg.message?.imageMessage?.caption
-          || msg.message?.videoMessage?.caption
+        // ═══ EXTRACCIÓN EXHAUSTIVA DE BODY ═══
+        // WhatsApp tiene 15+ tipos de mensaje con texto en distintos campos.
+        // Si no los cubrimos TODOS, MIIA ve body="" y descarta mensajes reales.
+        const msgContent = msg.message || {};
+        const body = msgContent.conversation
+          || msgContent.extendedTextMessage?.text
+          || msgContent.imageMessage?.caption
+          || msgContent.videoMessage?.caption
+          // Mensajes reenviados (viewOnce wraps el mensaje real)
+          || msgContent.viewOnceMessage?.message?.imageMessage?.caption
+          || msgContent.viewOnceMessage?.message?.videoMessage?.caption
+          || msgContent.viewOnceMessageV2?.message?.imageMessage?.caption
+          || msgContent.viewOnceMessageV2?.message?.videoMessage?.caption
+          // Listas, botones, templates
+          || msgContent.listResponseMessage?.title
+          || msgContent.listResponseMessage?.singleSelectReply?.selectedRowId
+          || msgContent.buttonsResponseMessage?.selectedDisplayText
+          || msgContent.templateButtonReplyMessage?.selectedDisplayText
+          // Document con caption
+          || msgContent.documentMessage?.caption
+          || msgContent.documentWithCaptionMessage?.message?.documentMessage?.caption
+          // Contactos compartidos
+          || (msgContent.contactMessage?.displayName ? `[Contacto compartido: ${msgContent.contactMessage.displayName}]` : '')
+          // Location compartida
+          || (msgContent.locationMessage ? `[Ubicación: ${msgContent.locationMessage.degreesLatitude},${msgContent.locationMessage.degreesLongitude}${msgContent.locationMessage.name ? ' — ' + msgContent.locationMessage.name : ''}]` : '')
+          // Newsletter/Channel forwarded
+          || msgContent.newsletterAdminInviteMessage?.caption
+          // Ephemeral (mensajes temporales)
+          || msgContent.ephemeralMessage?.message?.conversation
+          || msgContent.ephemeralMessage?.message?.extendedTextMessage?.text
           || '';
         const hasMedia = !!(msg.message?.audioMessage || msg.message?.imageMessage
           || msg.message?.videoMessage || msg.message?.documentMessage
           || msg.message?.stickerMessage);
 
         // ═══ CONTEXT INFO: quoted replies + forwarded messages ═══
-        const ctxInfo = msg.message?.extendedTextMessage?.contextInfo
-          || msg.message?.imageMessage?.contextInfo
-          || msg.message?.videoMessage?.contextInfo
-          || msg.message?.audioMessage?.contextInfo
+        const ctxInfo = msgContent.extendedTextMessage?.contextInfo
+          || msgContent.imageMessage?.contextInfo
+          || msgContent.videoMessage?.contextInfo
+          || msgContent.audioMessage?.contextInfo
+          || msgContent.documentMessage?.contextInfo
+          || msgContent.viewOnceMessage?.message?.imageMessage?.contextInfo
+          || msgContent.viewOnceMessage?.message?.videoMessage?.contextInfo
+          || msgContent.ephemeralMessage?.message?.extendedTextMessage?.contextInfo
           || null;
         const messageContext = { msgKey: msg.key };
         if (ctxInfo) {
           if (ctxInfo.quotedMessage) {
-            const quotedText = ctxInfo.quotedMessage.conversation
-              || ctxInfo.quotedMessage.extendedTextMessage?.text
-              || ctxInfo.quotedMessage.imageMessage?.caption
+            const qm = ctxInfo.quotedMessage;
+            const quotedText = qm.conversation
+              || qm.extendedTextMessage?.text
+              || qm.imageMessage?.caption
+              || qm.videoMessage?.caption
+              || qm.documentMessage?.caption
+              || qm.documentWithCaptionMessage?.message?.documentMessage?.caption
+              || qm.viewOnceMessage?.message?.imageMessage?.caption
+              || qm.viewOnceMessage?.message?.videoMessage?.caption
+              || qm.listResponseMessage?.title
+              || qm.buttonsResponseMessage?.selectedDisplayText
+              || (qm.contactMessage?.displayName ? `[Contacto: ${qm.contactMessage.displayName}]` : '')
+              || (qm.locationMessage?.name || (qm.locationMessage ? '[Ubicación compartida]' : ''))
               || '[media]';
             messageContext.quotedText = quotedText;
             messageContext.quotedParticipant = ctxInfo.participant || null;

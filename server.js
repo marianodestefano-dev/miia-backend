@@ -3841,8 +3841,16 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         } else if (aiAuditResult.action === 'regenerate') {
           console.warn(`[POSTPROCESS:AI] 🔄 Auditor IA recomienda regenerar: ${aiAuditResult.issues.join('; ')}`);
           try {
-            const aiHint = `\n\n⚠️ MEJORA REQUERIDA: ${aiAuditResult.issues.join('. ')}. Mejorá tu respuesta corrigiendo estos puntos.`;
-            const improveResult = await aiGateway.smartCall(aiContext, fullPrompt + aiHint, ownerAIConfig, { enableSearch: searchTriggered });
+            // Si el issue es "inventa datos fácticos" → FORZAR google_search con Gemini
+            const isFactualIssue = aiAuditResult.issues.some(i => /invent|fáctic|dato|fact/i.test(i));
+            const aiHint = `\n\n⚠️ MEJORA REQUERIDA: ${aiAuditResult.issues.join('. ')}. Mejorá tu respuesta corrigiendo estos puntos.${isFactualIssue ? ' OBLIGATORIO: Usá Google Search para verificar datos antes de responder. NO inventes datos que no hayas buscado.' : ''}`;
+            // Forzar search=true cuando es issue factual, y preferir gemini (tiene google_search nativo)
+            const regenOpts = { enableSearch: true };
+            if (isFactualIssue) {
+              regenOpts.forceProvider = 'gemini'; // Gemini tiene google_search gratis
+              console.log(`[POSTPROCESS:AI] 🔍 Forzando regeneración con Gemini + google_search (issue factual)`);
+            }
+            const improveResult = await aiGateway.smartCall(aiContext, fullPrompt + aiHint, ownerAIConfig, regenOpts);
             aiMessage = improveResult.text;
             // Re-verificar con regex — si TAMBIÉN falla, usar fallback seguro (NUNCA enviar mensaje vetado)
             const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });

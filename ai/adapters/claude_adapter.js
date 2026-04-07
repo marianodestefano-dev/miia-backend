@@ -2,7 +2,7 @@
 
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args)).catch(() => require('node-fetch')(...args));
 
-const DEFAULT_MODEL = 'claude-opus-4-6';
+const DEFAULT_MODEL = 'claude-sonnet-4-6'; // Safety net: si alguien llama sin model, NUNCA Opus por accidente
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [8000, 20000, 45000];
 const API_VERSION = '2023-06-01';

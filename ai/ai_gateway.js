@@ -197,8 +197,10 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
   const config = applyTierOverride(ownerConfig?.aiTier, context, baseConfig);
   totalCalls++;
 
+  // forceProvider: override para regeneración (ej: forzar gemini con google_search)
+  const forceProvider = opts.forceProvider;
   // Si el owner tiene un proveedor específico configurado, respetar
-  const ownerProvider = ownerConfig?.aiProvider;
+  const ownerProvider = forceProvider || ownerConfig?.aiProvider;
   const providers = ownerProvider
     ? [ownerProvider, ...config.fallbacks.filter(f => f !== ownerProvider)]
     : [config.preferred, ...config.fallbacks];
