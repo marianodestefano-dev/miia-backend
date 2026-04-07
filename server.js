@@ -2855,16 +2855,17 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
                 images: [{ mimeType: 'image/png', data: imageBuffer.toString('base64') }],
               });
             }
-            const garments = miiaOutfit.parseGarmentAnalysis(visionResponse);
-            if (garments.length === 0) {
+            const garmentResult = miiaOutfit.parseGarmentAnalysis(visionResponse);
+            if (garmentResult.error || garmentResult.items.length === 0) {
+              console.warn(`[OUTFIT] ⚠️ No se detectaron prendas: ${garmentResult.error || 'items vacío'}`);
               await safeSendMessage(phone, `🤷‍♀️ No pude identificar prendas en la foto. ¿Podés enviarla de nuevo más de cerca?`, { isSelfChat: true, skipEmoji: true });
               return;
             }
-            for (const g of garments) {
+            for (const g of garmentResult.items) {
               g.addedAt = new Date().toISOString();
               await wardrobeRef.add(g);
             }
-            const confirmMsg = miiaOutfit.formatGarmentSaved(garments);
+            const confirmMsg = miiaOutfit.formatGarmentSaved(garmentResult.items);
             await safeSendMessage(phone, confirmMsg, { isSelfChat: true, skipEmoji: true });
             console.log(`[OUTFIT] ✅ ${garments.length} prenda(s) guardada(s) en guardarropa`);
             return;
@@ -4521,24 +4522,76 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       const regexResult = runPostprocess(aiMessage, {
         chatType: postChatType,
         contactName: postContactName,
+        contactPhone: basePhone,
         hasSearchData: searchTriggered,
       });
 
       // Aplicar correcciones del regex (strips)
       aiMessage = regexResult.finalMessage;
 
-      // Si regex ya vetó → regenerar directo sin esperar IA
+      // Si regex ya vetó → manejar según tipo de veto
       if (!regexResult.approved && regexResult.action === 'veto') {
         console.error(`[POSTPROCESS:REGEX] 🚫 VETO directo: ${regexResult.vetoReason}`);
-        try {
-          const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${regexResult.vetoReason}. Genera una nueva respuesta COMPLETAMENTE DIFERENTE que NO cometa este error. PROHIBIDO: empezar con "¡Hola, jefe!", decir "ya agendé" sin haber agendado, inventar fechas o eventos. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos exactos, di "no encontré el dato preciso". Respuesta máximo 2 oraciones, directa, sin preámbulos.`;
-          const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + strictHint, ownerAIConfig, { enableSearch: searchTriggered });
-          aiMessage = regenResult.text;
-          const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
-          aiMessage = recheck.approved ? recheck.finalMessage : getFallbackMessage(regexResult.vetoReason, postChatType);
-        } catch (regenErr) {
-          console.error(`[POSTPROCESS] ❌ Error regenerando: ${regenErr.message}`);
-          aiMessage = getFallbackMessage(regexResult.vetoReason, postChatType);
+
+        // ═══ FIX AGENDA: Si el veto es por AGENDAR_EVENTO, extraer datos con IA y forzar el tag ═══
+        const isAgendaVeto = regexResult.vetoReason && /AGENDAR_EVENTO/.test(regexResult.vetoReason);
+        if (isAgendaVeto) {
+          console.log(`[AGENDA:RESCUE] 🆘 Veto por agenda detectado — intentando rescate con IA...`);
+          try {
+            const extractPrompt = `Extraé la información de agendamiento de este mensaje. El usuario pidió agendar algo y la IA confirmó pero no emitió el tag correcto.
+
+MENSAJE DEL USUARIO: "${(effectiveMsg || '').substring(0, 500)}"
+RESPUESTA DE LA IA: "${(aiMessage || '').substring(0, 500)}"
+FECHA ACTUAL: ${new Date().toISOString()}
+TIMEZONE: America/Argentina/Buenos_Aires
+
+Respondé SOLO con JSON válido, sin markdown ni explicación:
+{"fecha":"YYYY-MM-DDTHH:MM:SS","razon":"título del evento","contacto":"nombre o self"}
+
+REGLAS:
+- Si dice "mañana" calculá la fecha real desde la fecha actual
+- Si dice "lunes/martes/etc" calculá la próxima ocurrencia
+- Si dice "a las 5" o "5pm" → 17:00. Si dice "5am" → 05:00
+- Si no hay hora específica, usá 10:00 como default
+- "razon" es un título corto: "Reunión con X", "Turno médico", etc.
+- "contacto" es "self" si es para el owner, o el nombre del contacto
+- Si NO hay suficiente info para agendar, respondé: {"error":"no hay datos suficientes"}`;
+
+            const extractResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, extractPrompt, ownerAIConfig);
+            const extractText = extractResult.text || '';
+            const jsonMatch = extractText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const extracted = JSON.parse(jsonMatch[0]);
+              if (extracted.fecha && !extracted.error) {
+                const rescueTag = `[AGENDAR_EVENTO:${extracted.contacto || 'self'}|${extracted.fecha}|${extracted.razon || 'Evento'}||presencial|]`;
+                console.log(`[AGENDA:RESCUE] ✅ Tag reconstruido con IA: ${rescueTag}`);
+                // Inyectar tag al mensaje original de MIIA (que decía "ya te agendé")
+                aiMessage = rescueTag + ' ' + aiMessage;
+                // NO vetar — el tag ahora existe y será procesado abajo
+              } else {
+                console.warn(`[AGENDA:RESCUE] ⚠️ IA no pudo extraer datos: ${extracted.error || 'sin datos'}`);
+                aiMessage = 'Necesito un poco más de info para agendarte. ¿Qué día y a qué hora querés?';
+              }
+            } else {
+              console.warn(`[AGENDA:RESCUE] ⚠️ IA no devolvió JSON válido`);
+              aiMessage = 'Necesito un poco más de info para agendarte. ¿Qué día y a qué hora querés?';
+            }
+          } catch (rescueErr) {
+            console.error(`[AGENDA:RESCUE] ❌ Error en rescate: ${rescueErr.message}`);
+            aiMessage = 'Necesito un poco más de info para agendarte. ¿Qué día y a qué hora querés?';
+          }
+        } else {
+          // Veto NO de agenda → regenerar genéricamente
+          try {
+            const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${regexResult.vetoReason}. Genera una nueva respuesta COMPLETAMENTE DIFERENTE que NO cometa este error. PROHIBIDO: empezar con "¡Hola, jefe!", decir "ya agendé" sin haber agendado, inventar fechas o eventos. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos exactos, di "no encontré el dato preciso". Respuesta máximo 2 oraciones, directa, sin preámbulos.`;
+            const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + strictHint, ownerAIConfig, { enableSearch: searchTriggered });
+            aiMessage = regenResult.text;
+            const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
+            aiMessage = recheck.approved ? recheck.finalMessage : getFallbackMessage(regexResult.vetoReason, postChatType);
+          } catch (regenErr) {
+            console.error(`[POSTPROCESS] ❌ Error regenerando: ${regenErr.message}`);
+            aiMessage = getFallbackMessage(regexResult.vetoReason, postChatType);
+          }
         }
       }
 

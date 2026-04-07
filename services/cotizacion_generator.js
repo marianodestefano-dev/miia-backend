@@ -722,8 +722,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
       </tr>` : ''}
       ${usuariosBonus > 0 ? `
       <tr class="row-even" style="background:#e8f5e9">
-        <td class="td-desc">🎁 USUARIOS MÉDICOS BONUS &#215; ${usuariosBonus} <span class="bdg" style="background:#4caf50;color:#fff">GRATIS</span>
-          <span class="td-sub">Total: ${totalUsuarios} usuarios médicos (${params.usuarios} pagos + ${usuariosBonus} bonificados)</span></td>
+        <td class="td-desc">🎁 USUARIOS MÉDICOS EXTRAS &#215; ${usuariosBonus} <span class="bdg" style="background:#4caf50;color:#fff">GRATIS</span>
+          <span class="td-sub">Total: ${totalUsuarios} usuarios médicos (${params.usuarios} pagos + ${usuariosBonus} extras)</span></td>
         <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
         <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
         <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
