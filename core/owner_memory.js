@@ -160,8 +160,23 @@ async function formatForWhatsApp() {
  * @param {string} msg - Mensaje del owner
  * @returns {{ category: string, key: string, value: string, confirmMsg: string }|null}
  */
-function detectPreference(msg) {
+function detectPreference(msg, ownerName) {
   const lower = msg.toLowerCase().trim();
+
+  // ─── GUARD: Ignorar si el owner dice su propio nombre ("soy Mariano") ───
+  // El owner ya sabe quién es. No es una preferencia, es un saludo/identificación.
+  if (ownerName) {
+    const ownerLower = ownerName.toLowerCase().trim();
+    const ownerFirst = ownerLower.split(/\s+/)[0]; // "mariano" de "Mariano De Stefano"
+    const soyMatch = lower.match(/^(?:miia\s+)?soy\s+(.+)/i);
+    if (soyMatch) {
+      const claimed = soyMatch[1].trim().toLowerCase();
+      if (claimed === ownerLower || claimed === ownerFirst || ownerLower.includes(claimed)) {
+        console.log(`[OWNER-MEMORY] ⏭️ Ignorando "soy ${soyMatch[1]}" — es el nombre del owner, no una preferencia`);
+        return null;
+      }
+    }
+  }
 
   // ─── GUSTOS ───
   const gustoMatch = lower.match(/^(?:miia\s+)?(?:me\s+(?:gusta|encanta|fascina|copa)\s+(?:el|la|los|las)?\s*(.+)|soy\s+(?:vegetariano|vegano|celíaco|celiaco|carnívoro|carnivoro))/i);

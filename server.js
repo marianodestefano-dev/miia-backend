@@ -2573,7 +2573,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
           const fallback = isKnown
             ? `¡Hola! Acá estoy 😊 ¿En qué los ayudo?`
             : `¡Hola ${userProfile.shortName || ''}! ¿Me querés presentar a alguien? 😊`;
-          await safeSendMessage(phone, fallback);
+          await safeSendMessage(phone, fallback, { isSelfChat: isSelfChatMsg });
         }
         return;
       }
@@ -2830,7 +2830,7 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
             await safeSendMessage(phone, '✅ Entendido, no lo memorizo.', { isSelfChat: true });
             console.log(`[LEARNING] ⊘ Descartado por feedback no: "${question.text.substring(0, 80)}..."`);
           } else if (feedback === 'partial') {
-            await safeSendMessage(phone, '✅ Anotado para revisión posterior.');
+            await safeSendMessage(phone, '✅ Anotado para revisión posterior.', { isSelfChat: true });
           }
 
           // Registrar feedback para aprendizaje futuro
@@ -2850,7 +2850,7 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
     if (isAdmin && learnCmdMatch) {
       cerebroAbsoluto.appendLearning(learnCmdMatch[1].trim(), 'WHATSAPP_ADMIN');
       saveDB();
-      await safeSendMessage(phone, '✅ Aprendido y guardado en mi memoria permanente.');
+      await safeSendMessage(phone, '✅ Aprendido y guardado en mi memoria permanente.', { isSelfChat: true });
       return;
     }
 
@@ -2911,13 +2911,13 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       if (lower.includes('desactivar humanizador') || lower.includes('desactivar versión humanizada')) {
         if (OWNER_UID) await admin.firestore().collection('users').doc(OWNER_UID).update({ humanizer_enabled: false });
         _humanizerCache = { value: false, ts: Date.now() };
-        await safeSendMessage(phone, '✅ Humanizador desactivado. Responderé de forma más directa y sin pausas largas.');
+        await safeSendMessage(phone, '✅ Humanizador desactivado. Responderé de forma más directa y sin pausas largas.', { isSelfChat: true });
         return;
       }
       if (lower.includes('activar humanizador') || lower.includes('activar versión humanizada')) {
         if (OWNER_UID) await admin.firestore().collection('users').doc(OWNER_UID).update({ humanizer_enabled: true });
         _humanizerCache = { value: true, ts: Date.now() };
-        await safeSendMessage(phone, '✅ Humanizador activado. Incluiré pausas variables y pequeños errores tipográficos ocasionales.');
+        await safeSendMessage(phone, '✅ Humanizador activado. Incluiré pausas variables y pequeños errores tipográficos ocasionales.', { isSelfChat: true });
         return;
       }
     }
@@ -2936,7 +2936,7 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       const _weekendTz = messageLogic.getTimezoneForCountry(messageLogic.getCountryFromPhone(OWNER_PHONE || ''));
       const weekendResult = weekendMode.processWeekendResponse(OWNER_UID, effectiveMsg, _weekendTz);
       if (weekendResult.handled) {
-        await safeSendMessage(phone, weekendResult.response);
+        await safeSendMessage(phone, weekendResult.response, { isSelfChat: true });
         return;
       }
 
@@ -2948,7 +2948,7 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       } catch (_) {}
       const classResult = await contactClassifier.tryClassifyFromOwnerMessage(OWNER_UID, effectiveMsg, ownerBusinesses);
       if (classResult.handled) {
-        await safeSendMessage(phone, classResult.response);
+        await safeSendMessage(phone, classResult.response, { isSelfChat: true });
         return;
       }
 
@@ -3549,7 +3549,8 @@ REGLAS:
 
       // ─── DETECCIÓN AUTOMÁTICA DE PREFERENCIAS ───
       // "me gusta X", "soy vegetariano", "mi hijo se llama X", etc.
-      const detected = ownerMemory.detectPreference(effectiveMsg);
+      // Pasa ownerName para ignorar "soy Mariano" (el owner se identifica, no es una preferencia)
+      const detected = ownerMemory.detectPreference(effectiveMsg, userProfile?.name || 'Mariano');
       if (detected) {
         _pendingOwnerConfirm = {
           ownerUid: OWNER_UID,
@@ -3559,7 +3560,7 @@ REGLAS:
           value: detected.value,
           rawText: effectiveMsg
         };
-        await safeSendMessage(phone, detected.confirmMsg);
+        await safeSendMessage(phone, detected.confirmMsg, { isSelfChat: true });
         return;
       }
     }
@@ -6719,21 +6720,23 @@ async function handleIncomingMessage(message) {
   if (!body) return;
 
 
-  // ═══ ANTI-LOOP NIVEL 1: Zero-Width marker = mensaje de otra instancia MIIA ═══
+  // ═══ ANTI-LOOP NIVEL 1: Zero-Width marker = mensaje GENERADO por otra instancia MIIA ═══
   // Cuando MIIA envía a leads, agrega \u200B al inicio. Si otra MIIA recibe eso → ignorar.
+  // IMPORTANTE: Solo bloquea mensajes con marker (generados por IA), NO al humano del mismo teléfono.
   if (body && body.startsWith(ZERO_WIDTH_MARKER)) {
     const senderBase = (message.from || '').split('@')[0].replace(/:\d+$/, '');
-    console.log(`[ANTI-LOOP] 🛡️ Zero-Width marker detectado de ${senderBase} — mensaje de otra MIIA, ignorando.`);
+    console.log(`[ANTI-LOOP] 🛡️ Zero-Width marker detectado de ${senderBase} — mensaje generado por otra MIIA, ignorando.`);
     return;
   }
 
-  // ═══ ANTI-LOOP NIVEL 2: Sender está en MIIA_PHONE_REGISTRY = instancia MIIA conocida ═══
-  // Si el remitente es un phone que corre MIIA y NO es nuestro self-chat → no responder
+  // ═══ MIIA_PHONE_REGISTRY: SOLO LOGGING (NO bloquear) ═══
+  // Un phone que corre MIIA también lo usa un humano. No podemos bloquear al humano.
+  // El Zero-Width marker (Nivel 1) ya detecta los mensajes de IA. El registry solo loguea para awareness.
   if (!fromMe && body) {
     const senderBase = (message.from || '').split('@')[0].replace(/:\d+$/, '');
     if (MIIA_PHONE_REGISTRY.has(senderBase) && senderBase !== OWNER_PHONE) {
-      console.log(`[ANTI-LOOP] 🛡️ Mensaje de MIIA instance ${senderBase} (registry) — ignorando para prevenir MIIA↔MIIA loop.`);
-      return;
+      console.log(`[MIIA-REGISTRY] ℹ️ Mensaje de phone con MIIA activa: ${senderBase} (sin marker → es el humano, NO su MIIA → procesar normal)`);
+      // NO return — el humano detrás de esa MIIA está escribiendo, procesar normalmente
     }
   }
 
