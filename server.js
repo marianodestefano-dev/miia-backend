@@ -4912,10 +4912,11 @@ ${history}
 
 MIIA, genera tu respuesta breve, estratégica y humana:`;
 
-    // Google Search: siempre activo para owner y círculo cercano (familia, equipo)
-    const isCirculoCercano = isSelfChat || isAdmin || isFamilyContact || contactTypes[phone] === 'equipo';
-    const searchTriggered = isCirculoCercano;
-    if (searchTriggered) console.log(`[GEMINI-SEARCH] 🔍 Search activo — ${isSelfChat ? 'self-chat' : isFamilyContact ? 'familia' : isAdmin ? 'admin' : 'equipo'}`);
+    // Google Search: SIEMPRE activo en número de MIIA (ventas)
+    // MIIA necesita Google Search para responder CUALQUIER pregunta del lead en tiempo real
+    // (clima, deportes, salud, noticias, etc.) y luego pivotar a venta
+    const searchTriggered = true;
+    console.log(`[GEMINI-SEARCH] 🔍 Search activo — ${isSelfChat ? 'self-chat' : isAdmin ? 'admin' : 'lead MIIA'}`);
 
     // ═══ AI GATEWAY — Routing inteligente por contexto ═══
     // Self-chat/Admin → Claude Opus (premium) | Familia → Gemini Flash | Leads → Gemini Flash
