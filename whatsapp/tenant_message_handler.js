@@ -56,6 +56,7 @@ const rateLimiter = require('../core/rate_limiter');
 const humanDelay = require('../core/human_delay');
 const contactClassifier = require('../core/contact_classifier');
 const weekendMode = require('../core/weekend_mode');
+const { runPostprocess, runAIAudit, getFallbackMessage } = require('../core/miia_postprocess');
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
@@ -1076,6 +1077,62 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   }
 
   console.log(`${logPrefix} ✅ Respuesta IA recibida via ${aiResult.provider} (${aiMessage.length} chars, ${aiResult.latencyMs}ms) para ${basePhone}`);
+
+  // ── PASO 10b: AUDITORÍA (Regex + IA Sonnet) ──
+  // PASO 1: Regex rápida (6 auditors, ~0ms)
+  const postChatType = isSelfChat ? 'self' : contactType === 'lead' ? 'lead' : 'family';
+  const postContactName = ctx.leadNames?.[phone] || basePhone;
+  const regexAudit = runPostprocess(aiMessage, { chatType: postChatType, contactName: postContactName });
+
+  if (!regexAudit.approved) {
+    if (regexAudit.action === 'veto') {
+      console.error(`${logPrefix} 🚫 REGEX VETO: ${regexAudit.vetoReason}`);
+      aiMessage = getFallbackMessage(regexAudit.vetoReason, postChatType);
+    } else if (regexAudit.action === 'regenerate') {
+      console.warn(`${logPrefix} ♻️ REGEX: regeneración requerida — ${regexAudit.vetoReason}`);
+      // Intentar regenerar con hint del auditor
+      try {
+        const hint = `\n\n⚠️ CORRECCIÓN: ${regexAudit.vetoReason}. Corregí esto en tu nueva respuesta.`;
+        const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + hint, { aiProvider, aiApiKey });
+        if (regenResult.text?.trim()) {
+          aiMessage = regenResult.text;
+          console.log(`${logPrefix} ♻️ Regeneración exitosa (${regenResult.latencyMs}ms)`);
+        }
+      } catch (e) {
+        console.error(`${logPrefix} ♻️ Regeneración falló: ${e.message} — usando fallback`);
+        aiMessage = getFallbackMessage(regexAudit.vetoReason, postChatType);
+      }
+    }
+  }
+
+  // PASO 2: Auditoría IA con Sonnet (100% mensajes)
+  try {
+    const aiAuditResult = await runAIAudit(aiMessage, {
+      chatType: postChatType,
+      contactName: postContactName,
+      userMessage: messageBody,
+      generateAI: (prompt) => aiGateway.smartCall(aiGateway.CONTEXTS.AUDITOR, prompt, { aiProvider, aiApiKey }).then(r => r.text),
+    });
+
+    if (!aiAuditResult.approved) {
+      if (aiAuditResult.action === 'veto') {
+        console.error(`${logPrefix} 🚫 AI AUDITOR VETO: ${aiAuditResult.issues.join('; ')}`);
+        aiMessage = getFallbackMessage(aiAuditResult.issues[0] || 'AUDITOR', postChatType);
+      } else if (aiAuditResult.action === 'regenerate') {
+        console.warn(`${logPrefix} ♻️ AI AUDITOR: regeneración — ${aiAuditResult.issues.join('; ')}`);
+        try {
+          const hint = `\n\n⚠️ CORRECCIÓN DEL AUDITOR: ${aiAuditResult.issues.join('. ')}. Corregí estos problemas.`;
+          const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + hint, { aiProvider, aiApiKey });
+          if (regenResult.text?.trim()) aiMessage = regenResult.text;
+        } catch (_) {
+          aiMessage = getFallbackMessage('AUDITOR', postChatType);
+        }
+      }
+    }
+  } catch (auditErr) {
+    // Fail-open: si el auditor falla, dejar pasar (ya pasó regex)
+    console.error(`${logPrefix} ⚠️ AI Auditor error (fail-open): ${auditErr.message}`);
+  }
 
   // ── PASO 11: Procesar tags de IA ──
 
