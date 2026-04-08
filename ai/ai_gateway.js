@@ -3,13 +3,16 @@
 // (c) 2024-2026 Mariano De Stefano. All rights reserved.
 // ════════════════════════════════════════════════════════════════════════════
 // Router inteligente que decide qué modelo/proveedor usar según contexto.
-// ESTRATEGIA HÍBRIDA (Opción B + Tier System):
-// - Admin audit → Claude Sonnet 4.6 (calidad suficiente, 80% ahorro vs Opus)
-// - Owner self-chat → Claude Sonnet 4.6 (calidad + economía)
-// - Todo lo demás → Gemini Flash (GRATIS, 18 keys en pool)
-// - OWNER KEY PRIORITY: si el owner tiene su propia Gemini key → usarla primero
+// ESTRATEGIA B+ (Sesión 28):
+// - Temperature + Thinking calibrados POR CONTEXTO (12 contextos)
+// - Claude Opus: Owner chat (temp 0.7, think 4096), Familia (0.8, think 2048), Nightly (0.6, think 8192)
+// - Claude Sonnet: Auditor (temp 0.2, think 512), Admin audit (0.5, think 1024)
+// - Gemini Flash: Leads (temp 0.4, think 2048), Classification (0.1), Sports (0.9), etc.
+// - Gemini thinking = GRATIS en free tier → calidad pro a $0
+// - Claude thinking = paga pero mejora calidad → menos regeneraciones
+// - Failover cross-provider: Gemini → OpenAI → Claude (nunca sin respuesta)
+// - OWNER KEY PRIORITY: si el owner tiene su propia key → usarla primero
 // - OPUS MAX ($149/mes): TODO pasa por Opus
-// - Failover: Gemini → OpenAI → Claude (nunca sin respuesta)
 //
 // Incluye failover cross-provider (P5.4): si Gemini falla → OpenAI → Claude.
 // ════════════════════════════════════════════════════════════════════════════
@@ -43,90 +46,131 @@ const CONTEXTS = {
 // Failover: si falla → OpenAI → Claude (nunca sin respuesta)
 // Costo estimado: ~$22/mes extra vs solo Sonnet
 // ═══════════════════════════════════════════════════════════════════
+// ═══ ESTRATEGIA B+ (Sesión 28): Temperature + Thinking en TODOS los contextos ═══
+// Antes: temperature DEFAULT (1.0) en TODO = caos, respuestas impredecibles
+// Ahora: cada contexto tiene temperature calibrada + thinking budget optimizado
+// Gemini Flash thinking = GRATIS (no cobra thinking tokens en free tier)
+// Claude thinking = paga pero mejora calidad → menos regeneraciones → ahorra
 const CONTEXT_CONFIG = {
   [CONTEXTS.ADMIN_AUDIT]: {
     preferred: 'claude',
     model: 'claude-sonnet-4-6',
     fallbacks: ['openai', 'gemini'],
-    maxTokens: 8192,
-    description: 'Auditoría admin — Claude Sonnet 4.6'
+    maxTokens: 4096,
+    temperature: 0.5,       // Detallado pero consistente
+    thinking: 1024,         // Sonnet piensa antes de auditar
+    description: 'Auditoría admin — Sonnet 4.6 + thinking 1024'
   },
   [CONTEXTS.OWNER_CHAT]: {
     preferred: 'claude',
     model: 'claude-opus-4-6',
     fallbacks: ['claude', 'gemini', 'openai'],
     maxTokens: 4096,
-    description: 'OPUS HYBRID Director — Claude Opus 4.6 (máxima calidad para owner)'
+    temperature: 0.7,       // Natural pero coherente para el jefe
+    thinking: 4096,         // Opus PIENSA mucho antes de responder al owner
+    description: 'OPUS Director — Opus 4.6 + thinking 4096 (máxima calidad)'
   },
   [CONTEXTS.LEAD_RESPONSE]: {
     preferred: 'gemini',
     model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
-    maxTokens: 4096,
-    description: 'Respuesta a leads — Gemini Flash (GRATIS)'
+    maxTokens: 2048,
+    temperature: 0.4,       // Preciso, profesional, NO improvisar con leads
+    topP: 0.85,
+    topK: 40,
+    thinkingBudget: 2048,   // Flash piensa GRATIS → calidad pro a $0
+    description: 'Leads — Flash + thinking 2048 (GRATIS, calidad pro)'
   },
   [CONTEXTS.FAMILY_CHAT]: {
     preferred: 'claude',
     model: 'claude-opus-4-6',
     fallbacks: ['claude', 'gemini', 'openai'],
     maxTokens: 4096,
-    description: 'OPUS ARMY — Familia con Claude Opus 4.6 (máxima calidad, 2 API keys = $200 budget)'
+    temperature: 0.8,       // Cálido, natural, más libertad creativa con familia
+    thinking: 2048,         // Pensar para dar respuestas con cariño real
+    description: 'OPUS Familia — Opus 4.6 + thinking 2048 (calidez máxima)'
   },
   [CONTEXTS.CLASSIFICATION]: {
     preferred: 'gemini',
     model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
-    maxTokens: 256,
-    description: 'Clasificación de contacto — Gemini Flash (GRATIS, rápido)'
+    maxTokens: 128,
+    temperature: 0.1,       // DETERMINÍSTICO — siempre clasificar igual
+    topP: 0.8,
+    topK: 20,
+    thinkingBudget: 512,    // Poco thinking, pero ayuda a no equivocarse
+    description: 'Clasificación — Flash temp 0.1 (determinístico)'
   },
   [CONTEXTS.SPORT_MESSAGE]: {
     preferred: 'gemini',
     model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 512,
-    description: 'Mensaje deportivo — Gemini Flash (GRATIS)'
+    temperature: 0.9,       // EMOTIVO, creativo — cada gol se celebra distinto
+    topP: 0.95,
+    thinkingBudget: 1024,   // Pensar en el contexto emocional del contacto
+    description: 'Deportes — Flash temp 0.9 (emotivo, creativo)'
   },
   [CONTEXTS.LEARNING]: {
     preferred: 'gemini',
     model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
-    maxTokens: 2048,
-    description: 'Extracción de aprendizaje — Gemini Flash (GRATIS)'
+    maxTokens: 1024,
+    temperature: 0.2,       // Extracción factual, NO inventar datos
+    topP: 0.85,
+    topK: 40,
+    thinkingBudget: 1024,   // Pensar qué es realmente importante
+    description: 'Learning — Flash temp 0.2 (factual, no inventar)'
   },
   [CONTEXTS.SUMMARY]: {
     preferred: 'gemini',
     model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
-    maxTokens: 1024,
-    description: 'Resumen de conversación — Gemini Flash (GRATIS)'
+    maxTokens: 512,
+    temperature: 0.3,       // Resumen preciso, sin variación
+    topP: 0.85,
+    topK: 40,
+    thinkingBudget: 512,
+    description: 'Resumen — Flash temp 0.3 (preciso)'
   },
   [CONTEXTS.AUDITOR]: {
     preferred: 'claude',
     model: 'claude-sonnet-4-6',
     fallbacks: ['gemini', 'openai'],
     maxTokens: 1024,
-    description: 'OPUS HYBRID Auditor — Claude Sonnet 4.6 (verifica calidad de respuestas)'
+    temperature: 0.2,       // Juicio firme, consistente, no creativo
+    thinking: 512,          // Pensar sistemáticamente cada regla antes de aprobar
+    description: 'Auditor — Sonnet 4.6 + thinking 512 (juicio firme)'
   },
   [CONTEXTS.NIGHTLY_BRAIN]: {
     preferred: 'claude',
     model: 'claude-opus-4-6',
     fallbacks: ['claude', 'gemini'],
     maxTokens: 8192,
-    description: 'OPUS HYBRID Nightly Brain — Claude Opus 4.6 (análisis diario profundo)'
+    temperature: 0.6,       // Análisis profundo, algo de creatividad para insights
+    thinking: 8192,         // MÁXIMO thinking — 1 vez al día, vale la inversión
+    description: 'Nightly — Opus 4.6 + thinking 8192 (análisis profundo diario)'
   },
   [CONTEXTS.TRANSCRIPTION]: {
     preferred: 'gemini',
     model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 2048,
-    description: 'Transcripción de audio/media — Gemini Flash (GRATIS, multimodal)'
+    temperature: 0.1,       // Lo más fiel posible al audio
+    topP: 0.8,
+    topK: 30,
+    thinkingBudget: 0,      // No necesita pensar, solo transcribir
+    description: 'Transcripción — Flash temp 0.1 (fidelidad máxima)'
   },
   [CONTEXTS.GENERAL]: {
     preferred: 'gemini',
     model: 'gemini-2.5-flash',
     fallbacks: ['openai', 'claude'],
     maxTokens: 4096,
-    description: 'Uso general — Gemini Flash (GRATIS)'
+    temperature: 0.5,       // Balance general
+    topP: 0.9,
+    thinkingBudget: 1024,
+    description: 'General — Flash temp 0.5 + thinking 1024'
   }
 };
 
@@ -254,10 +298,25 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
       ? (opts.model || config.model)  // Proveedor principal: usar modelo del contexto
       : PROVIDER_DEFAULT_MODELS[provider] || config.model;  // Failover: usar default del proveedor
 
+    // ═══ B+ Strategy: inyectar temperature + thinking desde CONTEXT_CONFIG ═══
+    const baseMaxTokens = opts.maxTokens || config.maxTokens;
+    // Claude: max_tokens es TOTAL (thinking + respuesta), así que sumamos ambos
+    const claudeThinking = (provider === 'claude' && config.thinking) ? config.thinking : 0;
+    const effectiveMaxTokens = claudeThinking > 0 ? baseMaxTokens + claudeThinking : baseMaxTokens;
+
     const callOpts = {
       ...opts,
-      maxTokens: opts.maxTokens || config.maxTokens,
-      model: modelForProvider
+      maxTokens: effectiveMaxTokens,
+      model: modelForProvider,
+      temperature: opts.temperature ?? config.temperature,
+      // Claude: extended thinking budget
+      ...(claudeThinking > 0 && { thinking: config.thinking }),
+      // Gemini: generationConfig params
+      ...(provider === 'gemini' && {
+        topP: opts.topP ?? config.topP,
+        topK: opts.topK ?? config.topK,
+        thinkingBudget: opts.thinkingBudget ?? config.thinkingBudget
+      })
     };
 
     try {
@@ -323,10 +382,22 @@ async function smartChat(context, messages, systemPrompt, ownerConfig = {}, opts
       ? (opts.model || config.model)
       : PROVIDER_DEFAULTS[provider] || config.model;
 
+    // ═══ B+ Strategy: inyectar temperature + thinking desde CONTEXT_CONFIG ═══
+    const baseMaxTokens = opts.maxTokens || config.maxTokens;
+    const claudeThinking = (provider === 'claude' && config.thinking) ? config.thinking : 0;
+    const effectiveMaxTokens = claudeThinking > 0 ? baseMaxTokens + claudeThinking : baseMaxTokens;
+
     const callOpts = {
       ...opts,
-      maxTokens: opts.maxTokens || config.maxTokens,
-      model: chatModel
+      maxTokens: effectiveMaxTokens,
+      model: chatModel,
+      temperature: opts.temperature ?? config.temperature,
+      ...(claudeThinking > 0 && { thinking: config.thinking }),
+      ...(provider === 'gemini' && {
+        topP: opts.topP ?? config.topP,
+        topK: opts.topK ?? config.topK,
+        thinkingBudget: opts.thinkingBudget ?? config.thinkingBudget
+      })
     };
 
     try {

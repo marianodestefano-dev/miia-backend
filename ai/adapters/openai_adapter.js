@@ -9,10 +9,12 @@ const RETRY_DELAYS = [8000, 20000, 45000];
 async function call(apiKey, prompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
   const url = 'https://api.openai.com/v1/chat/completions';
+  // ═══ B+ Strategy: temperature controlada por contexto ═══
   const payload = {
     model,
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: opts.maxTokens || 4096
+    max_tokens: opts.maxTokens || 4096,
+    ...(opts.temperature != null && { temperature: opts.temperature })
   };
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -76,7 +78,9 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
       body: JSON.stringify({
         model,
         messages: openaiMessages,
-        max_tokens: opts.maxTokens || 4096
+        max_tokens: opts.maxTokens || 4096,
+        // ═══ B+ Strategy ═══
+        ...(opts.temperature != null && { temperature: opts.temperature })
       })
     });
 

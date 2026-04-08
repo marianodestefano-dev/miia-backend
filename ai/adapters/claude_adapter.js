@@ -5,16 +5,29 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const DEFAULT_MODEL = 'claude-sonnet-4-6'; // Safety net: si alguien llama sin model, NUNCA Opus por accidente
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [8000, 20000, 45000];
-const API_VERSION = '2023-06-01';
+const API_VERSION = '2025-04-14'; // B+ Strategy: requiere 2025+ para extended thinking
 
 async function call(apiKey, prompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
   const url = 'https://api.anthropic.com/v1/messages';
+  const useThinking = opts.thinking && opts.thinking > 0;
+
+  // ═══ B+ Strategy: temperature + extended thinking ═══
   const payload = {
     model,
     max_tokens: opts.maxTokens || 4096,
-    messages: [{ role: 'user', content: prompt }]
+    messages: [{ role: 'user', content: prompt }],
+    // Temperature: solo si NO hay thinking (Claude no permite ambos juntos)
+    ...(!useThinking && opts.temperature != null && { temperature: opts.temperature }),
+    // Extended thinking: budget_tokens controla cuánto piensa antes de responder
+    ...(useThinking && {
+      thinking: { type: 'enabled', budget_tokens: opts.thinking }
+    })
   };
+
+  if (useThinking) {
+    console.log(`[CLAUDE] 🧠 Thinking habilitado: ${opts.thinking} tokens budget`);
+  }
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -30,8 +43,15 @@ async function call(apiKey, prompt, opts = {}) {
 
       if (response.ok) {
         const data = await response.json();
-        const text = data.content?.[0]?.text;
+        // Con thinking, la respuesta tiene bloques thinking + text
+        const textBlock = data.content?.find(b => b.type === 'text');
+        const text = textBlock?.text || data.content?.[0]?.text;
         if (!text) throw new Error('No text in Claude response');
+        // Log thinking usage si presente
+        const thinkingBlock = data.content?.find(b => b.type === 'thinking');
+        if (thinkingBlock) {
+          console.log(`[CLAUDE] 🧠 Thinking usado: ${thinkingBlock.thinking?.length || 0} chars`);
+        }
         return text;
       }
 
@@ -58,6 +78,7 @@ async function call(apiKey, prompt, opts = {}) {
 async function callChat(apiKey, messages, systemPrompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
   const url = 'https://api.anthropic.com/v1/messages';
+  const useThinking = opts.thinking && opts.thinking > 0;
 
   const claudeMessages = messages.map(m => ({
     role: m.role === 'assistant' ? 'assistant' : 'user',
@@ -65,7 +86,7 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
   }));
 
   try {
-    console.log(`[CLAUDE] Chat request: ${messages.length} msgs, prompt ${systemPrompt.length} chars`);
+    console.log(`[CLAUDE] Chat request: ${messages.length} msgs, prompt ${systemPrompt.length} chars${useThinking ? ` 🧠thinking:${opts.thinking}` : ''}`);
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -77,7 +98,12 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
         model,
         max_tokens: opts.maxTokens || 4096,
         system: systemPrompt,
-        messages: claudeMessages
+        messages: claudeMessages,
+        // ═══ B+ Strategy ═══
+        ...(!useThinking && opts.temperature != null && { temperature: opts.temperature }),
+        ...(useThinking && {
+          thinking: { type: 'enabled', budget_tokens: opts.thinking }
+        })
       })
     });
 
@@ -88,12 +114,18 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
     }
 
     const data = await response.json();
-    const text = data.content?.[0]?.text;
+    // Con thinking: buscar bloque type=text (puede haber thinking blocks antes)
+    const textBlock = data.content?.find(b => b.type === 'text');
+    const text = textBlock?.text || data.content?.[0]?.text;
     if (!text) {
       console.error('[CLAUDE] Invalid response structure:', JSON.stringify(data).substring(0, 200));
       return null;
     }
 
+    const thinkingBlock = data.content?.find(b => b.type === 'thinking');
+    if (thinkingBlock) {
+      console.log(`[CLAUDE] 🧠 Thinking: ${thinkingBlock.thinking?.length || 0} chars pensados`);
+    }
     console.log(`[CLAUDE] OK: ${text.length} chars`);
     return text;
   } catch (error) {

@@ -52,9 +52,22 @@ async function callGemini(apiKey, prompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
   const retries = opts.retries ?? MAX_RETRIES;
   const url = buildUrl(apiKey, model);
+
+  // ═══ B+ Strategy: generationConfig con temperature + thinking ═══
+  const genConfig = {};
+  if (opts.temperature != null) genConfig.temperature = opts.temperature;
+  if (opts.topP != null) genConfig.topP = opts.topP;
+  if (opts.topK != null) genConfig.topK = opts.topK;
+  // Gemini 2.5 Flash: thinking es GRATIS en free tier
+  if (opts.thinkingBudget != null && opts.thinkingBudget > 0) {
+    genConfig.thinkingConfig = { thinkingBudget: opts.thinkingBudget };
+    console.log(`[GEMINI] 🧠 Thinking habilitado: ${opts.thinkingBudget} tokens budget`);
+  }
+
   const payload = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    ...(opts.enableSearch && { tools: [{ google_search: {} }] })
+    ...(opts.enableSearch && { tools: [{ google_search: {} }] }),
+    ...(Object.keys(genConfig).length > 0 && { generationConfig: genConfig })
   };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -106,6 +119,16 @@ async function callGemini(apiKey, prompt, opts = {}) {
 async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
   const url = buildUrl(apiKey, model);
+
+  // ═══ B+ Strategy: generationConfig con temperature + thinking ═══
+  const genConfig = {};
+  if (opts.temperature != null) genConfig.temperature = opts.temperature;
+  if (opts.topP != null) genConfig.topP = opts.topP;
+  if (opts.topK != null) genConfig.topK = opts.topK;
+  if (opts.thinkingBudget != null && opts.thinkingBudget > 0) {
+    genConfig.thinkingConfig = { thinkingBudget: opts.thinkingBudget };
+  }
+
   const payload = {
     contents: messages.map(m => ({
       role: m.role === 'assistant' ? 'model' : 'user',
@@ -113,7 +136,8 @@ async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
     })),
     systemInstruction: {
       parts: [{ text: systemPrompt }]
-    }
+    },
+    ...(Object.keys(genConfig).length > 0 && { generationConfig: genConfig })
   };
 
   try {
