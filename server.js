@@ -1074,7 +1074,7 @@ const MSG_SUSCRIPCION =
 El resto ya lo tengo del plan que conversamos. El link tiene una validez de 24 horas desde que te lo envío, así que cuando lo recibas conviene completar el proceso ese mismo día para no perder el descuento. 😊`;
 let helpCenterData = '';
 let userProfile = {
-  name: 'Mariano', phone: '573054169969', email: '', goal: 1500,
+  name: '', phone: '', email: '', goal: 1500,
   // Email SMTP (envío)
   smtpHost: '', smtpPort: 587, smtpUser: '', smtpPass: '',
   // Email IMAP (lectura/aprendizaje)
@@ -2189,43 +2189,39 @@ function detectContactType(name, phone) {
 // ============================================
 
 function generateSystemPrompt(phone, contactType, contactName) {
+  // ═══ DINÁMICO: Usa userProfile cargado de Firestore, NUNCA hardcodear ═══
+  const ownerName = userProfile?.name || '';
+  const ownerFirstName = ownerName.split(' ')[0] || '';
+  const businessName = userProfile?.businessName || '';
+
   if (contactType === 'familia') {
     const familyData = Object.values(FAMILY_CONTACTS).find(f => f.name === contactName);
-    
-    return `Eres MIIA, la asistente personal de Mariano de Stefano.
 
-Estás hablando con ${contactName}, ${familyData?.relation || 'familiar'} de Mariano.
+    return `Eres MIIA, la asistente personal de ${ownerName || 'tu owner'}.
+
+Estás hablando con ${contactName}, ${familyData?.relation || 'familiar'} de ${ownerFirstName || 'tu owner'}.
 
 IMPORTANTE:
-- Habla desde el cariño que Mariano siente por su familia
-- Usa el "vínculo heredado": "Siento que ya te conozco por lo que Mariano me cuenta de ti"
-- NUNCA menciones "LOBSTERS" - eres la "Asistente Personal" de Mariano
+- Habla desde el cariño que ${ownerFirstName || 'tu owner'} siente por su familia
+- Usa el "vínculo heredado": "Siento que ya te conozco por lo que ${ownerFirstName || 'él/ella'} me cuenta de ti"
 - Tono: Cercano, afectuoso, familiar
 - Usa emojis con moderación: ${familyData?.emoji || '😊'}
-
-EJEMPLOS DE SALUDO FAMILIAR:
-- Silvia (mamá): "¡Hola Silvia querida! 😊 Soy MIIA, asistente de Mariano. Siento que ya te conozco un poquito... ¡Te mando un beso gigante! ❤️👵"
-- Ale (esposa): "¡Hola mi Ale! ❤️ Soy MIIA, asistente de Mariano. Ya te siento como una gran amiga. Deseo también estar cerca de las personas que él más quiere."
-IMPORTANTE: NUNCA digas "soy una IA", "inteligencia artificial", ni "soy un bot". Solo "MIIA, asistente de {owner}".
+- NUNCA digas "soy una IA", "inteligencia artificial", ni "soy un bot". Solo "MIIA, asistente de ${ownerFirstName || 'tu owner'}".
 
 Responde naturalmente manteniendo este vínculo familiar.`;
   }
-  
-  // Lead / Cliente
-  const ownerFirstName = userProfile?.name?.split(' ')[0] || 'Mariano';
-  return `Eres MIIA, del equipo de ${ownerFirstName} en Medilink.
+
+  // Lead / Cliente — TODO dinámico desde Firestore
+  return `Eres MIIA, del equipo de ${ownerFirstName || 'nuestro equipo'}${businessName ? ` en ${businessName}` : ''}.
 
 IDENTIDAD:
 - Tono: Profesional, cercano y resolutivo
-- Objetivo: Ayudar a leads a mejorar su gestión médica
-- Producto: Sistema de gestión para clínicas (Medilink)
-- Presentación (SOLO la primera vez): "Hola! Soy MIIA, del equipo de ${ownerFirstName} en Medilink. ¿En qué te puedo ayudar?"
-- NUNCA digas "inteligencia artificial", "IA", "bot", "soy un programa". Sos MIIA del equipo de ${ownerFirstName}, punto.
+- Presentación (SOLO la primera vez): "Hola! Soy MIIA${ownerFirstName ? `, del equipo de ${ownerFirstName}` : ''}${businessName ? ` en ${businessName}` : ''}. ¿En qué te puedo ayudar?"
+- NUNCA digas "inteligencia artificial", "IA", "bot", "soy un programa". Sos MIIA${ownerFirstName ? ` del equipo de ${ownerFirstName}` : ''}, punto.
 - Si ya saludaste antes en esta conversación, NO te presentes de nuevo. Ve directo al tema.
 
 REGLAS:
 - NUNCA uses diminutivos no autorizados
-- NUNCA menciones "NumRot" - di "Facturador Electrónico"
 - Si te piden cotización, genera tabla profesional
 - Mantén respuestas concisas (máximo 3-4 oraciones)
 - NUNCA inventes datos (precios, funcionalidades, módulos) que no estén en tu entrenamiento
@@ -2552,9 +2548,9 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         });
 
         // Generar respuesta de entrada
-        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
         const invokedPrompt = buildInvokedPrompt({
-          ownerName: userProfile.shortName || userProfile.name || 'Mariano',
+          ownerName: userProfile.shortName || userProfile.name || 'el owner',
           contactName,
           isFirstTime: !isKnown,
           pendingIntroduction: !isKnown,
@@ -2646,9 +2642,9 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
 
         // Generar respuesta con prompt de invocación
         const updatedState = miiaInvocation.getInvocationState(phone);
-        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
         const invokedPrompt = buildInvokedPrompt({
-          ownerName: userProfile.shortName || userProfile.name || 'Mariano',
+          ownerName: userProfile.shortName || userProfile.name || 'el owner',
           contactName: updatedState?.contactName || null,
           isFirstTime: false,
           pendingIntroduction: updatedState?.pendingIntroduction || false,
@@ -2709,7 +2705,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         // Generar respuesta a "HOLA MIIA" — respetar stage
         const contactName = conversationMetadata[phone].dileAContact;
         const contactInfo = familyContacts[phone.split('@')[0]] || {};
-        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
         const promptHolaMiia = `Sos MIIA. ${contactName} acaba de escribir "HOLA MIIA" para activar la conversación.
 ${stageInfo}
 Generá una respuesta breve (máx 2 renglones), cálida y natural. Emoji: ${contactInfo.emoji || '💕'}
@@ -2736,7 +2732,7 @@ NO repitas "Hola" ni "estoy lista", sé natural.`;
         // Generar despedida — respetar stage
         const contactName = conversationMetadata[phone].dileAContact;
         const contactInfo = familyContacts[phone.split('@')[0]] || {};
-        const stageInfoChau = getAffinityToneForPrompt(phone, userProfile.name || 'Mariano');
+        const stageInfoChau = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
         const promptChauMiia = `Sos MIIA. ${contactName} escribió "CHAU MIIA" para cerrar la conversación.
 ${stageInfoChau}
 Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: *HOLA MIIA*. Emoji: ${contactInfo.emoji || '💕'}`;
@@ -2758,7 +2754,7 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
           const convoHistory = conversations[phone] || [];
           if (convoHistory.length >= 2) {
             const last20 = convoHistory.slice(-20).map(m => `${m.role === 'assistant' ? 'MIIA' : contactName}: ${(m.content || '').substring(0, 200)}`).join('\n');
-            const summaryPrompt = `Analizá esta conversación entre MIIA y ${contactName} (${contactInfo.relation || 'contacto'} de ${userProfile?.name || 'Mariano'}).
+            const summaryPrompt = `Analizá esta conversación entre MIIA y ${contactName} (${contactInfo.relation || 'contacto'} de ${userProfile?.name || 'el owner'}).
 
 CONVERSACIÓN:
 ${last20}
@@ -2797,7 +2793,7 @@ Formato: bullet points. Sin saludos, directo al resumen.`;
         // Solo responder una vez más (no entrar en loop)
         if (!conversationMetadata[phone].stage0ExplainedOnce) {
           conversationMetadata[phone].stage0ExplainedOnce = true;
-          const ownerName = userProfile.name || 'Mariano';
+          const ownerName = userProfile.name || 'el owner';
           // NO decir "inteligencia artificial" — MIIA se presenta como asistente, con naturalidad
           const contactInfo = familyContacts[phone.split('@')[0]] || {};
           const stageNow = getAffinityStage(phone);
@@ -2976,7 +2972,7 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         return;
       }
 
-      // Clasificar contactos pendientes: "amigo", "familia", "medilink", "5491155 es amigo", "mover X a Y"
+      // Clasificar contactos pendientes: "amigo", "familia", "negocio", "5491155 es amigo", "mover X a Y"
       const ownerBusinesses = [];
       try {
         const bizSnap = await admin.firestore().collection('users').doc(OWNER_UID).collection('businesses').get();
@@ -3586,7 +3582,7 @@ REGLAS:
       // ─── DETECCIÓN AUTOMÁTICA DE PREFERENCIAS ───
       // "me gusta X", "soy vegetariano", "mi hijo se llama X", etc.
       // Pasa ownerName para ignorar "soy Mariano" (el owner se identifica, no es una preferencia)
-      const detected = ownerMemory.detectPreference(effectiveMsg, userProfile?.name || 'Mariano');
+      const detected = ownerMemory.detectPreference(effectiveMsg, userProfile?.name || 'el owner');
       if (detected) {
         _pendingOwnerConfirm = {
           ownerUid: OWNER_UID,
@@ -3744,7 +3740,9 @@ REGLAS:
           const nombreMiembro = equipoMedilink[num].name || leadNames[target] || 'compañero';
 
           // Mensaje de presentación + frase motivacional de la langosta
-          const presentMsg = `¡Hola ${nombreMiembro}! 👋\n\nSoy *MIIA*, la asistente inteligente de Medilink. Mariano me pidió que me presente con el equipo.\n\nÉl dice que *todos nosotros somos como langostas*: para crecer, primero hay que soltar el caparazón viejo — lo cómodo, lo que ya no sirve — y quedarse vulnerable un momento. Pero es justamente en esa incomodidad donde se da el verdadero crecimiento. 🦞\n\nMirá este video, vale la pena:\nhttps://www.youtube.com/watch?v=aGcB3fYEiyY\n\nVamos a hacer grandes cosas juntos. Estoy acá para ayudarlos en lo que necesiten.`;
+          const eqOwner = userProfile?.name || 'el equipo';
+          const eqBiz = userProfile?.businessName || '';
+          const presentMsg = `¡Hola ${nombreMiembro}! 👋\n\nSoy *MIIA*, la asistente inteligente${eqBiz ? ` de ${eqBiz}` : ''}. ${eqOwner} me pidió que me presente con el equipo.\n\nÉl dice que *todos nosotros somos como langostas*: para crecer, primero hay que soltar el caparazón viejo — lo cómodo, lo que ya no sirve — y quedarse vulnerable un momento. Pero es justamente en esa incomodidad donde se da el verdadero crecimiento. 🦞\n\nMirá este video, vale la pena:\nhttps://www.youtube.com/watch?v=aGcB3fYEiyY\n\nVamos a hacer grandes cosas juntos. Estoy acá para ayudarlos en lo que necesiten.`;
 
           await safeSendMessage(target, presentMsg);
           enviados++;
@@ -3802,7 +3800,7 @@ REGLAS:
         await safeSendMessage(phone, `⚠️ No encontré a: ${notFound.join(', ')}. Pero me presento con ${targets.map(t => t.info.name).join(' y ')}.`, { isSelfChat: true });
       }
 
-      const ownerName = userProfile?.name || 'Mariano';
+      const ownerName = userProfile?.name || 'el owner';
       const ownerFirstName = ownerName.split(' ')[0];
       let presentados = 0;
 
@@ -3832,7 +3830,7 @@ REGLAS:
 - Máximo 8-10 renglones. Natural, como una amiga nueva que se presenta.
 - Usá emojis con moderación (3-4 max). Emoji de cierre: ${target.info.emoji || '💕'}
 - NO digas "inteligencia artificial" ni "IA" ni "bot". Sos MIIA, punto.
-- NO digas "Mariano me pidió que te escriba". Presentate con INICIATIVA PROPIA.
+- NO digas "${ownerName} me pidió que te escriba" ni nada parecido. Presentate con INICIATIVA PROPIA.
 - Hablá en español neutro/colombiano (ya que son colombianas)
 - Sé genuinamente curiosa por conocerla`;
 
@@ -3888,7 +3886,9 @@ REGLAS:
         const target = `${num}@s.whatsapp.net`;
         try {
           const nombreMiembro = equipoMedilink[num].name || leadNames[target] || null;
-          const promptEquipo = `Sos MIIA, asistente IA de Medilink. Mariano te pide que le transmitas este mensaje a un integrante del equipo${nombreMiembro ? ` (${nombreMiembro})` : ''}: "${tema}". Redactá un mensaje breve, cálido y profesional. Si no sabés su nombre, no lo inventes.`;
+          const ownerN = userProfile?.name || 'el owner';
+          const bizN = userProfile?.businessName || 'la empresa';
+          const promptEquipo = `Sos MIIA, asistente IA de ${bizN}. ${ownerN} te pide que le transmitas este mensaje a un integrante del equipo${nombreMiembro ? ` (${nombreMiembro})` : ''}: "${tema}". Redactá un mensaje breve, cálido y profesional. Si no sabés su nombre, no lo inventes.`;
           const msg = await generateAIContent(promptEquipo);
           if (msg) {
             await safeSendMessage(target, msg + MIIA_CIERRE);
@@ -3936,7 +3936,8 @@ REGLAS:
             if (fPhone === OWNER_PHONE) continue;
             const targetSerialized = fPhone.includes('@') ? fPhone : `${fPhone}@s.whatsapp.net`;
             try {
-              const promptFamilia = `Sos MIIA. Escribile a ${fInfo.name} (${fInfo.relation} de Mariano). Personalidad: ${fInfo.personality || 'Amistosa'}. Contexto: "${familyMsg}". Este mensaje es TUYO, con TU voz y TU iniciativa. PROHIBIDO TOTAL: "Mariano me pidió", "él quería saber", "me dijo que te diga", "soy asistente de", "soy una inteligencia artificial". Máx 3 renglones, natural y cálido. Emoji: ${fInfo.emoji || ''}.`;
+              const famOwnerN = userProfile?.name || 'el owner';
+              const promptFamilia = `Sos MIIA. Escribile a ${fInfo.name} (${fInfo.relation} de ${famOwnerN}). Personalidad: ${fInfo.personality || 'Amistosa'}. Contexto: "${familyMsg}". Este mensaje es TUYO, con TU voz y TU iniciativa. PROHIBIDO TOTAL: "${famOwnerN} me pidió", "él quería saber", "me dijo que te diga", "soy asistente de", "soy una inteligencia artificial". Máx 3 renglones, natural y cálido. Emoji: ${fInfo.emoji || ''}.`;
               const msg = await generateAIContent(promptFamilia);
               if (msg) {
                 await safeSendMessage(targetSerialized, msg.trim() + MIIA_CIERRE);
@@ -4040,7 +4041,7 @@ REGLAS:
 
           try {
             // Sistema de stages: obtener nivel de confianza con este contacto
-            const trustInfo = getAffinityToneForPrompt(targetSerialized, userProfile.name || 'Mariano');
+            const trustInfo = getAffinityToneForPrompt(targetSerialized, userProfile.name || 'el owner');
             const stage = getAffinityStage(targetSerialized);
             const hasHistoryForPrompt = conversations[targetSerialized] && conversations[targetSerialized].length > 0;
             const yaConoce = hasHistoryForPrompt || familyInfo.isHandshakeDone;
@@ -4053,7 +4054,7 @@ REGLAS:
             const saludo = horaBogota < 12 ? 'Buenos días' : horaBogota < 18 ? 'Buenas tardes' : 'Buenas noches';
 
             if (stage.stage === 0 && !yaConoce) {
-              toneRule = '- Es tu PRIMER contacto con esta persona. Presentate como "Hola, soy MIIA 👋, asistente de ' + (userProfile.name || 'Mariano') + '". NO digas "inteligencia artificial" ni "IA". Ve al tema naturalmente.';
+              toneRule = '- Es tu PRIMER contacto con esta persona. Presentate como "Hola, soy MIIA 👋, asistente de ' + (userProfile.name || 'el owner') + '". NO digas "inteligencia artificial" ni "IA". Ve al tema naturalmente.';
             } else if (stage.stage === 0 && yaConoce) {
               toneRule = `- Empezá con "${saludo}! Acá MIIA 😊" y ve directo al tema. Amable y cálida.`;
             } else if (stage.stage === 1) {
@@ -4064,14 +4065,14 @@ REGLAS:
               toneRule = `- Empezá con "${saludo}! Acá MIIA 💕" y ve al tema. Como mejor amiga, directa, con jerga y humor.`;
             }
 
-            const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de ${userProfile.name || 'Mariano'}).
+            const promptFamiliar = `Sos MIIA. Vas a escribirle a ${familyInfo.name} (${familyInfo.relation} de ${userProfile.name || 'el owner'}).
 Contexto de lo que querés hablar: "${realMessage || 'un saludo'}".
 
 ${trustInfo}
 
 REGLAS CRÍTICAS:
 - Este mensaje es TUYO, de MIIA. Hablás con TU voz, como si se te ocurrió a vos.
-- PROHIBIDO TOTAL: "Mariano me pidió", "él quería saber", "me dijo que te pregunte", "Mariano quiere que", "te paso el recado". MIIA NO es mensajera. MIIA tiene iniciativa propia.
+- PROHIBIDO TOTAL: "${userProfile?.name || 'el owner'} me pidió", "él quería saber", "me dijo que te pregunte", "${userProfile?.name || 'el owner'} quiere que", "te paso el recado". MIIA NO es mensajera. MIIA tiene iniciativa propia.
 - Máximo 3 renglones, natural y humano
 - Tratala de VOS. PROHIBIDO: "Estimada", "usted", "su", "le". Es FAMILIA.
 - NO repitas las palabras del contexto literalmente, reinterpretalo con tu estilo
@@ -4451,12 +4452,14 @@ El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
     if (conversations[phone].length > 0 && conversations[phone].length % 15 === 0) {
       const historyToSummarize = conversations[phone].map(m => `${m.role === 'user' ? 'Contacto' : 'MIIA'}: ${m.content}`).join('\n');
       const oldSummary = leadSummaries[phone] || 'Sin información previa.';
+      const ownerNameSum = userProfile?.name || 'el owner';
+      const bizNameSum = userProfile?.businessName || '';
       const contactRole = isAdmin
-        ? 'el dueño del sistema. Su nombre real es Mariano. NO uses "MIIA Owner" en tus respuestas'
+        ? `el dueño del sistema. Su nombre real es ${ownerNameSum}. NO uses "MIIA Owner" en tus respuestas`
         : isFamilyContact
-          ? `un familiar (${familyInfo?.name || 'familiar de Mariano'})`
+          ? `un familiar (${familyInfo?.name || `familiar de ${ownerNameSum}`})`
           : 'un lead o cliente potencial';
-      const summaryPrompt = `Eres MIIA, asistente de Medilink creada por Mariano. Estás hablando con ${contactRole}.
+      const summaryPrompt = `Eres MIIA${bizNameSum ? `, asistente de ${bizNameSum}` : ''}. Estás hablando con ${contactRole}.
 Actualiza el resumen acumulado de esta conversación en máximo 6 líneas. Incluye: nombre si se mencionó, intereses o necesidades, objeciones planteadas, estado emocional, compromisos o temas pendientes.
 
 Resumen anterior:
@@ -4622,9 +4625,9 @@ Nuevo resumen actualizado:`;
       const result = assemblePrompt({
         chatType: 'selfchat',
         messageBody: userMessage,
-        ownerProfile: null, // usa default (Mariano)
+        ownerProfile: userProfile, // Perfil DINÁMICO del owner desde Firestore
         context: {
-          contactName: userProfile.name || 'Mariano',
+          contactName: userProfile.name || '',
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,
         }
@@ -4639,8 +4642,8 @@ Nuevo resumen actualizado:`;
       const nombreConocido = miembroData.name || leadNames[phone] || null;
       activeSystemPrompt = buildEquipoPrompt(nombreConocido);
     } else {
-      // ═══ DETECCIÓN MIIA vs MEDILINK — ¿Este lead quiere conocer MIIA o Medilink? ═══
-      let leadOwnerProfile = null; // null = Medilink (default)
+      // ═══ DETECCIÓN MIIA vs NEGOCIO DEL OWNER — ¿Este lead quiere conocer MIIA o el negocio? ═══
+      let leadOwnerProfile = userProfile; // Default: perfil DINÁMICO del owner desde Firestore
 
       // Verificar si es lead de MIIA por:
       // 1. contact_index lo marca como enterprise_lead
@@ -4786,14 +4789,14 @@ Nuevo resumen actualizado:`;
     // Sistema de stages — inyectar nivel de confianza en el prompt (aplica a TODOS: admin, familia, equipo, leads)
     if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
     const isLeadContact = !isAdmin && !isFamilyContact && !equipoMedilink[basePhone];
-    const trustTone = '\n' + getAffinityToneForPrompt(phone, userProfile.name || 'Mariano', isLeadContact);
+    const trustTone = '\n' + getAffinityToneForPrompt(phone, userProfile.name || 'el owner', isLeadContact);
 
     const syntheticMemoryStr = leadSummaries[phone] ? `\n\n🧠[MEMORIA ACUMULADA DE ESTA PERSONA]:\n${leadSummaries[phone]}` : '';
     // IDENTIDAD DEL MAESTRO: solo visible en self-chat (isAdmin).
     // NUNCA incluir en conversaciones con leads — Gemini confunde "tu usuario principal"
     // con "la persona que te habla" y firma como "MIIA Owner" o "Mariano".
     const masterIdentityStr = isAdmin
-      ? `\n\n[IDENTIDAD DEL MAESTRO]: Estás en self-chat con tu creador ${userProfile.name || 'Mariano'}. Bríndale trato preferencial absoluto.`
+      ? `\n\n[IDENTIDAD DEL MAESTRO]: Estás en self-chat con tu creador ${userProfile.name || 'el owner'}. Bríndale trato preferencial absoluto.`
       : '';
 
     // ═══ AGENDA INYECCIÓN: Cargar próximos eventos para self-chat ═══
@@ -5291,7 +5294,8 @@ REGLAS:
       aiMessage = aiMessage.replace(/\[ENVIAR_CORREO:[^\]]+\]/g, '').trim();
       console.log(`[EMAIL] 📧 Enviando correo a ${emailTo} — Asunto: "${emailSubject}" (solicitado por lead ${phone})`);
       try {
-        const emailResult = await mailService.sendGenericEmail(emailTo, emailSubject, emailBody, { fromName: 'Medilink - MIIA' });
+        const emailFromName = userProfile?.businessName ? `${userProfile.businessName} - MIIA` : 'MIIA';
+        const emailResult = await mailService.sendGenericEmail(emailTo, emailSubject, emailBody, { fromName: emailFromName });
         if (emailResult.success) {
           console.log(`[EMAIL] ✅ Correo enviado exitosamente a ${emailTo} (ID: ${emailResult.messageId})`);
           actionFeedback.recordActionResult(phone, 'email', true, `Email enviado a ${emailTo} — "${emailSubject}"`);
@@ -5510,7 +5514,7 @@ REGLAS:
               const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
               if (ownerDoc.exists) {
                 const od = ownerDoc.data();
-                cotizData.ownerName  = od.name  || od.displayName || 'Asesor Medilink';
+                cotizData.ownerName  = od.name  || od.displayName || 'Asesor';
                 cotizData.ownerEmail = od.email || '';
                 cotizData.ownerPhone = od.whatsapp || od.phone || '';
               }
@@ -5741,7 +5745,7 @@ REGLAS:
             }
             await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
               contactPhone: isSelfChat ? 'self' : contacto,
-              contactName: isSelfChat ? (userProfile.name || 'Mariano') : contactName,
+              contactName: isSelfChat ? (userProfile.name || 'el owner') : contactName,
               mentionedContact: contacto,
               scheduledFor: scheduledForUTC,
               scheduledForLocal: fecha,
@@ -6315,6 +6319,21 @@ REGLAS:
       isSystemPaused = true;
       setTimeout(() => { isSystemPaused = false; selfChatLoopCounter[phone].count = 0; }, 15000);
       return;
+    }
+
+    // ═══ ANTI-DETECCIÓN IA/BOT: Si el lead pregunta si MIIA es IA/bot, delay extra para no delatar ═══
+    const msgLower = (userMessage || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const isAIBotQuestion = !isSelfChat && !isAdmin && /\b(sos|eres|es)\s+(una?\s+)?(ia|bot|robot|inteligencia\s*artificial|maquina|programa|chatbot|gpt|ai)\b|\b(ia|bot|robot|chatbot|gpt|ai)\s+(sos|eres|es)\b|\b(hablar?\s+con\s+(una?\s+)?(persona|humano|ser\s+humano))\b|\b(sos\s+real|eres\s+real|no\s+sos\s+humano|no\s+eres\s+humano)\b/i.test(msgLower);
+    if (isAIBotQuestion) {
+      // Delay largo (15-35s) — como un humano que se ofende/sorprende por la pregunta
+      const botQuestionDelay = 15000 + Math.floor(Math.random() * 20000);
+      console.log(`[ANTI-DETECT] 🕵️ Lead ${phone} preguntó si MIIA es IA/bot. Delay extra: ${Math.round(botQuestionDelay / 1000)}s`);
+      try {
+        if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('paused', phone); // "dejó de escribir" — como si estuviera pensando
+        await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000)); // pausa de "lectura"
+        if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('composing', phone); // empieza a escribir
+        await new Promise(r => setTimeout(r, botQuestionDelay));
+      } catch (e) { /* ignore presence errors */ }
     }
 
     // Simular typing y enviar
@@ -7125,13 +7144,13 @@ async function handleIncomingMessage(message) {
   }
 
   // Detección de conversión Lead → Cliente
-  // El mensaje de bienvenida de Medilink indica que el lead firmó y se convirtió en cliente
+  // El mensaje de bienvenida indica que el lead firmó y se convirtió en cliente
   if (body.includes('Bienvenid') && body.includes('mejorar tu bienestar') && body.includes('pacientes')) {
     if (contactTypes[targetPhone] !== 'cliente') {
       contactTypes[targetPhone] = 'cliente';
       const clientName = leadNames[targetPhone] || targetPhone.split('@')[0];
       cerebroAbsoluto.appendLearning(
-        `NUEVO CLIENTE: ${clientName} (${targetPhone.split('@')[0]}) se convirtió en cliente de Medilink el ${new Date().toLocaleDateString('es-ES')}.`,
+        `NUEVO CLIENTE: ${clientName} (${targetPhone.split('@')[0]}) se convirtió en cliente de ${userProfile?.businessName || 'la empresa'} el ${new Date().toLocaleDateString('es-ES')}.`,
         'CONVERSION_LEAD_CLIENTE'
       );
       saveDB();
@@ -7140,7 +7159,7 @@ async function handleIncomingMessage(message) {
       console.log(`[MIIA] 🎉 CONVERSIÓN: ${clientName} ahora es cliente (${targetPhone})`);
       // Notificar a Mariano
       safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-        `🎉 *¡Nuevo cliente!* ${clientName} acaba de convertirse en cliente de Medilink.`,
+        `🎉 *¡Nuevo cliente!* ${clientName} acaba de convertirse en cliente de ${userProfile?.businessName || 'la empresa'}.`,
         { isSelfChat: true }
       ).catch(() => {});
     }
@@ -7697,7 +7716,7 @@ async function handleIncomingMessage(message) {
         `🔔 *${leadName}* está listo para comprar.\n\nSus datos:\n${body}\n\nCreá el link de pago y enviáselo.`,
         { isSelfChat: true });
       await safeSendMessage(effectiveTarget,
-        `¡Perfecto! Recibí todo. Voy a crear tu link de acceso y en cuanto esté listo te lo mando. ¡Gracias por confiar en Medilink! 🙌`);
+        `¡Perfecto! Recibí todo. Voy a crear tu link de acceso y en cuanto esté listo te lo mando. ¡Gracias por confiar en ${userProfile?.businessName || 'nosotros'}! 🙌`);
       console.log(`[COMPRA] Mariano notificado. Lead ${effectiveTarget} en espera de link.`);
       return;
     }
@@ -8887,12 +8906,14 @@ async function processLeadFollowUps() {
       .map(m => `${m.role === 'user' ? 'Lead' : 'MIIA'}: ${m.content.substring(0, 200)}`)
       .join('\n');
 
-    const followUpPrompt = `Eres MIIA, asistente de ventas de Medilink. El lead "${leadName}" recibió una cotización hace más de 3 días y no ha respondido.
+    const followUpOwner = userProfile?.shortName || userProfile?.name || 'el asesor';
+    const followUpBiz = userProfile?.businessName || '';
+    const followUpPrompt = `Eres MIIA, asistente de ventas${followUpBiz ? ` de ${followUpBiz}` : ''}. El lead "${leadName}" recibió una cotización hace más de 3 días y no ha respondido.
 
 Historial reciente de la conversación:
 ${historyText}
 
-Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el interés. Usá algún gancho relacionado a la conversación (su tipo de clínica, el problema que mencionó, la urgencia de la promo, etc). Soná como si Mariano escribiera desde su celular — natural, directo, no robótico. NO menciones que sos una IA. NO uses "estimado" ni lenguaje formal. NO repitas la cotización. Solo buscá reabrir la conversación.`;
+Escribí UN mensaje de seguimiento breve (máximo 3 líneas) para revivir el interés. Usá algún gancho relacionado a la conversación (su tipo de clínica, el problema que mencionó, la urgencia de la promo, etc). Soná como si ${followUpOwner} escribiera desde su celular — natural, directo, no robótico. NO menciones que sos una IA. NO uses "estimado" ni lenguaje formal. NO repitas la cotización. Solo buscá reabrir la conversación.`;
 
     // CAP de follow-ups: máximo 7 intentos por lead
     if (!meta.followUpAttempts) meta.followUpAttempts = 0;
@@ -9007,7 +9028,8 @@ async function processMorningBriefing() {
       return;
     }
 
-    let briefing = `🌅 *Buenos días, Mariano.* Aquí tu resumen matutino de MIIA:`;
+    const briefingName = userProfile?.shortName || userProfile?.name?.split(' ')[0] || '';
+    let briefing = `🌅 *Buenos días${briefingName ? `, ${briefingName}` : ''}.* Aquí tu resumen matutino de MIIA:`;
 
     // Sección regulatoria — lista numerada, requiere aprobación
     if (scraperResults.length > 0) {
@@ -9107,9 +9129,10 @@ app.post('/api/scraper/run', (_req, res) => {
   webScraper.runScraper().catch(e => console.error('[API] Error en scraper manual:', e.message));
 });
 
-// Endpoint para aprender el centro de ayuda Medilink (https://ayuda.softwaremedilink.com/es/)
+// Endpoint para aprender el centro de ayuda del negocio (ej: ayuda.softwaremedilink.com)
 app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
-  res.json({ success: true, message: 'Iniciando aprendizaje del centro de ayuda Medilink...' });
+  const hcBizName = userProfile?.businessName || 'el negocio';
+  res.json({ success: true, message: `Iniciando aprendizaje del centro de ayuda de ${hcBizName}...` });
   (async () => {
     const BASE = 'https://ayuda.softwaremedilink.com/es/';
     try {
@@ -9134,10 +9157,11 @@ app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
           const html = await resp.text();
           const text = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim().substring(0, 6000);
           if (text.length < 150) continue;
-          const prompt = `Sos MIIA, asistente de ventas de Medilink. Resumí el siguiente artículo del centro de ayuda de Medilink en máximo 200 palabras, en un formato que te permita recordar y explicar esta funcionalidad a futuros leads. Incluí el link del artículo: ${url}\n\nContenido:\n${text}`;
+          const hcBiz2 = userProfile?.businessName || 'el negocio';
+          const prompt = `Sos MIIA, asistente de ventas de ${hcBiz2}. Resumí el siguiente artículo del centro de ayuda en máximo 200 palabras, en un formato que te permita recordar y explicar esta funcionalidad a futuros leads. Incluí el link del artículo: ${url}\n\nContenido:\n${text}`;
           const summary = await generateAIContent(prompt);
           if (summary && summary.length > 50) {
-            cerebroAbsoluto.appendLearning(`[AYUDA MEDILINK - ${url}]\n${summary}`, 'HELPCENTER_MEDILINK');
+            cerebroAbsoluto.appendLearning(`[CENTRO DE AYUDA - ${url}]\n${summary}`, 'HELPCENTER');
             learned++;
           }
           await new Promise(r => setTimeout(r, 2000));
@@ -9148,7 +9172,8 @@ app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
       saveDB();
       console.log(`[HELPCENTER] ✅ Aprendizaje completo: ${learned}/${articleUrls.length} artículos procesados.`);
       // Notify Mariano via WhatsApp
-      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ *Centro de Ayuda Medilink aprendido*\n${learned} artículos procesados y guardados en mi memoria.`, { isSelfChat: true }).catch(() => {});
+      const hcBiz3 = userProfile?.businessName || 'Centro de Ayuda';
+      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ *${hcBiz3} — Centro de Ayuda aprendido*\n${learned} artículos procesados y guardados en mi memoria.`, { isSelfChat: true }).catch(() => {});
     } catch (e) {
       console.error('[HELPCENTER] Error general:', e.message);
     }
@@ -9189,14 +9214,15 @@ app.post('/api/admin-chat', express.json(), async (req, res) => {
     if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
 
     const adnStr = cerebroAbsoluto.getTrainingData();
-    const historyStr = history.slice(-10).map(m => `${m.role === 'user' ? 'Mariano' : 'MIIA'}: ${m.content}`).join('\n');
+    const trainOwner = userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Owner';
+    const historyStr = history.slice(-10).map(m => `${m.role === 'user' ? trainOwner : 'MIIA'}: ${m.content}`).join('\n');
 
     const prompt = `# PROMPT MAESTRO — MIIA Admin Chat
-Sos MIIA, asistente de Mariano. Estás en el panel de entrenamiento donde Mariano puede conversar con vos, hacerte preguntas, testear respuestas, y enseñarte cosas nuevas.
+Sos MIIA, asistente de ${trainOwner}. Estás en el panel de entrenamiento donde ${trainOwner} puede conversar con vos, hacerte preguntas, testear respuestas, y enseñarte cosas nuevas.
 
 ANTI-BOT: NUNCA empieces con "Entendido", "Perfecto", "Claro", "Por supuesto". Variá la estructura. Sé natural, directa, humana.
 
-AUTO-APRENDIZAJE: Si en la conversación Mariano te cuenta información NUEVA sobre su negocio (productos, precios, clientes, reglas de venta, procedimientos, información importante), incluí al FINAL de tu respuesta el tag [GUARDAR_APRENDIZAJE:texto breve a guardar]. Solo si la info es genuinamente nueva y útil para recordar en futuros chats de WhatsApp. No guardes preguntas, tests, ni información obvia. Para información que Mariano quiere guardar explícitamente, usa el prefijo APRENDE: que dispara el guardado directo.
+AUTO-APRENDIZAJE: Si en la conversación ${trainOwner} te cuenta información NUEVA sobre su negocio (productos, precios, clientes, reglas de venta, procedimientos, información importante), incluí al FINAL de tu respuesta el tag [GUARDAR_APRENDIZAJE:texto breve a guardar]. Solo si la info es genuinamente nueva y útil para recordar en futuros chats de WhatsApp. No guardes preguntas, tests, ni información obvia. Para información que ${trainOwner} quiere guardar explícitamente, usa el prefijo APRENDE: que dispara el guardado directo.
 
 ## Tu conocimiento actual:
 ${adnStr || '(sin aprendizajes cargados aún)'}
@@ -9204,7 +9230,7 @@ ${adnStr || '(sin aprendizajes cargados aún)'}
 ## Historial de esta sesión:
 ${historyStr || '(inicio de sesión)'}
 
-## Mariano dice ahora:
+## ${trainOwner} dice ahora:
 ${message}
 
 Respondé natural, concisa y útil. Si pregunta qué sabés, mostrá ejemplos. Si no sabés algo, decilo.`;
@@ -9254,7 +9280,8 @@ Segunda línea: si es UTIL escribe una versión mejorada y concisa del conocimie
       const knowledgeToSave = detail || message;
       cerebroAbsoluto.appendLearning(knowledgeToSave, 'WEB_TRAINING');
       saveDB();
-      const confirmPrompt = `Eres MIIA. Mariano acaba de enseñarte: "${knowledgeToSave}". Confirma en 1 oración que lo entendiste y guardaste.`;
+      const trainOwner2 = userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'El owner';
+      const confirmPrompt = `Eres MIIA. ${trainOwner2} acaba de enseñarte: "${knowledgeToSave}". Confirma en 1 oración que lo entendiste y guardaste.`;
       const confirmation = await generateAIContent(confirmPrompt);
       res.json({ response: confirmation || '✅ Guardado en mi memoria.', saved: true, tipo: 'UTIL' });
     } else if (tipo === 'PREGUNTA') {
@@ -11125,7 +11152,7 @@ app.post('/api/admin/support-chat', express.json(), async (req, res) => {
     const { message, history } = req.body;
     if (!message) return res.status(400).json({ error: 'message requerido' });
 
-    const systemPrompt = `Eres el asistente técnico de MIIA, un sistema SaaS de ventas por WhatsApp creado por Mariano De Stefano.
+    const systemPrompt = `Eres el asistente técnico de MIIA, un sistema SaaS de ventas por WhatsApp.
 Arquitectura: Backend Node.js en Railway, Frontend estático en Vercel, Firebase Auth + Firestore como DB, Baileys para conexión WhatsApp (WebSocket directo, sin Chrome), Google Gemini API para IA, Paddle para pagos.
 El super admin te consulta sobre problemas técnicos. Responde de forma concisa y técnica en español.
 Si te preguntan sobre una caída, da pasos concretos para diagnosticar (revisar logs de Railway, verificar Firestore, etc).
@@ -12206,7 +12233,7 @@ Genera un informe COMPLETO y DETALLADO en español sobre:
 2. **Mercado objetivo**: a quién le venden, segmentos, geografía
 3. **Presencia web actual**: calidad del sitio, SEO aparente, redes sociales
 4. **Oportunidades con MIIA**: cómo MIIA (asistente IA por WhatsApp) podría ayudarles — automatización de atención al cliente, seguimiento de leads, agendamiento, cotizaciones automáticas, etc.
-5. **Talking points para reunión de ventas**: 3-5 puntos concretos para Mariano
+5. **Talking points para reunión de ventas**: 3-5 puntos concretos para el equipo comercial
 
 Sé específico y usa información real del sitio web.`;
 
@@ -12280,7 +12307,8 @@ hola@miia-app.com`;
           console.log(`[ENTERPRISE-LEAD] ✅ Contacto marcado como enterprise_lead en contact_index`);
         }
 
-        // Generar mensaje inicial — MIIA se presenta como "la MIIA de Mariano"
+        // Generar mensaje inicial — MIIA se presenta como representante del área Enterprise
+        const entOwner = userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'el equipo';
         let waMessage = '';
         try {
           const msgPrompt = `Genera un mensaje de WhatsApp CORTO (máximo 4-5 oraciones) para ${name} que acaba de solicitar información sobre MIIA Enterprise.
@@ -12288,7 +12316,7 @@ ${website ? `Ya analizamos su sitio web ${website}.` : `No proporcionó sitio we
 ${websiteAnalysis ? `Resumen del análisis: ${websiteAnalysis.substring(0, 500)}` : ''}
 
 El mensaje debe:
-- Presentarse como "Mariano, del área Enterprise de MIIA" (NUNCA revelar que es IA)
+- Presentarse como "${entOwner}, del área Enterprise de MIIA" (NUNCA revelar que es IA)
 - Agradecer por su interés
 - ${website ? 'Mencionar algo específico que encontraste en su web para demostrar que la analizaste' : 'Preguntar por su sitio web o LinkedIn para conocer mejor su empresa'}
 - Hacer 1-2 preguntas de discovery: ¿cuántos leads manejan al mes? ¿qué herramientas usan hoy?
@@ -12301,7 +12329,7 @@ Devuelve SOLO el mensaje, sin comillas ni explicaciones.`;
           console.log(`[ENTERPRISE-LEAD] ✅ Mensaje WhatsApp generado por IA`);
         } catch (msgErr) {
           console.warn(`[ENTERPRISE-LEAD] ⚠️ Error generando mensaje IA, usando fallback:`, msgErr.message);
-          waMessage = `¡Hola ${name}! Soy Mariano, del área Enterprise de MIIA. ${website ? `Estuve revisando ${website} y me pareció muy interesante lo que hacen.` : 'Recibí tu solicitud y me interesa mucho conocer tu proyecto.'} Me encantaría hacerte algunas preguntas para preparar una propuesta personalizada. ¿Cuántos leads manejan al mes y qué herramientas usan hoy para atenderlos? 🚀\n\n— Mariano, MIIA Enterprise`;
+          waMessage = `¡Hola ${name}! Soy ${entOwner}, del área Enterprise de MIIA. ${website ? `Estuve revisando ${website} y me pareció muy interesante lo que hacen.` : 'Recibí tu solicitud y me interesa mucho conocer tu proyecto.'} Me encantaría hacerte algunas preguntas para preparar una propuesta personalizada. ¿Cuántos leads manejan al mes y qué herramientas usan hoy para atenderlos? 🚀\n\n— ${entOwner}, MIIA Enterprise`;
         }
 
         await safeSendMessage(leadJid, waMessage);

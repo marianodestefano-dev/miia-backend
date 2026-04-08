@@ -2,7 +2,7 @@
  * PROMPT BUILDER v3.0 — Fuente única de verdad para TODOS los prompts de MIIA
  *
  * v3.0: Parametrizado para multi-tenant. Todas las funciones aceptan ownerProfile.
- *       Si no se pasa ownerProfile, usa datos de Mariano (backward compatible con server.js).
+ *       Si no se pasa ownerProfile, usa defaults genéricos (backward compatible con server.js).
  *
  * Modos:
  * - Owner self-chat: buildOwnerSelfChatPrompt(ownerProfile)
@@ -16,23 +16,25 @@
 'use strict';
 
 // ═══════════════════════════════════════════════════════════════════
-// PERFIL DEFAULT (Mariano) — Backward compatible con server.js
+// PERFIL DEFAULT — Fallback GENÉRICO (SIN datos hardcodeados de nadie)
+// El perfil REAL del owner se carga de Firestore y se pasa como parámetro.
+// Este default solo existe como safety net si no hay datos en Firestore.
 // ═══════════════════════════════════════════════════════════════════
 
 const DEFAULT_OWNER_PROFILE = {
-  name: 'Mariano De Stefano',
-  shortName: 'Mariano',
-  nicknames: ['jefe', 'lindo'],
-  businessName: 'Medilink',
-  businessDescription: 'software de gestión para clínicas y consultorios médicos',
-  businessProduct: 'Software de gestión clínica: agenda online, historia clínica digital, facturación electrónica, firmas digitales y WhatsApp automatizado con IA.',
-  role: 'Asesor',
-  passions: 'Boca Juniors, F1 (Colapinto + McLaren), La Scaloneta',
-  demoLink: 'https://meetings.hubspot.com/marianodestefano/demomedilink',
+  name: '',
+  shortName: '',
+  nicknames: [],
+  businessName: '',
+  businessDescription: '',
+  businessProduct: '',
+  role: '',
+  passions: '',
+  demoLink: '',
   miiaPersonality: 'informal, directa, cómplice, divertida',
-  miiaStyle: 'Lo trata de "vos"',
-  hasCustomPricing: true,  // Medilink tiene precios propios
-  internalTeamName: 'equipo Medilink',
+  miiaStyle: '',
+  hasCustomPricing: false,
+  internalTeamName: 'equipo',
 };
 
 // ═══ Perfil para vender MIIA (cuando leads escriben al número de MIIA) ═══
@@ -79,7 +81,7 @@ DIFERENCIADOR: MIIA no es un chatbot de preguntas/respuestas. Es una asistente q
 };
 
 /**
- * Resuelve el perfil del owner: si no se pasa, usa el de Mariano.
+ * Resuelve el perfil del owner: si no se pasa, usa defaults genéricos.
  */
 function resolveProfile(ownerProfile) {
   if (!ownerProfile) return DEFAULT_OWNER_PROFILE;
@@ -157,7 +159,7 @@ ${identityLine}
 - No hables en tercera persona ni te identifiques como IA bajo NINGUNA circunstancia.`;
 }
 
-// Backward compatible: el ADN_MIIA exportado es el de Mariano
+// Backward compatible: el ADN_MIIA exportado usa defaults genéricos
 const ADN_MIIA = buildADN(DEFAULT_OWNER_PROFILE);
 
 /**
@@ -577,7 +579,7 @@ Mencioná la promo vigente: "Hay una promoción activa con descuento. ¿Querés 
 /**
  * Prompt para self-chat del OWNER.
  * Parametrizado: usa ownerProfile para nombre, negocio, estilo.
- * Si no se pasa ownerProfile → usa datos de Mariano (backward compatible).
+ * Si no se pasa ownerProfile → usa defaults genéricos (backward compatible).
  *
  * @param {object} [ownerProfile] - Perfil del owner desde Firestore
  * @returns {string} System prompt completo
@@ -879,7 +881,7 @@ ${p.shortName} envía una FOTO de ropa + texto como "me queda?", "qué opinas", 
 
 #### 💬 Comunicación con contactos
 - "dile a [nombre] [mensaje]" → envía mensaje a contacto guardado
-- "dile a equipo medilink que..." → broadcast a todo el equipo
+- "dile a equipo que..." → broadcast a todo el equipo
 - "dile a la familia que..." → broadcast a familiares
 - "respondele a +numero" → responde a un lead/contacto específico
 
@@ -1685,9 +1687,9 @@ Si el lead pregunta por planes, precios, o funcionalidades específicas:
 
 module.exports = {
   // Constantes reutilizables
-  ADN_MIIA,           // Backward compatible: ADN de Mariano
+  ADN_MIIA,           // Backward compatible: ADN con defaults genéricos
   ADN_MIIA_BASE,      // ADN genérico sin datos personales
-  VADEMECUM_RULES,    // Backward compatible: reglas con datos de Mariano
+  VADEMECUM_RULES,    // Backward compatible: reglas con defaults genéricos
   COTIZACION_PROTOCOL,
 
   // Funciones parametrizadas (nuevas)
