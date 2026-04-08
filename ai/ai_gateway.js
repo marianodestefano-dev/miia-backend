@@ -66,11 +66,11 @@ const CONTEXT_CONFIG = {
     description: 'Respuesta a leads — Gemini Flash (GRATIS)'
   },
   [CONTEXTS.FAMILY_CHAT]: {
-    preferred: 'gemini',
-    model: 'gemini-2.5-flash',
-    fallbacks: ['openai', 'claude'],
-    maxTokens: 2048,
-    description: 'Chat familiar — Gemini Flash (GRATIS)'
+    preferred: 'claude',
+    model: 'claude-opus-4-6',
+    fallbacks: ['claude', 'gemini', 'openai'],
+    maxTokens: 4096,
+    description: 'OPUS ARMY — Chat familiar con Claude Opus 4.6 (máxima calidad, 30 familiares = 30 vendedores)'
   },
   [CONTEXTS.CLASSIFICATION]: {
     preferred: 'gemini',
