@@ -152,7 +152,6 @@ const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
 const ownerMemory = require('./core/owner_memory');
 const nightlyBrain = require('./core/nightly_brain');
-const biweeklyReport = require('./core/biweekly_report');
 const patternEngine = require('./core/pattern_engine');
 const linkTracker = require('./core/link_tracker');
 const ttsEngine = require('./voice/tts_engine');
@@ -963,13 +962,6 @@ setTimeout(() => {
     aiGateway,
     safeSendMessage,
     getScheduleConfig,
-    OWNER_PHONE
-  });
-  biweeklyReport.init(OWNER_UID, {
-    firestore: firestoreInstance,
-    aiGateway,
-    mailService,
-    safeSendMessage,
     OWNER_PHONE
   });
   patternEngine.init(OWNER_UID, {
