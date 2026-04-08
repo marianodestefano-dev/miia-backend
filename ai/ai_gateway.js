@@ -67,10 +67,10 @@ const CONTEXT_CONFIG = {
   },
   [CONTEXTS.FAMILY_CHAT]: {
     preferred: 'claude',
-    model: 'claude-sonnet-4-6',
-    fallbacks: ['gemini', 'openai'],
+    model: 'claude-opus-4-6',
+    fallbacks: ['claude', 'gemini', 'openai'],
     maxTokens: 4096,
-    description: 'SONNET ARMY — 30 familiares con Claude Sonnet 4.6 (calidad 9/10, cabe en $100 API limit)'
+    description: 'OPUS ARMY — Familia con Claude Opus 4.6 (máxima calidad, 2 API keys = $200 budget)'
   },
   [CONTEXTS.CLASSIFICATION]: {
     preferred: 'gemini',
