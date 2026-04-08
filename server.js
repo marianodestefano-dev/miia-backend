@@ -362,6 +362,16 @@ let sentMessageIds = new Set();
 let lastAiSentBody = {};
 let lastMessageKey = {};    // 🔧 Para self-chat: guardar message.key más reciente por contacto
 let miiaPausedUntil = 0;
+
+// ═══ MIIA_PHONE_REGISTRY — Previene loops MIIA↔MIIA entre instancias ═══
+// Contiene TODOS los teléfonos que corren una instancia de MIIA.
+// Si un mensaje llega desde un phone que está en el registry → es otra MIIA → no responder.
+// Se carga de Firestore al startup + se actualiza cuando se registran nuevos tenants.
+const MIIA_PHONE_REGISTRY = new Set();
+// Zero-Width Space marker: MIIA lo agrega al inicio de TODOS sus mensajes a leads.
+// Cuando otra MIIA recibe un mensaje que empieza con \u200B → sabe que es de otra MIIA → ignora.
+// Invisible para humanos en WhatsApp, pero detectable por código.
+const ZERO_WIDTH_MARKER = '\u200B';
 // trainingData vive SOLO en cerebroAbsoluto (fuente única de verdad) — NO duplicar aquí
 let leadSummaries = {};
 let conversationMetadata = {};
@@ -1073,6 +1083,10 @@ let userProfile = {
 const BLACKLISTED_NUMBERS = ['573023317570@s.whatsapp.net'];
 const OWNER_PHONE = '573054169969';
 const ADMIN_PHONES = ['573054169969'];
+
+// ═══ MIIA_PHONE_REGISTRY: Registrar el phone propio al definirse ═══
+MIIA_PHONE_REGISTRY.add(OWNER_PHONE);
+console.log(`[MIIA-REGISTRY] 📱 Phone propio registrado: ${OWNER_PHONE} (${MIIA_PHONE_REGISTRY.size} instancias)`);
 let automationSettings = {
   autoResponse: true,
   additionalPersona: '',
@@ -1825,6 +1839,13 @@ async function safeSendMessage(target, content, options = {}) {
       if (detected.cinemaSub) emojiCtx.cinemaSub = detected.cinemaSub;
     }
     content = applyMiiaEmoji(content, emojiCtx);
+  }
+
+  // ═══ ZERO-WIDTH MARKER: Agregar a mensajes a leads (sin emoji) para que otra MIIA los detecte ═══
+  // Solo aplica a mensajes que NO son self-chat, NO familia, NO grupo — es decir, leads/desconocidos.
+  // El marker es invisible para humanos pero otra instancia MIIA lo detecta y no responde.
+  if (typeof content === 'string' && !isEmojiEligible && !options.skipZeroWidth) {
+    content = ZERO_WIDTH_MARKER + content;
   }
 
   const ownerSock = getOwnerSock();
@@ -6698,7 +6719,25 @@ async function handleIncomingMessage(message) {
   if (!body) return;
 
 
-  // ═══ ANTI-LOOP DEFINITIVO: Si fromMe y el body empieza con emoji oficial de MIIA → es eco de MIIA ═══
+  // ═══ ANTI-LOOP NIVEL 1: Zero-Width marker = mensaje de otra instancia MIIA ═══
+  // Cuando MIIA envía a leads, agrega \u200B al inicio. Si otra MIIA recibe eso → ignorar.
+  if (body && body.startsWith(ZERO_WIDTH_MARKER)) {
+    const senderBase = (message.from || '').split('@')[0].replace(/:\d+$/, '');
+    console.log(`[ANTI-LOOP] 🛡️ Zero-Width marker detectado de ${senderBase} — mensaje de otra MIIA, ignorando.`);
+    return;
+  }
+
+  // ═══ ANTI-LOOP NIVEL 2: Sender está en MIIA_PHONE_REGISTRY = instancia MIIA conocida ═══
+  // Si el remitente es un phone que corre MIIA y NO es nuestro self-chat → no responder
+  if (!fromMe && body) {
+    const senderBase = (message.from || '').split('@')[0].replace(/:\d+$/, '');
+    if (MIIA_PHONE_REGISTRY.has(senderBase) && senderBase !== OWNER_PHONE) {
+      console.log(`[ANTI-LOOP] 🛡️ Mensaje de MIIA instance ${senderBase} (registry) — ignorando para prevenir MIIA↔MIIA loop.`);
+      return;
+    }
+  }
+
+  // ═══ ANTI-LOOP NIVEL 3: Si fromMe y el body empieza con emoji oficial de MIIA → es eco de MIIA ═══
   // Esto cubre TODOS los casos: SPLIT-SMART, MULTI-MSG, mensajes normales, etc.
   // MIIA siempre prefija sus mensajes con emoji en self-chat, así que si vuelve con emoji → ignorar
   if (fromMe && body) {
@@ -11563,6 +11602,26 @@ app.get('/r/:uid/:trackId', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => res.json(shield.getHealthDashboard()));
+
+// ═══ MIIA_PHONE_REGISTRY API — Para multi-tenant: registrar/consultar instancias MIIA ═══
+app.get('/api/miia-registry', (req, res) => {
+  res.json({ phones: [...MIIA_PHONE_REGISTRY], count: MIIA_PHONE_REGISTRY.size });
+});
+app.post('/api/miia-registry', (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone requerido' });
+  const cleanPhone = phone.replace(/[^0-9]/g, '');
+  MIIA_PHONE_REGISTRY.add(cleanPhone);
+  console.log(`[MIIA-REGISTRY] 📱 Nuevo phone registrado: ${cleanPhone} (total: ${MIIA_PHONE_REGISTRY.size})`);
+  res.json({ ok: true, phone: cleanPhone, total: MIIA_PHONE_REGISTRY.size });
+});
+app.delete('/api/miia-registry/:phone', (req, res) => {
+  const cleanPhone = req.params.phone.replace(/[^0-9]/g, '');
+  if (cleanPhone === OWNER_PHONE) return res.status(400).json({ error: 'No se puede eliminar el phone propio' });
+  MIIA_PHONE_REGISTRY.delete(cleanPhone);
+  console.log(`[MIIA-REGISTRY] 🗑️ Phone eliminado: ${cleanPhone} (total: ${MIIA_PHONE_REGISTRY.size})`);
+  res.json({ ok: true, phone: cleanPhone, total: MIIA_PHONE_REGISTRY.size });
+});
 app.get('/api/health/unknown-errors', (req, res) => res.json(shield.getUnknownErrors()));
 app.get('/api/health/task-scheduler', (req, res) => res.json({
   metrics: taskScheduler.getTaskMetrics(),
