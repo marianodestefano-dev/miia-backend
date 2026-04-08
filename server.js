@@ -2300,18 +2300,26 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
   console.log(`[MIIA-RESPONSE-DEBUG] phone=${phone}, basePhone=${basePhone}`);
   try {
     if (!conversations[phone]) conversations[phone] = [];
-    const familyInfo = familyContacts[basePhone];
-    const isFamilyContact = !!familyInfo;
-    let isAdmin = ADMIN_PHONES.includes(basePhone);  // ← CAMBIO: const → let (para poder reasignar en self-chat)
+    // ═══ REGLA ARQUITECTÓNICA: Este servidor es el NÚMERO DE MIIA (ventas) ═══
+    // familyContacts y equipoMedilink solo aplican en self-chat del owner.
+    // Para TODOS los demás contactos → son leads de MIIA. Sin excepciones.
+    let isAdmin = ADMIN_PHONES.includes(basePhone);
 
     // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin
-    // Detectar self-chat comparando basePhone con el número real del owner (no con isAlreadySavedParam)
     const ownerSockPMR = getOwnerSock();
     const ownerPhonePMR = ownerSockPMR?.user?.id?.split('@')[0]?.split(':')[0] || OWNER_PHONE;
     const isSelfChat = basePhone === ownerPhonePMR || basePhone === OWNER_PHONE || ADMIN_PHONES.includes(basePhone);
     if (isSelfChat && !isAdmin) {
       isAdmin = true;
       console.log(`[ADMIN-FIX] 🔧 Self-chat: isAdmin=true (${basePhone} = owner ${ownerPhonePMR})`);
+    }
+
+    // familyContacts/equipoMedilink → DESACTIVADOS para contactos externos.
+    // Este número es de MIIA, no personal. Solo el self-chat del owner puede usar estos datos.
+    const familyInfo = isSelfChat ? familyContacts[basePhone] : null;
+    const isFamilyContact = false; // NUNCA familia en número de MIIA
+    if (!isSelfChat && familyContacts[basePhone]) {
+      console.log(`[MIIA-SALES] 📱 ${basePhone} está en familyContacts pero este es el número de MIIA → tratado como LEAD`);
     }
 
     // Recuperar mensaje real del historial cuando fue llamado con userMessage=null
@@ -4634,38 +4642,12 @@ Nuevo resumen actualizado:`;
       });
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
-    } else if (isFamilyContact) {
-      // Familia sigue usando builder dedicado (tiene lógica de familyData específica)
-      activeSystemPrompt = buildOwnerFamilyPrompt(familyInfo.name, familyInfo);
-    } else if (equipoMedilink[basePhone]) {
-      const miembroData = equipoMedilink[basePhone];
-      const nombreConocido = miembroData.name || leadNames[phone] || null;
-      activeSystemPrompt = buildEquipoPrompt(nombreConocido);
     } else {
-      // ═══ DETECCIÓN MIIA vs NEGOCIO DEL OWNER — ¿Este lead quiere conocer MIIA o el negocio? ═══
-      let leadOwnerProfile = userProfile; // Default: perfil DINÁMICO del owner desde Firestore
-
-      // Verificar si es lead de MIIA por:
-      // 1. contact_index lo marca como enterprise_lead
-      // 2. Primer mensaje o conversación contiene keywords de MIIA
-      const isMiiaLead = (() => {
-        // Check contact_index (si ya fue clasificado)
-        const contactMeta = conversationMetadata[phone];
-        if (contactMeta?.contactType === 'enterprise_lead' || contactMeta?.contactType === 'miia_lead') return true;
-
-        // Check keywords en la conversación completa
-        const allMsgs = (conversations[phone] || []).map(m => (m.content || m.text || '').toLowerCase()).join(' ');
-        const currentMsg = (userMessage || '').toLowerCase();
-        const miiaKeywords = ['miia', 'conocer miia', 'quiero miia', 'sobre miia', 'planes miia', 'cuánto cuesta miia', 'asistente ia', 'asistente inteligencia artificial', 'miia-app', 'miia app'];
-        return miiaKeywords.some(kw => currentMsg.includes(kw) || allMsgs.includes(kw));
-      })();
-
-      if (isMiiaLead) {
-        leadOwnerProfile = MIIA_SALES_PROFILE;
-        console.log(`[LEAD-DETECT] 🤖 Lead ${basePhone} detectado como LEAD DE MIIA — usando perfil MIIA_SALES_PROFILE`);
-        // Marcar en metadata para futuros mensajes
-        if (conversationMetadata[phone]) conversationMetadata[phone].contactType = 'miia_lead';
-      }
+      // ═══ NÚMERO DE MIIA: TODOS son leads de MIIA. Sin excepciones. ═══
+      // No hay familia, no hay equipo en este número. Solo venta de MIIA.
+      const leadOwnerProfile = MIIA_SALES_PROFILE;
+      console.log(`[MIIA-SALES] 🤖 ${basePhone} → Lead de MIIA (MIIA_SALES_PROFILE)`);
+      if (conversationMetadata[phone]) conversationMetadata[phone].contactType = 'miia_lead';
 
       const result = assemblePrompt({
         chatType: 'lead',
@@ -4673,7 +4655,7 @@ Nuevo resumen actualizado:`;
         ownerProfile: leadOwnerProfile,
         context: {
           contactName: leadNames[phone] || '',
-          trainingData: isMiiaLead ? '' : cerebroAbsoluto.getTrainingData(), // MIIA no necesita cerebro de Medilink
+          trainingData: '', // Número de MIIA: NO cargar cerebro de otro negocio
           countryContext,
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,
@@ -4788,7 +4770,7 @@ Nuevo resumen actualizado:`;
 
     // Sistema de stages — inyectar nivel de confianza en el prompt (aplica a TODOS: admin, familia, equipo, leads)
     if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
-    const isLeadContact = !isAdmin && !isFamilyContact && !equipoMedilink[basePhone];
+    const isLeadContact = !isAdmin; // Número de MIIA: todo no-admin es lead
     const trustTone = '\n' + getAffinityToneForPrompt(phone, userProfile.name || 'el owner', isLeadContact);
 
     const syntheticMemoryStr = leadSummaries[phone] ? `\n\n🧠[MEMORIA ACUMULADA DE ESTA PERSONA]:\n${leadSummaries[phone]}` : '';
@@ -6293,11 +6275,8 @@ REGLAS:
       return;
     }
 
-    // Agregar texto de cierre al final de mensajes a familia y equipo Medilink
-    const basePhoneFinal = phone.split('@')[0];
-    if ((isFamilyContact || equipoMedilink[basePhoneFinal]) && !isAdmin) {
-      aiMessage = aiMessage.trimEnd() + MIIA_CIERRE;
-    }
+    // Cierre MIIA: desactivado en número de ventas (no hay familia/equipo aquí)
+    // Se reactivará cuando se conecte el número personal del owner
 
     conversations[phone].push({ role: 'assistant', content: aiMessage, timestamp: Date.now() });
     if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
@@ -7338,18 +7317,12 @@ async function handleIncomingMessage(message) {
       }
     }
 
-    // Auto-takeover via CONTACT GATE — keywords dinámicas + hardcodeadas admin (Medilink)
+    // Auto-takeover via CONTACT GATE — keywords para MIIA (el producto)
     if (!isAllowed && !existsInCRM && !fromMe) {
-      // Admin (Mariano): mantener keywords hardcodeadas de Medilink como fallback
-      const ADMIN_MEDILINK_KEYWORDS = [
-        'medico', 'doctor', 'clinica', 'consultorio', 'consulta',
-        'medilink', 'precio', 'cotizacion', 'software', 'sistema', 'plataforma',
-        'salud', 'dentista', 'odontologo', 'kinesiologo', 'psicologia',
-        'psicologo', 'ips', 'centro', 'secretaria', 'administrativa',
-        'pediatra', 'pediatria', 'nutricionista', 'fisioterapeuta', 'especialista',
-        'paciente', 'pacientes', 'cita', 'citas',
-        'medica', 'medicos', 'terapeuta', 'cirujano', 'ginecologo',
-        'dermatologo', 'cardiologo', 'neurologo', 'ortopedista', 'traumatologo',
+      // NÚMERO DE MIIA: keywords de venta de MIIA, no de Medilink
+      const MIIA_SALES_KEYWORDS = [
+        'miia', 'asistente', 'whatsapp', 'automatizar', 'ia', 'inteligencia artificial',
+        'bot', 'chatbot', 'ventas', 'leads', 'crm',
         'info', 'informacion', 'infomacion', 'informasion',
         'interesado', 'interesada', 'me interesa',
         'quiero saber', 'quiero info', 'necesito',
@@ -7357,12 +7330,12 @@ async function handleIncomingMessage(message) {
         'contratar', 'adquirir', 'comprar', 'suscripcion',
         'presupuesto', 'costo', 'valor', 'tarifa', 'mensualidad',
         'conocer', 'cotizar', 'averiguar',
-        'presio', 'precios', 'cuanto vale', 'cuanto cuesta', 'cuanto sale',
-        'como funciona', 'que ofrece', 'que ofrecen',
-        'quisiera', 'me gustaria', 'contratacion', 'servicio', 'servicios'
+        'precio', 'precios', 'cuanto vale', 'cuanto cuesta', 'cuanto sale',
+        'como funciona', 'que ofrece', 'que ofrecen', 'planes',
+        'quisiera', 'me gustaria', 'contratacion', 'servicio', 'servicios',
+        'hola', 'buenas', 'buenos dias', 'buenas tardes'
       ];
-      // Combinar: keywords dinámicas del owner + hardcodeadas admin
-      const allKeywords = [...keywordsSet, ...ADMIN_MEDILINK_KEYWORDS];
+      const allKeywords = [...keywordsSet, ...MIIA_SALES_KEYWORDS];
       const kwMatch = matchesBusinessKeywords(body, allKeywords);
       if (kwMatch.matched) {
         try {
@@ -7515,8 +7488,8 @@ async function handleIncomingMessage(message) {
       return;
     }
 
-    const isMIIAMentioned = bodyLower.includes('miia') || bodyLower.includes('hola') || bodyLower === 'hi' ||
-      bodyLower.includes('medic') || bodyLower.includes('medilink') || bodyLower.includes('precio');
+    // NÚMERO DE MIIA: cualquier mensaje activa MIIA (es su número de ventas)
+    const isMIIAMentioned = true;
 
     // Si es self-chat y se menciona MIIA por primera vez → abrir sesión
     if (isSelfChatMsg && isMIIAMentioned && !isMIIASessionActive) {
@@ -7530,9 +7503,10 @@ async function handleIncomingMessage(message) {
     // El estado de sesión se pierde en cada redeploy (Railway filesystem efímero)
     const isMIIAActive = isSelfChatMsg ? true : (isMIIAMentioned || isMIIASessionActive);
 
-    const isFamily = !!familyContacts[effectiveTarget.split('@')[0]];
-    const isEquipo = !!equipoMedilink[effectiveTarget.split('@')[0]];
-    const isSelfChatMIIA = isSelfChatMsg && (isMIIAActive || isFamily);
+    // NÚMERO DE MIIA: No hay familia ni equipo. Todo contacto externo = lead de MIIA.
+    const isFamily = false;
+    const isEquipo = false;
+    const isSelfChatMIIA = isSelfChatMsg && isMIIAActive;
 
     // B1 DIAGNOSTIC: Log de estado de clasificación
     if (isSelfChatMsg || fromMe) {
