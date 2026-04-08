@@ -11217,6 +11217,187 @@ tenantMessageHandler.setApprovalFunctions({
   markApprovalApplied
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENTERPRISE LEAD ENDPOINT — Formulario público para captar leads enterprise
+// ═══════════════════════════════════════════════════════════════════════════════
+app.post('/api/enterprise-lead', express.json(), async (req, res) => {
+  const startTime = Date.now();
+  console.log('[ENTERPRISE-LEAD] 📥 Nueva solicitud recibida');
+
+  try {
+    // ── 1. Validar datos del formulario ──
+    const { name, email, phone, website, team_size, message } = req.body || {};
+    if (!name || !email || !phone) {
+      console.warn('[ENTERPRISE-LEAD] ❌ Datos incompletos:', { name: !!name, email: !!email, phone: !!phone });
+      return res.status(400).json({ error: 'name, email y phone son requeridos' });
+    }
+    console.log(`[ENTERPRISE-LEAD] 👤 Lead: ${name} | ${email} | ${phone} | website: ${website || 'N/A'} | team: ${team_size || 'N/A'}`);
+
+    // ── 2. Guardar lead en Firestore ──
+    const leadData = {
+      name,
+      email,
+      phone,
+      website: website || '',
+      team_size: team_size || '',
+      message: message || '',
+      status: 'new',
+      createdAt: new Date().toISOString(),
+      timestamp: Date.now()
+    };
+
+    const leadRef = await admin.firestore().collection('enterprise_leads').add(leadData);
+    const leadId = leadRef.id;
+    console.log(`[ENTERPRISE-LEAD] ✅ Lead guardado en Firestore: enterprise_leads/${leadId}`);
+
+    // ── 3. Analizar website con Gemini + Google Search grounding ──
+    let websiteAnalysis = '';
+    if (website) {
+      try {
+        console.log(`[ENTERPRISE-LEAD] 🔍 Analizando website: ${website}`);
+        const analysisPrompt = `Analiza la siguiente empresa y su sitio web: ${website}
+
+Nombre del contacto: ${name}
+Tamaño del equipo: ${team_size || 'No especificado'}
+Mensaje: ${message || 'Sin mensaje'}
+
+Genera un informe COMPLETO y DETALLADO en español sobre:
+1. **Qué hace la empresa**: productos, servicios, propuesta de valor
+2. **Mercado objetivo**: a quién le venden, segmentos, geografía
+3. **Presencia web actual**: calidad del sitio, SEO aparente, redes sociales
+4. **Oportunidades con MIIA**: cómo MIIA (asistente IA por WhatsApp) podría ayudarles — automatización de atención al cliente, seguimiento de leads, agendamiento, cotizaciones automáticas, etc.
+5. **Talking points para reunión de ventas**: 3-5 puntos concretos para Mariano
+
+Sé específico y usa información real del sitio web.`;
+
+        websiteAnalysis = await generateAIContent(analysisPrompt, { enableSearch: true });
+        console.log(`[ENTERPRISE-LEAD] ✅ Análisis completado (${websiteAnalysis.length} chars)`);
+
+        // Guardar análisis en el documento del lead
+        await leadRef.update({ websiteAnalysis });
+        console.log(`[ENTERPRISE-LEAD] ✅ Análisis guardado en Firestore`);
+      } catch (analysisErr) {
+        console.error(`[ENTERPRISE-LEAD] ⚠️ Error en análisis de website:`, analysisErr.message);
+        websiteAnalysis = `[Error al analizar: ${analysisErr.message}]`;
+        await leadRef.update({ websiteAnalysis }).catch(() => {});
+      }
+    } else {
+      console.log('[ENTERPRISE-LEAD] ⏭️ Sin website — análisis omitido');
+      websiteAnalysis = 'No se proporcionó website para analizar.';
+    }
+
+    // ── 4. Enviar email de confirmación al lead ──
+    try {
+      console.log(`[ENTERPRISE-LEAD] 📧 Enviando email de confirmación a ${email}`);
+      const emailSubject = `¡Hola ${name}! Recibimos tu solicitud — MIIA Enterprise`;
+      const emailBody = `Hola ${name},
+
+¡Gracias por tu interés en MIIA Enterprise! 🚀
+
+Recibimos tu solicitud y ya estamos analizando cómo podemos potenciar tu negocio${website ? ` (${website})` : ''}.
+
+Un miembro de nuestro equipo te contactará en las próximas horas para agendar una demo personalizada.
+
+Mientras tanto, si tenés alguna pregunta, respondé directamente a este email.
+
+¡Saludos!
+Mariano De Stefano
+MIIA Enterprise`;
+
+      await mailService.sendGenericEmail(email, emailSubject, emailBody, {
+        fromName: 'MIIA Enterprise',
+        replyTo: 'hola@miia-app.com'
+      });
+      console.log(`[ENTERPRISE-LEAD] ✅ Email de confirmación enviado a ${email}`);
+    } catch (emailErr) {
+      console.error(`[ENTERPRISE-LEAD] ⚠️ Error enviando email de confirmación:`, emailErr.message);
+      // No falla — el lead ya está guardado
+    }
+
+    // ── 5. Enviar WhatsApp al lead desde la conexión del owner ──
+    try {
+      const sock = getOwnerSock();
+      if (sock?.user?.id) {
+        // Limpiar teléfono: solo números
+        const cleanPhone = phone.replace(/[^0-9]/g, '');
+        const leadJid = `${cleanPhone}@s.whatsapp.net`;
+
+        console.log(`[ENTERPRISE-LEAD] 💬 Enviando WhatsApp a ${leadJid}`);
+
+        // Generar mensaje personalizado con IA
+        let waMessage = '';
+        try {
+          const msgPrompt = `Generá un mensaje de WhatsApp CORTO (máximo 3-4 oraciones) de Mariano, del área Enterprise de MIIA, para ${name}.
+${website ? `Visitamos su sitio web ${website} y nos interesó mucho lo que hacen.` : `Recibimos su solicitud y nos interesa mucho su proyecto.`}
+El mensaje debe ser:
+- Amigable y profesional (NO formal ni corporativo)
+- Mencionar que vimos su empresa y tenemos ideas concretas para potenciar su negocio con IA
+- Proponer agendar una llamada o reunión rápida
+- NUNCA revelar que este mensaje fue generado por IA
+- Firmado como "Mariano, del área Enterprise de MIIA"
+- Sin emojis excesivos (máximo 1-2)
+
+Devolvé SOLO el mensaje, sin comillas ni explicaciones.`;
+
+          waMessage = await generateAIContent(msgPrompt);
+          console.log(`[ENTERPRISE-LEAD] ✅ Mensaje WhatsApp generado por IA`);
+        } catch (msgErr) {
+          console.warn(`[ENTERPRISE-LEAD] ⚠️ Error generando mensaje IA, usando fallback:`, msgErr.message);
+          waMessage = `¡Hola ${name}! Soy Mariano, del área Enterprise de MIIA. ${website ? `Estuve viendo ${website} y me encantó lo que hacen.` : 'Recibí tu solicitud y me interesa mucho tu proyecto.'} Tengo algunas ideas de cómo podemos potenciar tu negocio con inteligencia artificial. ¿Te parece si agendamos una llamada rápida? 🚀\n\n— Mariano, MIIA Enterprise`;
+        }
+
+        await safeSendMessage(leadJid, waMessage);
+        console.log(`[ENTERPRISE-LEAD] ✅ WhatsApp enviado a ${leadJid}`);
+      } else {
+        console.warn(`[ENTERPRISE-LEAD] ⚠️ WhatsApp no disponible — sock no conectado`);
+      }
+    } catch (waErr) {
+      console.error(`[ENTERPRISE-LEAD] ⚠️ Error enviando WhatsApp al lead:`, waErr.message);
+      // No falla — el lead ya está guardado
+    }
+
+    // ── 6. Enviar reporte al self-chat de Mariano ──
+    try {
+      const sock = getOwnerSock();
+      if (sock?.user?.id) {
+        const ownerJid = sock.user.id;
+        const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+
+        const report = `🏢 *NUEVO LEAD ENTERPRISE*
+
+👤 *Nombre*: ${name}
+📧 *Email*: ${email}
+📱 *Teléfono*: ${phone}
+🌐 *Website*: ${website || 'N/A'}
+👥 *Equipo*: ${team_size || 'N/A'}
+💬 *Mensaje*: ${message || 'Sin mensaje'}
+
+📊 *Análisis del sitio web*:
+${websiteAnalysis ? websiteAnalysis.substring(0, 3000) : 'No disponible'}
+
+⏱️ Procesado en ${Date.now() - startTime}ms
+🆔 Firestore: enterprise_leads/${leadId}`;
+
+        await safeSendMessage(ownerSelf, report, { isSelfChat: true });
+        console.log(`[ENTERPRISE-LEAD] ✅ Reporte enviado al self-chat del owner`);
+      } else {
+        console.warn(`[ENTERPRISE-LEAD] ⚠️ No se pudo enviar reporte — sock no conectado`);
+      }
+    } catch (reportErr) {
+      console.error(`[ENTERPRISE-LEAD] ⚠️ Error enviando reporte al owner:`, reportErr.message);
+    }
+
+    // ── 7. Respuesta exitosa ──
+    const elapsed = Date.now() - startTime;
+    console.log(`[ENTERPRISE-LEAD] ✅ Lead ${leadId} procesado completamente en ${elapsed}ms`);
+    res.json({ ok: true, leadId, processedInMs: elapsed });
+
+  } catch (err) {
+    console.error(`[ENTERPRISE-LEAD] 🔴 ERROR FATAL:`, err.message, err.stack);
+    res.status(500).json({ error: 'Error procesando lead enterprise' });
+  }
+});
+
 // Inyectar dependencias en protection_manager
 protectionManager.setProtectionDependencies({
   sendGenericEmail: mailService.sendGenericEmail,
