@@ -1844,42 +1844,87 @@ async function safeSendMessage(target, content, options = {}) {
   }
   hourlySendLog.count++;
 
-  // ═══ SPLIT CASUAL: 30% de respuestas medianas se parten en 2-3 msgs rápidos ═══
-  // Simula estilo humano de mandar varios mensajes cortos seguidos
-  // Solo aplica a leads (no self-chat, no familia, no tags especiales)
+  // ═══ SPLIT INTELIGENTE: Decide contextualmente si partir la respuesta en múltiples mensajes ═══
+  // Analiza estructura del contenido: listas, múltiples temas, secciones con emojis
+  // Aplica a leads Y self-chat — MIIA puede enviar varios mensajes cuando tiene sentido
   const tieneTagEspecial = typeof content === 'string' && /\[(GENERAR_COTIZACION_PDF|GUARDAR_APRENDIZAJE|GUARDAR_NOTA|APRENDIZAJE_NEGOCIO|APRENDIZAJE_PERSONAL|APRENDIZAJE_DUDOSO):/.test(content);
   if (
     typeof content === 'string' &&
-    !options.isSelfChat &&
     !options.skipSplit &&
     !tieneTagEspecial &&
-    content.length >= 80 && content.length <= 600 &&
-    content.includes('\n') &&
-    Math.random() < 0.30
+    content.length >= 60 && content.length <= 800
   ) {
-    // Partir por doble salto de línea o punto + salto
-    const parts = content.split(/\n{2,}/).filter(p => p.trim().length > 0);
-    if (parts.length >= 2 && parts.length <= 4) {
-      console.log(`[SPLIT-CASUAL] 💬 Partiendo respuesta en ${parts.length} msgs rápidos para ${target}`);
-      for (let i = 0; i < parts.length; i++) {
-        const partDelay = i === 0 ? 0 : (800 + Math.random() * 1500); // 0.8-2.3s entre partes
-        if (partDelay > 0) await new Promise(r => setTimeout(r, partDelay));
-        try {
-          let sendJid = target;
-          if (options.isSelfChat) {
-            const ownerSockSC = getOwnerSock();
-            sendJid = ownerSockSC?.user?.id || target;
+    // ── Análisis contextual: ¿tiene sentido partir este mensaje? ──
+    let splitParts = null;
+    let splitReason = '';
+
+    // 1. Doble salto de línea = separación clara de temas/secciones
+    const byDoubleNewline = content.split(/\n{2,}/).filter(p => p.trim().length > 0);
+    if (byDoubleNewline.length >= 2 && byDoubleNewline.length <= 5) {
+      splitParts = byDoubleNewline;
+      splitReason = 'doble-salto (secciones separadas)';
+    }
+
+    // 2. Lista con bullets/emojis al inicio de línea (📅 Reunión...\n🍽️ Almuerzo...)
+    if (!splitParts) {
+      const lines = content.split('\n').filter(l => l.trim().length > 0);
+      const bulletLines = lines.filter(l => /^\s*[•\-📅🍽️🌧️🎂✅📈⚽📰🌤️₿💰📊🔔⚠️🎯💡🔥📱💬🎧📋🏥💊🎁🛒]/.test(l.trim()));
+      // Si >60% son bullets Y hay un intro antes, es una lista con contexto
+      if (lines.length >= 3 && bulletLines.length >= 2 && bulletLines.length / lines.length > 0.5) {
+        // Agrupar: intro (non-bullet) + lista (bullets) como bloques naturales
+        const intro = [];
+        const lista = [];
+        for (const line of lines) {
+          if (/^\s*[•\-📅🍽️🌧️🎂✅📈⚽📰🌤️₿💰📊🔔⚠️🎯💡🔥📱💬🎧📋🏥💊🎁🛒]/.test(line.trim())) {
+            lista.push(line);
+          } else if (lista.length === 0) {
+            intro.push(line);
+          } else {
+            lista.push(line); // línea no-bullet después de bullets = parte de la lista
           }
-          await getOwnerSock().sendMessage(sendJid, { text: parts[i].trim() });
-          rateLimiter.recordOutgoing('admin');
-          privacyCounters.recordOutgoing('admin');
-          hourlySendLog.count++;
-        } catch (e) {
-          console.error(`[SPLIT-CASUAL] Error enviando parte ${i + 1}:`, e.message);
-          break;
+        }
+        if (intro.length > 0 && lista.length > 0) {
+          splitParts = [intro.join('\n'), lista.join('\n')];
+          splitReason = 'intro + lista con bullets';
         }
       }
-      return { status: 'split', parts: parts.length };
+    }
+
+    // 3. Respuesta con "También" / "Además" / "Por otro lado" = cambio de tema natural
+    if (!splitParts) {
+      const temaBreaks = content.split(/\n(?=(?:También|Además|Por otro lado|Otra cosa|Y otra cosa|Ah,? y |Por cierto)[,:.\s])/i);
+      if (temaBreaks.length >= 2 && temaBreaks.length <= 4 && temaBreaks.every(p => p.trim().length >= 15)) {
+        splitParts = temaBreaks;
+        splitReason = 'cambio de tema (También/Además/etc)';
+      }
+    }
+
+    // Ejecutar split si encontramos partes válidas
+    if (splitParts && splitParts.length >= 2 && splitParts.length <= 5) {
+      // Filtrar partes vacías y validar tamaños mínimos
+      splitParts = splitParts.map(p => p.trim()).filter(p => p.length >= 10);
+      if (splitParts.length >= 2) {
+        console.log(`[SPLIT-SMART] 💬 Partiendo respuesta en ${splitParts.length} msgs para ${target} — Razón: ${splitReason}`);
+        for (let i = 0; i < splitParts.length; i++) {
+          const partDelay = i === 0 ? 0 : (800 + Math.random() * 1500); // 0.8-2.3s entre partes
+          if (partDelay > 0) await new Promise(r => setTimeout(r, partDelay));
+          try {
+            let sendJid = target;
+            if (options.isSelfChat) {
+              const ownerSockSC = getOwnerSock();
+              sendJid = ownerSockSC?.user?.id || target;
+            }
+            await getOwnerSock().sendMessage(sendJid, { text: splitParts[i] });
+            rateLimiter.recordOutgoing('admin');
+            privacyCounters.recordOutgoing('admin');
+            hourlySendLog.count++;
+          } catch (e) {
+            console.error(`[SPLIT-SMART] Error enviando parte ${i + 1}:`, e.message);
+            break;
+          }
+        }
+        return { status: 'split', parts: splitParts.length };
+      }
     }
   }
 
@@ -12975,6 +13020,248 @@ app.post('/api/calendar/event', requireRole('owner', 'agent'), express.json(), a
     const result = await createCalendarEvent({ ...(req.body || {}), uid: req.user.uid });
     res.json(result);
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CRM ANALYTICS ENDPOINTS — Pipeline, Nightly, Patterns, Metrics, Conversations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// 1. Pipeline de ventas — leads agrupados por etapa
+app.get('/api/tenant/:uid/analytics/pipeline', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    console.log(`[CRM-ANALYTICS] 📊 Pipeline solicitado para uid:${uid.substring(0, 8)}`);
+    const db = admin.firestore();
+
+    // Cargar contact_index completo
+    const indexSnap = await db.collection('users').doc(uid).collection('contact_index').get();
+    const stages = {
+      nuevo: { name: 'Nuevo', count: 0, leads: [] },
+      en_conversacion: { name: 'En conversación', count: 0, leads: [] },
+      cotizacion_enviada: { name: 'Cotización enviada', count: 0, leads: [] },
+      cerrado: { name: 'Cerrado', count: 0, leads: [] },
+      perdido: { name: 'Perdido', count: 0, leads: [] }
+    };
+
+    let totalActive = 0;
+    let totalCerrados = 0;
+    const responseTimesAll = [];
+
+    for (const doc of indexSnap.docs) {
+      const data = doc.data();
+      if (data.type !== 'lead' && data.type !== 'pending' && data.type !== 'enterprise_lead') continue;
+
+      const stage = data.stage || 'nuevo';
+      const stageKey = stages[stage] ? stage : 'nuevo';
+      const lead = {
+        phone: doc.id,
+        name: data.name || doc.id.replace('@s.whatsapp.net', ''),
+        lastActivity: data.lastActivity || data.updatedAt || null,
+        businessId: data.businessId || null,
+        stage: stageKey
+      };
+
+      stages[stageKey].leads.push(lead);
+      stages[stageKey].count++;
+
+      if (stageKey !== 'cerrado' && stageKey !== 'perdido') totalActive++;
+      if (stageKey === 'cerrado') totalCerrados++;
+      if (data.avgResponseMs) responseTimesAll.push(data.avgResponseMs);
+    }
+
+    const totalLeads = indexSnap.docs.filter(d => {
+      const t = d.data().type;
+      return t === 'lead' || t === 'pending' || t === 'enterprise_lead';
+    }).length;
+    const conversion = totalLeads > 0 ? Math.round((totalCerrados / totalLeads) * 100) : 0;
+    const avgResponseMs = responseTimesAll.length > 0
+      ? Math.round(responseTimesAll.reduce((a, b) => a + b, 0) / responseTimesAll.length)
+      : 0;
+
+    res.json({
+      stages: Object.values(stages),
+      totals: { active: totalActive, total: totalLeads, conversion, avgResponseMs }
+    });
+    console.log(`[CRM-ANALYTICS] ✅ Pipeline: ${totalLeads} leads, ${conversion}% conversión`);
+  } catch (e) {
+    console.error(`[CRM-ANALYTICS] ❌ Error pipeline uid:${uid.substring(0, 8)}: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 2. Informes nocturnos IA
+app.get('/api/tenant/:uid/analytics/nightly', async (req, res) => {
+  const { uid } = req.params;
+  const days = Math.min(parseInt(req.query.days) || 7, 30);
+  try {
+    console.log(`[CRM-ANALYTICS] 🌙 Nightly reports (${days}d) para uid:${uid.substring(0, 8)}`);
+    const db = admin.firestore();
+
+    const snap = await db.collection('users').doc(uid)
+      .collection('nightly_reports')
+      .orderBy('date', 'desc')
+      .limit(days)
+      .get();
+
+    const reports = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    res.json(reports);
+    console.log(`[CRM-ANALYTICS] ✅ Nightly: ${reports.length} reportes devueltos`);
+  } catch (e) {
+    console.error(`[CRM-ANALYTICS] ❌ Error nightly uid:${uid.substring(0, 8)}: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 3. ADN Vendedor / Análisis de patrones
+app.get('/api/tenant/:uid/analytics/patterns', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    console.log(`[CRM-ANALYTICS] 🧬 Patterns para uid:${uid.substring(0, 8)}`);
+    const db = admin.firestore();
+
+    const snap = await db.collection('users').doc(uid)
+      .collection('pattern_analysis')
+      .orderBy('date', 'desc')
+      .limit(1)
+      .get();
+
+    if (snap.empty) {
+      res.json({ date: null, patterns: null, adn_vendedor: null, message: 'Sin análisis aún. Se genera automáticamente cada noche.' });
+      return;
+    }
+
+    const latest = { id: snap.docs[0].id, ...snap.docs[0].data() };
+
+    // También traer ADN acumulado
+    const adnDoc = await db.collection('users').doc(uid)
+      .collection('pattern_analysis').doc('adn_vendedor').get();
+
+    latest.adn_vendedor = adnDoc.exists ? adnDoc.data() : null;
+    res.json(latest);
+    console.log(`[CRM-ANALYTICS] ✅ Patterns: fecha ${latest.date}, ${latest.conversationsAnalyzed || 0} conversaciones`);
+  } catch (e) {
+    console.error(`[CRM-ANALYTICS] ❌ Error patterns uid:${uid.substring(0, 8)}: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 4. Métricas diarias (mensajes, IA, errores, tiempos)
+app.get('/api/tenant/:uid/analytics/metrics', async (req, res) => {
+  const { uid } = req.params;
+  const days = Math.min(parseInt(req.query.days) || 7, 30);
+  try {
+    console.log(`[CRM-ANALYTICS] 📈 Metrics (${days}d) para uid:${uid.substring(0, 8)}`);
+    const db = admin.firestore();
+
+    // Generar fechas de los últimos N días
+    const dates = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dates.push('daily_' + d.toISOString().split('T')[0]);
+    }
+
+    // Fetch en paralelo
+    const promises = dates.map(dateId =>
+      db.collection('users').doc(uid).collection('miia_metrics').doc(dateId).get()
+    );
+    const docs = await Promise.all(promises);
+
+    const metrics = docs
+      .filter(d => d.exists)
+      .map(d => {
+        const data = d.data();
+        const responseTimes = data.responseTimesMs || [];
+        const avgResponse = responseTimes.length > 0
+          ? Math.round(responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length)
+          : 0;
+        return {
+          date: d.id.replace('daily_', ''),
+          messagesProcessed: data.messagesProcessed || 0,
+          messagesFromLeads: data.messagesFromLeads || 0,
+          messagesFromOwner: data.messagesFromOwner || 0,
+          messagesFromFamily: data.messagesFromFamily || 0,
+          aiCalls: data.aiCalls || 0,
+          aiTokensEstimated: data.aiTokensEstimated || 0,
+          errors: data.errors || 0,
+          avgResponseMs: avgResponse,
+          outreachSent: data.outreachSent || 0,
+          agendaEvents: data.agendaEvents || 0
+        };
+      })
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    res.json(metrics);
+    console.log(`[CRM-ANALYTICS] ✅ Metrics: ${metrics.length} días con datos`);
+  } catch (e) {
+    console.error(`[CRM-ANALYTICS] ❌ Error metrics uid:${uid.substring(0, 8)}: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 5. Conversaciones activas (vista en vivo)
+app.get('/api/tenant/:uid/analytics/conversations', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    console.log(`[CRM-ANALYTICS] 💬 Conversations para uid:${uid.substring(0, 8)}`);
+    const db = admin.firestore();
+
+    const convSnap = await db.collection('users').doc(uid)
+      .collection('conversations')
+      .orderBy('lastActivity', 'desc')
+      .limit(50)
+      .get();
+
+    if (convSnap.empty) {
+      res.json([]);
+      return;
+    }
+
+    // Enriquecer con contact_index
+    const conversations = [];
+    for (const doc of convSnap.docs) {
+      const data = doc.data();
+      const phone = doc.id;
+
+      // Buscar info del contacto
+      let contactInfo = {};
+      try {
+        const indexDoc = await db.collection('users').doc(uid)
+          .collection('contact_index').doc(phone).get();
+        if (indexDoc.exists) contactInfo = indexDoc.data();
+      } catch {}
+
+      const msgs = data.messages || [];
+      const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+      const lastActivity = data.lastActivity || (lastMsg ? lastMsg.timestamp : null);
+
+      // Determinar status: active (<5min), waiting (<1h), idle (>1h)
+      const now = Date.now();
+      const lastTs = lastActivity ? new Date(lastActivity).getTime() : 0;
+      const diffMin = (now - lastTs) / 60000;
+      let status = 'idle';
+      if (diffMin < 5) status = 'active';
+      else if (diffMin < 60) status = 'waiting';
+
+      conversations.push({
+        phone,
+        name: contactInfo.name || data.contactName || phone.replace('@s.whatsapp.net', ''),
+        type: contactInfo.type || 'unknown',
+        businessId: contactInfo.businessId || null,
+        lastMessage: lastMsg ? (lastMsg.content || lastMsg.text || '').substring(0, 100) : '',
+        lastMessageFrom: lastMsg ? lastMsg.role || 'unknown' : '',
+        lastActivity,
+        status,
+        messageCount: msgs.length
+      });
+    }
+
+    res.json(conversations);
+    console.log(`[CRM-ANALYTICS] ✅ Conversations: ${conversations.length} activas`);
+  } catch (e) {
+    console.error(`[CRM-ANALYTICS] ❌ Error conversations uid:${uid.substring(0, 8)}: ${e.message}`);
     res.status(500).json({ error: e.message });
   }
 });
