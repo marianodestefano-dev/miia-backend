@@ -396,7 +396,9 @@ let familyContacts = {
   '5491140293119': { name: 'Chapy', fullName: 'Juan Pablo', relation: 'primo de Mariano', emoji: '💻💪', personality: 'Capo en programación, fan del gym', isHandshakeDone: false },
   '573145868362': { name: 'Juancho', fullName: 'Juan Diego', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️', personality: 'Amistoso. Experto en leyes colombianas. Le gusta viajar en moto y tiene campo de aguacates.', isHandshakeDone: false },
   '573108221373': { name: 'Maria', fullName: 'Maria Clara', relation: 'concuñada, esposa de Juancho', emoji: '🏠🏍️🙏', personality: 'Muy amistosa y agradable. Tiene inmobiliaria. Le encanta viajar en moto con Juancho. Ayudarle con deseos de rezar.', isHandshakeDone: false },
-  '573217976029': { name: 'Consu', fullName: 'Consuelo', relation: 'suegra, mamá de Ale y Juancho', emoji: '👵⛪📿', personality: 'Mujer súper dulce. Fanática de Dios, la religión y rezar. Cuidarla y ayudarle en todo.', isHandshakeDone: false }
+  '573217976029': { name: 'Consu', fullName: 'Consuelo', relation: 'suegra, mamá de Ale y Juancho', emoji: '👵⛪📿', personality: 'Mujer súper dulce. Fanática de Dios, la religión y rezar. Cuidarla y ayudarle en todo.', isHandshakeDone: false },
+  '573014822744': { name: 'Kamila', fullName: 'Kamila', relation: 'amiga de Alejandra y Mariano', emoji: '💜🤗', personality: 'Amiga cercana de Ale y Mariano. Colombiana. Conocerla, ser cálida y curiosa.', isHandshakeDone: false },
+  '573015392753': { name: 'Liliana', fullName: 'Liliana', relation: 'amiga de Alejandra y Mariano', emoji: '💛🤗', personality: 'Amiga cercana de Ale y Mariano. Colombiana. Conocerla, ser cálida y curiosa.', isHandshakeDone: false }
 };
 // EQUIPO MEDILINK — compañeros de trabajo de Mariano
 const equipoMedilink = {
@@ -2748,6 +2750,40 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
           console.error(`[DILE A] Error generando despedida CHAU MIIA:`, e.message);
           await safeSendMessage(phone, `¡Chaauuu! Si quieres volver a hablar, escribe HOLA MIIA en el chat. 💕`, { isFamily: true });
         }
+
+        // ═══ RESUMEN DE LO APRENDIDO → enviar al owner en self-chat ═══
+        // Después de que un contacto dice CHAU MIIA, MIIA analiza la conversación
+        // y le manda un resumen al owner de lo que aprendió sobre esa persona.
+        try {
+          const convoHistory = conversations[phone] || [];
+          if (convoHistory.length >= 2) {
+            const last20 = convoHistory.slice(-20).map(m => `${m.role === 'assistant' ? 'MIIA' : contactName}: ${(m.content || '').substring(0, 200)}`).join('\n');
+            const summaryPrompt = `Analizá esta conversación entre MIIA y ${contactName} (${contactInfo.relation || 'contacto'} de ${userProfile?.name || 'Mariano'}).
+
+CONVERSACIÓN:
+${last20}
+
+Generá un RESUMEN BREVE (máx 5 renglones) de lo que MIIA aprendió sobre ${contactName}:
+- Datos personales mencionados (trabajo, gustos, familia, ubicación, etc.)
+- Impresión general (¿le gustó MIIA? ¿se divirtió? ¿fue escéptica?)
+- Algo que ${contactName} haya pedido o necesitado
+- Si no se aprendió nada relevante, decilo honestamente
+
+Formato: bullet points. Sin saludos, directo al resumen.`;
+            const summary = await generateAIContent(summaryPrompt);
+            if (summary) {
+              const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
+              await safeSendMessage(ownerJid,
+                `📋 *Resumen de mi charla con ${contactName}:*\n\n${summary.trim()}`,
+                { isSelfChat: true }
+              );
+              console.log(`[DILE A] 📋 Resumen de conversación con ${contactName} enviado al owner`);
+            }
+          }
+        } catch (summaryErr) {
+          console.error(`[DILE A] ❌ Error generando resumen para ${contactName}:`, summaryErr.message);
+        }
+
         saveDB();
         return;
       }
@@ -3724,6 +3760,121 @@ REGLAS:
         await db.collection('users').doc(OWNER_UID).collection('miia_flags').doc('team_presentation').set({ done: true, doneAt: new Date().toISOString(), sentTo: enviados });
       } catch (_) {}
       console.log(`[EQUIPO:PRESENTACIÓN] ✅ Presentación completa (${enviados}/${phones.length})`);
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COMANDO: "presentate a [nombre/s]" — MIIA se presenta individualmente a contactos
+    // Trigger: "presentate a Kamila", "preséntate a Kamila y Liliana", "presentate con Kamila, Liliana"
+    // MIIA inicia conversación proactiva: se presenta, explica qué es, conoce a la persona
+    // ═══════════════════════════════════════════════════════════════════════════
+    const presentarIndividualMatch = effectiveMsg && effectiveMsg.match(/(?:presenta(?:te)?|preséntate|presentá(?:te)?)\s+(?:miia\s+)?(?:a|con)\s+(.+)/i);
+    const isNotEquipoPresent = effectiveMsg && !effectiveMsg.match(/(?:presenta(?:te)?|preséntate)\s+(?:miia\s+)?(?:al?\s+)?equipo/i);
+    if (isAdmin && presentarIndividualMatch && isNotEquipoPresent) {
+      const namesRaw = presentarIndividualMatch[1].trim();
+      // Parsear nombres: "Kamila y Liliana", "Kamila, Liliana", "Kamila"
+      const names = namesRaw.split(/\s*(?:,|y)\s*/i).map(n => n.trim()).filter(n => n.length > 0);
+      console.log(`[PRESENTAR] 🎬 Owner pidió presentación individual a: ${names.join(', ')}`);
+
+      // Buscar cada nombre en familyContacts
+      const targets = [];
+      const notFound = [];
+      for (const name of names) {
+        const nameLower = name.toLowerCase();
+        const match = Object.entries(familyContacts).find(([, info]) => {
+          const n = (info.name || '').toLowerCase();
+          const fn = (info.fullName || '').toLowerCase();
+          return n === nameLower || fn === nameLower || n.includes(nameLower) || fn.includes(nameLower);
+        });
+        if (match) {
+          targets.push({ phone: match[0], info: match[1] });
+        } else {
+          notFound.push(name);
+        }
+      }
+
+      if (targets.length === 0) {
+        await safeSendMessage(phone, `❌ No encontré a nadie con ${names.length > 1 ? 'esos nombres' : 'ese nombre'} en tus contactos. Verificá que estén registrados.`, { isSelfChat: true });
+        return;
+      }
+
+      if (notFound.length > 0) {
+        await safeSendMessage(phone, `⚠️ No encontré a: ${notFound.join(', ')}. Pero me presento con ${targets.map(t => t.info.name).join(' y ')}.`, { isSelfChat: true });
+      }
+
+      const ownerName = userProfile?.name || 'Mariano';
+      const ownerFirstName = ownerName.split(' ')[0];
+      let presentados = 0;
+
+      for (const target of targets) {
+        const targetJid = `${target.phone}@s.whatsapp.net`;
+        try {
+          // Prompt IA para generar presentación natural y personalizada
+          const introPrompt = `Sos MIIA. ${ownerFirstName} te pidió que te presentes con ${target.info.name}.
+
+CONTEXTO:
+- ${target.info.name} es ${target.info.relation || 'amiga/o de ' + ownerFirstName}
+- Personalidad: ${target.info.personality || 'Persona cercana a la familia'}
+- ${ownerFirstName} creó un grupo especial donde ${target.info.name} tiene acceso GRATIS de por vida a MIIA
+- MIIA todavía está en desarrollo, no fue "liberada" oficialmente aún
+- La página web es www.miia-app.com
+
+TU MISIÓN en este primer mensaje:
+1. Presentarte de forma cálida y natural (NO formal, NO robótica, NO listado de funciones)
+2. Decirle que ${ownerFirstName} te creó y que ella forma parte de un grupo especial con acceso gratis para siempre
+3. Mencionarle la página www.miia-app.com para que la conozca
+4. Explicarle brevemente qué hacés (asistente personal por WhatsApp: agenda, recordatorios, clima, noticias, deportes, y más)
+5. Aclararle que todavía estás en construcción pero que pronto vas a estar lista al 100%
+6. Preguntarle algo sobre ella para empezar a conocerla (qué hace, qué le gusta)
+7. Transmitir sutilmente que ${ownerFirstName} ha estado trabajando mucho en este proyecto con mucho cariño
+
+REGLAS:
+- Máximo 8-10 renglones. Natural, como una amiga nueva que se presenta.
+- Usá emojis con moderación (3-4 max). Emoji de cierre: ${target.info.emoji || '💕'}
+- NO digas "inteligencia artificial" ni "IA" ni "bot". Sos MIIA, punto.
+- NO digas "Mariano me pidió que te escriba". Presentate con INICIATIVA PROPIA.
+- Hablá en español neutro/colombiano (ya que son colombianas)
+- Sé genuinamente curiosa por conocerla`;
+
+          const introMsg = await generateAIContent(introPrompt);
+          if (introMsg) {
+            await safeSendMessage(targetJid, introMsg.trim(), { isFamily: true });
+            target.info.isHandshakeDone = true;
+            if (!allowedLeads.includes(targetJid)) allowedLeads.push(targetJid);
+            conversations[targetJid] = conversations[targetJid] || [];
+            conversations[targetJid].push({ role: 'assistant', content: introMsg.trim(), timestamp: Date.now() });
+            presentados++;
+
+            // Metadata: MIIA INICIÓ la conversación → lista para chatear de inmediato
+            // dileAHandshakePending = false porque MIIA ya se presentó, no necesita HOLA MIIA
+            if (!conversationMetadata[targetJid]) conversationMetadata[targetJid] = {};
+            conversationMetadata[targetJid].dileAMode = true; // Habilita handler HOLA/CHAU MIIA
+            conversationMetadata[targetJid].dileAActive = true; // Conversación activa ya
+            conversationMetadata[targetJid].dileAContact = target.info.name;
+            conversationMetadata[targetJid].dileAHandshakePending = false; // NO requiere HOLA MIIA — MIIA inició
+
+            console.log(`[PRESENTAR] ✅ Presentación enviada a ${target.info.name} (${target.phone})`);
+
+            // Delay entre mensajes para no parecer bot
+            if (targets.indexOf(target) < targets.length - 1) {
+              const delay = 5000 + Math.floor(Math.random() * 5000);
+              await new Promise(r => setTimeout(r, delay));
+            }
+          } else {
+            console.error(`[PRESENTAR] ❌ IA no generó mensaje para ${target.info.name}`);
+          }
+        } catch (e) {
+          console.error(`[PRESENTAR] ❌ Error presentándose a ${target.info.name}:`, e.message);
+        }
+      }
+
+      saveDB();
+      if (presentados > 0) {
+        const nombresOk = targets.filter((_, i) => i < presentados).map(t => t.info.name).join(' y ');
+        await safeSendMessage(phone, `✅ Me presenté con ${nombresOk}. Cuando respondan con *HOLA MIIA* arrancamos a conversar. Les expliqué quién soy y que son parte del grupo gratis 💜`, { isSelfChat: true });
+      } else {
+        await safeSendMessage(phone, `❌ No pude enviar ninguna presentación. Verificá que WhatsApp esté conectado.`, { isSelfChat: true });
+      }
       return;
     }
 
