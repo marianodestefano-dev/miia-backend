@@ -4646,8 +4646,11 @@ Nuevo resumen actualizado:`;
       // ═══ NÚMERO DE MIIA: TODOS son leads de MIIA. Sin excepciones. ═══
       // No hay familia, no hay equipo en este número. Solo venta de MIIA.
       const leadOwnerProfile = MIIA_SALES_PROFILE;
-      console.log(`[MIIA-SALES] 🤖 ${basePhone} → Lead de MIIA (MIIA_SALES_PROFILE)`);
       if (conversationMetadata[phone]) conversationMetadata[phone].contactType = 'miia_lead';
+
+      // Contador de respuestas de MIIA a este lead
+      const miiaResponseCount = (conversations[phone] || []).filter(m => m.role === 'assistant').length;
+      console.log(`[MIIA-SALES] 🤖 ${basePhone} → Lead de MIIA (respuesta #${miiaResponseCount + 1})`);
 
       const result = assemblePrompt({
         chatType: 'lead',
@@ -4659,10 +4662,28 @@ Nuevo resumen actualizado:`;
           countryContext,
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,
+          miiaResponseCount: miiaResponseCount,
         }
       });
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
+
+      // Inyectar regla de cierre según contador
+      if (miiaResponseCount >= 10) {
+        activeSystemPrompt += `\n\n## 🚨 CIERRE OBLIGATORIO (respuesta #${miiaResponseCount + 1})
+Ya llevas ${miiaResponseCount} respuestas con este lead. Es momento de cerrar con respeto pero firmeza.
+- Responde la pregunta actual BREVEMENTE (máximo 2 líneas)
+- Luego di algo como: "Me encanta ayudarte con estas cosas 😊 Imaginate tener esto TODOS los días, automático, sin pedirlo. Con el plan mensual de MIIA a $15 USD/mes (los primeros 7 días son GRATIS) tenés todo esto y mucho más. Registrate acá: www.miia-app.com"
+- Si ya ofreciste el plan antes y sigue sin registrarse, sé directa: "Hasta acá puedo ayudarte gratis. Para seguir contando conmigo todos los días, activá tu prueba gratuita en www.miia-app.com — son 7 días sin costo 😊"
+- INCLUYE SIEMPRE el link www.miia-app.com
+- Tono: amigable pero firme. No suplicar. MIIA es valiosa.`;
+      } else if (miiaResponseCount >= 5) {
+        activeSystemPrompt += `\n\n## 💡 CIERRE SUAVE (respuesta #${miiaResponseCount + 1} de 10 gratis)
+Ya llevas ${miiaResponseCount} respuestas con este lead. Empieza a sugerir el plan.
+- Responde su pregunta normalmente
+- Al final, menciona casualmente: "¿Sabías que puedo hacer todo esto por vos automáticamente todos los días? Probá 7 días gratis en www.miia-app.com"
+- No presiones, pero siempre deja la semilla del plan.`;
+      }
     }
 
     // ═══ PROTECCIÓN ELDERLY: Inyectar tono respetuoso si detectado ═══
@@ -7166,9 +7187,14 @@ async function handleIncomingMessage(message) {
     return;
   }
 
-  // Opt-out
-  const optOutKeywords = ['quitar', 'baja', 'no molestar', 'no me interesa', 'spam', 'parar', 'unsubscribe'];
-  if (!fromMe && optOutKeywords.some(kw => lowerBody.includes(kw))) {
+  // Opt-out (word boundary: evitar falsos positivos como "trabajar" → "baja")
+  const optOutKeywords = ['quitar', 'dar de baja', 'darse de baja', 'darme de baja', 'no molestar', 'no me interesa', 'spam', 'parar de escribir', 'unsubscribe', 'no quiero mas mensajes', 'dejen de escribir'];
+  if (!fromMe && optOutKeywords.some(kw => {
+    // Match palabra completa para keywords cortas, substring para frases largas
+    if (kw.includes(' ')) return lowerBody.includes(kw);
+    return new RegExp(`\\b${kw}\\b`).test(lowerBody);
+  })) {
+    console.log(`[OPT-OUT] ⚠️ Keyword detectado en: "${(body||'').substring(0,80)}"`);
     await handleLeadOptOut(targetPhone);
     return;
   }

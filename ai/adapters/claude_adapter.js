@@ -5,7 +5,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const DEFAULT_MODEL = 'claude-sonnet-4-6'; // Safety net: si alguien llama sin model, NUNCA Opus por accidente
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [8000, 20000, 45000];
-const API_VERSION = '2025-04-14'; // B+ Strategy: requiere 2025+ para extended thinking
+const API_VERSION = '2023-06-01'; // Versión estable — extended thinking funciona con este header
 
 async function call(apiKey, prompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
