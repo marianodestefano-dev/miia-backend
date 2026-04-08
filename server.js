@@ -93,7 +93,7 @@ const crypto = require('crypto');
 const cerebroAbsoluto = require('./data/cerebro_absoluto');
 const confidenceEngine = require('./core/confidence_engine');
 const messageLogic = require('./core/message_logic');
-const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping } = require('./core/miia_emoji');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping, MIIA_OFFICIAL_EMOJIS } = require('./core/miia_emoji');
 const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
@@ -1914,10 +1914,28 @@ async function safeSendMessage(target, content, options = {}) {
               const ownerSockSC = getOwnerSock();
               sendJid = ownerSockSC?.user?.id || target;
             }
+            // ═══ GUARD: No enviar partes vacías (causa burbujas vacías en WhatsApp) ═══
+            if (!splitParts[i] || !splitParts[i].trim()) {
+              console.warn(`[SPLIT-SMART] ⚠️ Parte ${i + 1} vacía — saltando`);
+              continue;
+            }
             await getOwnerSock().sendMessage(sendJid, { text: splitParts[i] });
             rateLimiter.recordOutgoing('admin');
             privacyCounters.recordOutgoing('admin');
             hourlySendLog.count++;
+            // ═══ ANTI-LOOP: Registrar cada parte en lastSentByBot para que el eco no se procese ═══
+            const splitSentBody = splitParts[i].trim();
+            if (splitSentBody) {
+              if (!lastSentByBot[target]) lastSentByBot[target] = [];
+              lastSentByBot[target].push(splitSentBody);
+              setTimeout(() => {
+                if (lastSentByBot[target]) {
+                  lastSentByBot[target] = lastSentByBot[target].filter(b => b !== splitSentBody);
+                  if (lastSentByBot[target].length === 0) delete lastSentByBot[target];
+                }
+              }, 15000); // 15s (más que los 10s normales, por delay entre partes)
+            }
+            console.log(`[SPLIT-SMART] ✅ Parte ${i + 1}/${splitParts.length} enviada y registrada en botBuffer`);
           } catch (e) {
             console.error(`[SPLIT-SMART] Error enviando parte ${i + 1}:`, e.message);
             break;
@@ -1961,9 +1979,26 @@ async function safeSendMessage(target, content, options = {}) {
             const ownerSockMM = getOwnerSock();
             sendJid = ownerSockMM?.user?.id || target;
           }
+          // ═══ GUARD: No enviar chunks vacíos ═══
+          if (!chunkContent || !chunkContent.trim()) {
+            console.warn(`[MULTI-MSG] ⚠️ Chunk ${i + 1} vacío — saltando`);
+            continue;
+          }
           await getOwnerSock().sendMessage(sendJid, { text: chunkContent });
           hourlySendLog.count++;
-          console.log(`[MULTI-MSG] Chunk ${i + 1}/${chunks.length} enviado (${chunkContent.length} chars)`);
+          // ═══ ANTI-LOOP: Registrar cada chunk en lastSentByBot para que el eco no se procese ═══
+          const chunkSentBody = chunkContent.trim();
+          if (chunkSentBody) {
+            if (!lastSentByBot[target]) lastSentByBot[target] = [];
+            lastSentByBot[target].push(chunkSentBody);
+            setTimeout(() => {
+              if (lastSentByBot[target]) {
+                lastSentByBot[target] = lastSentByBot[target].filter(b => b !== chunkSentBody);
+                if (lastSentByBot[target].length === 0) delete lastSentByBot[target];
+              }
+            }, 15000);
+          }
+          console.log(`[MULTI-MSG] Chunk ${i + 1}/${chunks.length} enviado y registrado en botBuffer (${chunkContent.length} chars)`);
         } catch (e) {
           console.error(`[MULTI-MSG] Error enviando chunk ${i + 1}:`, e.message);
           break;
@@ -2768,10 +2803,10 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
             // Guardar el aprendizaje
             cerebroAbsoluto.appendLearning(question.text, 'MIIA_AUTO');
             saveDB();
-            await safeSendMessage(phone, `✅ Memorizando permanentemente: "${question.text.substring(0, 100)}${question.text.length > 100 ? '...' : ''}"`);
+            await safeSendMessage(phone, `✅ Memorizando permanentemente: "${question.text.substring(0, 100)}${question.text.length > 100 ? '...' : ''}"`, { isSelfChat: true });
             console.log(`[LEARNING] ✅ Guardado después de feedback sí: "${question.text.substring(0, 80)}..."`);
           } else if (feedback === 'no') {
-            await safeSendMessage(phone, '✅ Entendido, no lo memorizo.');
+            await safeSendMessage(phone, '✅ Entendido, no lo memorizo.', { isSelfChat: true });
             console.log(`[LEARNING] ⊘ Descartado por feedback no: "${question.text.substring(0, 80)}..."`);
           } else if (feedback === 'partial') {
             await safeSendMessage(phone, '✅ Anotado para revisión posterior.');
@@ -3347,10 +3382,10 @@ REGLAS:
         if (sportPref) {
           try {
             await sportEngine.addSportPreference('self', 'Owner', sportPref);
-            await safeSendMessage(phone, `✅ Anotado! Voy a seguir a ${sportPref.team || sportPref.driver} (${sportPref.type}) y te aviso cuando jueguen 🔥`);
+            await safeSendMessage(phone, `✅ Anotado! Voy a seguir a ${sportPref.team || sportPref.driver} (${sportPref.type}) y te aviso cuando jueguen 🔥`, { isSelfChat: true });
           } catch (err) {
             console.error(`[SPORT-CMD] Error agregando preferencia: ${err.message}`);
-            await safeSendMessage(phone, `❌ No pude guardar la preferencia: ${err.message}`);
+            await safeSendMessage(phone, `❌ No pude guardar la preferencia: ${err.message}`, { isSelfChat: true });
           }
           return;
         }
@@ -3371,10 +3406,10 @@ REGLAS:
               contactName,
               sportPref
             );
-            await safeSendMessage(phone, `✅ Anotado! ${contactName} es fan de ${sportPref.team || sportPref.driver} (${sportPref.type}). Le voy a avisar cuando jueguen 🔥`);
+            await safeSendMessage(phone, `✅ Anotado! ${contactName} es fan de ${sportPref.team || sportPref.driver} (${sportPref.type}). Le voy a avisar cuando jueguen 🔥`, { isSelfChat: true });
           } catch (err) {
             console.error(`[SPORT-CMD] Error: ${err.message}`);
-            await safeSendMessage(phone, `❌ Error: ${err.message}`);
+            await safeSendMessage(phone, `❌ Error: ${err.message}`, { isSelfChat: true });
           }
           return;
         }
@@ -3390,9 +3425,9 @@ REGLAS:
           : (_findContactPhoneBySportName(contactName) || contactName);
         try {
           await sportEngine.removeSportPreference(contactPhone, sportType);
-          await safeSendMessage(phone, `✅ Eliminada preferencia de ${sportType} para ${contactName}`);
+          await safeSendMessage(phone, `✅ Eliminada preferencia de ${sportType} para ${contactName}`, { isSelfChat: true });
         } catch (err) {
-          await safeSendMessage(phone, `❌ Error: ${err.message}`);
+          await safeSendMessage(phone, `❌ Error: ${err.message}`, { isSelfChat: true });
         }
         return;
       }
@@ -3436,18 +3471,18 @@ REGLAS:
             const ok = await morningBriefing.updateBriefingHour(pending.briefingType, pending.hour);
             await safeSendMessage(phone, ok
               ? `✅ Listo. Briefing de ${pending.briefingType} a las ${pending.hour}:00. Guardado para siempre 🔒`
-              : `❌ Error guardando. Intentá de nuevo.`);
+              : `❌ Error guardando. Intentá de nuevo.`, { isSelfChat: true });
           } else if (pending.type === 'city') {
             await morningBriefing.updateOwnerCity(pending.city);
-            await safeSendMessage(phone, `✅ Ciudad guardada: ${pending.city}. Te mando el clima todos los días 🌤️🔒`);
+            await safeSendMessage(phone, `✅ Ciudad guardada: ${pending.city}. Te mando el clima todos los días 🌤️🔒`, { isSelfChat: true });
           } else if (pending.type === 'owner_memory') {
             await ownerMemory.save(pending.category, pending.key, pending.value, pending.rawText);
-            await safeSendMessage(phone, `✅ Guardado para siempre 🔒`);
+            await safeSendMessage(phone, `✅ Guardado para siempre 🔒`, { isSelfChat: true });
           }
           return;
         } else if (briefLower === 'no' || briefLower === 'nah' || briefLower === 'cancelar') {
           _pendingOwnerConfirm = null;
-          await safeSendMessage(phone, `👌 Cancelado.`);
+          await safeSendMessage(phone, `👌 Cancelado.`, { isSelfChat: true });
           return;
         }
         // Si no es ni sí ni no, limpiar el pending y seguir procesando normalmente
@@ -3460,10 +3495,10 @@ REGLAS:
         const type = briefingMatch[1];
         const hour = parseInt(briefingMatch[2], 10);
         if (hour < 0 || hour > 23) {
-          await safeSendMessage(phone, `❌ Hora inválida. Usá un número entre 0 y 23.`);
+          await safeSendMessage(phone, `❌ Hora inválida. Usá un número entre 0 y 23.`, { isSelfChat: true });
         } else {
           _pendingOwnerConfirm = { ownerUid: OWNER_UID, type: 'briefing_hour', briefingType: type, hour };
-          await safeSendMessage(phone, `¿Confirmo cambiar el briefing de *${type}* a las *${hour}:00*? Esto queda guardado para siempre 🔒 (sí/no)`);
+          await safeSendMessage(phone, `¿Confirmo cambiar el briefing de *${type}* a las *${hour}:00*? Esto queda guardado para siempre 🔒 (sí/no)`, { isSelfChat: true });
         }
         return;
       }
@@ -3473,7 +3508,7 @@ REGLAS:
       if (cityMatch) {
         const city = cityMatch[1].trim();
         _pendingOwnerConfirm = { ownerUid: OWNER_UID, type: 'city', city };
-        await safeSendMessage(phone, `¿Confirmo que tu ciudad es *${city}*? Esto queda guardado para siempre 🔒 (sí/no)`);
+        await safeSendMessage(phone, `¿Confirmo que tu ciudad es *${city}*? Esto queda guardado para siempre 🔒 (sí/no)`, { isSelfChat: true });
         return;
       }
 
@@ -3531,9 +3566,9 @@ REGLAS:
           if (result.storeWhatsApp) response += `\n📱 Le escribí al WhatsApp de la tienda consultando precio y stock`;
           if (result.storeEmail) response += `\n📧 También envié un email a la tienda`;
           response += `\n\nTe avisaré cuando cambie el precio 💰`;
-          await safeSendMessage(phone, response);
+          await safeSendMessage(phone, response, { isSelfChat: true });
         } else {
-          await safeSendMessage(phone, `❌ No pude analizar ese producto: ${result.error}`);
+          await safeSendMessage(phone, `❌ No pude analizar ese producto: ${result.error}`, { isSelfChat: true });
         }
         return;
       }
@@ -3549,7 +3584,7 @@ REGLAS:
           .where('status', '==', 'active')
           .limit(20).get();
         if (tracksSnap.empty) {
-          await safeSendMessage(phone, '📦 No tenés productos en seguimiento. Decime "seguí este producto: [URL]" para empezar!');
+          await safeSendMessage(phone, '📦 No tenés productos en seguimiento. Decime "seguí este producto: [URL]" para empezar!', { isSelfChat: true });
         } else {
           let msg = `📦 *Productos en seguimiento (${tracksSnap.size}):*\n`;
           for (const doc of tracksSnap.docs) {
@@ -3558,10 +3593,10 @@ REGLAS:
             const arrow = diff > 0 ? '📈' : diff < 0 ? '📉' : '➡️';
             msg += `\n${arrow} *${t.productName}*\n   ${t.currency} ${t.currentPrice?.toLocaleString()} (${diff > 0 ? '+' : ''}${diff}%) — Stock: ${t.stock}`;
           }
-          await safeSendMessage(phone, msg);
+          await safeSendMessage(phone, msg, { isSelfChat: true });
         }
       } catch (e) {
-        await safeSendMessage(phone, `❌ Error consultando productos: ${e.message}`);
+        await safeSendMessage(phone, `❌ Error consultando productos: ${e.message}`, { isSelfChat: true });
       }
       return;
     }
@@ -3588,9 +3623,9 @@ REGLAS:
       const currency = (flightAlertMatch[4] || 'USD').toUpperCase();
       const result = await travelTracker.createFlightAlert(OWNER_UID, origin, dest, maxPrice, currency);
       if (result.success) {
-        await safeSendMessage(phone, `✅ *Alerta de vuelo creada*\n✈️ ${origin} → ${dest}\n💰 Menos de ${currency} ${maxPrice}\n\nTe aviso cuando encuentre algo 🔔`);
+        await safeSendMessage(phone, `✅ *Alerta de vuelo creada*\n✈️ ${origin} → ${dest}\n💰 Menos de ${currency} ${maxPrice}\n\nTe aviso cuando encuentre algo 🔔`, { isSelfChat: true });
       } else {
-        await safeSendMessage(phone, `❌ Error creando alerta: ${result.error}`);
+        await safeSendMessage(phone, `❌ Error creando alerta: ${result.error}`, { isSelfChat: true });
       }
       return;
     }
@@ -3599,9 +3634,9 @@ REGLAS:
     const destInfoMatch = effectiveMsg && effectiveMsg.match(/^(?:miia\s+)?(?:que\s+necesito\s+para\s+)?(?:viajar\s+a|info\s+(?:de\s+)?|informacion\s+(?:de\s+)?)(\S+.*)/i);
     if (isAdmin && destInfoMatch && /viaj|info|necesito/i.test(effectiveMsg)) {
       const dest = destInfoMatch[1].replace(/\?/g, '').trim();
-      await safeSendMessage(phone, `🌍 Buscando info sobre ${dest}...`);
+      await safeSendMessage(phone, `🌍 Buscando info sobre ${dest}...`, { isSelfChat: true });
       const info = await travelTracker.getDestinationInfo(dest);
-      await safeSendMessage(phone, info);
+      await safeSendMessage(phone, info, { isSelfChat: true });
       return;
     }
 
@@ -3610,9 +3645,9 @@ REGLAS:
     if (isAdmin && checklistMatch) {
       const dest = checklistMatch[1].trim();
       const details = checklistMatch[2]?.trim() || '';
-      await safeSendMessage(phone, `📋 Generando checklist para ${dest}...`);
+      await safeSendMessage(phone, `📋 Generando checklist para ${dest}...`, { isSelfChat: true });
       const checklist = await travelTracker.generateChecklist(dest, details);
-      await safeSendMessage(phone, checklist);
+      await safeSendMessage(phone, checklist, { isSelfChat: true });
       return;
     }
 
@@ -6662,6 +6697,17 @@ async function handleIncomingMessage(message) {
   }
   if (!body) return;
 
+
+  // ═══ ANTI-LOOP DEFINITIVO: Si fromMe y el body empieza con emoji oficial de MIIA → es eco de MIIA ═══
+  // Esto cubre TODOS los casos: SPLIT-SMART, MULTI-MSG, mensajes normales, etc.
+  // MIIA siempre prefija sus mensajes con emoji en self-chat, así que si vuelve con emoji → ignorar
+  if (fromMe && body) {
+    const emojiLoopMatch = body.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)\s*:\s*/u);
+    if (emojiLoopMatch && MIIA_OFFICIAL_EMOJIS.has(emojiLoopMatch[1])) {
+      console.log(`[ANTI-LOOP] 🛡️ Eco de MIIA detectado (emoji ${emojiLoopMatch[1]}) — ignorando. body="${body.substring(0,60)}"`);
+      return;
+    }
+  }
 
   // Guardia de bucle por contenido (buffer de IA)
   const targetPhoneId = fromMe ? message.to : message.from;

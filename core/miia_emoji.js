@@ -439,4 +439,5 @@ module.exports = {
   isMiiaSleeping,
   getSleepInfo,
   DEFAULT_EMOJI,
+  MIIA_OFFICIAL_EMOJIS,
 };
