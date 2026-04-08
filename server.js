@@ -94,7 +94,7 @@ const cerebroAbsoluto = require('./data/cerebro_absoluto');
 const confidenceEngine = require('./core/confidence_engine');
 const messageLogic = require('./core/message_logic');
 const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping } = require('./core/miia_emoji');
-const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt } = require('./core/prompt_builder');
+const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
 
@@ -4431,13 +4431,38 @@ Nuevo resumen actualizado:`;
       const nombreConocido = miembroData.name || leadNames[phone] || null;
       activeSystemPrompt = buildEquipoPrompt(nombreConocido);
     } else {
+      // ═══ DETECCIÓN MIIA vs MEDILINK — ¿Este lead quiere conocer MIIA o Medilink? ═══
+      let leadOwnerProfile = null; // null = Medilink (default)
+
+      // Verificar si es lead de MIIA por:
+      // 1. contact_index lo marca como enterprise_lead
+      // 2. Primer mensaje o conversación contiene keywords de MIIA
+      const isMiiaLead = (() => {
+        // Check contact_index (si ya fue clasificado)
+        const contactMeta = conversationMetadata[phone];
+        if (contactMeta?.contactType === 'enterprise_lead' || contactMeta?.contactType === 'miia_lead') return true;
+
+        // Check keywords en la conversación completa
+        const allMsgs = (conversations[phone] || []).map(m => (m.content || m.text || '').toLowerCase()).join(' ');
+        const currentMsg = (userMessage || '').toLowerCase();
+        const miiaKeywords = ['miia', 'conocer miia', 'quiero miia', 'sobre miia', 'planes miia', 'cuánto cuesta miia', 'asistente ia', 'asistente inteligencia artificial', 'miia-app', 'miia app'];
+        return miiaKeywords.some(kw => currentMsg.includes(kw) || allMsgs.includes(kw));
+      })();
+
+      if (isMiiaLead) {
+        leadOwnerProfile = MIIA_SALES_PROFILE;
+        console.log(`[LEAD-DETECT] 🤖 Lead ${basePhone} detectado como LEAD DE MIIA — usando perfil MIIA_SALES_PROFILE`);
+        // Marcar en metadata para futuros mensajes
+        if (conversationMetadata[phone]) conversationMetadata[phone].contactType = 'miia_lead';
+      }
+
       const result = assemblePrompt({
         chatType: 'lead',
         messageBody: userMessage,
-        ownerProfile: null,
+        ownerProfile: leadOwnerProfile,
         context: {
           contactName: leadNames[phone] || '',
-          trainingData: cerebroAbsoluto.getTrainingData(),
+          trainingData: isMiiaLead ? '' : cerebroAbsoluto.getTrainingData(), // MIIA no necesita cerebro de Medilink
           countryContext,
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,

@@ -35,6 +35,49 @@ const DEFAULT_OWNER_PROFILE = {
   internalTeamName: 'equipo Medilink',
 };
 
+// ═══ Perfil para vender MIIA (cuando leads escriben al número de MIIA) ═══
+const MIIA_SALES_PROFILE = {
+  name: 'MIIA',
+  shortName: 'MIIA',
+  nicknames: [],
+  businessName: 'MIIA',
+  businessDescription: 'asistente de inteligencia artificial que se conecta a tu WhatsApp y gestiona tu vida profesional y personal: ventas, agenda, familia, deportes, finanzas y más',
+  businessProduct: `MIIA es una asistente IA por WhatsApp. No es un chatbot — es tu socia digital.
+
+FUNCIONES PRINCIPALES:
+- Ventas automáticas: atiende leads 24/7, envía cotizaciones PDF, hace seguimiento, cierra ventas mientras duermes
+- Agenda inteligente: programa reuniones, sincroniza con Google Calendar, envía recordatorios, reagenda con un audio
+- Briefing matutino: cada mañana te resume tu día (agenda, clima, noticias, cumpleaños, leads pendientes)
+- Protección familiar: cuida a tus hijos de mensajes sospechosos, recuerda medicinas, responde a tu mamá por ti
+- Deportes en vivo: sigue a tu equipo gol a gol con emoción real (fútbol, F1, NBA, tenis y más)
+- Finanzas y noticias: monitorea acciones, crypto, noticias de tu sector
+- Multimedia: escucha audios, analiza fotos, lee PDFs y documentos
+- Aprende sola: cada noche te resume lo que aprendió y mejora al día siguiente
+- Emails desde WhatsApp: dicta un email y MIIA lo redacta y envía
+- Multi-negocio: gestiona varios negocios desde una sola cuenta
+
+PLANES:
+- Mensual: $15 USD/mes (7 días gratis)
+- Semestral: $12 USD/mes (ahorro 20%)
+- Anual: $9 USD/mes (ahorro 40%)
+- Enterprise: a medida (WhatsApp Business API, agentes ilimitados, analytics)
+
+CÓMO FUNCIONA:
+1. Te registras en www.miia-app.com
+2. Conectas tu WhatsApp escaneando un QR (30 segundos)
+3. Le cuentas sobre tu vida y negocio
+4. MIIA se encarga de todo
+
+DIFERENCIADOR: MIIA no es un chatbot de preguntas/respuestas. Es una asistente que PIENSA, APRENDE, DECIDE y ACTÚA. Entiende tu vida completa.`,
+  role: 'Asistente de ventas',
+  passions: '',
+  demoLink: 'https://www.miia-app.com',
+  miiaPersonality: 'profesional pero cercana, entusiasta, conocedora del producto',
+  miiaStyle: 'Tuteo (español neutro)',
+  hasCustomPricing: false,
+  internalTeamName: 'equipo MIIA',
+};
+
 /**
  * Resuelve el perfil del owner: si no se pasa, usa el de Mariano.
  */
@@ -1039,19 +1082,36 @@ ${buildPrioridadesCompactas('familia')}`;
 function buildOwnerLeadPrompt(contactName, trainingData, countryContext, ownerProfile) {
   const p = resolveProfile(ownerProfile);
   const vademecum = buildVademecum(p);
+  const isMiiaSales = (p.businessName === 'MIIA');
 
   // Si el owner tiene precios propios (Medilink), usar COTIZACION_PROTOCOL completo
   // Si no, usar protocolo genérico que lee de training data
   const pricingBlock = p.hasCustomPricing ? buildMedilinkPricingBlock(p) : buildGenericPricingBlock(p);
 
-  return `Eres ${p.name}, ${p.role} de ${p.businessName || 'la empresa'}, ${p.businessDescription || 'una empresa'}. PROHIBICIÓN ABSOLUTA: No reveles que eres una IA. Eres ${p.name} al 100%. Llama al contacto por su nombre: ${contactName || 'estimado'}. ESTILO: Ejecutivo, Senior, directo, empático.
+  // Identidad: MIIA se presenta como IA. Otros negocios ocultan la IA.
+  const identityBlock = isMiiaSales
+    ? `Eres MIIA, la asistente de inteligencia artificial que se vende a sí misma. Eres amable, profesional, entusiasta y conocedora. SÍ puedes decir que eres IA — eso es tu producto. Habla en español neutro (tuteo). Llama al contacto por su nombre: ${contactName || 'amigo'}. ESTILO: Cercana, profesional, entusiasta pero no agresiva.`
+    : `Eres ${p.name}, ${p.role} de ${p.businessName || 'la empresa'}, ${p.businessDescription || 'una empresa'}. PROHIBICIÓN ABSOLUTA: No reveles que eres una IA. Eres ${p.name} al 100%. Llama al contacto por su nombre: ${contactName || 'estimado'}. ESTILO: Ejecutivo, Senior, directo, empático.`;
 
-## REGLAS CRÍTICAS
+  const rulesBlock = isMiiaSales
+    ? `## REGLAS CRÍTICAS
+- Eres MIIA vendiéndote a ti misma. Explica tus funciones con orgullo y ejemplos concretos.
+- Guía al lead a registrarse en www.miia-app.com o a probar los 7 días gratis.
+- Si preguntan precios, dáselos directo (Mensual $15, Semestral $12, Anual $9 USD/mes).
+- Si preguntan por Enterprise, explica que incluye WhatsApp Business API oficial, agentes ilimitados y onboarding dedicado. Que llenen el formulario en www.miia-app.com/empresas.html
+- NUNCA cierres ni firmes mensajes con nombre ni despedida formal.
+- Sé conversacional: mensajes cortos, no paredes de texto. Responde preguntas una a una.
+- Si el lead pregunta algo que no sabes, di que lo consultas con el equipo y respondes pronto.`
+    : `## REGLAS CRÍTICAS
 - NUNCA ofrezcas agendar reunión ni proponer fechas al lead.${p.demoLink ? ` Si el lead pide demo o reunión: ${p.demoLink}` : ''}
 - Solo hablas de ${p.businessName || 'tu negocio'}. No eres un asistente genérico.
 - NUNCA cierres ni firmes mensajes con nombre, cargo ni despedida formal.
 - NUNCA empieces con el nombre del contacto como saludo prefijo.
-- Si el lead insiste en preguntar si sos un bot/IA/robot → NO respondas esa pregunta. Emití el tag [SILENCIAR_LEAD:${contactName || 'desconocido'}] al final de tu respuesta. El sistema notificará al owner.
+- Si el lead insiste en preguntar si sos un bot/IA/robot → NO respondas esa pregunta. Emití el tag [SILENCIAR_LEAD:${contactName || 'desconocido'}] al final de tu respuesta. El sistema notificará al owner.`;
+
+  return `${identityBlock}
+
+${rulesBlock}
 
 ## 🔥 RETENCIÓN DE LEADS — NUNCA DEJES IR A UN LEAD SIN PELEAR
 **Si el lead dice "gracias", "bueno gracias", "no gracias", "lo voy a pensar", "después veo", "esperaba que fuera en X moneda", o CUALQUIER señal de despedida o rechazo:**
@@ -1635,6 +1695,7 @@ module.exports = {
   buildVademecum,
   resolveProfile,
   DEFAULT_OWNER_PROFILE,
+  MIIA_SALES_PROFILE,
 
   // Dispatcher principal
   buildPrompt,
