@@ -21,22 +21,27 @@ const { callAI, callAIChat, keyPool } = require('./ai_client');
 // Contextos de uso
 const CONTEXTS = {
   ADMIN_AUDIT: 'admin_audit',       // Auditoría profunda para admin
-  OWNER_CHAT: 'owner_chat',         // Self-chat del owner
+  OWNER_CHAT: 'owner_chat',         // Self-chat del owner (OPUS HYBRID: Director)
   LEAD_RESPONSE: 'lead_response',   // Respuesta a leads
   FAMILY_CHAT: 'family_chat',       // Chat con familia
   CLASSIFICATION: 'classification', // Clasificación de contacto
   SPORT_MESSAGE: 'sport_message',   // Mensaje deportivo
   LEARNING: 'learning',             // Extracción de aprendizaje
   SUMMARY: 'summary',              // Resumen de conversación
+  AUDITOR: 'auditor',              // OPUS HYBRID: Auditor de calidad (Sonnet)
+  NIGHTLY_BRAIN: 'nightly_brain',  // OPUS HYBRID: Análisis nocturno (Opus)
+  TRANSCRIPTION: 'transcription',  // P8.3: Transcripción de audio/media
   GENERAL: 'general'               // General
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// ESTRATEGIA HÍBRIDA:
-// - OWNER_CHAT + ADMIN_AUDIT → Claude Sonnet 4.6 (~$6-12/mes vs $40+ con Opus)
-// - Si owner tiene su Gemini key → priorizar esa (costo $0 para MIIA)
-// - TODO lo demás → Gemini Flash (GRATIS, 18 keys de respaldo en pool)
-// - Failover: si Gemini falla → OpenAI → Claude (nunca sin respuesta)
+// ═══ OPUS HYBRID STRATEGY (P7) ═══
+// Director (Opus): Owner self-chat — máxima calidad para el dueño
+// Auditor (Sonnet): Verifica calidad de CADA respuesta antes de enviar
+// Nightly Brain (Opus): Análisis nocturno de conversaciones (1x/día)
+// Todo lo demás → Gemini Flash (GRATIS, 18 keys de respaldo en pool)
+// Failover: si falla → OpenAI → Claude (nunca sin respuesta)
+// Costo estimado: ~$22/mes extra vs solo Sonnet
 // ═══════════════════════════════════════════════════════════════════
 const CONTEXT_CONFIG = {
   [CONTEXTS.ADMIN_AUDIT]: {
@@ -44,14 +49,14 @@ const CONTEXT_CONFIG = {
     model: 'claude-sonnet-4-6',
     fallbacks: ['openai', 'gemini'],
     maxTokens: 8192,
-    description: 'Auditoría — Claude Sonnet 4.6 (calidad suficiente, 80% ahorro vs Opus)'
+    description: 'Auditoría admin — Claude Sonnet 4.6'
   },
   [CONTEXTS.OWNER_CHAT]: {
     preferred: 'claude',
-    model: 'claude-sonnet-4-6',
-    fallbacks: ['gemini', 'openai'],
+    model: 'claude-opus-4-6',
+    fallbacks: ['claude', 'gemini', 'openai'],
     maxTokens: 4096,
-    description: 'Self-chat del owner — Claude Sonnet 4.6 (calidad + economía)'
+    description: 'OPUS HYBRID Director — Claude Opus 4.6 (máxima calidad para owner)'
   },
   [CONTEXTS.LEAD_RESPONSE]: {
     preferred: 'gemini',
@@ -94,6 +99,27 @@ const CONTEXT_CONFIG = {
     fallbacks: ['openai', 'claude'],
     maxTokens: 1024,
     description: 'Resumen de conversación — Gemini Flash (GRATIS)'
+  },
+  [CONTEXTS.AUDITOR]: {
+    preferred: 'claude',
+    model: 'claude-sonnet-4-6',
+    fallbacks: ['gemini', 'openai'],
+    maxTokens: 1024,
+    description: 'OPUS HYBRID Auditor — Claude Sonnet 4.6 (verifica calidad de respuestas)'
+  },
+  [CONTEXTS.NIGHTLY_BRAIN]: {
+    preferred: 'claude',
+    model: 'claude-opus-4-6',
+    fallbacks: ['claude', 'gemini'],
+    maxTokens: 8192,
+    description: 'OPUS HYBRID Nightly Brain — Claude Opus 4.6 (análisis diario profundo)'
+  },
+  [CONTEXTS.TRANSCRIPTION]: {
+    preferred: 'gemini',
+    model: 'gemini-2.5-flash',
+    fallbacks: ['openai', 'claude'],
+    maxTokens: 2048,
+    description: 'Transcripción de audio/media — Gemini Flash (GRATIS, multimodal)'
   },
   [CONTEXTS.GENERAL]: {
     preferred: 'gemini',

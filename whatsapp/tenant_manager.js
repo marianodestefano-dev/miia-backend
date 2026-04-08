@@ -1240,7 +1240,37 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
         const myNumber = tenant.sock?.user?.id?.split(':')[0];
         const fromNumber = from?.split('@')[0]?.split(':')[0];
-        const isSelfChat = isFromMe && myNumber && fromNumber && myNumber === fromNumber;
+
+        // ═══ P6 FIX: Resolver LID→JID para detección correcta de self-chat ═══
+        // Después de Bad MAC recovery, el remoteJid del self-chat puede llegar como
+        // LID (ej: 136417472712832@lid) en vez de phone@s.whatsapp.net.
+        // Sin resolución, isSelfChat=false y MIIA ignora al owner → se queda MUDA.
+        let resolvedFrom = from;
+        if (from?.includes('@lid')) {
+          const lidBase = from.split('@')[0].split(':')[0];
+          // Fuente 1: _lidMap (contactos de WhatsApp — más confiable)
+          if (tenant._lidMap && tenant._lidMap[lidBase]) {
+            resolvedFrom = tenant._lidMap[lidBase];
+            console.log(`[TM:${uid}] 🔗 P6-LID: ${from} → ${resolvedFrom} (via _lidMap)`);
+          }
+          // Fuente 2: Comparar con ownerPhone guardado al conectar
+          // Si el LID no se resolvió pero isFromMe=true, verificar si msg.key.remoteJid
+          // podría ser el owner comparando con sock.user.lid (Baileys a veces lo expone)
+          if (resolvedFrom === from && tenant.ownerPhone) {
+            const userLid = tenant.sock?.user?.lid;
+            if (userLid) {
+              const userLidBase = userLid.split('@')[0].split(':')[0];
+              if (userLidBase === lidBase) {
+                resolvedFrom = `${tenant.ownerPhone}@s.whatsapp.net`;
+                if (!tenant._lidMap) tenant._lidMap = {};
+                tenant._lidMap[lidBase] = resolvedFrom;
+                console.log(`[TM:${uid}] 🔗 P6-LID: Owner LID matched via sock.user.lid: ${lidBase} → ${resolvedFrom}`);
+              }
+            }
+          }
+        }
+        const resolvedFromNumber = resolvedFrom?.split('@')[0]?.split(':')[0];
+        const isSelfChat = isFromMe && myNumber && (myNumber === fromNumber || myNumber === resolvedFromNumber);
 
         // Mensaje offline → acumular en buffer (self-chat, leads, todos)
         // Solo ignorar si es MUY viejo (>10 min) y es self-chat
@@ -1292,14 +1322,43 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         }
 
         // Mensaje en tiempo real → procesar normalmente
-        console.log(`[TM:${uid}] 📨 Message from ${from}${isFromMe ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
+        const lidTag = (resolvedFrom !== from) ? ` [LID→${resolvedFrom.split('@')[0]}]` : '';
+        console.log(`[TM:${uid}] 📨 Message from ${from}${lidTag}${isSelfChat ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
         if (tenant.onMessage) {
           try { tenant.onMessage(msg, from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
         } else {
-          const realSelfChat = isFromMe && (from === `${myNumber}@s.whatsapp.net` || from === tenant.sock?.user?.id);
+          // ═══ P6 FIX: Usar resolvedFrom para self-chat detection + pasar JID resuelto ═══
+          const realSelfChat = isFromMe && (
+            from === `${myNumber}@s.whatsapp.net` ||
+            from === tenant.sock?.user?.id ||
+            resolvedFrom === `${myNumber}@s.whatsapp.net`
+          );
           const ownerUid = tenant.ownerUid || uid;
           const role = tenant.role || 'owner';
-          handleTenantMessage(uid, ownerUid, role, from, body, realSelfChat, isFromMe, tenant, messageContext)
+          // Pasar resolvedFrom (no from) para que conversations se keyen por phone, no LID
+          const phoneForHandler = resolvedFrom || from;
+          if (resolvedFrom !== from) {
+            console.log(`[TM:${uid}] 🔗 P6: Passing resolved JID to handler: ${from} → ${phoneForHandler} (realSelfChat=${realSelfChat})`);
+          }
+          // ═══ P8.3: Transcripción de audio/media para tenants ═══
+          let effectiveBody = body;
+          if (!body.trim() && hasMedia) {
+            try {
+              const transcribed = await transcribeMediaForTenant(uid, msg, tenant);
+              if (transcribed) {
+                effectiveBody = transcribed;
+                console.log(`[TM:${uid}] 🎤 Media transcribed: "${transcribed.substring(0, 60)}..."`);
+              } else {
+                console.log(`[TM:${uid}] 🎤 Media could not be transcribed — skipping`);
+                continue; // No text, no transcription → nothing to process
+              }
+            } catch (e) {
+              console.error(`[TM:${uid}] 🎤 Transcription error: ${e.message}`);
+              continue;
+            }
+          }
+
+          handleTenantMessage(uid, ownerUid, role, phoneForHandler, effectiveBody, realSelfChat, isFromMe, tenant, messageContext)
             .catch(e => console.error(`[TM:${uid}] handleTenantMessage error:`, e.message));
         }
       }
@@ -1802,6 +1861,120 @@ function getConnectedTenants() {
     }
   }
   return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P8.3: TRANSCRIPCIÓN DE MEDIA PARA TENANTS
+// Descarga audio/imagen/video via Baileys y transcribe con Gemini Flash (GRATIS).
+// ═══════════════════════════════════════════════════════════════════════════
+const MEDIA_TIMEOUT_MS = 30_000;
+const MEDIA_MAX_SIZE_B64 = 20_000_000; // ~15MB decoded
+
+/**
+ * Transcribe media (audio, image, video) for a tenant message.
+ * @param {string} uid - Tenant UID
+ * @param {Object} baileysMsg - Raw Baileys message
+ * @param {Object} tenant - Tenant object (for ownerConfig)
+ * @returns {Promise<string|null>} Transcribed text or null
+ */
+async function transcribeMediaForTenant(uid, baileysMsg, tenant) {
+  const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+  const aiGateway = require('../ai/ai_gateway');
+
+  const msgContent = baileysMsg.message || {};
+  const mimetype = msgContent.audioMessage?.mimetype
+    || msgContent.imageMessage?.mimetype
+    || msgContent.videoMessage?.mimetype
+    || msgContent.documentMessage?.mimetype
+    || msgContent.stickerMessage?.mimetype
+    || null;
+
+  if (!mimetype) return null;
+
+  // Stickers → skip
+  if (mimetype.includes('webp') || msgContent.stickerMessage) return null;
+
+  // Download with timeout
+  const buffer = await Promise.race([
+    downloadMediaMessage(baileysMsg, 'buffer', {}),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Media download timeout')), MEDIA_TIMEOUT_MS))
+  ]);
+
+  if (!buffer || buffer.length < 100) return null;
+
+  const b64 = buffer.toString('base64');
+  if (b64.length > MEDIA_MAX_SIZE_B64) {
+    console.log(`[TM:${uid}] 🎤 Media too large: ${(b64.length / 1_000_000).toFixed(1)}MB — skipping`);
+    return null;
+  }
+
+  // Build transcription prompt based on media type
+  let transcriptionPrompt;
+  if (mimetype.startsWith('audio/') || mimetype === 'audio/ogg; codecs=opus') {
+    transcriptionPrompt = 'Transcribí textualmente este audio al español. Solo devolvé la transcripción exacta, sin agregar nada más.';
+  } else if (mimetype.startsWith('image/')) {
+    transcriptionPrompt = 'Describí esta imagen de forma concisa en español. ¿Qué se ve? Si hay texto, transcribilo.';
+  } else if (mimetype.startsWith('video/')) {
+    transcriptionPrompt = 'Describí este video brevemente en español. ¿Qué se ve y qué se escucha?';
+  } else {
+    return null; // Unsupported media type
+  }
+
+  // Get owner AI config for key routing
+  const ownerConfig = {};
+  if (tenant.ownerUid) {
+    try {
+      const userDoc = await admin.firestore().collection('users').doc(tenant.ownerUid).get();
+      if (userDoc.exists) {
+        const d = userDoc.data();
+        if (d.aiProvider) ownerConfig.aiProvider = d.aiProvider;
+        if (d.aiApiKey) ownerConfig.aiApiKey = d.aiApiKey;
+        if (d.aiTier) ownerConfig.aiTier = d.aiTier;
+      }
+    } catch (_) { /* use defaults */ }
+  }
+
+  // Call Gemini Flash directly with multimodal content (inlineData)
+  const { keyPool } = require('../ai/ai_client');
+  const aiGW = require('../ai/ai_gateway');
+  let apiKey = aiGW.getApiKey('gemini', ownerConfig);
+  if (!apiKey && keyPool.hasKeys('gemini')) {
+    apiKey = keyPool.getKey('gemini');
+  }
+  if (!apiKey) {
+    console.error(`[TM:${uid}] 🎤 No Gemini API key available for transcription`);
+    return null;
+  }
+
+  const GEMINI_FLASH_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+  const url = `${GEMINI_FLASH_URL}?key=${apiKey}`;
+  const payload = {
+    contents: [{
+      role: 'user',
+      parts: [
+        { text: transcriptionPrompt },
+        { inlineData: { mimeType: mimetype, data: b64 } }
+      ]
+    }]
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS)
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    console.error(`[TM:${uid}] 🎤 Gemini transcription error ${response.status}: ${errText.substring(0, 200)}`);
+    return null;
+  }
+
+  const data = await response.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text || text.length < 3) return null;
+  return text.trim();
 }
 
 module.exports = {

@@ -4761,7 +4761,7 @@ REGLAS:
         contactName: postContactName,
         hasSearchData: searchTriggered,
         userMessage: effectiveMsg,
-        generateAI: (prompt) => aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, prompt, ownerAIConfig).then(r => r.text),
+        generateAI: (prompt) => aiGateway.smartCall(aiGateway.CONTEXTS.AUDITOR, prompt, ownerAIConfig).then(r => r.text),
       });
 
       if (!aiAuditResult.approved) {
