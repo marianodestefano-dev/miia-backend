@@ -286,6 +286,10 @@ async function classifyContact(ctx, basePhone, messageBody, tenantState) {
     if (cached.type === 'lead' && cached.businessId) {
       return { type: 'lead', businessId: cached.businessId, name: cached.name };
     }
+    // Enterprise leads: pasar TODOS los datos del contact_index para discovery
+    if (cached.type === 'enterprise_lead') {
+      return { ...cached, type: 'enterprise_lead' };
+    }
     return { type: cached.type || 'lead', name: cached.name };
   }
 
@@ -889,6 +893,53 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     activeSystemPrompt = buildOwnerFamilyPrompt(isFamilyContact.name, isFamilyContact, ctx.ownerProfile);
   } else if (isTeamMember) {
     activeSystemPrompt = buildEquipoPrompt(isTeamMember.name || ctx.leadNames[phone], ctx.ownerProfile);
+  } else if (contactType === 'enterprise_lead' && classification) {
+    // Enterprise lead — MIIA hace discovery como "Mariano del área Enterprise"
+    // La IA interpreta NATURALMENTE cuándo despedirse, revelar, o transferir a Mariano real
+    const elData = classification;
+    const leadName = elData.name || ctx.leadNames[phone] || '';
+    const webInfo = elData.websiteAnalysis ? `\nANÁLISIS DE SU WEB:\n${elData.websiteAnalysis.substring(0, 2000)}` : '';
+    const currentStage = elData.stage || 'initial_contact';
+
+    activeSystemPrompt = `Eres Mariano, del área Enterprise de MIIA. Estás conversando con un lead enterprise por WhatsApp.
+
+## DATOS DEL LEAD
+- Nombre: ${leadName}
+- Email: ${elData.email || 'N/A'}
+- Website: ${elData.website || 'No proporcionó'}
+- Tamaño equipo: ${elData.team_size || 'No especificado'}
+- Mensaje inicial: ${elData.message || 'N/A'}
+- Etapa actual: ${currentStage}
+${webInfo}
+
+## TU OBJETIVO
+1. DISCOVERY COMPLETO: Entender su negocio a fondo — qué venden, a quién, cuántos leads manejan, qué herramientas usan, qué problemas tienen
+2. RESPONDER PREGUNTAS sobre MIIA Enterprise con conocimiento real. Comparte https://miia-app.com si preguntan
+3. DEMOSTRAR VALOR: Usa los datos de su web para hacer observaciones inteligentes
+4. PROPONER SOLUCIÓN: Cuando tengas suficiente info, explica cómo MIIA Enterprise resolvería sus problemas específicos
+5. Si no tiene web, pregunta por su LinkedIn o perfil de empresa
+
+## COMPORTAMIENTO NATURAL DE DESPEDIDA (sin comandos, tú interpretas)
+Cuando sientas que la conversación está llegando a su fin (el lead se despide, agradece, dice que lo piensa, etc.):
+1. **Revela la verdad**: Dile algo natural como "Antes de irme, quiero contarte algo: en realidad soy la MIIA de Mariano. Todo lo que acabas de experimentar es exactamente lo que podemos hacer por ti y tu empresa 😉"
+2. **Ofrece hablar con Mariano**: "Si quieres hablar con una persona, solo dímelo y Mariano te contactará directamente"
+
+Cuando sientas que el lead quiere hablar con una persona real (pide hablar con alguien, quiere una llamada, insiste en algo humano, etc.):
+1. Despídete con calidez: "Ahora sí me retiro. Mariano ha sido informado y en breve te llamará para conversar. ¡Feliz día!"
+2. Incluye al FINAL de tu mensaje, en una línea separada, el texto exacto: [TRANSFER_TO_OWNER]
+
+## REGLAS
+- Español neutro (NO argentinismos como "vos/tenés/querés")
+- Tono profesional pero cercano, como un consultor de negocio amigable
+- Máximo 2 emojis por mensaje
+- NO presiones para cerrar — esto es un discovery genuino
+- Haz preguntas abiertas, una o dos por mensaje, no bombardees
+- Firma como "Mariano, MIIA Enterprise" solo en el primer mensaje
+- NUNCA reveles que eres IA HASTA que la conversación esté terminando naturalmente`;
+
+    // Post-respuesta: verificar si la IA decidió transferir (se chequea después de generar respuesta)
+    // Se maneja más abajo cuando se obtiene aiMessage
+
   } else {
     // Lead — usar cerebro del negocio específico si hay clasificación con businessId
     let leadCerebro = ctx.businessCerebro;
@@ -1236,7 +1287,10 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     console.log(`${logPrefix} ⏰ Clave expirada notificada a ${basePhone}`);
   }
 
-  // ── PASO 12: Enviar respuesta ──
+  // ── PASO 12: Limpiar tags internos y enviar respuesta ──
+  const hasTransferTag = aiMessage.includes('[TRANSFER_TO_OWNER]');
+  aiMessage = aiMessage.replace(/\[TRANSFER_TO_OWNER\]/g, '').trim();
+
   if (!aiMessage.trim()) {
     console.warn(`${logPrefix} ⚠️ Mensaje final vacío después de procesar tags. No se envía.`);
     return;
@@ -1251,6 +1305,30 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     await sendTenantMessage(tenantState, phone, maybeAddTypo(parts[1]));
   } else {
     await sendTenantMessage(tenantState, phone, maybeAddTypo(aiMessage));
+  }
+
+  // ── PASO 12b: Enterprise lead — post-respuesta: transferir a owner si la IA lo decidió ──
+  if (contactType === 'enterprise_lead' && hasTransferTag) {
+    console.log(`${logPrefix} 🔄 ENTERPRISE TRANSFER: Lead ${basePhone} transferido a Mariano`);
+
+    // Generar resumen compacto de la conversación para el owner
+    const convoHistory = ctx.conversations[phone] || [];
+    const recentMsgs = convoHistory.slice(-10).map(m => `${m.role === 'user' ? leadName : 'MIIA'}: ${m.content.substring(0, 150)}`).join('\n');
+
+    const ownerJid = tenantState.sock?.user?.id;
+    if (ownerJid) {
+      const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
+      const elData = classification || {};
+      const summaryMsg = `📞 *LEAD ENTERPRISE → LLAMAR AHORA*\n\n👤 *${leadName}* | 📱 +${basePhone}\n🌐 ${elData.website || 'N/A'} | 👥 Equipo: ${elData.team_size || 'N/A'}\n\n📋 *Resumen de la conversación:*\n${recentMsgs.substring(0, 1500)}\n\n⚡ El lead quiere hablar con una persona. Llámalo.`;
+
+      try { await sendTenantMessage(tenantState, ownerSelf, summaryMsg); } catch (_) {}
+    }
+
+    // Actualizar stage en Firestore
+    try {
+      await db().collection('users').doc(ctx.ownerUid).collection('contact_index').doc(basePhone)
+        .update({ stage: 'handed_to_owner' });
+    } catch (_) {}
   }
 
   // ── PASO 13: Guardar respuesta en historial ──

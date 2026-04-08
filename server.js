@@ -11294,15 +11294,15 @@ Sé específico y usa información real del sitio web.`;
 
 ¡Gracias por tu interés en MIIA Enterprise! 🚀
 
-Recibimos tu solicitud y ya estamos analizando cómo podemos potenciar tu negocio${website ? ` (${website})` : ''}.
+Hemos recibido tu solicitud y ya estamos analizando cómo podemos potenciar tu negocio${website ? ` (${website})` : ''}.
 
-Un miembro de nuestro equipo te contactará en las próximas horas para agendar una demo personalizada.
+En breve te contactaremos por WhatsApp para conocer mejor tu empresa y preparar una propuesta personalizada.
 
-Mientras tanto, si tenés alguna pregunta, respondé directamente a este email.
+Si tienes alguna pregunta, responde directamente a este email.
 
 ¡Saludos!
-Mariano De Stefano
-MIIA Enterprise`;
+Equipo MIIA Enterprise
+hola@miia-app.com`;
 
       await mailService.sendGenericEmail(email, emailSubject, emailBody, {
         fromName: 'MIIA Enterprise',
@@ -11314,46 +11314,88 @@ MIIA Enterprise`;
       // No falla — el lead ya está guardado
     }
 
-    // ── 5. Enviar WhatsApp al lead desde la conexión del owner ──
+    // ── 5. Enviar WhatsApp al lead — MIIA hace discovery completo ──
     try {
       const sock = getOwnerSock();
       if (sock?.user?.id) {
-        // Limpiar teléfono: solo números
         const cleanPhone = phone.replace(/[^0-9]/g, '');
         const leadJid = `${cleanPhone}@s.whatsapp.net`;
-
         console.log(`[ENTERPRISE-LEAD] 💬 Enviando WhatsApp a ${leadJid}`);
 
-        // Generar mensaje personalizado con IA
+        // Marcar el contacto como enterprise_lead en Firestore para que el handler lo trate especial
+        const ownerUid = Object.keys(tenantStates || {})[0]; // Owner principal (Mariano)
+        if (ownerUid) {
+          await admin.firestore().collection(`users/${ownerUid}/contact_index`).doc(cleanPhone).set({
+            type: 'enterprise_lead',
+            leadId,
+            name,
+            email,
+            website: website || '',
+            team_size: team_size || '',
+            websiteAnalysis: websiteAnalysis ? websiteAnalysis.substring(0, 5000) : '',
+            message: message || '',
+            stage: 'initial_contact', // stages: initial_contact → discovery → farewell → handed_to_owner
+            createdAt: new Date().toISOString()
+          }, { merge: true });
+          console.log(`[ENTERPRISE-LEAD] ✅ Contacto marcado como enterprise_lead en contact_index`);
+        }
+
+        // Generar mensaje inicial — MIIA se presenta como "la MIIA de Mariano"
         let waMessage = '';
         try {
-          const msgPrompt = `Generá un mensaje de WhatsApp CORTO (máximo 3-4 oraciones) de Mariano, del área Enterprise de MIIA, para ${name}.
-${website ? `Visitamos su sitio web ${website} y nos interesó mucho lo que hacen.` : `Recibimos su solicitud y nos interesa mucho su proyecto.`}
-El mensaje debe ser:
-- Amigable y profesional (NO formal ni corporativo)
-- Mencionar que vimos su empresa y tenemos ideas concretas para potenciar su negocio con IA
-- Proponer agendar una llamada o reunión rápida
-- NUNCA revelar que este mensaje fue generado por IA
-- Firmado como "Mariano, del área Enterprise de MIIA"
-- Sin emojis excesivos (máximo 1-2)
+          const msgPrompt = `Genera un mensaje de WhatsApp CORTO (máximo 4-5 oraciones) para ${name} que acaba de solicitar información sobre MIIA Enterprise.
+${website ? `Ya analizamos su sitio web ${website}.` : `No proporcionó sitio web.`}
+${websiteAnalysis ? `Resumen del análisis: ${websiteAnalysis.substring(0, 500)}` : ''}
 
-Devolvé SOLO el mensaje, sin comillas ni explicaciones.`;
+El mensaje debe:
+- Presentarse como "Mariano, del área Enterprise de MIIA" (NUNCA revelar que es IA)
+- Agradecer por su interés
+- ${website ? 'Mencionar algo específico que encontraste en su web para demostrar que la analizaste' : 'Preguntar por su sitio web o LinkedIn para conocer mejor su empresa'}
+- Hacer 1-2 preguntas de discovery: ¿cuántos leads manejan al mes? ¿qué herramientas usan hoy?
+- Tono amigable profesional, español neutro (NO argentinismos), máximo 2 emojis
+- Si pregunta algo sobre MIIA, puede compartir el link https://miia-app.com
+
+Devuelve SOLO el mensaje, sin comillas ni explicaciones.`;
 
           waMessage = await generateAIContent(msgPrompt);
           console.log(`[ENTERPRISE-LEAD] ✅ Mensaje WhatsApp generado por IA`);
         } catch (msgErr) {
           console.warn(`[ENTERPRISE-LEAD] ⚠️ Error generando mensaje IA, usando fallback:`, msgErr.message);
-          waMessage = `¡Hola ${name}! Soy Mariano, del área Enterprise de MIIA. ${website ? `Estuve viendo ${website} y me encantó lo que hacen.` : 'Recibí tu solicitud y me interesa mucho tu proyecto.'} Tengo algunas ideas de cómo podemos potenciar tu negocio con inteligencia artificial. ¿Te parece si agendamos una llamada rápida? 🚀\n\n— Mariano, MIIA Enterprise`;
+          waMessage = `¡Hola ${name}! Soy Mariano, del área Enterprise de MIIA. ${website ? `Estuve revisando ${website} y me pareció muy interesante lo que hacen.` : 'Recibí tu solicitud y me interesa mucho conocer tu proyecto.'} Me encantaría hacerte algunas preguntas para preparar una propuesta personalizada. ¿Cuántos leads manejan al mes y qué herramientas usan hoy para atenderlos? 🚀\n\n— Mariano, MIIA Enterprise`;
         }
 
         await safeSendMessage(leadJid, waMessage);
         console.log(`[ENTERPRISE-LEAD] ✅ WhatsApp enviado a ${leadJid}`);
       } else {
         console.warn(`[ENTERPRISE-LEAD] ⚠️ WhatsApp no disponible — sock no conectado`);
+
+        // Sin WhatsApp: enviar segundo email pidiendo WhatsApp
+        try {
+          console.log(`[ENTERPRISE-LEAD] 📧 Enviando email solicitando WhatsApp a ${email}`);
+          const waRequestSubject = `${name}, queremos preparar tu propuesta — MIIA Enterprise`;
+          const waRequestBody = `Hola ${name},
+
+Para poder preparar una propuesta personalizada para tu empresa, nos gustaría conversar contigo por WhatsApp.
+
+¿Podrías confirmarnos un número de WhatsApp donde podamos contactarte? Así podemos hacerte algunas preguntas rápidas y mostrarte cómo MIIA puede transformar tu operación comercial.
+
+Si ya lo proporcionaste en el formulario, ignora este mensaje — te contactaremos en breve.
+
+Saludos,
+Equipo MIIA Enterprise
+hola@miia-app.com`;
+
+          await mailService.sendGenericEmail(email, waRequestSubject, waRequestBody, {
+            fromName: 'MIIA Enterprise',
+            replyTo: 'hola@miia-app.com'
+          });
+          console.log(`[ENTERPRISE-LEAD] ✅ Email de solicitud de WhatsApp enviado`);
+        } catch (waEmailErr) {
+          console.error(`[ENTERPRISE-LEAD] ⚠️ Error enviando email de solicitud WA:`, waEmailErr.message);
+        }
       }
     } catch (waErr) {
       console.error(`[ENTERPRISE-LEAD] ⚠️ Error enviando WhatsApp al lead:`, waErr.message);
-      // No falla — el lead ya está guardado
     }
 
     // ── 6. Enviar reporte al self-chat de Mariano ──

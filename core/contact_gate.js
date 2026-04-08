@@ -188,6 +188,11 @@ function shouldMiiaRespond(opts) {
     return { respond: false, reason: `${contactType}_no_trigger`, action: 'none' };
   }
 
+  // ═══ PASO 4b: Enterprise lead → SIEMPRE responder (discovery MIIA) ═══
+  if (contactType === 'enterprise_lead') {
+    return { respond: true, reason: 'enterprise_lead_discovery', action: 'none' };
+  }
+
   // ═══ PASO 5: Lead conocido (ya clasificado) → responder ═══
   if (contactType === 'lead') {
     // Lead ya fue clasificado previamente por keywords — responder
