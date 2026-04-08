@@ -2566,14 +2566,14 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         try {
           const invocResponse = await generateAIContent(invokedPrompt);
           if (invocResponse) {
-            await safeSendMessage(phone, invocResponse.trim());
+            await safeSendMessage(phone, invocResponse.trim(), { isFamily: true });
           }
         } catch (e) {
           console.error(`[INVOCATION] ❌ Error generando respuesta de entrada:`, e.message);
           const fallback = isKnown
             ? `¡Hola! Acá estoy 😊 ¿En qué los ayudo?`
             : `¡Hola ${userProfile.shortName || ''}! ¿Me querés presentar a alguien? 😊`;
-          await safeSendMessage(phone, fallback, { isSelfChat: isSelfChatMsg });
+          await safeSendMessage(phone, fallback, { isSelfChat: isSelfChatMsg, isFamily: !isSelfChatMsg });
         }
         return;
       }
@@ -2586,9 +2586,9 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         try {
           const farewellPrompt = `Sos MIIA. Te despiden de una conversación de 3. Despedite brevemente de ambos (el owner y ${contactName}). Recordá que pueden invocarte con "MIIA ven". Máx 2 líneas, natural.`;
           const farewell = await generateAIContent(farewellPrompt);
-          await safeSendMessage(phone, farewell?.trim() || `¡Fue un gusto! Si me necesitan: *MIIA ven* 😊👋`);
+          await safeSendMessage(phone, farewell?.trim() || `¡Fue un gusto! Si me necesitan: *MIIA ven* 😊👋`, { isFamily: true });
         } catch (e) {
-          await safeSendMessage(phone, `¡Chauu! Si me necesitan: *MIIA ven* 😊👋`);
+          await safeSendMessage(phone, `¡Chauu! Si me necesitan: *MIIA ven* 😊👋`, { isFamily: true });
         }
         return;
       }
@@ -2673,7 +2673,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
             // Extraer tags de plan (internos, nunca visibles)
             const { cleanText, plans } = outreachEngine.extractPlanTags(response);
 
-            await safeSendMessage(phone, cleanText.trim());
+            await safeSendMessage(phone, cleanText.trim(), { isFamily: true });
 
             // Enviar imágenes de plan si hay tags
             for (const plan of plans) {
@@ -2716,11 +2716,11 @@ NO repitas "Hola" ni "estoy lista", sé natural.`;
         try {
           const respuestaHola = await generateAIContent(promptHolaMiia);
           if (respuestaHola) {
-            await safeSendMessage(phone, respuestaHola.trim());
+            await safeSendMessage(phone, respuestaHola.trim(), { isFamily: true });
           }
         } catch (e) {
           console.error(`[DILE A] Error generando respuesta HOLA MIIA:`, e.message);
-          await safeSendMessage(phone, `¡Acá estoy! Listos para lo que necesites. 💕`);
+          await safeSendMessage(phone, `¡Acá estoy! Listos para lo que necesites. 💕`, { isFamily: true });
         }
         return;
       }
@@ -2742,11 +2742,11 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
         try {
           const despedida = await generateAIContent(promptChauMiia);
           if (despedida) {
-            await safeSendMessage(phone, despedida.trim());
+            await safeSendMessage(phone, despedida.trim(), { isFamily: true });
           }
         } catch (e) {
           console.error(`[DILE A] Error generando despedida CHAU MIIA:`, e.message);
-          await safeSendMessage(phone, `¡Chaauuu! Si quieres volver a hablar, escribe HOLA MIIA en el chat. 💕`);
+          await safeSendMessage(phone, `¡Chaauuu! Si quieres volver a hablar, escribe HOLA MIIA en el chat. 💕`, { isFamily: true });
         }
         saveDB();
         return;
@@ -2773,12 +2773,12 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
           try {
             const explainMsg = await generateAIContent(promptExplain);
             if (explainMsg) {
-              await safeSendMessage(phone, explainMsg.trim());
+              await safeSendMessage(phone, explainMsg.trim(), { isFamily: true });
             } else {
-              await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`);
+              await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`, { isFamily: true });
             }
           } catch (e) {
-            await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`);
+            await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`, { isFamily: true });
           }
           // Avisar al owner en self-chat
           const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
@@ -2868,9 +2868,9 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         cerebroAbsoluto.setTrainingData(filtered.join('\n'));
         saveDB();
         console.log(`[FORGET] 🗑️ Owner pidió olvidar "${toForget}" — ${removedCount} líneas eliminadas del cerebro`);
-        await safeSendMessage(phone, `🗑️ Listo, eliminé ${removedCount} línea(s) de mi memoria que mencionaban "${toForget.substring(0, 50)}". Olvidado para siempre.`);
+        await safeSendMessage(phone, `🗑️ Listo, eliminé ${removedCount} línea(s) de mi memoria que mencionaban "${toForget.substring(0, 50)}". Olvidado para siempre.`, { isSelfChat: true });
       } else {
-        await safeSendMessage(phone, `🤔 No encontré nada en mi memoria sobre "${toForget.substring(0, 50)}". ¿Querés que busque con otras palabras?`);
+        await safeSendMessage(phone, `🤔 No encontré nada en mi memoria sobre "${toForget.substring(0, 50)}". ¿Querés que busque con otras palabras?`, { isSelfChat: true });
       }
       // También limpiar de contact_preferences/affinities si aplica
       try {
@@ -3457,7 +3457,7 @@ REGLAS:
       if (sportLower.match(/^(?:miia\s+)?mis\s+deportes$/i)) {
         const stats = sportEngine.getStats();
         if (stats.contactsWithPrefs === 0) {
-          await safeSendMessage(phone, '📊 No tenés deportes configurados aún. Decime "soy hincha de [equipo]" para empezar!');
+          await safeSendMessage(phone, '📊 No tenés deportes configurados aún. Decime "soy hincha de [equipo]" para empezar!', { isSelfChat: true });
         } else {
           let msg = `📊 Deportes configurados:\n`;
           msg += `• Adapters cargados: ${stats.adaptersLoaded}\n`;
@@ -3470,7 +3470,7 @@ REGLAS:
           } else {
             msg += `• Sin eventos activos en este momento`;
           }
-          await safeSendMessage(phone, msg);
+          await safeSendMessage(phone, msg, { isSelfChat: true });
         }
         return;
       }
@@ -3543,7 +3543,7 @@ REGLAS:
         briefMsg += `  ⚽ Deportes+Precios: ${schedule.deportesHour}:00\n`;
         briefMsg += `  ✈️ Vuelos: ${schedule.vuelosHour}:00\n`;
         briefMsg += `  📍 Ciudad: ${schedule.city || '(no configurada)'}\n`;
-        await safeSendMessage(phone, memoryMsg + briefMsg);
+        await safeSendMessage(phone, memoryMsg + briefMsg, { isSelfChat: true });
         return;
       }
 
@@ -3570,7 +3570,7 @@ REGLAS:
       const priceLower = effectiveMsg.toLowerCase().trim();
       if (priceLower.match(/^(?:miia\s+)?(?:averiguaste\s+algo|que\s+pas[oó]\s+con\s+mi\s+producto|estado\s+(?:de\s+)?mis\s+productos|mis\s+productos|que\s+averiguaste)/i)) {
         const statusMsg = await priceTracker.getStoreInquiryStatus(OWNER_UID);
-        await safeSendMessage(phone, statusMsg);
+        await safeSendMessage(phone, statusMsg, { isSelfChat: true });
         return;
       }
     }
@@ -3581,7 +3581,7 @@ REGLAS:
     if (isAdmin && priceTrackMatch) {
       const urlOrProduct = priceTrackMatch[1].trim();
       if (urlOrProduct.includes('http')) {
-        await safeSendMessage(phone, `🔍 Analizando producto... Dame unos segundos.`);
+        await safeSendMessage(phone, `🔍 Analizando producto... Dame unos segundos.`, { isSelfChat: true });
         const result = await priceTracker.trackProduct(urlOrProduct, OWNER_UID);
         if (result.success) {
           let response = `✅ *Producto registrado para seguimiento*\n📦 ${result.productName}\n💰 ${result.currency} ${result.price?.toLocaleString() || 'N/A'}\n📊 Stock: ${result.stock || 'desconocido'}`;
@@ -3630,9 +3630,9 @@ REGLAS:
       const origin = flightSearchMatch[1].trim();
       const dest = flightSearchMatch[2].trim();
       const dateRange = flightSearchMatch[3]?.trim() || 'próximas semanas';
-      await safeSendMessage(phone, `✈️ Buscando vuelos ${origin} → ${dest} para ${dateRange}...`);
+      await safeSendMessage(phone, `✈️ Buscando vuelos ${origin} → ${dest} para ${dateRange}...`, { isSelfChat: true });
       const results = await travelTracker.searchFlights(origin, dest, dateRange);
-      await safeSendMessage(phone, results);
+      await safeSendMessage(phone, results, { isSelfChat: true });
       return;
     }
 
@@ -3683,9 +3683,9 @@ REGLAS:
       if (parsed && parsed.trim() !== 'INVALID' && parsed.match(/\d{4}-\d{2}-\d{2}/)) {
         const expiryDate = parsed.match(/\d{4}-\d{2}-\d{2}/)[0];
         await travelTracker.savePassport(OWNER_UID, { expiry: expiryDate });
-        await safeSendMessage(phone, `🛂 Pasaporte registrado — vence el *${expiryDate}*. Te avisaré 3 meses antes 📅`);
+        await safeSendMessage(phone, `🛂 Pasaporte registrado — vence el *${expiryDate}*. Te avisaré 3 meses antes 📅`, { isSelfChat: true });
       } else {
-        await safeSendMessage(phone, `🤔 No entendí la fecha. Probá con formato: "pasaporte vence en diciembre 2027"`);
+        await safeSendMessage(phone, `🤔 No entendí la fecha. Probá con formato: "pasaporte vence en diciembre 2027"`, { isSelfChat: true });
       }
       return;
     }
@@ -3955,18 +3955,18 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
               await safeSendMessage(phone, `✅ Enviado a ${familyInfo.name}`, { isSelfChat: true, noDelay: true });
               console.log(`[DILE A] ✅ Mensaje enviado a ${familyInfo.name}`);
             } else {
-              await safeSendMessage(phone, `No pude generar el mensaje para ${familyInfo.name}. Intentá de nuevo.`);
+              await safeSendMessage(phone, `No pude generar el mensaje para ${familyInfo.name}. Intentá de nuevo.`, { isSelfChat: true });
             }
           } catch (e) {
             console.error(`[DILE A] Error enviando a ${familyInfo.name}:`, e.message);
-            await safeSendMessage(phone, `❌ Error enviando a ${familyInfo.name}: ${e.message}`);
+            await safeSendMessage(phone, `❌ Error enviando a ${familyInfo.name}: ${e.message}`, { isSelfChat: true });
           }
           return;
         }
 
         // Familiar no encontrado
         const nombreBuscado = words.slice(0, 2).join(' ');
-        await safeSendMessage(phone, `🤔 Marian, no encontré a *"${nombreBuscado}"* en mi círculo familiar. Verificá el nombre o agregalo.`);
+        await safeSendMessage(phone, `🤔 No encontré a *"${nombreBuscado}"* en mi círculo de contactos. Verificá el nombre o agregalo.`, { isSelfChat: true });
         return;
       }
     }
@@ -3974,14 +3974,14 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
     // Comando STOP
     if ((isAdmin) && effectiveMsg && effectiveMsg.toUpperCase() === 'STOP') {
       miiaPausedUntil = Date.now() + 30 * 60 * 1000;
-      await safeSendMessage(phone, '*[MIIA PROTOCOLO STOP]*\nSistema detenido por 30 minutos. Responde REACTIVAR para volver.');
+      await safeSendMessage(phone, '*[MIIA PROTOCOLO STOP]*\nSistema detenido por 30 minutos. Responde REACTIVAR para volver.', { isSelfChat: true });
       return;
     }
     // Guardia de silencio
     if (miiaPausedUntil > Date.now()) {
       if (isAdmin && effectiveMsg && effectiveMsg.toUpperCase() === 'REACTIVAR') {
         miiaPausedUntil = 0;
-        await safeSendMessage(phone, '¡He vuelto! Sistema reactivado.');
+        await safeSendMessage(phone, '¡He vuelto! Sistema reactivado.', { isSelfChat: true });
         return;
       }
       console.log(`[WA] Sistema en pausa (STOP) para ${phone}`);
@@ -4019,9 +4019,9 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
           conversationMetadata[targetPhone].highestStage = newStage;
           console.log(`[AFFINITY] 🔄 RESET ${targetName} → Stage ${newStage} (${newAffinity} pts) por comando admin`);
           saveAffinityToFirestore(); // Persistir reset en Firestore
-          await safeSendMessage(phone, `🔄 Affinity de *${targetName}* reseteado a Stage ${newStage} (${newAffinity} pts).`);
+          await safeSendMessage(phone, `🔄 Affinity de *${targetName}* reseteado a Stage ${newStage} (${newAffinity} pts).`, { isSelfChat: true });
         } else {
-          await safeSendMessage(phone, `❌ No encontré a "${target}" en mis contactos.`);
+          await safeSendMessage(phone, `❌ No encontré a "${target}" en mis contactos.`, { isSelfChat: true });
         }
         return;
       }
@@ -4270,9 +4270,9 @@ El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
           }
           saveDB();
           const names = selectedIndexes.map(i => pending[i].source).join(', ');
-          await safeSendMessage(phone, `✅ Guardé ${selectedIndexes.length} novedad(es): ${names}`);
+          await safeSendMessage(phone, `✅ Guardé ${selectedIndexes.length} novedad(es): ${names}`, { isSelfChat: true });
         } else {
-          await safeSendMessage(phone, `🗑️ Novedades descartadas. No se guardó nada.`);
+          await safeSendMessage(phone, `🗑️ Novedades descartadas. No se guardó nada.`, { isSelfChat: true });
         }
         return;
       }
