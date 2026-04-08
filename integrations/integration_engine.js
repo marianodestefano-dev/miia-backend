@@ -110,6 +110,67 @@ async function runIntegrationEngine() {
   }
 }
 
+/**
+ * Chequeo directo de clima — llamado por morning_briefing.
+ * @param {string} ownerUid
+ * @param {string} city
+ */
+async function checkWeather(ownerUid, city) {
+  const weatherAdapter = integrationRegistry.get('weather');
+  if (!weatherAdapter) {
+    console.log('[INTEGRATIONS-ENGINE] ⚠️ Weather adapter no registrado');
+    return;
+  }
+
+  const { admin, safeSendMessage, OWNER_PHONE } = engineState.deps;
+  if (!admin || !safeSendMessage || !OWNER_PHONE) return;
+
+  try {
+    const ctx = { ownerUid, ownerPhone: OWNER_PHONE, admin };
+    const results = await weatherAdapter.checkDirect(city, ctx);
+
+    for (const result of results) {
+      if (result.message && result.message.length > 5) {
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, result.message, { isSelfChat: true });
+        engineState.messagesSent++;
+        console.log(`[INTEGRATIONS-ENGINE] 🌤️ Clima enviado: ${city}`);
+      }
+    }
+  } catch (e) {
+    console.error(`[INTEGRATIONS-ENGINE] ❌ Error checkWeather: ${e.message}`);
+  }
+}
+
+/**
+ * Chequeo directo de noticias — llamado por morning_briefing.
+ * @param {string} ownerUid
+ */
+async function checkNews(ownerUid) {
+  const newsAdapter = integrationRegistry.get('news');
+  if (!newsAdapter) {
+    console.log('[INTEGRATIONS-ENGINE] ⚠️ News adapter no registrado');
+    return;
+  }
+
+  const { admin, safeSendMessage, OWNER_PHONE } = engineState.deps;
+  if (!admin || !safeSendMessage || !OWNER_PHONE) return;
+
+  try {
+    const ctx = { ownerUid, ownerPhone: OWNER_PHONE, admin };
+    const results = await newsAdapter.checkDirect(ctx);
+
+    for (const result of results) {
+      if (result.message && result.message.length > 5) {
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, result.message, { isSelfChat: true });
+        engineState.messagesSent++;
+        console.log(`[INTEGRATIONS-ENGINE] 📰 Noticias enviadas`);
+      }
+    }
+  } catch (e) {
+    console.error(`[INTEGRATIONS-ENGINE] ❌ Error checkNews: ${e.message}`);
+  }
+}
+
 function getStats() {
   return {
     adapters: integrationRegistry.types().length,
@@ -119,4 +180,4 @@ function getStats() {
   };
 }
 
-module.exports = { initIntegrationEngine, runIntegrationEngine, getStats };
+module.exports = { initIntegrationEngine, runIntegrationEngine, getStats, checkWeather, checkNews };

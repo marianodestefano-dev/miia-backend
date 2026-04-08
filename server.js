@@ -151,6 +151,9 @@ const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
 const ownerMemory = require('./core/owner_memory');
+const nightlyBrain = require('./core/nightly_brain');
+const biweeklyReport = require('./core/biweekly_report');
+const patternEngine = require('./core/pattern_engine');
 const linkTracker = require('./core/link_tracker');
 const ttsEngine = require('./voice/tts_engine');
 const kidsMode = require('./voice/kids_mode');
@@ -955,6 +958,24 @@ setTimeout(() => {
   });
   ownerMemory.init(OWNER_UID, firestoreInstance);
   linkTracker.init(OWNER_UID, firestoreInstance, ownerMemory);
+  nightlyBrain.init(OWNER_UID, {
+    firestore: firestoreInstance,
+    aiGateway,
+    safeSendMessage,
+    getScheduleConfig,
+    OWNER_PHONE
+  });
+  biweeklyReport.init(OWNER_UID, {
+    firestore: firestoreInstance,
+    aiGateway,
+    mailService,
+    safeSendMessage,
+    OWNER_PHONE
+  });
+  patternEngine.init(OWNER_UID, {
+    firestore: firestoreInstance,
+    aiGateway
+  });
 }, 480000); // 8 min post-startup (después de que todos los engines estén listos)
 
 // ═══ MODO FINDE — Check cada 30min si preguntar al owner (P3.4) ═══
@@ -1522,9 +1543,11 @@ if (GEMINI_BACKUP_KEYS.length > 0) {
 }
 
 if (process.env.OPENAI_API_KEY) keyPool.register('openai', [process.env.OPENAI_API_KEY]);
-// Claude: soporta múltiples keys via CLAUDE_API_KEY, CLAUDE_API_KEY_2 (ej: cuenta personal + MIIA App org)
-const CLAUDE_KEYS = [process.env.CLAUDE_API_KEY, process.env.CLAUDE_API_KEY_2, process.env.CLAUDE_API_KEY_3].filter(Boolean);
-if (CLAUDE_KEYS.length) keyPool.register('claude', CLAUDE_KEYS);
+// Claude: KEY primaria (mariano.destefano@gmail.com, $100 limit) se usa PRIMERO.
+// KEY backup (hola@miia-app.com, $300+ limit) se activa cuando la primaria agota quota.
+if (process.env.CLAUDE_API_KEY) keyPool.register('claude', [process.env.CLAUDE_API_KEY]);
+const CLAUDE_BACKUP_KEYS = [process.env.CLAUDE_API_KEY_2, process.env.CLAUDE_API_KEY_3].filter(Boolean);
+if (CLAUDE_BACKUP_KEYS.length) keyPool.registerBackup('claude', CLAUDE_BACKUP_KEYS);
 // Groq: soporta múltiples keys via GROQ_API_KEY, GROQ_API_KEY_2, etc.
 const GROQ_KEYS = [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2, process.env.GROQ_API_KEY_3].filter(Boolean);
 if (GROQ_KEYS.length) keyPool.register('groq', GROQ_KEYS);
@@ -7651,6 +7674,10 @@ app.get('/health', (req, res) => {
       FRONTEND_URL: !!process.env.FRONTEND_URL,
       ADMIN_API_KEY: !!process.env.ADMIN_API_KEY,
       SKIP_WA_INIT: process.env.SKIP_WA_INIT || null
+    },
+    engines: {
+      nightlyBrain: nightlyBrain.getStatus(),
+      integrations: integrationEngine.getStats()
     }
   });
 });
