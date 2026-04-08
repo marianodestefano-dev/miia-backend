@@ -8018,6 +8018,8 @@ function requireRole(...allowedRoles) {
       const role = doc.exists ? (doc.data().role || 'owner') : 'owner'; // default owner for legacy users
       req.userRole = role;
 
+      // Admin siempre tiene acceso a todo
+      if (role === 'admin') return next();
       if (allowedRoles.includes(role)) return next();
       return res.status(403).json({ error: 'Acceso denegado', requiredRole: allowedRoles, yourRole: role });
     } catch (e) {
