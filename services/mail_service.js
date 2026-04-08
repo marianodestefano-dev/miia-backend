@@ -205,6 +205,40 @@ async function sendGenericEmail(to, subject, body, opts = {}) {
 }
 
 /**
+ * Enviar email con HTML personalizado (sin template genérico)
+ * Usado para emails institucionales con diseño propio (reset password, bienvenida, etc.)
+ */
+async function sendCustomEmail(to, subject, html, opts = {}) {
+  if (!transporter) {
+    console.log('[MAIL] ❌ SMTP no configurado. Email NO enviado.');
+    return { success: false, error: 'SMTP no configurado' };
+  }
+
+  if (!to || !to.includes('@')) {
+    return { success: false, error: 'Email destinatario inválido' };
+  }
+
+  const fromName = opts.fromName || 'MIIA';
+  const from = `"${fromName}" <${process.env.SMTP_FROM?.match(/<(.+)>/)?.[1] || process.env.SMTP_USER || 'hola@miia-app.com'}>`;
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to,
+      subject,
+      html,
+      ...(opts.replyTo && { replyTo: opts.replyTo }),
+    });
+
+    console.log(`[MAIL] ✅ Email institucional enviado a ${to} — Subject: "${subject}" (ID: ${info.messageId})`);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error(`[MAIL] ❌ Error enviando email institucional a ${to}:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Inicializar al cargar el módulo
  */
 initMailer();
@@ -212,6 +246,7 @@ initMailer();
 module.exports = {
   sendSessionRecoveryEmail,
   sendGenericEmail,
+  sendCustomEmail,
   initMailer,
   isConfigured: () => !!transporter
 };

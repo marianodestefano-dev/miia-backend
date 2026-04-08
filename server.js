@@ -9365,6 +9365,448 @@ app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, r
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// BUSINESSES CRUD — Multi-negocio por owner (FASE 1)
+// Estructura: users/{uid}/businesses/{bizId}
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const db = admin.firestore();
+
+// GET /api/tenant/:uid/businesses — Listar todos los negocios del owner
+app.get('/api/tenant/:uid/businesses', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const snap = await db.collection('users').doc(uid).collection('businesses').orderBy('createdAt', 'desc').get();
+    const businesses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    console.log(`[BIZ] 📋 Listados ${businesses.length} negocios para ${uid}`);
+    res.json(businesses);
+  } catch (e) {
+    console.error(`[BIZ] ❌ Error listando negocios:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/tenant/:uid/businesses — Crear nuevo negocio
+app.post('/api/tenant/:uid/businesses', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { name, email, address, website, demoLink, description, whatsapp_number, ownerRole } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name es requerido' });
+
+    const bizData = {
+      name: name.trim(),
+      email: (email || '').trim(),
+      address: (address || '').trim(),
+      website: (website || '').trim(),
+      demoLink: (demoLink || '').trim(),
+      description: (description || '').trim(),
+      whatsapp_number: (whatsapp_number || '').trim(),
+      ownerRole: (ownerRole || '').trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const docRef = await db.collection('users').doc(uid).collection('businesses').add(bizData);
+    console.log(`[BIZ] ✅ Negocio creado: ${bizData.name} (${docRef.id}) para ${uid}`);
+
+    // Si es el primer negocio, setearlo como default
+    const allBiz = await db.collection('users').doc(uid).collection('businesses').get();
+    if (allBiz.size === 1) {
+      await db.collection('users').doc(uid).update({ defaultBusinessId: docRef.id });
+      console.log(`[BIZ] 📌 Seteado como negocio default para ${uid}`);
+    }
+
+    res.json({ success: true, id: docRef.id, business: { id: docRef.id, ...bizData } });
+  } catch (e) {
+    console.error(`[BIZ] ❌ Error creando negocio:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/tenant/:uid/businesses/:bizId — Obtener un negocio
+app.get('/api/tenant/:uid/businesses/:bizId', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const doc = await db.collection('users').doc(uid).collection('businesses').doc(bizId).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Negocio no encontrado' });
+    res.json({ id: doc.id, ...doc.data() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/tenant/:uid/businesses/:bizId — Actualizar negocio
+app.put('/api/tenant/:uid/businesses/:bizId', express.json(), async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const allowed = ['name', 'email', 'address', 'website', 'demoLink', 'description', 'whatsapp_number', 'ownerRole'];
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = typeof req.body[key] === 'string' ? req.body[key].trim() : req.body[key];
+    }
+    updates.updatedAt = new Date().toISOString();
+
+    await db.collection('users').doc(uid).collection('businesses').doc(bizId).update(updates);
+    console.log(`[BIZ] ✏️ Negocio ${bizId} actualizado para ${uid}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[BIZ] ❌ Error actualizando negocio:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/tenant/:uid/businesses/:bizId — Eliminar negocio
+app.delete('/api/tenant/:uid/businesses/:bizId', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+
+    // No permitir borrar el default si es el único
+    const allBiz = await db.collection('users').doc(uid).collection('businesses').get();
+    if (allBiz.size <= 1) return res.status(400).json({ error: 'No puedes eliminar tu único negocio' });
+
+    // Borrar subcolecciones del negocio
+    const subcollections = ['products', 'sessions'];
+    for (const sub of subcollections) {
+      const subSnap = await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection(sub).get();
+      const batch = db.batch();
+      subSnap.docs.forEach(d => batch.delete(d.ref));
+      if (!subSnap.empty) await batch.commit();
+    }
+    // Borrar docs individuales
+    for (const docName of ['brain/business_cerebro', 'contact_rules', 'payment_methods']) {
+      try { await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('brain').doc('business_cerebro').delete(); } catch(e) {}
+    }
+
+    await db.collection('users').doc(uid).collection('businesses').doc(bizId).delete();
+
+    // Si era el default, asignar otro
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (userDoc.data()?.defaultBusinessId === bizId) {
+      const remaining = await db.collection('users').doc(uid).collection('businesses').limit(1).get();
+      if (!remaining.empty) {
+        await db.collection('users').doc(uid).update({ defaultBusinessId: remaining.docs[0].id });
+      }
+    }
+
+    console.log(`[BIZ] 🗑️ Negocio ${bizId} eliminado para ${uid}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[BIZ] ❌ Error eliminando negocio:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Business-scoped training endpoints ──────────────────────────────────────
+
+// Products scoped to business
+app.get('/api/tenant/:uid/businesses/:bizId/products', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const snap = await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('products').orderBy('createdAt', 'desc').get();
+    res.json(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tenant/:uid/businesses/:bizId/products', express.json(), async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const { name, description, price, pricePromo, stock, extras } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name requerido' });
+
+    const productData = {
+      name: name.trim(),
+      description: (description || '').trim(),
+      price: price || '',
+      pricePromo: pricePromo || '',
+      stock: stock || '',
+      extras: extras || {},
+      createdAt: new Date().toISOString()
+    };
+
+    const docRef = await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('products').add(productData);
+
+    // Inject into tenant brain
+    const learningText = `[${bizId}] Producto: ${productData.name} — ${productData.description}. Precio: ${productData.price}${productData.pricePromo ? ` (Promo: ${productData.pricePromo})` : ''}`;
+    tenantManager.appendTenantTraining(uid, learningText);
+
+    console.log(`[BIZ] ✅ Producto "${name}" creado en negocio ${bizId}`);
+    res.json({ success: true, id: docRef.id, product: productData });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/tenant/:uid/businesses/:bizId/products/:productId', async (req, res) => {
+  try {
+    const { uid, bizId, productId } = req.params;
+    await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('products').doc(productId).delete();
+    await rebuildTenantBrainFromFirestore(uid);
+    console.log(`[BIZ] 🗑️ Producto ${productId} eliminado de negocio ${bizId}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Brain (cerebro) scoped to business
+app.get('/api/tenant/:uid/businesses/:bizId/brain', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const doc = await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('brain').doc('business_cerebro').get();
+    res.json(doc.exists ? doc.data() : { content: '', updatedAt: null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/tenant/:uid/businesses/:bizId/brain', express.json(), async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const { content } = req.body;
+    await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('brain').doc('business_cerebro').set({
+      content: content || '',
+      updatedAt: new Date().toISOString()
+    });
+    console.log(`[BIZ] 🧠 Cerebro actualizado para negocio ${bizId}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Contact rules scoped to business
+app.get('/api/tenant/:uid/businesses/:bizId/contact-rules', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const doc = await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('contact_rules').get();
+    res.json(doc.exists ? doc.data() : { lead_keywords: [], client_keywords: [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tenant/:uid/businesses/:bizId/contact-rules', express.json(), async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const { lead_keywords, client_keywords } = req.body;
+    await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('contact_rules').set({
+      lead_keywords: lead_keywords || [],
+      client_keywords: client_keywords || [],
+      updatedAt: new Date().toISOString()
+    });
+    console.log(`[BIZ] 📋 Contact rules actualizadas para negocio ${bizId}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Payment methods scoped to business
+app.get('/api/tenant/:uid/businesses/:bizId/payment-methods', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const doc = await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('payment_methods').get();
+    res.json(doc.exists ? (doc.data().methods || []) : []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tenant/:uid/businesses/:bizId/payment-methods', express.json(), async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const { methods } = req.body;
+    if (!Array.isArray(methods)) return res.status(400).json({ error: 'methods array required' });
+
+    await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('payment_methods').set({
+      methods,
+      updatedAt: new Date().toISOString()
+    });
+    console.log(`[BIZ] 💰 Payment methods actualizados para negocio ${bizId}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Training sessions scoped to business
+app.get('/api/tenant/:uid/businesses/:bizId/sessions', async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const snap = await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('sessions').orderBy('date', 'desc').get();
+    res.json(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tenant/:uid/businesses/:bizId/sessions', express.json(), async (req, res) => {
+  try {
+    const { uid, bizId } = req.params;
+    const { date, messages, trainingBlock, summary } = req.body;
+    if (!date) return res.status(400).json({ error: 'date requerido' });
+
+    await db.collection('users').doc(uid).collection('businesses').doc(bizId).collection('sessions').doc(date).set({
+      date, messages: messages || [], trainingBlock: trainingBlock || '', summary: summary || '',
+      createdAt: new Date().toISOString()
+    });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONTACT GROUPS CRUD — Grupos dinámicos de contactos (FASE 1)
+// Estructura: users/{uid}/contact_groups/{groupId}
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/tenant/:uid/contact-groups — Listar todos los grupos
+app.get('/api/tenant/:uid/contact-groups', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const snap = await db.collection('users').doc(uid).collection('contact_groups').orderBy('createdAt', 'asc').get();
+    const groups = [];
+    for (const doc of snap.docs) {
+      const contactsSnap = await db.collection('users').doc(uid).collection('contact_groups').doc(doc.id).collection('contacts').get();
+      groups.push({ id: doc.id, ...doc.data(), contactCount: contactsSnap.size });
+    }
+    console.log(`[GROUPS] 📋 Listados ${groups.length} grupos para ${uid}`);
+    res.json(groups);
+  } catch (e) {
+    console.error(`[GROUPS] ❌ Error listando grupos:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/tenant/:uid/contact-groups — Crear grupo
+app.post('/api/tenant/:uid/contact-groups', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { name, icon, tone, autoRespond, proactiveEnabled } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name es requerido' });
+
+    const groupData = {
+      name: name.trim(),
+      icon: icon || '👥',
+      tone: (tone || '').trim(),
+      autoRespond: autoRespond === true ? true : false,
+      proactiveEnabled: proactiveEnabled === true ? true : false,
+      createdAt: new Date().toISOString()
+    };
+
+    const docRef = await db.collection('users').doc(uid).collection('contact_groups').add(groupData);
+    console.log(`[GROUPS] ✅ Grupo "${name}" creado (${docRef.id}) para ${uid}`);
+    res.json({ success: true, id: docRef.id, group: { id: docRef.id, ...groupData } });
+  } catch (e) {
+    console.error(`[GROUPS] ❌ Error creando grupo:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/tenant/:uid/contact-groups/:groupId — Actualizar grupo
+app.put('/api/tenant/:uid/contact-groups/:groupId', express.json(), async (req, res) => {
+  try {
+    const { uid, groupId } = req.params;
+    const allowed = ['name', 'icon', 'tone', 'autoRespond', 'proactiveEnabled'];
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    updates.updatedAt = new Date().toISOString();
+
+    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).update(updates);
+    console.log(`[GROUPS] ✏️ Grupo ${groupId} actualizado`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/tenant/:uid/contact-groups/:groupId — Eliminar grupo
+app.delete('/api/tenant/:uid/contact-groups/:groupId', async (req, res) => {
+  try {
+    const { uid, groupId } = req.params;
+    // Borrar contactos dentro del grupo
+    const contactsSnap = await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').get();
+    if (!contactsSnap.empty) {
+      const batch = db.batch();
+      contactsSnap.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).delete();
+
+    // Limpiar contact_index entries que apuntan a este grupo
+    const indexSnap = await db.collection('users').doc(uid).collection('contact_index').where('groupId', '==', groupId).get();
+    if (!indexSnap.empty) {
+      const batch2 = db.batch();
+      indexSnap.docs.forEach(d => batch2.delete(d.ref));
+      await batch2.commit();
+    }
+
+    console.log(`[GROUPS] 🗑️ Grupo ${groupId} eliminado para ${uid}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/tenant/:uid/contact-groups/:groupId/contacts — Listar contactos del grupo
+app.get('/api/tenant/:uid/contact-groups/:groupId/contacts', async (req, res) => {
+  try {
+    const { uid, groupId } = req.params;
+    const snap = await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').orderBy('addedAt', 'desc').get();
+    res.json(snap.docs.map(d => ({ phone: d.id, ...d.data() })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/tenant/:uid/contact-groups/:groupId/contacts — Agregar contacto al grupo
+app.post('/api/tenant/:uid/contact-groups/:groupId/contacts', express.json(), async (req, res) => {
+  try {
+    const { uid, groupId } = req.params;
+    const { phone, name, notes, proactiveEnabled } = req.body;
+    if (!phone) return res.status(400).json({ error: 'phone es requerido' });
+
+    const contactData = {
+      name: (name || '').trim(),
+      notes: (notes || '').trim(),
+      proactiveEnabled: proactiveEnabled === true ? true : false,
+      addedAt: new Date().toISOString()
+    };
+
+    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').doc(phone).set(contactData);
+
+    // Actualizar contact_index
+    await db.collection('users').doc(uid).collection('contact_index').doc(phone).set({
+      type: 'group',
+      groupId,
+      name: contactData.name,
+      updatedAt: new Date().toISOString()
+    });
+
+    console.log(`[GROUPS] ✅ Contacto ${phone} (${name}) agregado al grupo ${groupId}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/tenant/:uid/contact-groups/:groupId/contacts/:phone — Quitar contacto del grupo
+app.delete('/api/tenant/:uid/contact-groups/:groupId/contacts/:phone', async (req, res) => {
+  try {
+    const { uid, groupId, phone } = req.params;
+    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').doc(phone).delete();
+    await db.collection('users').doc(uid).collection('contact_index').doc(phone).delete();
+    console.log(`[GROUPS] 🗑️ Contacto ${phone} eliminado del grupo ${groupId}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONTACT INDEX — Clasificación rápida de contactos
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/tenant/:uid/contact-index/:phone — Obtener clasificación de un contacto
+app.get('/api/tenant/:uid/contact-index/:phone', async (req, res) => {
+  try {
+    const { uid, phone } = req.params;
+    const doc = await db.collection('users').doc(uid).collection('contact_index').doc(phone).get();
+    if (!doc.exists) return res.json({ classified: false });
+    res.json({ classified: true, ...doc.data() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/tenant/:uid/contact-index/:phone — Clasificar un contacto
+app.post('/api/tenant/:uid/contact-index/:phone', express.json(), async (req, res) => {
+  try {
+    const { uid, phone } = req.params;
+    const { type, groupId, businessId, name } = req.body;
+    if (!type) return res.status(400).json({ error: 'type es requerido (group|lead|pending)' });
+
+    await db.collection('users').doc(uid).collection('contact_index').doc(phone).set({
+      type, groupId: groupId || null, businessId: businessId || null,
+      name: (name || '').trim(),
+      updatedAt: new Date().toISOString()
+    });
+    console.log(`[INDEX] ✅ Contacto ${phone} clasificado como ${type}`);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Prompt Registry — Módulos versionados + checkpoints ─────────────────────
 
 const promptRegistry = require('./core/prompt_registry');
@@ -11215,6 +11657,175 @@ tenantMessageHandler.setApprovalFunctions({
   validateLearningKey,
   createLearningApproval,
   markApprovalApplied
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FORGOT PASSWORD — Email institucional con diseño MIIA
+// ═══════════════════════════════════════════════════════════════════════════════
+app.post('/api/forgot-password', express.json(), async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'Email requerido' });
+
+    console.log(`[AUTH] 🔑 Solicitud de reset password para: ${email}`);
+
+    // Verificar que el usuario existe
+    let userRecord;
+    try {
+      userRecord = await admin.auth().getUserByEmail(email);
+    } catch (e) {
+      console.log(`[AUTH] ❌ Usuario no encontrado: ${email}`);
+      // No revelar si el email existe o no (seguridad)
+      return res.json({ ok: true, message: 'Si el email existe, recibirás un correo.' });
+    }
+
+    // Verificar si la cuenta fue creada solo con Google
+    const providers = userRecord.providerData.map(p => p.providerId);
+    if (providers.includes('google.com') && !providers.includes('password')) {
+      console.log(`[AUTH] ⚠️ Cuenta solo Google: ${email}`);
+      return res.status(400).json({ error: 'google_only', message: 'Tu cuenta fue creada con Google. Usa "Continuar con Google" para ingresar.' });
+    }
+
+    // Generar link de reset con Firebase Admin
+    const resetLink = await admin.auth().generatePasswordResetLink(email, {
+      url: 'https://www.miia-app.com/login.html'
+    });
+    console.log(`[AUTH] ✅ Link de reset generado para ${email}`);
+
+    // Enviar email institucional con diseño MIIA
+    const htmlEmail = `
+      <!DOCTYPE html>
+      <html>
+        <head><meta charset="utf-8"></head>
+        <body style="margin:0;padding:0;background:#f4f4f5;font-family:'Inter',-apple-system,sans-serif;">
+          <div style="max-width:560px;margin:40px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+            <!-- Header con gradient MIIA -->
+            <div style="background:linear-gradient(135deg,#00E5FF 0%,#7C3AED 50%,#FF1744 100%);padding:32px 40px;text-align:center;">
+              <h1 style="margin:0;color:#fff;font-size:28px;font-weight:900;letter-spacing:-1px;">MIIA</h1>
+              <p style="margin:8px 0 0;color:rgba(255,255,255,0.85);font-size:14px;">Tu asistente IA en WhatsApp</p>
+            </div>
+
+            <!-- Contenido -->
+            <div style="padding:36px 40px;">
+              <h2 style="margin:0 0 12px;color:#1a1a2e;font-size:20px;font-weight:700;">Restablecer contraseña</h2>
+              <p style="color:#64748b;font-size:15px;line-height:1.7;margin:0 0 24px;">
+                Hola! Recibimos una solicitud para restablecer la contraseña de tu cuenta <strong style="color:#1a1a2e;">${email}</strong>.
+              </p>
+              <p style="color:#64748b;font-size:15px;line-height:1.7;margin:0 0 28px;">
+                Haz clic en el botón para crear una nueva contraseña:
+              </p>
+
+              <!-- Botón -->
+              <div style="text-align:center;margin:0 0 28px;">
+                <a href="${resetLink}" style="display:inline-block;padding:14px 40px;background:linear-gradient(135deg,#00E5FF 0%,#7C3AED 50%,#FF1744 100%);color:#fff;text-decoration:none;border-radius:50px;font-weight:700;font-size:15px;">
+                  Restablecer mi contraseña
+                </a>
+              </div>
+
+              <p style="color:#94a3b8;font-size:13px;line-height:1.6;margin:0 0 8px;">
+                Si no solicitaste este cambio, puedes ignorar este correo. Tu contraseña actual seguirá funcionando.
+              </p>
+              <p style="color:#94a3b8;font-size:13px;line-height:1.6;margin:0;">
+                Este enlace expira en 1 hora por seguridad.
+              </p>
+            </div>
+
+            <!-- Footer -->
+            <div style="background:#f8f9fa;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb;">
+              <p style="margin:0;color:#94a3b8;font-size:12px;">
+                MIIA — Tu asistente IA que vende, organiza y conecta<br>
+                <a href="https://www.miia-app.com" style="color:#7C3AED;text-decoration:none;">www.miia-app.com</a> ·
+                <a href="https://wa.me/573054169969" style="color:#7C3AED;text-decoration:none;">WhatsApp</a>
+              </p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    await mailService.sendCustomEmail(email, 'Restablecer tu contraseña — MIIA', htmlEmail, {
+      fromName: 'MIIA',
+      replyTo: 'hola@miia-app.com'
+    });
+
+    console.log(`[AUTH] ✅ Email institucional de reset enviado a ${email}`);
+    res.json({ ok: true, message: 'Email enviado correctamente.' });
+  } catch (e) {
+    console.error(`[AUTH] ❌ Error en forgot-password:`, e.message);
+    res.status(500).json({ error: 'Error interno. Intenta de nuevo.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEW REGISTRATION — Welcome email + admin notification
+// ═══════════════════════════════════════════════════════════════════════════════
+app.post('/api/admin/new-registration', express.json(), async (req, res) => {
+  const { uid, name, email, whatsapp, plan } = req.body;
+  if (!uid || !email) return res.status(400).json({ error: 'uid y email son requeridos' });
+
+  console.log(`[REG] 📝 Nuevo registro: ${name} (${email}) — Plan: ${plan}, WhatsApp: ${whatsapp}`);
+
+  // 1. Welcome email al usuario
+  try {
+    const mailService = require('./services/mail_service');
+    if (mailService.isConfigured()) {
+      const welcomeHtml = `
+        <!DOCTYPE html><html><head><meta charset="utf-8">
+        <style>
+          body { font-family: Inter, -apple-system, sans-serif; color: #333; line-height: 1.6; margin: 0; }
+          .container { max-width: 600px; margin: 0 auto; padding: 0; }
+          .header { background: linear-gradient(135deg, #00E5FF 0%, #7C3AED 50%, #FF1744 100%); color: white; padding: 32px 24px; text-align: center; border-radius: 8px 8px 0 0; }
+          .header h1 { margin: 0; font-size: 1.6rem; font-weight: 800; }
+          .header p { margin: 8px 0 0; opacity: .85; font-size: .95rem; }
+          .content { padding: 28px 24px; background: #f9fafb; border: 1px solid #e5e7eb; border-top: none; }
+          .step { display: flex; gap: 12px; margin-bottom: 16px; }
+          .step-num { width: 28px; height: 28px; border-radius: 50%; background: #7C3AED; color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .8rem; flex-shrink: 0; }
+          .step-text { font-size: .9rem; }
+          .cta { display: inline-block; margin: 20px 0; padding: 12px 28px; background: linear-gradient(135deg, #7C3AED, #00E5FF); color: white; text-decoration: none; border-radius: 50px; font-weight: 700; font-size: .9rem; }
+          .footer { padding: 16px 24px; text-align: center; color: #666; font-size: .78rem; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; background: #fff; }
+          .footer a { color: #7C3AED; text-decoration: none; }
+        </style></head><body>
+        <div class="container">
+          <div class="header">
+            <h1>Bienvenido a MIIA</h1>
+            <p>Tu asistente IA personal y de negocios</p>
+          </div>
+          <div class="content">
+            <p>Hola <strong>${name || 'Usuario'}</strong>,</p>
+            <p>Tu cuenta ha sido creada exitosamente. Estos son tus primeros pasos:</p>
+            <div class="step"><div class="step-num">1</div><div class="step-text">Verifica tu email haciendo clic en el enlace que te enviamos</div></div>
+            <div class="step"><div class="step-num">2</div><div class="step-text">Ingresa a tu <a href="https://www.miia-app.com/login.html" style="color:#7C3AED;">dashboard</a> y conecta tu WhatsApp</div></div>
+            <div class="step"><div class="step-num">3</div><div class="step-text">Entrena a MIIA con la info de tu negocio</div></div>
+            <div class="step"><div class="step-num">4</div><div class="step-text">MIIA empieza a responder por ti</div></div>
+            <p style="text-align:center"><a href="https://www.miia-app.com/login.html" class="cta">Ir a mi Dashboard</a></p>
+            <p style="color:#666;font-size:.82rem;">Tu plan: <strong>${plan === 'trial' ? 'Trial gratuito (7 días)' : plan}</strong></p>
+          </div>
+          <div class="footer">
+            <p>MIIA Center &copy; 2026 | <a href="https://www.miia-app.com">miia-app.com</a></p>
+            <p>Si tienes preguntas, escríbenos a <a href="https://wa.me/573054169969">WhatsApp</a></p>
+          </div>
+        </div></body></html>`;
+
+      await mailService.sendCustomEmail(email, 'Bienvenido a MIIA — Tu asistente IA', welcomeHtml);
+      console.log(`[REG] ✅ Welcome email enviado a ${email}`);
+    }
+  } catch (e) {
+    console.error(`[REG] ⚠️ Error enviando welcome email:`, e.message);
+  }
+
+  // 2. Notify admin (Mariano) via Firestore — non-blocking
+  try {
+    await admin.firestore().collection('admin_notifications').add({
+      type: 'new_registration',
+      uid, name, email, whatsapp, plan,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    console.log(`[REG] ✅ Admin notificado del nuevo registro`);
+  } catch (e) {
+    console.error(`[REG] ⚠️ Error notificando admin:`, e.message);
+  }
+
+  res.json({ success: true });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
