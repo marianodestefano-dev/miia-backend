@@ -67,10 +67,10 @@ const CONTEXT_CONFIG = {
   },
   [CONTEXTS.FAMILY_CHAT]: {
     preferred: 'claude',
-    model: 'claude-opus-4-6',
-    fallbacks: ['claude', 'gemini', 'openai'],
+    model: 'claude-sonnet-4-6',
+    fallbacks: ['gemini', 'openai'],
     maxTokens: 4096,
-    description: 'OPUS ARMY — Chat familiar con Claude Opus 4.6 (máxima calidad, 30 familiares = 30 vendedores)'
+    description: 'SONNET ARMY — 30 familiares con Claude Sonnet 4.6 (calidad 9/10, cabe en $100 API limit)'
   },
   [CONTEXTS.CLASSIFICATION]: {
     preferred: 'gemini',
