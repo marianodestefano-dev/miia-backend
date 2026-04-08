@@ -1522,7 +1522,9 @@ if (GEMINI_BACKUP_KEYS.length > 0) {
 }
 
 if (process.env.OPENAI_API_KEY) keyPool.register('openai', [process.env.OPENAI_API_KEY]);
-if (process.env.CLAUDE_API_KEY) keyPool.register('claude', [process.env.CLAUDE_API_KEY]);
+// Claude: soporta múltiples keys via CLAUDE_API_KEY, CLAUDE_API_KEY_2 (ej: cuenta personal + MIIA App org)
+const CLAUDE_KEYS = [process.env.CLAUDE_API_KEY, process.env.CLAUDE_API_KEY_2, process.env.CLAUDE_API_KEY_3].filter(Boolean);
+if (CLAUDE_KEYS.length) keyPool.register('claude', CLAUDE_KEYS);
 // Groq: soporta múltiples keys via GROQ_API_KEY, GROQ_API_KEY_2, etc.
 const GROQ_KEYS = [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2, process.env.GROQ_API_KEY_3].filter(Boolean);
 if (GROQ_KEYS.length) keyPool.register('groq', GROQ_KEYS);
