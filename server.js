@@ -8016,7 +8016,10 @@ function requireRole(...allowedRoles) {
 
       // Check role in Firestore
       const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
-      const role = doc.exists ? (doc.data().role || 'owner') : 'owner'; // default owner for legacy users
+      let role = doc.exists ? (doc.data().role || 'owner') : 'owner'; // default owner for legacy users
+
+      // Normalizar: 'client' es equivalente a 'owner' (legacy role name)
+      if (role === 'client') role = 'owner';
       req.userRole = role;
 
       // Admin siempre tiene acceso a todo
