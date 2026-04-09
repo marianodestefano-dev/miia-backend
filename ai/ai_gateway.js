@@ -139,8 +139,8 @@ const CONTEXT_CONFIG = {
     fallbacks: ['gemini', 'openai'],
     maxTokens: 1024,
     temperature: 0.2,       // Juicio firme, consistente, no creativo
-    thinking: 512,          // Pensar sistemáticamente cada regla antes de aprobar
-    description: 'Auditor — Sonnet 4.6 + thinking 512 (juicio firme)'
+    thinking: 1024,         // Mínimo Claude API = 1024
+    description: 'Auditor — Sonnet 4.6 + thinking 1024 (juicio firme)'
   },
   [CONTEXTS.NIGHTLY_BRAIN]: {
     preferred: 'claude',

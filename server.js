@@ -502,6 +502,7 @@ let allowedLeads = Object.keys(contactTypes); // Pre-seed con contactos conocido
 let flaggedBots = {};
 let lastInteractionTime = {};
 let selfChatLoopCounter = {};
+let vacunaCounter = {};
 let isSystemPaused = false;
 const nightPendingLeads = new Set(); // leads que escribieron durante el silencio nocturno
 
@@ -6507,21 +6508,19 @@ REGLAS:
     if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
     saveDB();
 
-    // Anti-ráfaga (Vacuna)
-    if (!selfChatLoopCounter[phone] || typeof selfChatLoopCounter[phone] === 'number') {
-      selfChatLoopCounter[phone] = { count: 0, lastTime: 0 };
-    }
+    // Anti-ráfaga (Vacuna) — usa contador SEPARADO para no interferir con loop detector
+    if (!vacunaCounter[phone]) vacunaCounter[phone] = { count: 0, lastTime: 0 };
     const nowLoop = Date.now();
-    if (nowLoop - selfChatLoopCounter[phone].lastTime < 5000) {
-      selfChatLoopCounter[phone].count++;
+    if (nowLoop - vacunaCounter[phone].lastTime < 5000) {
+      vacunaCounter[phone].count++;
     } else {
-      selfChatLoopCounter[phone].count = 1;
+      vacunaCounter[phone].count = 1;
     }
-    selfChatLoopCounter[phone].lastTime = nowLoop;
-    if (selfChatLoopCounter[phone].count > 3) {
-      console.log(`🚨 [VACUNA] BLOQUEO POR RÁFAGA en ${phone}`);
+    vacunaCounter[phone].lastTime = nowLoop;
+    if (vacunaCounter[phone].count > 5) {
+      console.log(`🚨 [VACUNA] BLOQUEO POR RÁFAGA en ${phone} — pausa 15s`);
       isSystemPaused = true;
-      setTimeout(() => { isSystemPaused = false; selfChatLoopCounter[phone].count = 0; }, 15000);
+      setTimeout(() => { isSystemPaused = false; vacunaCounter[phone].count = 0; console.log(`[VACUNA] ✅ Pausa expirada`); }, 15000);
       return;
     }
 
@@ -7174,22 +7173,33 @@ async function handleIncomingMessage(message) {
       selfChatLoopCounter[targetPhoneId] = { count: 0, lastTime: 0 };
       return;
     }
-    // Velocidad de auto-bucle
-    const lastInt = lastInteractionTime[targetPhoneId] || 0;
-    if (!selfChatLoopCounter[targetPhoneId] || typeof selfChatLoopCounter[targetPhoneId] === 'number') {
-      selfChatLoopCounter[targetPhoneId] = { count: 0, lastTime: 0 };
-    }
-    if (now - lastInt < 20000) {
-      selfChatLoopCounter[targetPhoneId].count++;
+    // FIX: No contar mensajes replayed (timestamp anterior a conexión) como loop
+    // Baileys re-envía mensajes viejos al reconectar, no es un loop real
+    const msgTs = message.timestamp || 0;
+    const isReplayedMsg = ownerConnectedAt > 0 && msgTs > 0 && msgTs < ownerConnectedAt;
+    if (isReplayedMsg) {
+      console.log(`[HIM] ⏭️ Msg replay ignorado por loop detector (ts=${msgTs} < connected=${ownerConnectedAt})`);
+      // NO contar hacia loop, pero SÍ dejar pasar el mensaje
     } else {
-      selfChatLoopCounter[targetPhoneId].count = 0;
-    }
-    selfChatLoopCounter[targetPhoneId].lastTime = now;
-    if (selfChatLoopCounter[targetPhoneId].count >= 3) {
-      console.warn(`[HIM] ⚠️ Self-chat loop detected (${selfChatLoopCounter[targetPhoneId].count} msgs in <20s) for ${targetPhoneId} — pausing MIIA`);
-      if (!conversationMetadata[targetPhoneId]) conversationMetadata[targetPhoneId] = {};
-      conversationMetadata[targetPhoneId].miiaFamilyPaused = true;
-      return;
+      // Velocidad de auto-bucle — solo para mensajes NUEVOS (post-conexión)
+      const lastInt = lastInteractionTime[targetPhoneId] || 0;
+      if (!selfChatLoopCounter[targetPhoneId] || typeof selfChatLoopCounter[targetPhoneId] === 'number') {
+        selfChatLoopCounter[targetPhoneId] = { count: 0, lastTime: 0 };
+      }
+      if (now - lastInt < 20000) {
+        selfChatLoopCounter[targetPhoneId].count++;
+      } else {
+        selfChatLoopCounter[targetPhoneId].count = 0;
+      }
+      selfChatLoopCounter[targetPhoneId].lastTime = now;
+      if (selfChatLoopCounter[targetPhoneId].count >= 5) {
+        console.warn(`[HIM] ⚠️ Self-chat loop detected (${selfChatLoopCounter[targetPhoneId].count} msgs in <20s) for ${targetPhoneId} — pausing 30s`);
+        selfChatLoopCounter[targetPhoneId].count = 0;
+        // Pausa temporal (30s) en vez de permanente
+        isSystemPaused = true;
+        setTimeout(() => { isSystemPaused = false; console.log(`[HIM] ✅ Pausa de loop expirada — MIIA reactivada`); }, 30000);
+        return;
+      }
     }
   }
   lastInteractionTime[targetPhoneId] = now;
