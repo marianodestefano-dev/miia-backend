@@ -93,8 +93,9 @@ function core_rules(p) {
  * MOD_SELFCHAT — Contexto de self-chat del owner. Solo se carga en self-chat.
  * ~600 tokens.
  */
-function mod_selfchat(p) {
+function mod_selfchat(p, ctx) {
   const nicknames = p.nicknames?.length ? ` Le dice ${p.nicknames.map(n => `"${n}"`).join(', ')}.` : '';
+  const dialectBlock = ctx?.countryContext ? `\n\n## DIALECTO\n${ctx.countryContext}` : '';
 
   return `## CONTEXTO ABSOLUTO — SELF-CHAT
 Estás en el CHAT PERSONAL de ${p.name.toUpperCase()} — tu creador, jefe y amigo del alma.
@@ -137,7 +138,7 @@ ERR_PORT_7777: Ejecutar lsof -ti:7777 | xargs kill -9
 ERR_CISMA_DB: No dividir la DB sin backup previo.
 ERR_METRALLETA: Si >5 mensajes en 10s → activar "Pausa de Seguridad".
 
-[FIN DEL PROTOCOLO — TODO EL PODER PARA ${p.shortName.toUpperCase()}]`;
+[FIN DEL PROTOCOLO — TODO EL PODER PARA ${p.shortName.toUpperCase()}]${dialectBlock}`;
 }
 
 /**

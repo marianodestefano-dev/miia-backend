@@ -169,21 +169,21 @@ function getTimezoneForCountry(country) {
 }
 
 /**
- * Genera contexto geográfico para el prompt de leads
+ * Genera contexto geográfico + dialecto para el prompt de CUALQUIER contacto
  * @param {string} basePhone - Número base (sin @s.whatsapp.net)
- * @returns {string} Contexto geográfico para inyectar en el prompt
+ * @returns {string} Contexto geográfico + dialecto para inyectar en el prompt
  */
 function getCountryContext(basePhone) {
   const countryCode = basePhone.substring(0, 2);
   const countryCode3 = basePhone.substring(0, 3);
 
-  if (countryCode === '57') return '🌍 El lead es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el lead los trae; si tiene SIIGO + Titanium → facturador electrónico $0.';
-  if (countryCode === '52') return '🌍 El lead es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD.';
-  if (countryCode === '56') return '🌍 El lead es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD.';
-  if (countryCode === '54') return '🌍 El lead es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el lead es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD.';
-  if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') return '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD.';
-  if (countryCode === '34') return '🌍 El lead es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
-  return '🌍 El lead es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD.';
+  if (countryCode === '57') return '🌍 El contacto es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el contacto los trae; si tiene SIIGO + Titanium → facturador electrónico $0. 🗣️ DIALECTO: Usá TÚ (tuteo colombiano). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "listo", "dale", "claro que sí", "con mucho gusto".';
+  if (countryCode === '52') return '🌍 El contacto es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo mexicano). Decí "cuéntame", "platícame", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "órale", "sale", "claro", "con gusto".';
+  if (countryCode === '56') return '🌍 El contacto es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo chileno). Decí "cuéntame", "dime". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "dale", "ya", "perfecto".';
+  if (countryCode === '54') return '🌍 El contacto es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el contacto es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá VOS (voseo rioplatense). Decí "contame", "decime", "mirá", "fijate". Expresiones: "dale", "genial", "bárbaro".';
+  if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') return '🌍 El contacto es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo caribeño). Decí "cuéntame", "dime". NUNCA "contame" ni "decime". Expresiones: "claro", "perfecto", "con gusto".';
+  if (countryCode === '34') return '🌍 El contacto es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo español). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). NUNCA usar "vos". Expresiones: "vale", "genial", "perfecto", "estupendo".';
+  return '🌍 El contacto es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (español neutro). Decí "cuéntame", "dime". NUNCA "contame" ni "decime" (eso es argentino). Tono profesional neutro.';
 }
 
 /**

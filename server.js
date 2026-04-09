@@ -120,6 +120,7 @@ const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 const taskScheduler = require('./core/task_scheduler');
 const { runPreprocess } = require('./core/miia_preprocess');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_postprocess');
+const salesAssets = require('./core/sales_assets');
 const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
 const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
@@ -797,6 +798,132 @@ async function runAgendaEngine() {
 // L4: Agenda — alto, recordatorios no pueden fallar
 setInterval(() => taskScheduler.executeWithConcentration(4, 'agenda-engine', runAgendaEngine), 300000);
 setTimeout(() => taskScheduler.executeWithConcentration(4, 'agenda-engine', runAgendaEngine), 180000);
+
+// ═══ GOOGLE CALENDAR SYNC — Leer eventos manuales y crear recordatorios ═══
+// Si el owner crea un evento manualmente en Google Calendar, MIIA lo detecta y lo agrega a miia_agenda
+// para enviarle recordatorio 10 min antes, igual que los eventos creados por MIIA.
+async function syncGoogleCalendarEvents() {
+  if (!OWNER_UID) return;
+
+  try {
+    // Verificar que el usuario tiene Google Calendar conectado
+    const userDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+    if (!userData.googleTokens || !userData.calendarEnabled) return;
+
+    const { cal, calId } = await getCalendarClient(OWNER_UID);
+    const scheduleConfig = await getScheduleConfig(OWNER_UID);
+    const tz = scheduleConfig?.timezone || 'America/Bogota';
+
+    // Leer eventos de las próximas 24 horas
+    const now = new Date();
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+    const response = await cal.events.list({
+      calendarId: calId,
+      timeMin: now.toISOString(),
+      timeMax: tomorrow.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 50,
+    });
+
+    const calEvents = response.data.items || [];
+    if (calEvents.length === 0) return;
+
+    // Leer eventos ya existentes en miia_agenda para no duplicar
+    const existingSnap = await admin.firestore()
+      .collection('users').doc(OWNER_UID).collection('miia_agenda')
+      .where('status', 'in', ['pending', 'sent'])
+      .get();
+
+    const existingCalEventIds = new Set();
+    const existingReasons = new Set();
+    existingSnap.docs.forEach(d => {
+      const data = d.data();
+      if (data.calendarEventId) existingCalEventIds.add(data.calendarEventId);
+      // También comparar por razón+hora para detectar duplicados sin calendarEventId
+      if (data.reason && data.scheduledFor) existingReasons.add(`${data.reason}__${data.scheduledFor.substring(0, 16)}`);
+    });
+
+    let synced = 0;
+    for (const evt of calEvents) {
+      // Saltar si ya existe en miia_agenda (por calendarEventId)
+      if (existingCalEventIds.has(evt.id)) continue;
+
+      const summary = evt.summary || 'Evento sin título';
+      const startDt = evt.start?.dateTime || evt.start?.date;
+      if (!startDt) continue;
+
+      const startISO = new Date(startDt).toISOString();
+
+      // Saltar si hay un evento con misma razón+hora (probablemente creado por MIIA sin calendarEventId)
+      const dedupeKey = `${summary}__${startISO.substring(0, 16)}`;
+      if (existingReasons.has(dedupeKey)) continue;
+
+      const endDt = evt.end?.dateTime || evt.end?.date;
+      const location = evt.location || '';
+      const meetLink = evt.hangoutLink || '';
+      const description = evt.description || '';
+      const attendees = (evt.attendees || []).map(a => a.email).filter(e => e).join(', ');
+
+      // Determinar modo del evento
+      let eventMode = 'presencial';
+      if (meetLink || summary.toLowerCase().includes('meet') || summary.toLowerCase().includes('zoom') || summary.toLowerCase().includes('call')) {
+        eventMode = 'virtual';
+      } else if (summary.toLowerCase().includes('llamar') || summary.toLowerCase().includes('telefo')) {
+        eventMode = 'telefono';
+      }
+
+      // Calcular hora local para display
+      const localStart = new Date(startDt).toLocaleString('en-US', { timeZone: tz });
+      const localStartDate = new Date(localStart);
+      const localISO = `${localStartDate.getFullYear()}-${String(localStartDate.getMonth() + 1).padStart(2, '0')}-${String(localStartDate.getDate()).padStart(2, '0')}T${String(localStartDate.getHours()).padStart(2, '0')}:${String(localStartDate.getMinutes()).padStart(2, '0')}:00`;
+
+      // Crear en miia_agenda
+      const agendaEntry = {
+        contactPhone: 'self',
+        contactName: userData.name || 'Owner',
+        reason: summary,
+        scheduledFor: startISO,
+        scheduledForLocal: localISO,
+        status: 'pending',
+        source: 'google_calendar_sync',
+        calendarEventId: evt.id,
+        eventMode,
+        eventLocation: location,
+        meetLink,
+        preReminderSent: false,
+        remindContact: false,
+        createdAt: new Date().toISOString(),
+        notes: `${description}${attendees ? `\nAsistentes: ${attendees}` : ''}`,
+      };
+
+      await admin.firestore()
+        .collection('users').doc(OWNER_UID).collection('miia_agenda')
+        .add(agendaEntry);
+
+      synced++;
+      console.log(`[CALENDAR-SYNC] 📅 Evento sincronizado: "${summary}" a las ${localISO.split('T')[1]}`);
+    }
+
+    if (synced > 0) {
+      console.log(`[CALENDAR-SYNC] ✅ ${synced} evento(s) manual(es) sincronizado(s) desde Google Calendar`);
+    }
+  } catch (e) {
+    // No bloquear si falla — Google Calendar es opcional
+    if (e.message?.includes('no conectado') || e.message?.includes('invalid_grant')) {
+      // Silencioso — Google Calendar no está conectado o tokens expirados
+    } else {
+      console.error(`[CALENDAR-SYNC] ❌ Error sincronizando:`, e.message);
+    }
+  }
+}
+
+// Cada 15 min (900s). Primera ejecución 4 min post-startup.
+// L3: Calendar sync — medio, no crítico pero útil
+setInterval(() => taskScheduler.executeWithConcentration(3, 'calendar-sync', syncGoogleCalendarEvents), 900000);
+setTimeout(() => taskScheduler.executeWithConcentration(3, 'calendar-sync', syncGoogleCalendarEvents), 240000);
 
 // ═══ INTEGRITY ENGINE — Verificación de promesas, preferencias, afinidades ═══
 // Cada 5 min via Gemini Flash ($0). Detecta promesas rotas, aprende gustos/preferencias de contactos.
@@ -3435,7 +3562,8 @@ REGLAS:
 - JAMÁS decir que sos IA
 - JAMÁS mencionar "me pidieron", "mi jefe", "el owner"
 - Presentate con el nombre del negocio si lo tenés
-- Preguntá en qué podés ayudar`;
+- Preguntá en qué podés ayudar
+${(() => { const lc = leadPhone.substring(0, 2); if (lc === '57') return '- DIALECTO: TÚ colombiano. "cuéntame", "dime". NUNCA "contame/decime".'; if (lc === '52') return '- DIALECTO: TÚ mexicano. "cuéntame", "platícame". NUNCA "contame/decime".'; if (lc === '54') return '- DIALECTO: VOS rioplatense. "contame", "decime", "mirá".'; if (lc === '34') return '- DIALECTO: TÚ español. "cuéntame", "dime". NUNCA "vos". Expresiones: "vale", "genial".'; return '- DIALECTO: TÚ español neutro. "cuéntame", "dime". NUNCA "contame/decime".'; })()}`;
 
           try {
             const responseMsg = await generateAIContent(respondPrompt);
@@ -3901,8 +4029,8 @@ REGLAS ABSOLUTAS:
 - PROHIBIDO decir que alguien "te creó". NADIE te creó en esta conversación. Sos la asistente de ${ownerFirstName}, punto.
 - Ejemplo correcto: "Soy MIIA, la asistente de ${ownerFirstName}" / "${ownerFirstName} quiso que te conozca"
 - Ejemplo PROHIBIDO: "${ownerFirstName} me creó" / "Él me hizo" / "Mi creador"
-- Hablá en español neutro
-- Sé genuinamente curiosa por conocerla`;
+- Sé genuinamente curiosa por conocerla
+${(() => { const tc = target.phone.substring(0, 2); const tc3 = target.phone.substring(0, 3); if (tc === '57') return '- DIALECTO: Usá TÚ (tuteo colombiano). "cuéntame", "dime". NUNCA "contame", "decime" (argentino). Expresiones: "listo", "dale", "con mucho gusto".'; if (tc === '52') return '- DIALECTO: Usá TÚ (tuteo mexicano). "cuéntame", "platícame". NUNCA "contame", "decime" (argentino). Expresiones: "órale", "sale", "con gusto".'; if (tc === '56') return '- DIALECTO: Usá TÚ (tuteo chileno). "cuéntame", "dime". NUNCA "contame", "decime" (argentino). Expresiones: "dale", "ya", "perfecto".'; if (tc === '54') return '- DIALECTO: Usá VOS (voseo rioplatense). "contame", "decime", "mirá". Expresiones: "dale", "genial", "bárbaro".'; if (tc3 === '180' || tc3 === '182' || tc3 === '184') return '- DIALECTO: Usá TÚ (tuteo caribeño). "cuéntame", "dime". NUNCA "contame" (argentino). Expresiones: "claro", "perfecto".'; if (tc === '34') return '- DIALECTO: Usá TÚ (tuteo español). "cuéntame", "dime". NUNCA "vos". Expresiones: "vale", "genial", "estupendo".'; return '- DIALECTO: Usá TÚ (español neutro). "cuéntame", "dime". NUNCA "contame" (argentino).'; })()}`;
 
           const introMsg = await generateAIContent(introPrompt);
           if (introMsg) {
@@ -4144,9 +4272,10 @@ REGLAS CRÍTICAS:
 - Este mensaje es TUYO, de MIIA. Hablás con TU voz, como si se te ocurrió a vos.
 - PROHIBIDO TOTAL: "${userProfile?.name || 'el owner'} me pidió", "él quería saber", "me dijo que te pregunte", "${userProfile?.name || 'el owner'} quiere que", "te paso el recado". MIIA NO es mensajera. MIIA tiene iniciativa propia.
 - Máximo 3 renglones, natural y humano
-- Tratala de VOS. PROHIBIDO: "Estimada", "usted", "su", "le". Es FAMILIA.
+- PROHIBIDO: "Estimada", "usted", "su", "le". Es FAMILIA, tono cercano.
 - NO repitas las palabras del contexto literalmente, reinterpretalo con tu estilo
 - Emoji: ${familyInfo.emoji || ''}
+${(() => { const fp = (familyInfo.phone || basePhone || '').replace(/\D/g,''); const fc = fp.substring(0,2); if (fc === '54') return '- DIALECTO: VOS rioplatense. "contame", "decime", "mirá". Tratala de VOS.'; if (fc === '57') return '- DIALECTO: TÚ colombiano. "cuéntame", "dime". Tratala de TÚ.'; if (fc === '52') return '- DIALECTO: TÚ mexicano. "cuéntame", "platícame". Tratala de TÚ.'; if (fc === '34') return '- DIALECTO: TÚ español. "cuéntame", "dime". Expresiones: "vale", "genial".'; return '- DIALECTO: TÚ español neutro. Tratala de TÚ.'; })()}
 ${toneRule}
 ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asistente", "soy una inteligencia artificial".' : ''}`;
             const miiaMsg = await generateAIContent(promptFamiliar);
@@ -4668,19 +4797,17 @@ Nuevo resumen actualizado:`;
       return;
     }
 
-    // Contexto geográfico
+    // Contexto geográfico + dialecto — aplica a TODOS los perfiles (leads, self-chat, familia, etc.)
     const countryCode = basePhone.substring(0, 2);
     const countryCode3 = basePhone.substring(0, 3);
     let countryContext = '';
-    if (!familyInfo) {
-      if (countryCode === '57') countryContext = '🌍 El lead es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el lead los trae; si tiene SIIGO + Titanium → facturador electrónico $0. 🗣️ DIALECTO: Usá TÚ (tuteo colombiano). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "listo", "dale", "claro que sí", "con mucho gusto".';
-      else if (countryCode === '52') countryContext = '🌍 El lead es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo mexicano). Decí "cuéntame", "platícame", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "órale", "sale", "claro", "con gusto".';
-      else if (countryCode === '56') countryContext = '🌍 El lead es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo chileno). Decí "cuéntame", "dime". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "dale", "ya", "perfecto".';
-      else if (countryCode === '54') countryContext = '🌍 El lead es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el lead es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá VOS (voseo rioplatense). Decí "contame", "decime", "mirá", "fijate". Expresiones: "dale", "genial", "bárbaro".';
-      else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 El lead es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo caribeño). Decí "cuéntame", "dime". NUNCA "contame" ni "decime". Expresiones: "claro", "perfecto", "con gusto".';
-      else if (countryCode === '34') countryContext = '🌍 El lead es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo español). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). NUNCA usar "vos". Expresiones: "vale", "genial", "perfecto", "estupendo".';
-      else countryContext = '🌍 El lead es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (español neutro). Decí "cuéntame", "dime". NUNCA "contame" ni "decime" (eso es argentino). Tono profesional neutro.';
-    }
+    if (countryCode === '57') countryContext = '🌍 Contacto de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el contacto los trae; si tiene SIIGO + Titanium → facturador electrónico $0. 🗣️ DIALECTO: Usá TÚ (tuteo colombiano). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "listo", "dale", "claro que sí", "con mucho gusto".';
+    else if (countryCode === '52') countryContext = '🌍 Contacto de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo mexicano). Decí "cuéntame", "platícame", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "órale", "sale", "claro", "con gusto".';
+    else if (countryCode === '56') countryContext = '🌍 Contacto de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo chileno). Decí "cuéntame", "dime". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "dale", "ya", "perfecto".';
+    else if (countryCode === '54') countryContext = '🌍 Contacto de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el contacto es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá VOS (voseo rioplatense). Decí "contame", "decime", "mirá", "fijate". Expresiones: "dale", "genial", "bárbaro".';
+    else if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') countryContext = '🌍 Contacto de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo caribeño). Decí "cuéntame", "dime". NUNCA "contame" ni "decime". Expresiones: "claro", "perfecto", "con gusto".';
+    else if (countryCode === '34') countryContext = '🌍 Contacto de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo español). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). NUNCA usar "vos". Expresiones: "vale", "genial", "perfecto", "estupendo".';
+    else countryContext = '🌍 Contacto INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (español neutro). Decí "cuéntame", "dime". NUNCA "contame" ni "decime" (eso es argentino). Tono profesional neutro.';
 
     // Construcción del system prompt
     const leadName = leadNames[phone] || '';
@@ -4698,6 +4825,7 @@ Nuevo resumen actualizado:`;
         ownerProfile: userProfile, // Perfil DINÁMICO del owner desde Firestore
         context: {
           contactName: userProfile.name || '',
+          countryContext, // Dialecto del owner en self-chat
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,
         }
@@ -6506,6 +6634,28 @@ REGLAS:
     // Si no se envió como audio, enviar como texto con emoji
     if (!sentAsAudio) {
       const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
+
+      // ═══ MIIA SALES: Enviar imagen/banner ilustrativo (30% de las probaditas) ═══
+      if (isMiiaSalesLead && !isSelfChat) {
+        const currentProbadita = (conversations[phone] || []).filter(m => m.role === 'assistant').length;
+        if (currentProbadita <= 10 && salesAssets.shouldSendImage(currentProbadita)) {
+          const topic = salesAssets.detectSalesTopic(aiMessage);
+          if (topic) {
+            try {
+              const asset = await salesAssets.getSalesAsset(topic);
+              if (asset) {
+                // Enviar imagen primero (ilustrativa), luego el texto con datos reales
+                await safeSendMessage(phone, { mimetype: 'image/png', data: asset.buffer.toString('base64') }, { caption: asset.caption, isMiiaSalesLead: true });
+                console.log(`[SALES-IMAGE] 🖼️ Imagen "${topic}" enviada a ${basePhone} (probadita #${currentProbadita})`);
+                await new Promise(r => setTimeout(r, 1500)); // Pausa entre imagen y texto
+              }
+            } catch (imgErr) {
+              console.warn(`[SALES-IMAGE] ⚠️ Error enviando imagen: ${imgErr.message}`);
+            }
+          }
+        }
+      }
+
       await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx, isMiiaSalesLead });
     }
 

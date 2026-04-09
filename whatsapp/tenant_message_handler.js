@@ -877,7 +877,8 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // ── PASO 9: Construir prompt completo ──
   const profile = resolveProfile(ctx.ownerProfile);
   let activeSystemPrompt = '';
-  const countryContext = (contactType === 'lead') ? getCountryContext(basePhone) : '';
+  // Dialecto se aplica a TODOS los perfiles (leads, familia, equipo, self-chat, grupos)
+  const countryContext = getCountryContext(basePhone);
 
   if (isSelfChat) {
     activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
@@ -886,13 +887,18 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       const bizList = ctx.businesses.map((b, i) => `${i + 1}. ${b.name}${b.description ? ' — ' + b.description.substring(0, 60) : ''}`).join('\n');
       activeSystemPrompt += `\n\n## TUS NEGOCIOS\nTenés ${ctx.businesses.length} negocios registrados:\n${bizList}\nCuando un contacto nuevo escriba, MIIA te consultará a qué negocio asignarlo.`;
     }
+    // Dialecto del owner para self-chat
+    if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
   } else if (contactType === 'group' && classification?.groupData) {
     const contactName = classification.name || ctx.leadNames[phone] || basePhone;
     activeSystemPrompt = buildGroupPrompt(classification.groupData, contactName, ctx.ownerProfile);
+    if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
   } else if (isFamilyContact) {
     activeSystemPrompt = buildOwnerFamilyPrompt(isFamilyContact.name, isFamilyContact, ctx.ownerProfile);
+    if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
   } else if (isTeamMember) {
     activeSystemPrompt = buildEquipoPrompt(isTeamMember.name || ctx.leadNames[phone], ctx.ownerProfile);
+    if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
   } else if (contactType === 'enterprise_lead' && classification) {
     // Enterprise lead — MIIA hace discovery como "Mariano del área Enterprise"
     // La IA interpreta NATURALMENTE cuándo despedirse, revelar, o transferir a Mariano real
@@ -929,8 +935,8 @@ Cuando sientas que el lead quiere hablar con una persona real (pide hablar con a
 2. Incluye al FINAL de tu mensaje, en una línea separada, el texto exacto: [TRANSFER_TO_OWNER]
 
 ## REGLAS
-- Español neutro (NO argentinismos como "vos/tenés/querés")
 - Tono profesional pero cercano, como un consultor de negocio amigable
+${countryContext ? `- ${countryContext}` : '- Español neutro (NO argentinismos como "vos/tenés/querés")'}
 - Máximo 2 emojis por mensaje
 - NO presiones para cerrar — esto es un discovery genuino
 - Haz preguntas abiertas, una o dos por mensaje, no bombardees
