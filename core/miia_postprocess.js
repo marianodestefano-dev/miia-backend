@@ -27,7 +27,7 @@ const { attemptAutoRepair } = require('./integrity_engine');
 // Frases que confirman acciones — SOLO válidas si el tag correspondiente existe
 const ACTION_CONFIRMATIONS = [
   { phrases: [/ya (?:te |lo )?agend[eé]/i, /listo.*agend/i, /te.*agend[eé]/i, /queda.*agendad/i],
-    requiredTag: /\[AGENDAR_EVENTO:/ },
+    requiredTag: /\[AGENDAR_EVENTO:|\[SOLICITAR_TURNO:/ },
   { phrases: [/ya (?:le |te )?(?:mandé|envié).*(?:mail|correo|email)/i, /listo.*(?:mail|correo|email)/i, /te.*(?:envié|mandé).*correo/i],
     requiredTag: /\[ENVIAR_CORREO:/ },
   { phrases: [/ya le avisé/i, /ya le dije/i, /listo.*le (?:avisé|dije)/i],

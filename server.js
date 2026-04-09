@@ -1355,17 +1355,16 @@ async function saveToFirestore() {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    // ═══ FIX GAP 1: trainingData AHORA se persiste a Firestore ═══
+    // ═══ FIX GAP 1: trainingData SIEMPRE se persiste a Firestore ═══
     // Railway es efímero: db.json se borra en cada deploy.
-    // Sin esto, TODO lo aprendido se perdía. SIEMPRE ES SIEMPRE.
-    const currentTrainingData = cerebroAbsoluto.getTrainingData();
-    if (currentTrainingData) {
-      await ref.doc('training_data').set({
-        content: currentTrainingData,
-        length: currentTrainingData.length,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-    }
+    // SIEMPRE guardar — incluso vacío — para que el doc EXISTA y loadFromFirestore funcione.
+    // BUG ANTERIOR: `if (currentTrainingData)` → string vacía es falsy → doc NUNCA se creaba → falla circular.
+    const currentTrainingData = cerebroAbsoluto.getTrainingData() || '';
+    await ref.doc('training_data').set({
+      content: currentTrainingData,
+      length: currentTrainingData.length,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
 
     console.log(`[FIRESTORE] ✅ Datos persistidos correctamente (training: ${currentTrainingData?.length || 0} chars)`);
   } catch (e) {
@@ -5220,8 +5219,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       if (!regexResult.approved && regexResult.action === 'veto') {
         console.error(`[POSTPROCESS:REGEX] 🚫 VETO directo: ${regexResult.vetoReason}`);
 
-        // ═══ FIX AGENDA: Si el veto es por AGENDAR_EVENTO, extraer datos con IA y forzar el tag ═══
-        const isAgendaVeto = regexResult.vetoReason && /AGENDAR_EVENTO/.test(regexResult.vetoReason);
+        // ═══ FIX AGENDA: Si el veto es por AGENDAR_EVENTO o SOLICITAR_TURNO, extraer datos con IA y forzar el tag ═══
+        const isAgendaVeto = regexResult.vetoReason && /AGENDAR_EVENTO|SOLICITAR_TURNO/.test(regexResult.vetoReason);
         if (isAgendaVeto) {
           console.log(`[AGENDA:RESCUE] 🆘 Veto por agenda detectado — intentando rescate con IA...`);
           try {
@@ -5250,8 +5249,11 @@ REGLAS:
             if (jsonMatch) {
               const extracted = JSON.parse(jsonMatch[0]);
               if (extracted.fecha && !extracted.error) {
-                const rescueTag = `[AGENDAR_EVENTO:${extracted.contacto || 'self'}|${extracted.fecha}|${extracted.razon || 'Evento'}||presencial|]`;
-                console.log(`[AGENDA:RESCUE] ✅ Tag reconstruido con IA: ${rescueTag}`);
+                // Si es lead, usar SOLICITAR_TURNO (requiere aprobación del owner). Si no, AGENDAR_EVENTO.
+                const isLeadContext = postChatType === 'lead';
+                const tagName = isLeadContext ? 'SOLICITAR_TURNO' : 'AGENDAR_EVENTO';
+                const rescueTag = `[${tagName}:${extracted.contacto || 'self'}|${extracted.fecha}|${extracted.razon || 'Evento'}||presencial|]`;
+                console.log(`[AGENDA:RESCUE] ✅ Tag reconstruido con IA (${tagName}): ${rescueTag}`);
                 // Inyectar tag al mensaje original de MIIA (que decía "ya te agendé")
                 aiMessage = rescueTag + ' ' + aiMessage;
                 // NO vetar — el tag ahora existe y será procesado abajo
