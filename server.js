@@ -7348,37 +7348,49 @@ async function handleIncomingMessage(message) {
 
     // Auto-takeover via CONTACT GATE — keywords para MIIA (el producto)
     if (!isAllowed && !existsInCRM && !fromMe) {
-      // NÚMERO DE MIIA: keywords de venta de MIIA, no de Medilink
-      const MIIA_SALES_KEYWORDS = [
-        'miia', 'asistente', 'whatsapp', 'automatizar', 'ia', 'inteligencia artificial',
-        'bot', 'chatbot', 'ventas', 'leads', 'crm',
-        'info', 'informacion', 'infomacion', 'informasion',
-        'interesado', 'interesada', 'me interesa',
-        'quiero saber', 'quiero info', 'necesito',
-        'demo', 'demostracion', 'probar', 'prueba',
-        'contratar', 'adquirir', 'comprar', 'suscripcion',
-        'presupuesto', 'costo', 'valor', 'tarifa', 'mensualidad',
-        'conocer', 'cotizar', 'averiguar',
-        'precio', 'precios', 'cuanto vale', 'cuanto cuesta', 'cuanto sale',
-        'como funciona', 'que ofrece', 'que ofrecen', 'planes',
-        'quisiera', 'me gustaria', 'contratacion', 'servicio', 'servicios',
-        'hola', 'buenas', 'buenos dias', 'buenas tardes'
-      ];
-      const allKeywords = [...keywordsSet, ...MIIA_SALES_KEYWORDS];
-      const kwMatch = matchesBusinessKeywords(body, allKeywords);
-      if (kwMatch.matched) {
+      // ═══ FIX CRÍTICO: En el número de MIIA (admin), TODOS los desconocidos son leads ═══
+      // Este ES el número de venta de MIIA. Cualquiera que escriba aquí quiere conocer MIIA.
+      // La FORBIDDEN_KEYWORDS blacklist bloqueaba "hola", "que hacen", etc. que son exactamente
+      // lo que dicen los leads cuando escriben por primera vez.
+      const isAdminNumber = true; // Este server.js SOLO maneja el número del admin (MIIA)
+
+      if (isAdminNumber && body && body.trim().length > 0) {
+        // En el número de MIIA: TODO mensaje de desconocido = lead potencial
+        allowedLeads.push(effectiveTarget);
+        isAllowed = true;
         try {
           const ct = await message.getContact();
-          allowedLeads.push(effectiveTarget);
-          isAllowed = true;
           detectContactType(ct.name || ct.pushname || 'Lead', effectiveTarget);
-          saveDB();
-          console.log(`[WA] ✅ Auto-takeover: ${effectiveTarget} agregado como lead por keyword "${kwMatch.keyword}"`);
-        } catch (e) {
+        } catch (_) {}
+        saveDB();
+        console.log(`[WA] ✅ Auto-takeover (MIIA Sales): ${effectiveTarget} — TODO desconocido es lead en número de MIIA. body="${(body||'').substring(0,50)}"`);
+      } else {
+        // Para owners regulares (futuro multi-tenant): usar keywords
+        const MIIA_SALES_KEYWORDS = [
+          'miia', 'asistente', 'whatsapp', 'automatizar', 'ia', 'inteligencia artificial',
+          'bot', 'chatbot', 'ventas', 'leads', 'crm',
+          'info', 'informacion', 'infomacion', 'informasion',
+          'interesado', 'interesada', 'me interesa',
+          'quiero saber', 'quiero info', 'necesito',
+          'demo', 'demostracion', 'probar', 'prueba',
+          'contratar', 'adquirir', 'comprar', 'suscripcion',
+          'presupuesto', 'costo', 'valor', 'tarifa', 'mensualidad',
+          'conocer', 'cotizar', 'averiguar',
+          'precio', 'precios', 'cuanto vale', 'cuanto cuesta', 'cuanto sale',
+          'como funciona', 'que ofrece', 'que ofrecen', 'planes',
+          'quisiera', 'me gustaria', 'contratacion', 'servicio', 'servicios'
+        ];
+        const allKeywords = [...keywordsSet, ...MIIA_SALES_KEYWORDS];
+        const kwMatch = matchesBusinessKeywords(body, allKeywords);
+        if (kwMatch.matched) {
           allowedLeads.push(effectiveTarget);
           isAllowed = true;
+          try {
+            const ct = await message.getContact();
+            detectContactType(ct.name || ct.pushname || 'Lead', effectiveTarget);
+          } catch (_) {}
           saveDB();
-          console.log(`[WA] ✅ Auto-takeover (sin contacto): ${effectiveTarget} keyword "${kwMatch.keyword}"`);
+          console.log(`[WA] ✅ Auto-takeover: ${effectiveTarget} keyword "${kwMatch.keyword}"`);
         }
       }
     }
