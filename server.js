@@ -318,8 +318,8 @@ let qrCode = null; // Legacy — tenant_manager maneja QR ahora
 let isReady = false; // Se actualiza desde tenant events
 let ownerConnectedAt = 0; // Unix timestamp (seconds) — para filtrar mensajes offline post-reconnect
 let conversations = {}; // { phone: [{ role, content, timestamp }] }
-let contactTypes = { '573163937365@s.whatsapp.net': 'lead' }; // { phone: 'familia' | 'lead' | 'cliente' }
-let leadNames = { '573163937365@s.whatsapp.net': 'Dr. Mariano' }; // { phone: 'nombre' }
+let contactTypes = {}; // { phone: 'familia' | 'lead' | 'cliente' }
+let leadNames = {}; // { phone: 'nombre' }
 
 // --- Mapeo LID ↔ Phone (Baileys linked devices) ---
 // LID es un ID interno de WhatsApp que no contiene el número real del contacto
@@ -1274,6 +1274,20 @@ async function loadFromFirestore() {
       } else if (localTraining.length > 0) {
         console.log(`[FIRESTORE] 🧬 TrainingData local más completo (${localTraining.length} chars) — conservando local`);
       }
+    }
+
+    // ═══ FIX: Cargar nombre del owner desde users/{uid} si userProfile.name está vacío ═══
+    if (!userProfile.name && OWNER_UID) {
+      try {
+        const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+        if (ownerDoc.exists) {
+          const d = ownerDoc.data();
+          if (d.name) {
+            userProfile.name = d.name;
+            console.log(`[FIRESTORE] 👤 userProfile.name restaurado desde users/${OWNER_UID}: "${d.name}"`);
+          }
+        }
+      } catch (e) { console.warn('[FIRESTORE] No se pudo cargar nombre del owner:', e.message); }
     }
 
     console.log('[FIRESTORE] ✅ Datos cargados desde Firestore (sobrevivió deploy)');
@@ -3812,8 +3826,17 @@ REGLAS:
         await safeSendMessage(phone, `⚠️ No encontré a: ${notFound.join(', ')}. Pero me presento con ${targets.map(t => t.info.name).join(' y ')}.`, { isSelfChat: true });
       }
 
-      const ownerName = userProfile?.name || 'el owner';
+      // Resolver nombre del owner — NUNCA usar 'el owner' como fallback (split produce 'el' → IA dice 'Él me creó')
+      let ownerName = userProfile?.name || '';
+      if (!ownerName && OWNER_UID) {
+        try {
+          const owDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+          if (owDoc.exists && owDoc.data().name) ownerName = owDoc.data().name;
+        } catch (_) {}
+      }
+      if (!ownerName) ownerName = 'Mariano'; // Último fallback hardcoded
       const ownerFirstName = ownerName.split(' ')[0];
+      console.log(`[PRESENTAR] 👤 Owner name para presentación: "${ownerFirstName}" (full: "${ownerName}")`);
       let presentados = 0;
 
       for (const target of targets) {
@@ -3831,7 +3854,7 @@ CONTEXTO:
 
 TU MISIÓN en este primer mensaje:
 1. Presentarte de forma cálida y natural (NO formal, NO robótica, NO listado de funciones)
-2. Decirle que ${ownerFirstName} te creó y que ella forma parte de un grupo especial con acceso gratis para siempre
+2. Decirle que *${ownerFirstName}* (mencioná su nombre EXPLÍCITAMENTE, no uses pronombres) te creó y que ella forma parte de un grupo especial con acceso gratis para siempre
 3. Mencionarle la página www.miia-app.com para que la conozca
 4. Explicarle brevemente qué hacés (asistente personal por WhatsApp: agenda, recordatorios, clima, noticias, deportes, y más)
 5. Aclararle que todavía estás en construcción pero que pronto vas a estar lista al 100%
@@ -3842,7 +3865,8 @@ REGLAS:
 - Máximo 8-10 renglones. Natural, como una amiga nueva que se presenta.
 - Usá emojis con moderación (3-4 max). Emoji de cierre: ${target.info.emoji || '💕'}
 - NO digas "inteligencia artificial" ni "IA" ni "bot". Sos MIIA, punto.
-- NO digas "${ownerName} me pidió que te escriba" ni nada parecido. Presentate con INICIATIVA PROPIA.
+- NO digas "${ownerFirstName} me pidió que te escriba" ni nada parecido. Presentate con INICIATIVA PROPIA.
+- OBLIGATORIO: Usá el nombre "${ownerFirstName}" explícitamente (NO "él", NO "ella", NO "mi creador"). Ejemplo: "${ownerFirstName} me creó", "${ownerFirstName} le ha puesto mucho amor".
 - Hablá en español neutro/colombiano (ya que son colombianas)
 - Sé genuinamente curiosa por conocerla`;
 
