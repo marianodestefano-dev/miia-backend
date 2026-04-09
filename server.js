@@ -1306,6 +1306,33 @@ async function loadFromFirestore() {
 // Cargar desde Firestore al arrancar (después de loadDB para que Firestore tenga prioridad)
 loadFromFirestore().then(loaded => {
   if (loaded) console.log('[FIRESTORE] 🔄 Datos de Firestore mergeados con db.json local');
+
+  // ═══ CLEANUP: Remover contactos personales del owner que no son leads de MIIA ═══
+  // Estos números son familia/amigos de Mariano, NO leads del número de auto-venta
+  const familyPhonesToClean = Object.keys(familyContacts).map(p => `${p}@s.whatsapp.net`);
+  let cleaned = 0;
+  for (const jid of familyPhonesToClean) {
+    if (allowedLeads.includes(jid)) {
+      allowedLeads = allowedLeads.filter(l => l !== jid);
+      cleaned++;
+    }
+    if (conversations[jid]) {
+      delete conversations[jid];
+      cleaned++;
+    }
+    if (contactTypes[jid]) {
+      delete contactTypes[jid];
+      cleaned++;
+    }
+    if (leadNames[jid]) {
+      delete leadNames[jid];
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`[CLEANUP] 🧹 ${cleaned} entradas de contactos personales removidas del número de MIIA`);
+    saveDB();
+  }
 });
 
 // Sync periódico a Firestore cada 2 minutos (batch, no en cada cambio)
@@ -3848,31 +3875,33 @@ REGLAS:
         const targetJid = `${target.phone}@s.whatsapp.net`;
         try {
           // Prompt IA para generar presentación natural y personalizada
-          const introPrompt = `Sos MIIA. ${ownerFirstName} te pidió que te presentes con ${target.info.name}.
+          const introPrompt = `Sos MIIA, una asistente personal por WhatsApp. ${ownerFirstName} quiere que te presentes con ${target.info.name}.
 
 CONTEXTO:
-- ${target.info.name} es ${target.info.relation || 'amiga/o de ' + ownerFirstName}
-- Personalidad: ${target.info.personality || 'Persona cercana a la familia'}
-- ${ownerFirstName} creó un grupo especial donde ${target.info.name} tiene acceso GRATIS de por vida a MIIA
+- ${target.info.name} es ${target.info.relation || 'cercana/o a ' + ownerFirstName}
+- Personalidad: ${target.info.personality || 'Persona cercana'}
+- ${ownerFirstName} le quiere dar acceso GRATIS de por vida a MIIA
 - MIIA todavía está en desarrollo, no fue "liberada" oficialmente aún
-- La página web es www.miia-app.com
+- Página web: www.miia-app.com
 
 TU MISIÓN en este primer mensaje:
-1. Presentarte de forma cálida y natural (NO formal, NO robótica, NO listado de funciones)
-2. Decirle que *${ownerFirstName}* (mencioná su nombre EXPLÍCITAMENTE, no uses pronombres) te creó y que ella forma parte de un grupo especial con acceso gratis para siempre
-3. Mencionarle la página www.miia-app.com para que la conozca
-4. Explicarle brevemente qué hacés (asistente personal por WhatsApp: agenda, recordatorios, clima, noticias, deportes, y más)
-5. Aclararle que todavía estás en construcción pero que pronto vas a estar lista al 100%
-6. Preguntarle algo sobre ella para empezar a conocerla (qué hace, qué le gusta)
-7. Transmitir sutilmente que ${ownerFirstName} ha estado trabajando mucho en este proyecto con mucho cariño
+1. Presentarte de forma cálida y natural (como una amiga nueva, NO formal, NO robótica)
+2. Mencionar que sos la asistente de ${ownerFirstName} (decí su nombre EXPLÍCITAMENTE)
+3. Explicar brevemente qué hacés (agenda, recordatorios, clima, noticias, deportes, y más)
+4. Decirle que tiene acceso gratis para siempre porque ${ownerFirstName} la incluyó en un grupo especial
+5. Mencionarle www.miia-app.com para que conozca más
+6. Preguntarle algo sobre ella para empezar a conocerla
 
-REGLAS:
-- Máximo 8-10 renglones. Natural, como una amiga nueva que se presenta.
-- Usá emojis con moderación (3-4 max). Emoji de cierre: ${target.info.emoji || '💕'}
+REGLAS ABSOLUTAS:
+- Máximo 8-10 renglones. Natural, como una amiga nueva.
+- Emojis con moderación (3-4 max). Emoji de cierre: ${target.info.emoji || '💕'}
 - NO digas "inteligencia artificial" ni "IA" ni "bot". Sos MIIA, punto.
 - NO digas "${ownerFirstName} me pidió que te escriba" ni nada parecido. Presentate con INICIATIVA PROPIA.
-- OBLIGATORIO: Usá el nombre "${ownerFirstName}" explícitamente (NO "él", NO "ella", NO "mi creador"). Ejemplo: "${ownerFirstName} me creó", "${ownerFirstName} le ha puesto mucho amor".
-- Hablá en español neutro/colombiano (ya que son colombianas)
+- OBLIGATORIO: Mencioná a ${ownerFirstName} por nombre (NO "él", NO "ella", NO pronombres).
+- PROHIBIDO decir que alguien "te creó". NADIE te creó en esta conversación. Sos la asistente de ${ownerFirstName}, punto.
+- Ejemplo correcto: "Soy MIIA, la asistente de ${ownerFirstName}" / "${ownerFirstName} quiso que te conozca"
+- Ejemplo PROHIBIDO: "${ownerFirstName} me creó" / "Él me hizo" / "Mi creador"
+- Hablá en español neutro
 - Sé genuinamente curiosa por conocerla`;
 
           const introMsg = await generateAIContent(introPrompt);
@@ -4701,21 +4730,24 @@ Nuevo resumen actualizado:`;
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
 
-      // Inyectar regla de cierre según contador
+      // Inyectar contexto de probaditas según contador
       if (miiaResponseCount >= 10) {
-        activeSystemPrompt += `\n\n## 🚨 CIERRE OBLIGATORIO (respuesta #${miiaResponseCount + 1})
-Ya llevas ${miiaResponseCount} respuestas con este lead. Es momento de cerrar con respeto pero firmeza.
-- Responde la pregunta actual BREVEMENTE (máximo 2 líneas)
-- Luego di algo como: "Me encanta ayudarte con estas cosas 😊 Imaginate tener esto TODOS los días, automático, sin pedirlo. Con el plan mensual de MIIA a $15 USD/mes (los primeros 7 días son GRATIS) tenés todo esto y mucho más. Registrate acá: www.miia-app.com"
-- Si ya ofreciste el plan antes y sigue sin registrarse, sé directa: "Hasta acá puedo ayudarte gratis. Para seguir contando conmigo todos los días, activá tu prueba gratuita en www.miia-app.com — son 7 días sin costo 😊"
-- INCLUYE SIEMPRE el link www.miia-app.com
-- Tono: amigable pero firme. No suplicar. MIIA es valiosa.`;
-      } else if (miiaResponseCount >= 5) {
-        activeSystemPrompt += `\n\n## 💡 CIERRE SUAVE (respuesta #${miiaResponseCount + 1} de 10 gratis)
-Ya llevas ${miiaResponseCount} respuestas con este lead. Empieza a sugerir el plan.
-- Responde su pregunta normalmente
-- Al final, menciona casualmente: "¿Sabías que puedo hacer todo esto por vos automáticamente todos los días? Probá 7 días gratis en www.miia-app.com"
-- No presiones, pero siempre deja la semilla del plan.`;
+        activeSystemPrompt += `\n\n## 🚨 PROBADITA #${miiaResponseCount + 1} — YA SE ACABARON LAS 10 GRATIS
+Este lead ya usó sus 10 probaditas. Ahora:
+- Si pregunta algo, respondé BREVEMENTE (1-2 líneas) y cerrá con gracia.
+- Usá tu estilo propio, con sentido común. NO copies frases textuales.
+- La idea: "Ya te mostré de qué soy capaz. Si querés tenerme todos los días: www.miia-app.com — 7 días gratis."
+- Si insiste sin registrarse: "Me encantaría seguir ayudándote, pero necesito que seas mi dueño/a oficial 😉 www.miia-app.com"
+- Tono: amigable, segura de sí misma. MIIA es valiosa. No suplica.`;
+      } else if (miiaResponseCount >= 7) {
+        activeSystemPrompt += `\n\n## 💡 PROBADITA #${miiaResponseCount + 1} de 10 — SE ACERCAN AL FINAL
+Quedan ${10 - miiaResponseCount} probaditas. Seguí haciendo cosas reales, pero mencioná sutilmente:
+- "Esto que estoy haciendo es una probadita gratis... quedan pocas 😉"
+- NO presiones. Seguí demostrando poder real.`;
+      } else {
+        activeSystemPrompt += `\n\n## PROBADITA #${miiaResponseCount + 1} de 10
+Estás en modo demo. HACÉ cosas reales (buscar, recordar, agendar, recetas, clima, deporte, etc.).
+NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con hechos.`;
       }
     }
 
