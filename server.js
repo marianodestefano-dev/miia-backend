@@ -9102,12 +9102,13 @@ setInterval(async () => {
       const ownerUid = process.env.OWNER_UID;
       if (ownerUid) {
         const ownerDoc = await admin.firestore().collection('users').doc(ownerUid).get();
-        adnConsentOk = ownerDoc.exists && ownerDoc.data().consent_adn === true;
+        const d = ownerDoc.exists ? ownerDoc.data() : {};
+        adnConsentOk = d.consent_adn === true || d.dna_consent === true;
       } else {
         // Fallback: buscar primer usuario con role admin y consent_adn
         const snap = await admin.firestore().collection('users')
           .where('role', 'in', ['admin', 'owner', 'client'])
-          .where('consent_adn', '==', true)
+          .where('dna_consent', '==', true)
           .limit(1).get();
         adnConsentOk = !snap.empty;
       }
