@@ -1821,10 +1821,10 @@ async function safeSendMessage(target, content, options = {}) {
     return null;
   }
 
-  // ═══ MIIA EMOJI PREFIX — Solo self-chat y grupos, NUNCA leads ═══
-  // El emoji prefix es parte de la personalidad de MIIA para el owner/familia/equipo.
-  // Los leads reciben mensajes sin emoji prefix (profesional, no asusta).
-  const isEmojiEligible = options.isSelfChat || options.isGroup || options.isFamily;
+  // ═══ MIIA EMOJI PREFIX — Self-chat, grupos, familia y leads de MIIA Sales ═══
+  // El emoji prefix es parte de la personalidad de MIIA.
+  // Leads de tenants regulares: SIN emoji (profesional). Leads de MIIA Sales: CON emoji (MIIA se vende como persona).
+  const isEmojiEligible = options.isSelfChat || options.isGroup || options.isFamily || options.isMiiaSalesLead;
   if (typeof content === 'string' && !options.skipEmoji && isEmojiEligible) {
     const emojiCtx = options.emojiCtx || {};
     // Timezone del owner para fechas especiales
@@ -6416,7 +6416,8 @@ REGLAS:
           ttsEngine.setAudioPreference(phone, true); // Default: audio (ya que mandó audio)
           // Enviar respuesta como texto + pregunta
           const pregunta = `\n\n_¿Preferís que te siga respondiendo con audio o con texto? Decime "prefiero audio" o "prefiero texto" 🎤_`;
-          await safeSendMessage(phone, aiMessage + pregunta, { isSelfChat, emojiCtx });
+          const isMiiaSalesLeadTTS = conversationMetadata[phone]?.contactType === 'miia_lead';
+          await safeSendMessage(phone, aiMessage + pregunta, { isSelfChat, emojiCtx, isMiiaSalesLead: isMiiaSalesLeadTTS });
           console.log(`[TTS] 🎤 Primer audio de ${phone} — preguntando preferencia`);
         } else {
           // Generar y enviar audio
@@ -6439,7 +6440,8 @@ REGLAS:
 
     // Si no se envió como audio, enviar como texto con emoji
     if (!sentAsAudio) {
-      await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx });
+      const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
+      await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx, isMiiaSalesLead });
     }
 
     io.emit('ai_response', {
