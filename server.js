@@ -12890,12 +12890,13 @@ server.listen(PORT, () => {
                 handleIncomingMessage(adapted);
               },
               onReady: (sock) => {
-                // Verificar que el número conectado coincide con el guardado
+                // Actualizar número si cambió (el owner puede vincular otro teléfono)
                 const connectedNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
                 if (savedNumber && connectedNumber && connectedNumber !== savedNumber) {
-                  console.log(`[AUTO-INIT] 🚫 OWNER: número no coincide! Guardado: ${savedNumber}, Conectado: ${connectedNumber}. Desconectando.`);
-                  sock.logout().catch(() => {});
-                  return;
+                  console.log(`[AUTO-INIT] ⚠️ OWNER: número cambió! Guardado: ${savedNumber}, Conectado: ${connectedNumber}. Actualizando.`);
+                  admin.firestore().collection('users').doc(uid).update({
+                    whatsapp_number: connectedNumber
+                  }).catch(() => {});
                 }
 
                 console.log(`[AUTO-INIT] ✅ Owner conectado (${connectedNumber})`);
@@ -12937,13 +12938,11 @@ server.listen(PORT, () => {
                 }, 60000); // Esperar 60s para no spamear al conectar
               }
             } : {
-              // Tenant no-owner: verificar número al conectar
+              // Tenant no-owner: actualizar número al conectar (puede cambiar si el user vincula otro teléfono)
               onReady: (sock) => {
                 const connectedNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
                 if (savedNumber && connectedNumber && connectedNumber !== savedNumber) {
-                  console.log(`[AUTO-INIT] 🚫 Tenant ${uid.substring(0, 12)}...: número no coincide! Guardado: ${savedNumber}, Conectado: ${connectedNumber}. Desconectando.`);
-                  sock.logout().catch(() => {});
-                  return;
+                  console.log(`[AUTO-INIT] ⚠️ Tenant ${uid.substring(0, 12)}...: número cambió! Guardado: ${savedNumber}, Conectado: ${connectedNumber}. Actualizando Firestore.`);
                 }
                 console.log(`[AUTO-INIT] ✅ Tenant ${uid.substring(0, 12)}... conectado (${connectedNumber})`);
                 if (connectedNumber) {
