@@ -98,7 +98,7 @@ const CONTEXT_CONFIG = {
     temperature: 0.1,       // DETERMINÍSTICO — siempre clasificar igual
     topP: 0.8,
     topK: 20,
-    thinkingBudget: 512,    // Poco thinking, pero ayuda a no equivocarse
+    thinkingBudget: 1024,   // Mínimo Claude API = 1024 (antes 512, ya no válido)
     description: 'Clasificación — Flash temp 0.1 (determinístico)'
   },
   [CONTEXTS.SPORT_MESSAGE]: {
@@ -130,7 +130,7 @@ const CONTEXT_CONFIG = {
     temperature: 0.3,       // Resumen preciso, sin variación
     topP: 0.85,
     topK: 40,
-    thinkingBudget: 512,
+    thinkingBudget: 1024,   // Mínimo Claude API = 1024
     description: 'Resumen — Flash temp 0.3 (preciso)'
   },
   [CONTEXTS.AUDITOR]: {

@@ -20,8 +20,9 @@ async function call(apiKey, prompt, opts = {}) {
     // Temperature: solo si NO hay thinking (Claude no permite ambos juntos)
     ...(!useThinking && opts.temperature != null && { temperature: opts.temperature }),
     // Extended thinking: budget_tokens controla cuánto piensa antes de responder
+    // MÍNIMO 1024 — Claude API rechaza valores menores desde 2025
     ...(useThinking && {
-      thinking: { type: 'enabled', budget_tokens: opts.thinking }
+      thinking: { type: 'enabled', budget_tokens: Math.max(opts.thinking, 1024) }
     })
   };
 
@@ -102,7 +103,7 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
         // ═══ B+ Strategy ═══
         ...(!useThinking && opts.temperature != null && { temperature: opts.temperature }),
         ...(useThinking && {
-          thinking: { type: 'enabled', budget_tokens: opts.thinking }
+          thinking: { type: 'enabled', budget_tokens: Math.max(opts.thinking, 1024) }
         })
       })
     });
