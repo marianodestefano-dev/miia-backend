@@ -1083,12 +1083,17 @@ let userProfile = {
   googleTokens: null, calendarEnabled: false, googleCalendarId: 'primary'
 };
 const BLACKLISTED_NUMBERS = ['573023317570@s.whatsapp.net'];
-const OWNER_PHONE = '573054169969';
-const ADMIN_PHONES = ['573054169969'];
+const OWNER_PHONE = '573054169969'; // Número de MIIA (auto-venta)
+const OWNER_PERSONAL_PHONE = '573163937365'; // Número personal de Mariano
+const ADMIN_PHONES = ['573054169969', '573163937365']; // Ambos números son admin
 
-// ═══ MIIA_PHONE_REGISTRY: Registrar el phone propio al definirse ═══
+// ═══ ownerConnectedPhone: se actualiza dinámicamente con el número REAL del sock ═══
+let ownerConnectedPhone = ''; // Se llena en onReady con sock.user.id
+
+// ═══ MIIA_PHONE_REGISTRY: Registrar phones propios al definirse ═══
 MIIA_PHONE_REGISTRY.add(OWNER_PHONE);
-console.log(`[MIIA-REGISTRY] 📱 Phone propio registrado: ${OWNER_PHONE} (${MIIA_PHONE_REGISTRY.size} instancias)`);
+MIIA_PHONE_REGISTRY.add(OWNER_PERSONAL_PHONE);
+console.log(`[MIIA-REGISTRY] 📱 Phones registrados: ${OWNER_PHONE}, ${OWNER_PERSONAL_PHONE} (${MIIA_PHONE_REGISTRY.size} instancias)`);
 let automationSettings = {
   autoResponse: true,
   additionalPersona: '',
@@ -2321,8 +2326,8 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
 
     // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin
     const ownerSockPMR = getOwnerSock();
-    const ownerPhonePMR = ownerSockPMR?.user?.id?.split('@')[0]?.split(':')[0] || OWNER_PHONE;
-    const isSelfChat = basePhone === ownerPhonePMR || basePhone === OWNER_PHONE || ADMIN_PHONES.includes(basePhone);
+    const ownerPhonePMR = ownerSockPMR?.user?.id?.split('@')[0]?.split(':')[0] || ownerConnectedPhone || OWNER_PHONE;
+    const isSelfChat = basePhone === ownerPhonePMR || basePhone === OWNER_PHONE || basePhone === ownerConnectedPhone || ADMIN_PHONES.includes(basePhone);
     if (isSelfChat && !isAdmin) {
       isAdmin = true;
       console.log(`[ADMIN-FIX] 🔧 Self-chat: isAdmin=true (${basePhone} = owner ${ownerPhonePMR})`);
@@ -3834,7 +3839,7 @@ REGLAS:
           if (owDoc.exists && owDoc.data().name) ownerName = owDoc.data().name;
         } catch (_) {}
       }
-      if (!ownerName) ownerName = 'Mariano'; // Último fallback hardcoded
+      if (!ownerName) ownerName = 'tu dueño'; // Fallback genérico — Firestore DEBERÍA tener el nombre
       const ownerFirstName = ownerName.split(' ')[0];
       console.log(`[PRESENTAR] 👤 Owner name para presentación: "${ownerFirstName}" (full: "${ownerName}")`);
       let presentados = 0;
@@ -6720,8 +6725,8 @@ async function handleIncomingMessage(message) {
   if (message.type === 'reaction' && message._reaction) {
     const { emoji, targetMsgId } = message._reaction;
     const fromNum = message.from.split('@')[0].split(':')[0];
-    const ownerNum = OWNER_PHONE;
-    const isSelfChat = message.fromMe || fromNum === ownerNum;
+    const ownerNum = (getOwnerSock() && getOwnerSock().user) ? getOwnerSock().user.id.split('@')[0].split(':')[0] : ownerConnectedPhone || OWNER_PHONE;
+    const isSelfChat = message.fromMe || fromNum === ownerNum || ADMIN_PHONES.includes(fromNum);
 
     // Reacción vacía = reacción removida → ignorar
     if (!emoji) return;
@@ -6864,7 +6869,8 @@ async function handleIncomingMessage(message) {
       const leadPhone = message.from;
       const leadName = leadNames[leadPhone] || leadPhone.split('@')[0];
 
-      const isSelfChatMedia = message.fromMe && leadPhone.includes(OWNER_PHONE);
+      const ownerNumMedia = (getOwnerSock() && getOwnerSock().user) ? getOwnerSock().user.id.split('@')[0].split(':')[0] : ownerConnectedPhone || OWNER_PHONE;
+      const isSelfChatMedia = message.fromMe && (leadPhone.includes(ownerNumMedia) || leadPhone.includes(OWNER_PHONE) || ADMIN_PHONES.some(p => leadPhone.includes(p)));
 
       if (isSelfChatMedia) {
         // Self-chat: avisar al owner de forma directa
@@ -8357,6 +8363,13 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
       console.log(`[WA] ✅ Owner connected via Baileys`);
       isReady = true;
       ownerConnectedAt = Math.floor(Date.now() / 1000);
+      // Guardar número conectado dinámicamente
+      const connNum = sock.user?.id?.split('@')[0]?.split(':')[0];
+      if (connNum) {
+        ownerConnectedPhone = connNum;
+        ADMIN_PHONES.push(connNum);
+        console.log(`[WA] 📱 ownerConnectedPhone = ${connNum} (dinámico)`);
+      }
       io.emit('whatsapp_ready', { status: 'connected' });
 
       // ═══ B1 FIX: Reset de estado post-reconexión ═══
