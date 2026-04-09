@@ -5027,7 +5027,7 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
             const modeEmoji = e.eventMode === 'virtual' ? '📹' : e.eventMode === 'telefono' ? '📞' : '📍';
             const contact = e.contactName || e.contactPhone || '';
             const loc = e.eventLocation ? ` — ${e.eventLocation}` : '';
-            return `  ${modeEmoji} ${dateStr} | ${e.reason || 'Sin detalle'}${contact ? ` (con ${contact})` : ''}${loc}`;
+            return `  ${modeEmoji} ${dateStr} | ${e.reason || '⚠️ SIN TÍTULO — preguntale al owner qué es'}${contact ? ` (con ${contact})` : ''}${loc}`;
           });
           agendaStr = `\n\n📅 [TU AGENDA — PRÓXIMOS ${events.length} EVENTOS]:\n${events.join('\n')}\nSi te piden "mi agenda", "qué tengo agendado", "mis próximos eventos" → mostrá esta lista. NO inventar links externos.`;
           console.log(`[AGENDA-INJECT] ✅ ${events.length} eventos inyectados al prompt`);
@@ -6144,7 +6144,7 @@ REGLAS:
             const contact = e.contactName || e.contactPhone || '';
             const loc = e.eventLocation ? ` — ${e.eventLocation}` : '';
             const meetInfo = e.meetLink ? ` (Meet: ${e.meetLink})` : '';
-            return `  ${modeEmoji} ${dateLocal} | ${e.reason || 'Sin detalle'} | ${modeLabel}${contact && contact !== 'self' ? ` con ${contact}` : ''}${loc}${meetInfo}`;
+            return `  ${modeEmoji} ${dateLocal} | ${e.reason || '⚠️ SIN TÍTULO — preguntale al owner qué es'} | ${modeLabel}${contact && contact !== 'self' ? ` con ${contact}` : ''}${loc}${meetInfo}`;
           });
         }
 
@@ -6167,7 +6167,7 @@ REGLAS:
                 const start = ev.start.dateTime || ev.start.date || '';
                 const startFormatted = start ? new Date(start).toLocaleString('es-ES', { timeZone: ownerTzCA, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
                 const meetLink = ev.hangoutLink || '';
-                return `  📅 ${startFormatted} | ${ev.summary || 'Sin título'}${meetLink ? ` (Meet: ${meetLink})` : ''}`;
+                return `  📅 ${startFormatted} | ${ev.summary || '⚠️ SIN TÍTULO — preguntale al owner qué es'}${meetLink ? ` (Meet: ${meetLink})` : ''}`;
               });
             }
           }

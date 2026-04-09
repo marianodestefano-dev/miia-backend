@@ -32,14 +32,16 @@ let lastAdnConsolidation = 0;
 const PROMISE_PATTERNS = [
   // Agenda
   { pattern: /(?:te|le|lo)\s+agend[oé]|ya.*agendad|listo.*agend|queda.*agendad/i, action: 'agendar', tag: 'AGENDAR_EVENTO' },
+  // Recordatorio a OTRO contacto (owner pide "recuérdame enviarle a X" → AGENDAR_EVENTO con remindContact)
+  { pattern: /(?:le\s+(?:recuerdo|aviso|escribo)|(?:ma[ñn]ana|hoy|el\s+\w+)\s+(?:\d{1,2}[.:]\d{2}|a\s+las\s+\d).*(?:le\s+(?:recuerdo|aviso|mando)))/i, action: 'agendar', tag: 'AGENDAR_EVENTO' },
   // Email
   { pattern: /(?:te|le)\s+(?:mand[oé]|envi[oé]).*(?:mail|correo|email)|listo.*(?:mail|correo)/i, action: 'email', tag: 'ENVIAR_CORREO' },
-  // Recordatorio
-  { pattern: /(?:te|le)\s+(?:recuerdo|aviso)|anotado.*recuer|listo.*recordatorio/i, action: 'recordar', tag: 'RECORDAR' },
+  // Recordatorio al owner (self-reminder)
+  { pattern: /(?:te|lo)\s+(?:recuerdo|aviso)|anotado.*recuer|listo.*recordatorio/i, action: 'recordar', tag: 'RECORDAR' },
   // Cotización
   { pattern: /(?:te|le)\s+(?:mand[oé]|envi[oé]).*cotizaci[oó]n|listo.*cotizaci[oó]n/i, action: 'cotizacion', tag: 'GENERAR_COTIZACION_PDF' },
-  // Cancelar evento
-  { pattern: /ya.*cancel[oé]|listo.*cancelad|queda.*cancelad/i, action: 'cancelar', tag: 'CANCELAR_EVENTO' },
+  // Cancelar/borrar/eliminar evento
+  { pattern: /ya.*cancel[oé]|listo.*cancelad|queda.*cancelad|(?:lo|la|el)\s+(?:borro|elimino|borr[eé]|elimin[eé])|listo.*(?:borr|elimin)|ya.*(?:borr|elimin)/i, action: 'cancelar', tag: 'CANCELAR_EVENTO' },
   // Mover evento
   { pattern: /ya.*mov[ií]|listo.*movid|queda.*reprogramad/i, action: 'mover', tag: 'MOVER_EVENTO' },
 ];
