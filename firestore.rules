@@ -84,6 +84,29 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
+    // ═══ DEALS — Pipeline de ventas del owner ═══
+    match /deals/{dealId} {
+      allow read: if request.auth != null && resource.data.client_uid == request.auth.uid;
+      allow write: if request.auth != null && resource.data.client_uid == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.client_uid == request.auth.uid;
+    }
+
+    // ═══ TEMPLATES — Templates de mensajes del owner ═══
+    match /templates/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      match /items/{itemId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // ═══ KNOWLEDGE FILES — Archivos de conocimiento del owner ═══
+    match /knowledge_files/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+      match /items/{itemId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
     // ═══ CONVERSATIONS — NUNCA accesible desde frontend ═══
     // Las conversaciones se manejan 100% via backend (Admin SDK)
     // Ni el owner ni el admin pueden leerlas directamente desde el frontend

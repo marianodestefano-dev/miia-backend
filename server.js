@@ -2255,7 +2255,17 @@ async function safeSendMessage(target, content, options = {}) {
       // Para self-chat: usar sock.user.id completo (incluye :device@)
       // Baileys necesita el JID exacto del usuario conectado para que llegue al self-chat real
       const ownerSockSC = getOwnerSock();
-      if (ownerSockSC?.user?.id) {
+      const connectedBase = ownerSockSC?.user?.id?.split('@')[0]?.split(':')[0];
+      const targetBase = target.split('@')[0]?.split(':')[0];
+
+      // ═══ FIX: ADMIN REMOTO (número personal del owner) ═══
+      // Si el target es un admin phone DIFERENTE del número conectado,
+      // enviar DIRECTO a ese número (no redirigir a sock.user.id).
+      // Esto permite que el owner reciba respuestas en su número personal.
+      if (connectedBase && targetBase && targetBase !== connectedBase && ADMIN_PHONES.includes(targetBase)) {
+        sendTarget = `${targetBase}@s.whatsapp.net`;
+        console.log(`[SELF-CHAT] 🔧 Admin remoto ${targetBase} — enviando directo (no self-chat redirect)`);
+      } else if (ownerSockSC?.user?.id) {
         sendTarget = ownerSockSC.user.id;
         console.log(`[SELF-CHAT] 🔧 Usando sock.user.id: ${sendTarget}`);
       } else {
@@ -7152,7 +7162,8 @@ async function handleIncomingMessage(message) {
   // Guardia de auto-bucle (self-chat)
   const myNumber = (getOwnerSock() && getOwnerSock().user)
     ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
-  const isSelfChat = targetPhoneId === myNumber || targetPhoneId.split('@')[0] === myNumber.split('@')[0].split(':')[0];
+  const targetPhoneBase = targetPhoneId.split('@')[0]?.split(':')[0];
+  const isSelfChat = targetPhoneId === myNumber || targetPhoneBase === myNumber.split('@')[0].split(':')[0] || ADMIN_PHONES.includes(targetPhoneBase);
   const now = Date.now();
 
   if (isSelfChat) {
@@ -7717,12 +7728,20 @@ async function handleIncomingMessage(message) {
       ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
     // senderNumber: quién envió este mensaje (cuando fromMe=true, es el dueño)
     const senderNumber = (message.from || '').split('@')[0];
-    const isSelfChatMsg = fromMe && (
+    // ═══ FIX: Incluir ADMIN_PHONES como self-chat ═══
+    // Cuando el owner escribe desde su número personal (573163937365) al número de MIIA,
+    // fromMe=false pero ES el owner. Detectar via ADMIN_PHONES.
+    const effectiveBase = effectiveTarget.split('@')[0]?.split(':')[0];
+    const isAdminRemote = !fromMe && ADMIN_PHONES.includes(effectiveBase) && effectiveBase !== (myNumberFull.split('@')[0]?.split(':')[0]);
+    const isSelfChatMsg = isAdminRemote || (fromMe && (
       effectiveTarget === myNumberFull ||
       effectiveTarget.split('@')[0] === myNumberFull.split('@')[0] ||
       effectiveTarget.split('@')[0] === OWNER_PHONE ||
       effectiveTarget.split('@')[0] === senderNumber   // remitente == destinatario → self-chat
-    );
+    ));
+    if (isAdminRemote) {
+      console.log(`[HIM] 🔧 Admin remoto detectado: ${effectiveBase} → tratando como self-chat`);
+    }
     const bodyLower = (body || '').toLowerCase();
 
     // ── INVOCACIÓN / CIERRE DE SESIÓN MIIA ──────────────────────────────────
