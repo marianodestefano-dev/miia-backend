@@ -5590,6 +5590,9 @@ REGLAS:
       if (OWNER_UID) {
         try {
           const agendaRef = admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda');
+          // FIX: Incluir notifyPhone del owner para que el recordatorio sepa A QUIÉN enviar
+          const ownerNotifyPhone = ownerConnectedPhone ? `${ownerConnectedPhone}@s.whatsapp.net` :
+            (OWNER_PHONE ? `${OWNER_PHONE}@s.whatsapp.net` : null);
           await agendaRef.add({
             type: 'recordatorio_contacto',
             from: basePhone,
@@ -5598,9 +5601,11 @@ REGLAS:
             scheduledFor: recordFecha,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             status: 'pending',
-            notifyTarget: 'owner'
+            notifyTarget: 'owner',
+            notifyPhone: ownerNotifyPhone,
+            contactPhone: 'self'
           });
-          console.log(`[RECORDAR] ✅ Recordatorio agendado para owner: "${recordMsg}" → ${recordFecha}`);
+          console.log(`[RECORDAR] ✅ Recordatorio agendado para owner: "${recordMsg}" → ${recordFecha} → notifyPhone=${ownerNotifyPhone}`);
         } catch (e) {
           console.error(`[RECORDAR] ❌ Error agendando recordatorio:`, e.message);
         }
@@ -5985,9 +5990,15 @@ REGLAS:
               console.log(`[AGENDA] 📲 remindContact=true para ${contacto} — razón: "${(razon || '').substring(0, 50)}"`);
             }
 
+            // FIX: Si contacto no es un teléfono válido (ej: "Mariano", "Cliente"), usar el phone real del chat
+            const resolvedContactPhone = isExternalContact ? contacto :
+              (isSelfChat ? 'self' : (basePhone || phone || contacto));
+            const resolvedContactName = isSelfChat && !isExternalContact ? (userProfile.name || 'el owner') :
+              (contactName || leadNames[`${basePhone}@s.whatsapp.net`] || contacto);
+
             await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
-              contactPhone: isSelfChat && !isExternalContact ? 'self' : contacto,
-              contactName: isSelfChat && !isExternalContact ? (userProfile.name || 'el owner') : contactName,
+              contactPhone: resolvedContactPhone,
+              contactName: resolvedContactName,
               mentionedContact: contacto,
               scheduledFor: scheduledForUTC,
               scheduledForLocal: fecha,

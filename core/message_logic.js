@@ -495,8 +495,13 @@ async function processAgendaTag(aiMessage, ctx, saveEvent, leadNames) {
     if (parts.length >= 3) {
       const [contacto, fecha, razon, hint] = parts;
       try {
+        // FIX: Si contacto no es un teléfono válido (ej: "Mariano"), usar el phone real del chat
+        const isValidPhone = contacto && /^\d{8,15}$/.test(contacto.replace(/\D/g, ''));
+        const isSelfChat = ctx.isSelfChat || false;
+        const resolvedPhone = isValidPhone ? contacto :
+          (isSelfChat ? 'self' : (ctx.basePhone || ctx.phone || contacto));
         await saveEvent(targetUid, {
-          contactPhone: contacto,
+          contactPhone: resolvedPhone,
           contactName: (leadNames || {})[`${contacto}@s.whatsapp.net`] || contacto,
           scheduledFor: fecha,
           reason: razon,
