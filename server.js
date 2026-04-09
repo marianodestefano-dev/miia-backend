@@ -625,17 +625,28 @@ async function runFollowupEngine() {
       continue;
     }
 
-    // Construir mensaje contextual usando historial
+    // Construir mensaje contextual usando IA
     const isLast = (fData.count + 1) >= followupMax;
-    let msg;
-    // Leads tibios/calientes: mensaje con contexto de la conversación
+    const leadName = leadNames[phone] || '';
+    const firstName = leadName ? leadName.split(' ')[0] : '';
     const lastUserMsg = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
-    if (lastUserMsg.length > 10 && !isLast) {
-      // Hay contexto → mensaje personalizado
-      const leadName = leadNames[phone] || baseNum;
-      msg = `Hola${leadName !== baseNum ? ' ' + leadName.split(' ')[0] : ''}, retomando nuestra conversación. ${followupMsg1}`;
-    } else {
+    const lastMiiaMsg = msgs.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
+    let msg;
+
+    try {
+      // Generar follow-up contextual con IA — breve, cálido, no robótico
+      const followupPrompt = isLast
+        ? `Sos MIIA, asistente IA por WhatsApp. Este es tu ÚLTIMO follow-up a un lead que no respondió. Despedite con gracia, sin resentimiento, dejando la puerta abierta. Nombre: ${firstName || 'sin nombre'}. Último mensaje del lead: "${lastUserMsg.substring(0, 100)}". Tu último mensaje: "${lastMiiaMsg.substring(0, 100)}". Máximo 3 líneas, 200 chars. Terminá con algo como "Si algún día me necesitás, acá estoy 💕" y el link www.miia-app.com. NO digas "seguimiento" ni "te escribo de nuevo". Sé natural.`
+        : `Sos MIIA, asistente IA por WhatsApp. Un lead te habló pero no respondió tu último mensaje. Retomá la conversación de forma natural, sin sonar a robot ni a "ventas". ${firstName ? `Se llama ${firstName}.` : ''} Último mensaje del lead: "${lastUserMsg.substring(0, 100)}". Tu último mensaje: "${lastMiiaMsg.substring(0, 100)}". Follow-up #${fData.count + 1}. Máximo 2 líneas, 150 chars. NO digas "seguimiento" ni "te escribo de nuevo". HACÉ algo útil: si hablaron de algo concreto, retomalo. Si no, ofrecé una probadita nueva.`;
+      const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, followupPrompt, {}, { enableSearch: false });
+      msg = aiResult?.text?.trim();
+      if (!msg || msg.length < 10) throw new Error('IA no generó follow-up válido');
+      console.log(`[FOLLOWUP] 🤖 IA generó follow-up: "${msg.substring(0, 80)}..."`);
+    } catch (aiErr) {
+      // Fallback a mensajes estáticos si IA falla
+      console.warn(`[FOLLOWUP] ⚠️ IA falló, usando fallback: ${aiErr.message}`);
       msg = isLast ? followupMsgLast : followupMsg1;
+      if (firstName) msg = `${firstName}, ${msg.charAt(0).toLowerCase()}${msg.slice(1)}`;
     }
 
     try {
@@ -643,10 +654,20 @@ async function runFollowupEngine() {
       await followupRef.set({
         count: (fData.count || 0) + 1,
         lastFollowup: new Date().toISOString(),
-        silenced: false
+        lastFollowupMsg: msg.substring(0, 200),
+        silenced: false,
+        isDespedida: isLast
       }, { merge: true });
       sent++;
-      console.log(`[FOLLOWUP] 📤 Seguimiento ${fData.count + 1}/${followupMax} → ${baseNum}`);
+      console.log(`[FOLLOWUP] 📤 ${isLast ? '👋 DESPEDIDA' : `Seguimiento ${fData.count + 1}/${followupMax}`} → ${baseNum}`);
+
+      // Si es despedida, notificar al owner en self-chat
+      if (isLast) {
+        safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+          `👋 *Lead cerrado*: ${firstName || baseNum}\nMIIA envió despedida después de ${followupMax} follow-ups sin respuesta.\nÚltimo msg del lead: "${lastUserMsg.substring(0, 60)}"`,
+          { isSelfChat: true }
+        ).catch(() => {});
+      }
     } catch (e) {
       console.error(`[FOLLOWUP] ❌ Error enviando a ${baseNum}:`, e.message);
     }
@@ -5951,9 +5972,19 @@ REGLAS:
             } catch (tzErr) {
               console.warn(`[AGENDA] ⚠️ Error convirtiendo timezone, usando fecha original: ${tzErr.message}`);
             }
+            // FIX P-CALENDAR-QUALITY: Si el contacto es un teléfono externo (no "self"),
+            // Y la razón incluye palabras de recordatorio/aviso al contacto → remindContact = true
+            // Esto permite que "recuérdale a +5491164431700 comprar medicación" FUNCIONE
+            const isExternalContact = contacto && contacto !== 'self' && /^\d{8,15}$/.test(contacto.replace(/\D/g, ''));
+            const isReminderForContact = /recor|avisa|escri|manda|notific|dile|decile|avisale|recordale|escribile/i.test(razon || '');
+            const shouldRemindContact = isExternalContact || (!isSelfChat && isReminderForContact);
+            if (shouldRemindContact) {
+              console.log(`[AGENDA] 📲 remindContact=true para ${contacto} — razón: "${(razon || '').substring(0, 50)}"`);
+            }
+
             await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
-              contactPhone: isSelfChat ? 'self' : contacto,
-              contactName: isSelfChat ? (userProfile.name || 'el owner') : contactName,
+              contactPhone: isSelfChat && !isExternalContact ? 'self' : contacto,
+              contactName: isSelfChat && !isExternalContact ? (userProfile.name || 'el owner') : contactName,
               mentionedContact: contacto,
               scheduledFor: scheduledForUTC,
               scheduledForLocal: fecha,
@@ -5965,7 +5996,7 @@ REGLAS:
               meetLink: meetLink || '',
               status: 'pending',
               calendarSynced: calendarOk,
-              remindContact: false,
+              remindContact: shouldRemindContact,
               reminderMinutes: 10,
               requestedBy: phone,
               searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
