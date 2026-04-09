@@ -670,7 +670,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   // ── PASO 6b: OWNER PRESENCE CHECK — Si el owner envió un mensaje reciente, MIIA se calla ──
   if (!isSelfChat && ctx.ownerActiveChats && ctx.ownerActiveChats[phone]) {
-    const OWNER_PRESENCE_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutos
+    const OWNER_PRESENCE_COOLDOWN_MS = 90 * 60 * 1000; // 90 minutos (como promete el FAQ)
     const elapsed = Date.now() - ctx.ownerActiveChats[phone];
     if (elapsed < OWNER_PRESENCE_COOLDOWN_MS) {
       const minsAgo = Math.round(elapsed / 60000);
