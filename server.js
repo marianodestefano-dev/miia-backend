@@ -1202,7 +1202,7 @@ async function isHumanizerEnabled() {
   return _humanizerCache.value;
 }
 
-// Micro-humanizer v2: typo 2% + minúscula inicial ~15% — para parecer más humano
+// Micro-humanizer v2: typo 2% + minúscula inicial 7% — para parecer más humano
 function maybeAddTypo(text) {
   if (!text || text.length < 5) return text;
   let result = text;
@@ -11430,18 +11430,76 @@ app.get('/api/admin/imports', verifyAdminToken, async (req, res) => {
 app.post('/api/tenant/:uid/test', express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
-    const { message } = req.body;
+    const { message, bizId } = req.body;
     if (!message) return res.status(400).json({ error: 'message required' });
 
-    // Build tenant brain from Firestore
-    const trainingData = await getFullTenantBrain(uid);
+    // Cargar cerebro del negocio específico (si hay bizId) o el defaultBusinessId
+    let businessCerebro = '';
+    let bizName = '';
+    try {
+      let targetBizId = bizId;
+      if (!targetBizId) {
+        const userDoc = await admin.firestore().collection('users').doc(uid).get();
+        targetBizId = userDoc.exists ? userDoc.data().defaultBusinessId : null;
+      }
+      if (targetBizId) {
+        const bizDoc = await admin.firestore().collection('users').doc(uid)
+          .collection('businesses').doc(targetBizId).get();
+        if (bizDoc.exists) bizName = bizDoc.data().name || '';
+        const brainDoc = await admin.firestore().collection('users').doc(uid)
+          .collection('businesses').doc(targetBizId)
+          .collection('brain').doc('business_cerebro').get();
+        if (brainDoc.exists) businessCerebro = brainDoc.data().content || '';
+      }
+    } catch (_) {}
 
-    const prompt = buildPrompt({ mode: 'test', trainingData });
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const response = await callGemini(geminiKey, prompt + `\nCliente: ${message}\nMIIA:`);
+    // Cargar perfil del owner
+    let ownerName = '';
+    try {
+      const userDoc = await admin.firestore().collection('users').doc(uid).get();
+      if (userDoc.exists) ownerName = userDoc.data().name || '';
+    } catch (_) {}
 
-    res.json({ response: response || 'No pude generar una respuesta. Intenta de nuevo.' });
+    // Cargar productos del negocio
+    let productsText = '';
+    try {
+      const targetBizId2 = bizId || (await admin.firestore().collection('users').doc(uid).get()).data()?.defaultBusinessId;
+      if (targetBizId2) {
+        const prodsSnap = await admin.firestore().collection('users').doc(uid)
+          .collection('businesses').doc(targetBizId2)
+          .collection('products').get();
+        if (!prodsSnap.empty) {
+          productsText = '\n\n## PRODUCTOS/SERVICIOS\n' + prodsSnap.docs.map(d => {
+            const p = d.data();
+            return `- ${p.name}: ${p.description || ''} (${p.price || 'consultar'})`;
+          }).join('\n');
+        }
+      }
+    } catch (_) {}
+
+    const systemPrompt = `Sos ${ownerName || 'el dueño del negocio'}${bizName ? ` de ${bizName}` : ''}. Un cliente potencial te escribe por WhatsApp. Respondé de forma profesional, breve y amigable.
+
+## INFORMACIÓN DE TU NEGOCIO
+${businessCerebro || 'Sin información cargada. Pedile al owner que entrene a MIIA con datos del negocio.'}
+${productsText}
+
+## REGLAS
+- Máximo 2-3 líneas por mensaje
+- Sé directo y resolutivo
+- Si no sabés algo, decí "No tengo esa info, lo consulto y te confirmo"
+- NUNCA reveles que sos IA
+- Usá emojis moderadamente (1-2)`;
+
+    const result = await aiGateway.smartCall(
+      aiGateway.CONTEXTS?.GENERAL || 'general',
+      systemPrompt + `\n\nCliente: ${message}\nVos:`,
+      {},
+      { maxTokens: 300, timeout: 15000 }
+    );
+
+    res.json({ response: result?.text || 'No pude generar una respuesta. Entrena a MIIA primero.' });
   } catch (e) {
+    console.error(`[TEST-MIIA] Error:`, e.message);
     res.status(500).json({ error: e.message });
   }
 });

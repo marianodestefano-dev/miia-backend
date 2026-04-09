@@ -659,10 +659,27 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     ctx.conversations[phone] = ctx.conversations[phone].slice(-40);
   }
 
-  // ── PASO 6: Si es isFromMe pero NO self-chat → solo registrar, no responder ──
+  // ── PASO 6: Si es isFromMe pero NO self-chat → registrar presencia del owner y NO responder ──
   if (isFromMe && !isSelfChat) {
-    console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} registrado (sin respuesta IA).`);
+    // OWNER PRESENCE: marcar que el owner está activamente chateando con este contacto
+    if (!ctx.ownerActiveChats) ctx.ownerActiveChats = {};
+    ctx.ownerActiveChats[phone] = Date.now();
+    console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} registrado (owner activo — MIIA callada por 30min).`);
     return;
+  }
+
+  // ── PASO 6b: OWNER PRESENCE CHECK — Si el owner envió un mensaje reciente, MIIA se calla ──
+  if (!isSelfChat && ctx.ownerActiveChats && ctx.ownerActiveChats[phone]) {
+    const OWNER_PRESENCE_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutos
+    const elapsed = Date.now() - ctx.ownerActiveChats[phone];
+    if (elapsed < OWNER_PRESENCE_COOLDOWN_MS) {
+      const minsAgo = Math.round(elapsed / 60000);
+      console.log(`${logPrefix} 🤫 OWNER ACTIVO con ${basePhone} (hace ${minsAgo}min) — MIIA NO responde. Cooldown: ${Math.round((OWNER_PRESENCE_COOLDOWN_MS - elapsed) / 60000)}min restantes.`);
+      return;
+    } else {
+      // Cooldown expirado → limpiar y permitir que MIIA responda
+      delete ctx.ownerActiveChats[phone];
+    }
   }
 
   // ── PASO 7: Clasificar contacto (cascada multi-negocio) ──
@@ -788,8 +805,9 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
 
   // Acción: notificar al owner sobre contacto desconocido sin keywords
-  // REGLA: Si el owner tiene 1 solo negocio → auto-clasificar (lead o cliente)
-  // Si tiene 2+ negocios → notificar al owner para que clasifique
+  // REGLA: Sin keyword match → MIIA NO EXISTE. Solo notifica al owner.
+  // Si hay keyword match (lead o client) y 1 negocio → auto-clasificar.
+  // Si hay keyword match y 2+ negocios → notificar al owner para que clasifique.
   if (gateDecision.action === 'notify_owner') {
     const businesses = ctx.businesses || [];
     if (businesses.length <= 1) {
@@ -805,16 +823,37 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
         contactType = 'client';
         ctx.contactTypes[phone] = 'client';
         if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'client', businessId: bizId, name: messageContext?.pushName || '' });
-      } else {
-        console.log(`${logPrefix} 🏷️ Auto-clasificando desconocido ${basePhone} como lead → ${bizName} (1 solo negocio)`);
+        // Sobreescribir gateDecision para que MIIA responda
+        gateDecision.respond = true;
+        gateDecision.reason = 'auto_classified_client';
+        gateDecision.action = 'none';
+      } else if (classification.type === 'lead') {
+        console.log(`${logPrefix} 🏷️ Desconocido ${basePhone} clasificado como lead por keyword "${classification.keyword}" → ${bizName}`);
         contactType = 'lead';
         ctx.contactTypes[phone] = 'lead';
         if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: messageContext?.pushName || '' });
+        // Sobreescribir gateDecision para que MIIA responda
+        gateDecision.respond = true;
+        gateDecision.reason = 'auto_classified_lead';
+        gateDecision.action = 'none';
+      } else {
+        // SIN keyword match → MIIA NO EXISTE. Notificar al owner y callar.
+        const ownerJid = tenantState.sock?.user?.id;
+        if (ownerJid) {
+          const pushName = messageContext?.pushName || '';
+          const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
+          const isLid = phoneDigits.length > 13;
+          const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
+          try {
+            await sendTenantMessage(tenantState, ownerJid, alertMsg);
+            console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin keyword match (MIIA callada)`);
+          } catch (e) {
+            console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
+          }
+        }
+        console.log(`${logPrefix} 🤫 Sin keyword match para ${basePhone} — MIIA NO EXISTE (no auto-clasificar sin evidencia)`);
+        // gateDecision.respond sigue en false → silencio total
       }
-      // Sobreescribir gateDecision para que MIIA responda
-      gateDecision.respond = true;
-      gateDecision.reason = classification.type === 'client' ? 'auto_classified_client' : 'auto_classified_lead';
-      gateDecision.action = 'none';
     } else {
       // 2+ negocios → notificar al owner para que clasifique
       const ownerJid = tenantState.sock?.user?.id;
@@ -1004,6 +1043,47 @@ ${countryContext ? `- ${countryContext}` : '- Español neutro (NO argentinismos 
 
     // Post-respuesta: verificar si la IA decidió transferir (se chequea después de generar respuesta)
     // Se maneja más abajo cuando se obtiene aiMessage
+
+  } else if (contactType === 'client') {
+    // ═══ CLIENTE EXISTENTE DEL NEGOCIO → MODO SOPORTE ═══
+    // Usa el cerebro del negocio pero con instrucciones de SOPORTE, no de venta
+    let clientCerebro = ctx.businessCerebro;
+    const clientBizId = classification?.businessId || ctx.businesses?.[0]?.id;
+    const clientBizName = ctx.businesses?.find(b => b.id === clientBizId)?.name || ctx.businesses?.[0]?.name || 'el negocio';
+    if (clientBizId) {
+      try {
+        const bizBrainDoc = await db().collection('users').doc(ctx.ownerUid)
+          .collection('businesses').doc(clientBizId)
+          .collection('brain').doc('business_cerebro').get();
+        if (bizBrainDoc.exists && bizBrainDoc.data().content) {
+          clientCerebro = bizBrainDoc.data().content;
+        }
+      } catch (_) {}
+    }
+    const clientName = ctx.leadNames[phone] || '';
+    const ownerName = ctx.ownerProfile?.shortName || ctx.ownerProfile?.name || '';
+    console.log(`${logPrefix} 🏥 Cliente de ${clientBizName} (${clientName}) → prompt de SOPORTE con cerebro del negocio`);
+
+    activeSystemPrompt = `Sos ${ownerName}, responsable de ${clientBizName}. Este contacto YA es cliente tuyo. NO le vendas — AYUDALO.
+
+## INFORMACIÓN DE TU NEGOCIO
+${clientCerebro || 'Sin información adicional del negocio.'}
+
+## TU ROL
+Sos soporte de ${clientBizName}. Este usuario YA usa tu producto/servicio. Tu trabajo es:
+- Si tiene un problema → guiarlo paso a paso usando tu conocimiento del negocio
+- Si no sabe cómo usar algo → explicarle con paciencia
+- Si tiene una queja → escuchar, ser empático, y ofrecer solución
+- Si necesita algo que no podés resolver → decirle "Lo consulto con el equipo y te aviso"
+- Si pregunta por algo que no sabés → ser honesto: "No tengo esa info ahora, lo verifico y te confirmo"
+
+## TONO
+Profesional, empático, resolutivo. Este usuario PAGA — merece atención de primera.
+NUNCA le hagas pitch de venta. Es TU cliente, no tu prospecto.
+${countryContext ? countryContext : ''}
+- Máximo 2-3 líneas por mensaje, directo al punto
+- Usá emojis moderadamente (1-2 por mensaje)
+- NUNCA reveles que sos IA`;
 
   } else {
     // Lead — usar cerebro del negocio específico si hay clasificación con businessId
