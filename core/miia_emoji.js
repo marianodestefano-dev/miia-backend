@@ -305,20 +305,20 @@ function detectMessageTopic(message, extraCtx = {}) {
   const lower = message.toLowerCase();
 
   // ─── STREET (👩‍💼): precio, vuelo, clima, noticias, delivery, transporte ───
-  if (/precio|oferta|descuento|promo|stock|tienda|comprar|producto|mercado/i.test(lower)) return { topic: 'price' };
+  if (/precio|oferta|descuento|\bpromo\b|stock|tienda|comprar|producto|mercado/i.test(lower)) return { topic: 'price' };
   if (/vuelo|avion|aeropuerto|pasaje|boarding|escala|reserva.*hotel/i.test(lower)) return { topic: 'travel' };
   if (/clima|lluvia|tormenta|\bsol\b|nublado|temperatura|calor|fr[ií]o|pron[oó]stico/i.test(lower)) return { topic: 'weather' };
   if (/noticia|titular|periódico|periodico|\bdiario\b|actualidad|prensa/i.test(lower)) return { topic: 'news' };
   if (/rappi|pedidosya|pedidos\s*ya|delivery|domicilio|pedir\s+comida/i.test(lower)) return { topic: 'delivery' };
   if (/uber|didi|taxi|cabify|transporte|viaje.*auto|llegada|conductor/i.test(lower)) return { topic: 'transport' };
-  if (/acci[oó]n|bolsa|cripto|bitcoin|inversi[oó]n|dolar|divisa|mercado.*valor/i.test(lower)) return { topic: 'finance' };
+  if (/\bacci[oó]n\b|bolsa|cripto|bitcoin|inversi[oó]n|dolar|divisa|mercado.*valor/i.test(lower)) return { topic: 'finance' };
 
   // ─── OFFICE (👩‍💻): agenda, mail, recordatorio ───
-  if (/agenda|reuni[oó]n|cita|mail|correo|email|recordatorio|tarea|pendiente|deadline/i.test(lower)) return { topic: 'office' };
+  if (/agenda|reuni[oó]n|\bcita\b|\bmail\b|correo|email|recordatorio|tarea|pendiente|deadline/i.test(lower)) return { topic: 'office' };
 
   // ─── Temas de vida ───
   if (/spotify|playlist|cancion|album|\bdisco\b|musica|lanzamiento.*(single|ep)|artista/i.test(lower)) return { topic: 'music' };
-  if (/receta|cocinar?|ingrediente|almuerzo|cena|comida|plato/i.test(lower)) return { topic: 'food' };
+  if (/receta|cocinar?|ingrediente|almuerzo|\bcena\b|comida|\bplato\b/i.test(lower)) return { topic: 'food' };
   if (/ejercicio|entrena|gym|gimnasio|correr|running|yoga|cardio|dieta|nutri/i.test(lower)) return { topic: 'health' };
   if (/estudiar|examen|parcial|tarea.*escuela|universidad|materia|clase/i.test(lower)) return { topic: 'study' };
   if (/juego|gaming|ps[45]|xbox|nintendo|gamer|fortnite|minecraft/i.test(lower)) return { topic: 'gaming' };
@@ -339,7 +339,7 @@ function detectMessageTopic(message, extraCtx = {}) {
     if (/terror|horror|miedo|zombie/i.test(lower)) return { topic: 'cinema', cinemaSub: 'terror' };
     if (/thriller|policial|detective|crimen/i.test(lower)) return { topic: 'cinema', cinemaSub: 'thriller' };
     if (/suspenso|misterio|intriga/i.test(lower)) return { topic: 'cinema', cinemaSub: 'suspense' };
-    if (/acci[oó]n|explosion|persecuci/i.test(lower)) return { topic: 'cinema', cinemaSub: 'action' };
+    if (/\bacci[oó]n\b|explosion|persecuci/i.test(lower)) return { topic: 'cinema', cinemaSub: 'action' };
     if (/roman[tc]|amor|comedia rom/i.test(lower)) return { topic: 'cinema', cinemaSub: 'romance' };
     return { topic: 'cinema', cinemaSub: 'scifi' };
   }
