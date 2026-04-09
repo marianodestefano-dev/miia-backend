@@ -14142,6 +14142,95 @@ app.post('/api/calendar/event', requireRole('owner', 'agent'), express.json(), a
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HOME STATS — Datos reales para las stat cards del dashboard home
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/tenant/:uid/home-stats', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const db = admin.firestore();
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+    // Cargar contact_index + conversaciones en memoria del tenant en paralelo
+    const [indexSnap, defaultBizSessionDoc] = await Promise.all([
+      db.collection('users').doc(uid).collection('contact_index').get(),
+      // Sesión de hoy del negocio default (para contar conversaciones)
+      (async () => {
+        const userDoc = await db.collection('users').doc(uid).get();
+        const defaultBizId = userDoc.exists ? userDoc.data().defaultBusinessId : null;
+        if (!defaultBizId) return null;
+        const sessionDoc = await db.collection('users').doc(uid)
+          .collection('businesses').doc(defaultBizId)
+          .collection('sessions').doc(todayStr).get();
+        return sessionDoc.exists ? sessionDoc : null;
+      })()
+    ]);
+
+    // Contar leads activos, pre-ventas (cotización enviada), ventas cerradas
+    let leadsActivos = 0;
+    let preventas = 0;
+    let ventasCerradas = 0;
+
+    for (const doc of indexSnap.docs) {
+      const data = doc.data();
+      if (data.type === 'lead' || data.type === 'pending' || data.type === 'enterprise_lead') {
+        const stage = data.stage || 'nuevo';
+        if (stage === 'cerrado') {
+          ventasCerradas++;
+        } else if (stage === 'cotizacion_enviada') {
+          preventas++;
+        } else {
+          leadsActivos++;
+        }
+      }
+    }
+
+    // Conversaciones hoy: contar phones únicos en la sesión de hoy
+    let conversacionesHoy = 0;
+    if (defaultBizSessionDoc) {
+      const sessionData = defaultBizSessionDoc.data();
+      if (sessionData.messages && Array.isArray(sessionData.messages)) {
+        const uniquePhones = new Set();
+        for (const msg of sessionData.messages) {
+          if (msg.phone) uniquePhones.add(msg.phone);
+          if (msg.from) uniquePhones.add(msg.from);
+        }
+        conversacionesHoy = uniquePhones.size;
+      }
+    }
+
+    // Fallback: contar conversaciones desde memoria del tenant si hay
+    if (conversacionesHoy === 0 && tenantManager) {
+      try {
+        const convs = await tenantManager.getTenantConversations(uid);
+        // Contar solo las que tuvieron actividad hoy
+        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+        conversacionesHoy = convs.filter(c => {
+          const ts = c.timestamp;
+          if (!ts) return false;
+          const msgTime = typeof ts === 'number' ? (ts > 1e12 ? ts : ts * 1000) : new Date(ts).getTime();
+          return msgTime >= todayStart;
+        }).length;
+      } catch (e) {
+        console.warn('[HOME-STATS] Fallback conversaciones error:', e.message);
+      }
+    }
+
+    console.log(`[HOME-STATS] uid:${uid.substring(0, 8)} → convs:${conversacionesHoy} leads:${leadsActivos} preventas:${preventas} ventas:${ventasCerradas}`);
+    res.json({
+      conversationsToday: conversacionesHoy,
+      activeLeads: leadsActivos,
+      presales: preventas,
+      salesClosed: ventasCerradas
+    });
+  } catch (e) {
+    console.error(`[HOME-STATS] ❌ Error uid:${uid.substring(0, 8)}: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CRM ANALYTICS ENDPOINTS — Pipeline, Nightly, Patterns, Metrics, Conversations
 // ═══════════════════════════════════════════════════════════════════════════════
 
