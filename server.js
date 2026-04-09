@@ -97,6 +97,8 @@ const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getC
 const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
+const { runSelfTest } = require('./core/self_test');
+const autoDiag = require('./core/auto_diagnostics');
 
 // ═══ AI — Clientes y adaptadores IA ═══
 const { callGemini, callGeminiChat } = require('./ai/gemini_client');
@@ -123,7 +125,7 @@ const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_
 const salesAssets = require('./core/sales_assets');
 const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
 const actionFeedback = require('./core/action_feedback');
-const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert } = require('./core/contact_gate');
+const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert, classifyUnknownContact } = require('./core/contact_gate');
 const miiaInvocation = require('./core/miia_invocation');
 const outreachEngine = require('./core/outreach_engine');
 const miiaOutfit = require('./core/miia_outfit');
@@ -4884,9 +4886,56 @@ Nuevo resumen actualizado:`;
       });
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
+    } else if (contactTypes[phone] === 'miia_client') {
+      // ═══ CLIENTE MIIA EXISTENTE → MODO SOPORTE ═══
+      if (conversationMetadata[phone]) conversationMetadata[phone].contactType = 'miia_client';
+      const clientName = leadNames[phone] || pushName || 'cliente';
+      console.log(`[MIIA-SUPPORT] 🏥 ${basePhone} → Cliente MIIA existente (${clientName}) — modo soporte`);
+
+      const supportProfile = {
+        ...MIIA_SALES_PROFILE,
+        role: 'Soporte MIIA',
+        businessProduct: `MIIA es una asistente por WhatsApp. Este contacto YA es cliente/usuario de MIIA.
+
+## TU ROL CON ESTE CONTACTO
+Sos la asistente de soporte de MIIA. Este usuario YA tiene cuenta. NO le vendas — AYUDALO.
+
+## QUÉ HACER:
+- Si tiene un problema técnico → guiarlo paso a paso
+- Si no sabe cómo usar algo → explicarle con paciencia
+- Si necesita algo del dashboard → indicarle dónde está (www.miia-app.com → Mi Dashboard)
+- Si hay un bug → decirle "Lo reporto al equipo" y [APRENDIZAJE_NEGOCIO:Bug reportado por cliente: {descripción}]
+- Si quiere cambiar de plan → www.miia-app.com/pricing
+- Si quiere cancelar → ser empática, preguntar por qué, y si insiste: www.miia-app.com → Mi Cuenta → Cancelar
+
+## RECURSOS DE AYUDA
+- Centro de ayuda: www.miia-app.com/help
+- Manual de usuario: www.miia-app.com/docs
+- Estado del sistema: api.miia-app.com/health
+- Contacto humano: mariano@miia-app.com
+
+## TONO
+Profesional, empático, resolutivo. Este usuario PAGA — merece atención premium.
+NUNCA le hagas pitch de venta. NUNCA cuentes demos. Es TU cliente, no tu prospecto.`,
+      };
+
+      const result = assemblePrompt({
+        chatType: 'lead', // Usa el pipeline de lead pero con perfil de soporte
+        messageBody: userMessage,
+        ownerProfile: supportProfile,
+        context: {
+          contactName: clientName,
+          trainingData: '',
+          countryContext,
+          affinityStage: conversationMetadata[phone]?.affinityStage,
+          affinityCount: conversationMetadata[phone]?.messageCount,
+        }
+      });
+      activeSystemPrompt = result.prompt;
+      promptMeta = result.meta;
+
     } else {
-      // ═══ NÚMERO DE MIIA: TODOS son leads de MIIA. Sin excepciones. ═══
-      // No hay familia, no hay equipo en este número. Solo venta de MIIA.
+      // ═══ NÚMERO DE MIIA: desconocido → lead de MIIA ═══
       const leadOwnerProfile = MIIA_SALES_PROFILE;
       if (conversationMetadata[phone]) conversationMetadata[phone].contactType = 'miia_lead';
 
@@ -5098,7 +5147,8 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
     let enrichedContext = '';
     try {
       const isMiiaSalesLeadPre = conversationMetadata[phone]?.contactType === 'miia_lead';
-      const chatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaSalesLeadPre ? 'miia_lead' : 'lead'));
+      const isMiiaClient = conversationMetadata[phone]?.contactType === 'miia_client' || contactTypes[phone] === 'miia_client';
+      const chatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaClient ? 'miia_client' : (isMiiaSalesLeadPre ? 'miia_lead' : 'lead')));
       enrichedContext = runPreprocess({
         messageBody: effectiveMsg,
         contactPhone: phone,
@@ -5223,7 +5273,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     // ═══ INTENSAMENTE v2.0: POST-PROCESO — Regex + IA Audit (100% coverage) ═══
     try {
       const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
-      const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaSalesLead ? 'miia_lead' : 'lead'));
+      const isMiiaClientPost = conversationMetadata[phone]?.contactType === 'miia_client' || contactTypes[phone] === 'miia_client';
+      const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaClientPost ? 'miia_client' : (isMiiaSalesLead ? 'miia_lead' : 'lead')));
       const postContactName = leadNames[phone] || familyContacts[basePhone]?.name || '';
 
       // PASO 1: Auditoría REGEX (instantánea, 2ms)
@@ -7649,7 +7700,7 @@ async function handleIncomingMessage(message) {
     }
     const existsInCRM = !!conversations[effectiveTarget];
 
-    // NUEVO: Si no está en allowedLeads, verificar si está registrado en Firestore como usuario MIIA
+    // NUEVO: Si no está en allowedLeads, verificar si está registrado en Firestore como usuario/cliente MIIA
     if (!isAllowed && !existsInCRM && !fromMe) {
       try {
         const userSnapshot = await admin.firestore()
@@ -7664,10 +7715,30 @@ async function handleIncomingMessage(message) {
           saveDB();
           const userData = userSnapshot.docs[0].data();
           const userName = userData.name || userData.email || 'Usuario MIIA';
-          console.log(`[WA] ✅ ${baseTarget} es usuario MIIA registrado (${userName}) — permitido automáticamente`);
+          // Marcar como CLIENTE existente (NO lead) — cambia el prompt a modo soporte
+          contactTypes[effectiveTarget] = 'miia_client';
+          console.log(`[WA] ✅ ${baseTarget} es CLIENTE MIIA registrado (${userName}) — modo soporte activado`);
         }
       } catch (e) {
         console.error(`[WA] Error buscando usuario en Firestore:`, e.message);
+      }
+    }
+
+    // También verificar por client_keywords: "soporte", "no puedo entrar", "mi cuenta", etc.
+    if (isAllowed && !contactTypes[effectiveTarget]?.includes('client') && !fromMe) {
+      const MIIA_CLIENT_KEYWORDS = [
+        'soporte', 'ayuda con mi cuenta', 'no puedo entrar', 'error', 'bug',
+        'mi suscripcion', 'mi suscripción', 'renovar', 'cancelar', 'mi plan',
+        'no me funciona', 'problema con', 'se cayó', 'no anda', 'no funciona',
+        'actualización', 'actualizacion', 'nueva función', 'nueva funcion',
+        'manual', 'tutorial', 'como se usa', 'como hago', 'no entiendo',
+        'mi cuenta', 'mi perfil', 'cambiar contraseña', 'cambiar plan',
+        'factura', 'recibo', 'cobro', 'pago'
+      ];
+      const clientMatch = matchesBusinessKeywords(body, MIIA_CLIENT_KEYWORDS);
+      if (clientMatch.matched) {
+        contactTypes[effectiveTarget] = 'miia_client';
+        console.log(`[WA] 🏥 Contacto ${baseTarget} detectado como cliente existente por keyword "${clientMatch.keyword}" — modo soporte`);
       }
     }
 
@@ -12147,7 +12218,7 @@ app.post('/api/mercadopago/confirm', express.json(), async (req, res) => {
 // ═══ RESILIENCE SHIELD: Iniciar monitoreo + endpoint ═══
 shield.startHealthMonitor(300_000); // Health log cada 5 minutos
 // Conectar Shield con safeSendMessage para notificaciones al owner
-shield.setNotifyFunction(async (uid, message) => {
+const _shieldNotify = async (uid, message) => {
   try {
     const tm = require('./whatsapp/tenant_manager');
     const tenant = tm.getTenant ? tm.getTenant(uid) : null;
@@ -12157,7 +12228,46 @@ shield.setNotifyFunction(async (uid, message) => {
   } catch (e) {
     console.error(`[SHIELD-NOTIFY] Error: ${e.message}`);
   }
-});
+};
+shield.setNotifyFunction(_shieldNotify);
+
+// ═══ AUTO-DIAG: Conectar shield con auto_diagnostics para buffer de errores ═══
+const _origRecordFail = shield.recordFail.bind(shield);
+shield.recordFail = function(system, reason, meta) {
+  autoDiag.recordError(`shield:${system}`, reason, meta);
+  return _origRecordFail(system, reason, meta);
+};
+
+// ═══ SELF-TEST: Verificar salud al arrancar (delay 30s para dar tiempo a conexiones) ═══
+setTimeout(async () => {
+  try {
+    const selfTestResult = await runSelfTest({
+      ownerUid: OWNER_UID,
+      aiGateway,
+      notifySelfChat: async (msg) => {
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, msg, { isSelfChat: true });
+      }
+    });
+    console.log(`[SELF-TEST] ${selfTestResult.summary}`);
+  } catch (e) {
+    console.error(`[SELF-TEST] Error en self-test: ${e.message}`);
+  }
+}, 30_000);
+
+// ═══ AUTO-DIAGNOSTICS: Diagnóstico IA cada hora ═══
+setInterval(async () => {
+  try {
+    await autoDiag.runDiagnostics({
+      aiGateway,
+      shield,
+      notifySelfChat: async (msg) => {
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, msg, { isSelfChat: true });
+      }
+    });
+  } catch (e) {
+    console.error(`[AUTO-DIAG] Error en diagnóstico periódico: ${e.message}`);
+  }
+}, 60 * 60 * 1000); // Cada hora
 // ═══ LINK TRACKER — Redirect endpoint para detectar clicks ═══
 app.get('/r/:uid/:trackId', async (req, res) => {
   try {
@@ -12209,6 +12319,25 @@ app.get('/api/health/rate-limiter', (req, res) => res.json({
 app.get('/api/health/wa-gateway', (req, res) => res.json(waGateway.healthCheck()));
 app.get('/api/health/ai-gateway', (req, res) => res.json(aiGateway.healthCheck()));
 app.get('/api/health/prompt-cache', (req, res) => res.json(promptCache.healthCheck()));
+app.get('/api/health/diagnostics', (req, res) => res.json({
+  recentErrors: autoDiag.getRecentErrors(2).length,
+  patterns: autoDiag.detectErrorPatterns(autoDiag.getRecentErrors(2)),
+  history: autoDiag.getDiagnosticHistory(),
+}));
+// Trigger diagnóstico manual
+app.post('/api/health/diagnostics/run', async (req, res) => {
+  try {
+    const result = await autoDiag.runDiagnostics({
+      aiGateway, shield, force: true,
+      notifySelfChat: async (msg) => {
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, msg, { isSelfChat: true });
+      }
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ═══ MINI APP / PWA — Endpoints de Protección ═══
 

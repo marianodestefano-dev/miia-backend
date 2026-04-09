@@ -52,7 +52,7 @@ const aiGateway = require('../ai/ai_gateway');
 const promptCache = require('../ai/prompt_cache');
 const {
   shouldMiiaRespond, matchesBusinessKeywords, getOwnerBusinessKeywords,
-  buildUnknownContactAlert
+  getOwnerClientKeywords, classifyUnknownContact, buildUnknownContactAlert
 } = require('../core/contact_gate');
 const rateLimiter = require('../core/rate_limiter');
 const humanDelay = require('../core/human_delay');
@@ -788,20 +788,32 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
 
   // Acción: notificar al owner sobre contacto desconocido sin keywords
-  // REGLA: Si el owner tiene 1 solo negocio → auto-clasificar como lead (no preguntar)
+  // REGLA: Si el owner tiene 1 solo negocio → auto-clasificar (lead o cliente)
+  // Si tiene 2+ negocios → notificar al owner para que clasifique
   if (gateDecision.action === 'notify_owner') {
     const businesses = ctx.businesses || [];
     if (businesses.length <= 1) {
-      // 1 negocio (o ninguno) → auto-clasificar como lead y dejar que MIIA responda
       const bizId = businesses[0]?.id || null;
       const bizName = businesses[0]?.name || 'Mi Negocio';
-      console.log(`${logPrefix} 🏷️ Auto-clasificando desconocido ${basePhone} como lead → ${bizName} (1 solo negocio, sin preguntar al owner)`);
-      contactType = 'lead';
-      ctx.contactTypes[phone] = 'lead';
-      if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: messageContext?.pushName || '' });
+      // Intentar distinguir: ¿es cliente existente (soporte) o lead nuevo?
+      const leadKw = getOwnerBusinessKeywords(ctx);
+      const clientKw = getOwnerClientKeywords(ctx);
+      const classification = classifyUnknownContact(messageBody, leadKw, clientKw);
+
+      if (classification.type === 'client') {
+        console.log(`${logPrefix} 🏥 Desconocido ${basePhone} detectado como CLIENTE por keyword "${classification.keyword}" → modo soporte`);
+        contactType = 'client';
+        ctx.contactTypes[phone] = 'client';
+        if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'client', businessId: bizId, name: messageContext?.pushName || '' });
+      } else {
+        console.log(`${logPrefix} 🏷️ Auto-clasificando desconocido ${basePhone} como lead → ${bizName} (1 solo negocio)`);
+        contactType = 'lead';
+        ctx.contactTypes[phone] = 'lead';
+        if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: messageContext?.pushName || '' });
+      }
       // Sobreescribir gateDecision para que MIIA responda
       gateDecision.respond = true;
-      gateDecision.reason = 'auto_classified_lead';
+      gateDecision.reason = classification.type === 'client' ? 'auto_classified_client' : 'auto_classified_lead';
       gateDecision.action = 'none';
     } else {
       // 2+ negocios → notificar al owner para que clasifique

@@ -135,7 +135,7 @@ function auditIdentidad(aiMessage, chatType, revealAsAI) {
   // Con familia, MIIA puede admitir que es IA (ellos saben)
   // Con miia_lead, MIIA SE VENDE A SÍ MISMA — puede decir que es IA, es su producto
   // Si el owner configuró revealAsAI=true, también puede revelar
-  if (chatType === 'selfchat' || chatType === 'self' || chatType === 'family' || chatType === 'miia_lead' || chatType === 'team' || revealAsAI) return { pass: true, action: 'ok', auditor: 'identidad' };
+  if (chatType === 'selfchat' || chatType === 'self' || chatType === 'family' || chatType === 'miia_lead' || chatType === 'miia_client' || chatType === 'team' || revealAsAI) return { pass: true, action: 'ok', auditor: 'identidad' };
 
   for (const pattern of AI_REVEAL_PATTERNS) {
     if (pattern.test(aiMessage)) {
@@ -295,7 +295,7 @@ function auditVerdad(aiMessage, hasSearchData, chatType) {
 
   // Self-chat del owner y familia: no vetar por datos deportivos/clima
   // El owner puede hablar de deportes libremente, Gemini tiene contexto directo
-  const isTrustedChat = ['self', 'family', 'team', 'miia_lead'].includes(chatType);
+  const isTrustedChat = ['self', 'family', 'team', 'miia_lead', 'miia_client'].includes(chatType);
 
   // Si NO hay datos de búsqueda pero la respuesta menciona scores/resultados deportivos
   if (!hasSearchData && !isTrustedChat) {

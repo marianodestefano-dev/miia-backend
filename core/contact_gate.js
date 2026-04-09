@@ -309,6 +309,52 @@ function getOwnerBusinessKeywords(ctx) {
   return keywords;
 }
 
+/**
+ * Obtener keywords de CLIENTES EXISTENTES (soporte) desde los businesses
+ *
+ * @param {object} ctx - Contexto del tenant
+ * @returns {string[]} Lista de client_keywords de todos los negocios del owner
+ */
+function getOwnerClientKeywords(ctx) {
+  const keywords = [];
+  if (ctx.businesses && Array.isArray(ctx.businesses)) {
+    for (const biz of ctx.businesses) {
+      if (biz.contact_rules && biz.contact_rules.client_keywords) {
+        for (const kw of biz.contact_rules.client_keywords) {
+          if (!keywords.includes(kw)) keywords.push(kw);
+        }
+      }
+    }
+  }
+  return keywords;
+}
+
+/**
+ * Clasificar contacto desconocido como lead, cliente existente, o desconocido puro
+ *
+ * @param {string} messageBody - Mensaje del contacto
+ * @param {string[]} leadKeywords - Keywords de leads
+ * @param {string[]} clientKeywords - Keywords de clientes existentes (soporte)
+ * @returns {{ type: 'lead'|'client'|'unknown', keyword?: string }}
+ */
+function classifyUnknownContact(messageBody, leadKeywords, clientKeywords) {
+  if (!messageBody) return { type: 'unknown' };
+
+  // Primero: ¿es cliente existente buscando soporte?
+  const clientMatch = matchesBusinessKeywords(messageBody, clientKeywords || []);
+  if (clientMatch.matched) {
+    return { type: 'client', keyword: clientMatch.keyword };
+  }
+
+  // Segundo: ¿es lead (interesado en comprar)?
+  const leadMatch = matchesBusinessKeywords(messageBody, leadKeywords || []);
+  if (leadMatch.matched) {
+    return { type: 'lead', keyword: leadMatch.keyword };
+  }
+
+  return { type: 'unknown' };
+}
+
 module.exports = {
   FORBIDDEN_KEYWORDS,
   validateKeyword,
@@ -316,5 +362,7 @@ module.exports = {
   shouldMiiaRespond,
   buildUnknownContactAlert,
   getOwnerBusinessKeywords,
+  getOwnerClientKeywords,
+  classifyUnknownContact,
   _normalize, // exported for testing
 };
