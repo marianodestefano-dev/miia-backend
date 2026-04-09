@@ -133,7 +133,8 @@ function auditPromesa(aiMessage, opts = {}) {
  */
 function auditIdentidad(aiMessage, chatType) {
   // Con familia, MIIA puede admitir que es IA (ellos saben)
-  if (chatType === 'selfchat' || chatType === 'family') return { pass: true, action: 'ok', auditor: 'identidad' };
+  // Con miia_lead, MIIA SE VENDE A SÍ MISMA — puede decir que es IA, es su producto
+  if (chatType === 'selfchat' || chatType === 'family' || chatType === 'miia_lead') return { pass: true, action: 'ok', auditor: 'identidad' };
 
   for (const pattern of AI_REVEAL_PATTERNS) {
     if (pattern.test(aiMessage)) {
@@ -151,7 +152,7 @@ function auditIdentidad(aiMessage, chatType) {
 /**
  * MIIA TONO — ¿Tiene muletillas de bot?
  */
-function auditTono(aiMessage, contactName) {
+function auditTono(aiMessage, contactName, chatType) {
   const issues = [];
 
   // Detectar openers de bot
@@ -177,11 +178,13 @@ function auditTono(aiMessage, contactName) {
     }
   }
 
-  // Detectar respuesta excesivamente larga (más de 800 chars para mensajes normales)
+  // Detectar respuesta excesivamente larga
+  // miia_lead tiene más margen (MIIA se explayea explicando sus funciones)
   // No aplica si contiene tags del sistema (cotización, agenda, etc.)
   const hasTags = /\[(GENERAR_COTIZACION|AGENDAR_EVENTO|ENVIAR_CORREO|CONSULTAR_AGENDA)/.test(aiMessage);
-  if (!hasTags && aiMessage.length > 800) {
-    issues.push(`Respuesta muy larga: ${aiMessage.length} chars (máx recomendado: 800)`);
+  const maxChars = chatType === 'miia_lead' ? 1200 : 800;
+  if (!hasTags && aiMessage.length > maxChars) {
+    issues.push(`Respuesta muy larga: ${aiMessage.length} chars (máx recomendado: ${maxChars})`);
   }
 
   if (issues.length > 0) {
@@ -203,8 +206,8 @@ function auditTono(aiMessage, contactName) {
 function auditAprendizaje(aiMessage, chatType) {
   const issues = [];
 
-  // Lead emitiendo APRENDIZAJE_NEGOCIO → STRIP (prohibido)
-  if (chatType === 'lead' && /\[APRENDIZAJE_NEGOCIO:/.test(aiMessage)) {
+  // Lead emitiendo APRENDIZAJE_NEGOCIO → STRIP (prohibido) — aplica a lead Y miia_lead
+  if ((chatType === 'lead' || chatType === 'miia_lead') && /\[APRENDIZAJE_NEGOCIO:/.test(aiMessage)) {
     issues.push({
       reason: 'Lead intentó emitir APRENDIZAJE_NEGOCIO — PROHIBIDO',
       action: 'strip',
@@ -212,8 +215,8 @@ function auditAprendizaje(aiMessage, chatType) {
     });
   }
 
-  // Lead emitiendo APRENDIZAJE_PERSONAL → STRIP (datos del owner, no del lead)
-  if (chatType === 'lead' && /\[APRENDIZAJE_PERSONAL:/.test(aiMessage)) {
+  // Lead emitiendo APRENDIZAJE_PERSONAL → STRIP (datos del owner, no del lead) — aplica a lead Y miia_lead
+  if ((chatType === 'lead' || chatType === 'miia_lead') && /\[APRENDIZAJE_PERSONAL:/.test(aiMessage)) {
     issues.push({
       reason: 'Lead intentó emitir APRENDIZAJE_PERSONAL — PROHIBIDO',
       action: 'strip',
@@ -230,8 +233,8 @@ function auditAprendizaje(aiMessage, chatType) {
     });
   }
 
-  // Lead emitiendo AGENDAR_EVENTO en vez de SOLICITAR_TURNO → STRIP y advertir
-  if (chatType === 'lead' && /\[AGENDAR_EVENTO:/.test(aiMessage)) {
+  // Lead emitiendo AGENDAR_EVENTO en vez de SOLICITAR_TURNO → STRIP y advertir — aplica a lead Y miia_lead
+  if ((chatType === 'lead' || chatType === 'miia_lead') && /\[AGENDAR_EVENTO:/.test(aiMessage)) {
     issues.push({
       reason: 'Lead intentó AGENDAR_EVENTO directo — debe ser SOLICITAR_TURNO',
       action: 'strip',
@@ -262,7 +265,13 @@ function auditMecanicaInterna(aiMessage, chatType) {
     return { pass: true, action: 'ok', auditor: 'mecanica' };
   }
 
-  for (const pattern of INTERNAL_MECHANICS_PATTERNS) {
+  // miia_lead: MIIA se vende a sí misma, puede decir "el sistema", "la API", "IA"
+  // Pero NUNCA debe exponer mecánica interna REAL (Firestore, Baileys, backend, prompts, cron, pipeline, tags)
+  const patternsToCheck = chatType === 'miia_lead'
+    ? INTERNAL_MECHANICS_PATTERNS.filter(p => /firestore|baileys|backend|prompt|cron|pipeline|tags/.test(p.source))
+    : INTERNAL_MECHANICS_PATTERNS;
+
+  for (const pattern of patternsToCheck) {
     if (pattern.test(aiMessage)) {
       return {
         pass: false,
@@ -406,7 +415,7 @@ function runPostprocess(aiMessage, opts = {}) {
     auditPromesa(finalMessage, { contactPhone: opts.contactPhone, contactName }),
     auditIdentidad(finalMessage, chatType),
     auditMecanicaInterna(finalMessage, chatType),
-    auditTono(finalMessage, contactName),
+    auditTono(finalMessage, contactName, chatType),
     auditAprendizaje(finalMessage, chatType),
     auditVerdad(finalMessage, hasSearchData),
   ];

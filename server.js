@@ -2137,7 +2137,18 @@ async function safeSendMessage(target, content, options = {}) {
               console.warn(`[SPLIT-SMART] ⚠️ Parte ${i + 1} vacía — saltando`);
               continue;
             }
-            await getOwnerSock().sendMessage(sendJid, { text: splitParts[i] });
+            // ═══ EMOJI EN CADA BURBUJA: Si es elegible para emoji, aplicar a CADA parte ═══
+            let partText = splitParts[i];
+            if (isEmojiEligible && !options.skipEmoji) {
+              const partEmojiCtx = options.emojiCtx || {};
+              if (!partEmojiCtx.topic) {
+                const detected = detectMessageTopic(partText);
+                partEmojiCtx.topic = detected.topic;
+                if (detected.cinemaSub) partEmojiCtx.cinemaSub = detected.cinemaSub;
+              }
+              partText = applyMiiaEmoji(partText, { ...partEmojiCtx });
+            }
+            await getOwnerSock().sendMessage(sendJid, { text: partText });
             rateLimiter.recordOutgoing('admin');
             privacyCounters.recordOutgoing('admin');
             hourlySendLog.count++;
@@ -5077,7 +5088,8 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
     // ═══ INTENSAMENTE: PRE-PROCESO — Enriquecer contexto sin costo IA ═══
     let enrichedContext = '';
     try {
-      const chatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : 'lead');
+      const isMiiaSalesLeadPre = conversationMetadata[phone]?.contactType === 'miia_lead';
+      const chatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaSalesLeadPre ? 'miia_lead' : 'lead'));
       enrichedContext = runPreprocess({
         messageBody: effectiveMsg,
         contactPhone: phone,
@@ -5087,7 +5099,7 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
         affinityCount: conversationMetadata[phone]?.affinityCount,
         lastContactDate: conversationMetadata[phone]?.lastMessageAt,
         conversationMetadata: conversationMetadata[phone],
-        isLead: chatType === 'lead',
+        isLead: chatType === 'lead' || chatType === 'miia_lead',
         leadData: conversationMetadata[phone]?.leadProfile,
         countryContext,
         kidsProfiles: typeof kidsMode !== 'undefined' && kidsMode.getKidsProfiles ? kidsMode.getKidsProfiles() : null,
@@ -5201,7 +5213,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
     // ═══ INTENSAMENTE v2.0: POST-PROCESO — Regex + IA Audit (100% coverage) ═══
     try {
-      const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : 'lead');
+      const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
+      const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaSalesLead ? 'miia_lead' : 'lead'));
       const postContactName = leadNames[phone] || familyContacts[basePhone]?.name || '';
 
       // PASO 1: Auditoría REGEX (instantánea, 2ms)
