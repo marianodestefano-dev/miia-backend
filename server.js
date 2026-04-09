@@ -725,17 +725,22 @@ async function runAgendaEngine() {
         // Solo avisar si no se envió reminder previo aún
         if (evt.preReminderSent) continue;
 
-        // Guard: si no tiene reason, el evento está incompleto — no enviar reminder roto
-        const reason = evt.reason || evt.title || 'Evento programado';
+        // Guard ESTRICTO: si el evento no tiene datos mínimos, NO enviar basura al owner
+        const reason = evt.reason || evt.title || '';
+        if (!reason || reason === 'undefined') {
+          console.log(`[AGENDA] ⏭️ Skip pre-recordatorio ${doc.id}: reason vacío/undefined — evento incompleto`);
+          await doc.ref.update({ preReminderSent: true, skippedBroken: true });
+          continue;
+        }
         const hora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : '';
         const modeEmoji = evt.eventMode === 'virtual' ? '📹' : (evt.eventMode === 'telefono' || evt.eventMode === 'telefónico') ? '📞' : '📍';
         const modeLabel = evt.eventMode === 'virtual' ? 'Virtual (Meet)' : (evt.eventMode === 'telefono' || evt.eventMode === 'telefónico') ? 'Telefónico' : 'Presencial';
         const locationInfo = evt.eventLocation ? ` — ${evt.eventLocation}` : '';
         const meetInfo = evt.meetLink ? `\n🔗 ${evt.meetLink}` : '';
         const contactName = evt.contactName || '';
-        const contactInfo = evt.contactPhone && evt.contactPhone !== 'self' && contactName
+        const contactInfo = evt.contactPhone && evt.contactPhone !== 'self' && contactName && contactName !== 'undefined'
           ? ` con *${contactName}*`
-          : (evt.contactPhone && evt.contactPhone !== 'self' ? ` con *${evt.contactPhone}*` : '');
+          : (evt.contactPhone && evt.contactPhone !== 'self' && evt.contactPhone !== 'undefined' ? ` con *${evt.contactPhone}*` : '');
 
         const reminderMsg = `⏰ *En ${REMINDER_MINUTES} minutos:*\n${modeEmoji} ${reason}${contactInfo}\n🕐 ${hora || 'Hora no especificada'} | ${modeLabel}${locationInfo}${meetInfo}`;
 
@@ -775,9 +780,14 @@ async function runAgendaEngine() {
         continue;
       }
 
-      // Generar mensaje contextualizado — NUNCA undefined
+      // Guard ESTRICTO: si reason es vacío/undefined, evento roto — no mandar basura
+      const evtReason = evt.reason || evt.title || '';
+      if (!evtReason || evtReason === 'undefined') {
+        console.log(`[AGENDA] ⏭️ Skip evento ${doc.id}: reason vacío/undefined — marcando como error`);
+        await doc.ref.update({ status: 'error', error: 'reason undefined — evento incompleto' });
+        continue;
+      }
       const mentioned = evt.mentionedContact || '';
-      const evtReason = evt.reason || evt.title || 'Evento programado';
       const evtContact = evt.contactName || 'este contacto';
       const prompt = isOwnerReminder
         ? `Sos MIIA. Recordale a tu owner (${evtContact}) este evento de su agenda: "${evtReason}"${mentioned ? ` (con ${mentioned})` : ''}. Mensaje breve en self-chat, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`

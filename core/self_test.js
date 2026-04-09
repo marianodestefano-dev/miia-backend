@@ -281,16 +281,10 @@ async function runSelfTest(opts = {}) {
     }
   }
 
-  // Si hay warnings pero no fallos, notificar más suave
-  if (fails.length === 0 && warns.length > 0 && notifySelfChat) {
-    const warnList = warns.map(w => `⚠️ ${w.name}: ${w.detail}`).join('\n');
-    try {
-      await notifySelfChat(
-        `🟡 *Self-test con advertencias*\n\n${warnList}\n\n✅ MIIA operativa al 100% — esto es solo informativo.`
-      );
-    } catch (e) {
-      console.error(`[SELF-TEST] Error notificando warnings: ${e.message}`);
-    }
+  // Warnings sin fallos: solo loguear en consola, NO molestar al owner por WhatsApp
+  // El owner no necesita saber que el cerebro está vacío cada vez que Railway redeploya
+  if (fails.length === 0 && warns.length > 0) {
+    console.log(`[SELF-TEST] 🟡 ${warns.length} warnings (solo log, no se notifica al owner por WhatsApp)`);
   }
 
   return { passed, results: [...results], summary };
