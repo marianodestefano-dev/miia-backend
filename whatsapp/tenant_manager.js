@@ -664,7 +664,8 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}, options = {}) 
     onReady: options.onReady || null,      // Callback when connection is ready
     onContacts: options.onContacts || null, // Callback for contacts sync (LID mapping)
     ownerUid: options.ownerUid || uid,     // UID del owner (agents apuntan al owner)
-    role: options.role || 'owner'          // 'owner' | 'agent'
+    role: options.role || 'owner',         // 'owner' | 'agent'
+    isOwnerAccount: options.isOwnerAccount || false  // true = procesar self-chat (fromMe)
   };
 
   tenants.set(uid, tenant);
@@ -1121,7 +1122,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         if (from?.endsWith('@g.us') || from === 'status@broadcast') continue;
 
         const isFromMe = msg.key.fromMe;
-        const isOwner = !!tenant.onMessage;
+        // Owners (con onMessage O isOwnerAccount) pueden procesar fromMe (self-chat).
+        // Agents NO procesan fromMe — solo mensajes entrantes de terceros.
+        const isOwner = !!tenant.onMessage || tenant.isOwnerAccount;
         if (!isOwner && isFromMe) continue;
 
         // ═══ REACCIONES: detectar y pasar al handler ═══

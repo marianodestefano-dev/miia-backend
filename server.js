@@ -8565,7 +8565,17 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
   // TODOS los usuarios van por el mismo flujo: tenant_manager
   // Si es el OWNER, conectar handleIncomingMessage y cerebro_absoluto
   const isOwner = (OWNER_UID && uid === OWNER_UID);
+  // Verificar rol del usuario para habilitar self-chat en owners no-admin
+  let isOwnerRole = true; // Default: quien inicia desde dashboard es owner
+  try {
+    const roleDoc = await admin.firestore().collection('users').doc(uid).get();
+    if (roleDoc.exists) {
+      const role = roleDoc.data().role || 'owner';
+      isOwnerRole = ['admin', 'owner', 'founder'].includes(role);
+    }
+  } catch (e) {}
   const tenantOptions = isOwner ? {
+    isOwnerAccount: true,
     onMessage: (baileysMsg, from, body) => {
       // Capturar participant como fuente de LID mapping
       // En linked devices, participant puede tener el phone real cuando remoteJid es LID (o viceversa)
@@ -8663,7 +8673,7 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
         appendLearning: cerebroAbsoluto.appendLearning
       });
     }
-  } : {};
+  } : { isOwnerAccount: isOwnerRole };
   const tenant = tenantManager.initTenant(uid, apiKeyToUse, io, {}, tenantOptions);
   console.log(`[INIT] ✅ WhatsApp iniciado para ${uid}. Checking role...`);
   tenantLogger.tmetric(uid, 'whatsapp_connected');
@@ -13391,12 +13401,17 @@ server.listen(PORT, () => {
             }
             gKey = gKey || process.env.GEMINI_API_KEY || '';
             const isOwner = (uid === OWNER_UID);
+            // Cualquier usuario con rol owner/admin/founder necesita self-chat activo
+            const userRole = userData.role || 'owner';
+            const isOwnerRole = ['admin', 'owner', 'founder'].includes(userRole);
 
-            console.log(`[AUTO-INIT] 🔄 Reconectando ${isOwner ? 'OWNER' : 'tenant'} ${uid.substring(0, 12)}... (WA: ${savedNumber || 'sin registro'})`);
+            console.log(`[AUTO-INIT] 🔄 Reconectando ${isOwner ? 'OWNER' : (isOwnerRole ? 'owner' : 'tenant')} ${uid.substring(0, 12)}... (WA: ${savedNumber || 'sin registro'}, role: ${userRole})`);
 
-            // CRÍTICO: el owner necesita onMessage (igual que /api/tenant/init) para que
-            // tenant_manager no filtre self-chat. Sin onMessage, isOwner=false → self-chat bloqueado.
+            // CRÍTICO: el admin necesita onMessage para rutear a handleIncomingMessage.
+            // Otros owners necesitan isOwnerAccount=true para que self-chat funcione
+            // via handleTenantMessage (el else branch en tenant_manager).
             const options = isOwner ? {
+              isOwnerAccount: true,
               onContacts: (contacts) => {
                 for (const c of contacts) {
                   if (c.id && c.lid) registerLidMapping(c.lid, c.id);
@@ -13480,7 +13495,8 @@ server.listen(PORT, () => {
                 }, 60000); // Esperar 60s para no spamear al conectar
               }
             } : {
-              // Tenant no-owner: actualizar número al conectar (puede cambiar si el user vincula otro teléfono)
+              // Non-admin tenant: owners necesitan isOwnerAccount para self-chat
+              isOwnerAccount: isOwnerRole,
               onReady: (sock) => {
                 const connectedNumber = sock.user?.id?.split('@')[0]?.split(':')[0];
                 if (savedNumber && connectedNumber && connectedNumber !== savedNumber) {
