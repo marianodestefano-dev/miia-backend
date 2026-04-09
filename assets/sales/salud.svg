@@ -13,9 +13,9 @@
   <rect width="800" height="418" fill="url(#bg)" rx="20"/>
   <rect x="40" y="40" width="720" height="338" fill="url(#card)" rx="16" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
   <text x="400" y="140" text-anchor="middle" font-size="72" fill="white">💪</text>
-  <text x="400" y="210" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-weight="800" font-size="36" fill="white">MIIA Salud</text>
-  <text x="400" y="255" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-weight="400" font-size="20" fill="rgba(255,255,255,0.85)">Rutinas, ejercicio, recordatorios de medicina</text>
-  <rect x="220" y="280" width="360" height="50" rx="25" fill="white"/>
-  <text x="400" y="312" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-weight="700" font-size="18" fill="#7C3AED">Tu coach de bienestar por WhatsApp</text>
-  <text x="400" y="395" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-weight="600" font-size="14" fill="rgba(255,255,255,0.6)">MIIA - Tu asistente inteligente por WhatsApp</text>
+  <text x="400" y="210" text-anchor="middle" font-family="'Inter', sans-serif" font-weight="800" font-size="36" fill="white">MIIA Salud</text>
+  <text x="400" y="255" text-anchor="middle" font-family="'Inter', sans-serif" font-weight="400" font-size="20" fill="rgba(255,255,255,0.85)">Rutinas, ejercicio, recordatorios de medicina</text>
+  <rect x="180" y="280" width="440" height="50" rx="25" fill="white"/>
+  <text x="400" y="312" text-anchor="middle" font-family="'Inter', sans-serif" font-weight="700" font-size="16" fill="#7C3AED">Tu coach de bienestar por WhatsApp</text>
+  <text x="400" y="395" text-anchor="middle" font-family="'Inter', sans-serif" font-weight="600" font-size="14" fill="rgba(255,255,255,0.6)">MIIA - Tu asistente inteligente por WhatsApp</text>
 </svg>
