@@ -78,6 +78,34 @@ async function tryClassifyFromOwnerMessage(ownerUid, messageBody, businesses) {
       return await classifyContact(ownerUid, last.phone, msg, businesses, pending);
     }
 
+    // ── Patrón 3b: Lenguaje natural → mapear a tipo ──
+    // "es mi primo" → familia, "es un amigo" → amigo, "es mi hermano" → familia
+    // "mi primo chapy" → familia, "es cliente" → cliente, "no le respondas" → ignorar
+    const naturalLanguageMap = [
+      // FAMILIA: primo, hermano, mamá, papá, tío, cuñado, sobrino, esposa, pareja, novio/a, suegro/a, abuelo/a
+      { pattern: /(?:es\s+)?(?:mi|un|una)\s+(?:primo|prima|hermano|hermana|mama|mam[aá]|papa|pap[aá]|tio|t[ií]o|tia|t[ií]a|cuñado|cuñada|sobrino|sobrina|esposo|esposa|pareja|novio|novia|suegro|suegra|abuelo|abuela|hijo|hija|familiar|pariente)/, type: 'familia' },
+      { pattern: /(?:es\s+)?familia/, type: 'familia' },
+      // AMIGO: amigo, amiga, compa, compañero, pana, brother, parcero, conocido
+      { pattern: /(?:es\s+)?(?:mi|un|una)\s+(?:amigo|amiga|compa|compañero|compañera|pana|brother|parcero|parcera|conocido|conocida|colega|vecino|vecina)/, type: 'amigo' },
+      { pattern: /(?:es\s+)?(?:amigo|amiga)/, type: 'amigo' },
+      // EQUIPO: empleado, trabajador, colaborador, socio
+      { pattern: /(?:es\s+)?(?:mi|un|una)\s+(?:empleado|empleada|trabajador|trabajadora|colaborador|colaboradora|socio|socia|asistente|secretario|secretaria)/, type: 'equipo' },
+      { pattern: /(?:es\s+)?(?:del\s+)?equipo/, type: 'equipo' },
+      // IGNORAR: no respondas, ignoralo, no le escribas, spam
+      { pattern: /(?:no\s+(?:le\s+)?respond|ignor[aáe]|no\s+le\s+escrib|spam|basura|bloquea)/, type: 'ignorar' },
+      // CLIENTE/LEAD
+      { pattern: /(?:es\s+)?(?:mi|un|una)\s+(?:cliente|paciente|alumno|alumna|lead)/, type: 'cliente' },
+      { pattern: /(?:es\s+)?cliente/, type: 'cliente' },
+    ];
+
+    for (const { pattern, type } of naturalLanguageMap) {
+      if (pattern.test(msg)) {
+        const last = pending[pending.length - 1];
+        console.log(`[CLASSIFIER] 🧠 Lenguaje natural "${msg.substring(0, 40)}" → tipo="${type}" para ${last.phone}`);
+        return await classifyContact(ownerUid, last.phone, type, businesses, pending);
+      }
+    }
+
     // ¿Es nombre de negocio?
     const matchedBiz = (businesses || []).find(b =>
       b.name && msg.includes(b.name.toLowerCase())

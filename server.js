@@ -3303,7 +3303,9 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       // Detecta TODAS las variantes de "responde" en español (tú, vos, usted, con/sin acento):
       //   responde, respondé, respóndele, respondele, respondale, contestale, contéstale,
       //   escribile, escríbele, mandále, mándale, atiéndelo, dale responde, dale contestá
-      const respondeleMatch = effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
+      // ⚠️ EXCLUIR "presentate a [nombres]" — es un comando distinto (presentarIndividual)
+      const isPresentarANombres = effectiveMsg && /(?:presenta(?:te)?|preséntate|presentá(?:te)?)\s+(?:miia\s+)?(?:a|con)\s+\w/i.test(effectiveMsg);
+      const respondeleMatch = !isPresentarANombres && effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
       if (respondeleMatch) {
         // PRIORIDAD 1: Buscar alerta "Alguien te escribió" en historial reciente
         const twoHoursAgo = Date.now() - 7200000;
