@@ -41,7 +41,7 @@ const PERSONAL_BRAIN = `# CEREBRO PERSONAL DE MARIANO — Lo que MIIA sabe de su
 - Le gusta mucho cocinar y la estética
 - Ama a sus hijos y su esposo Rafa
 
-### RAFA (PAPÁ de Mariano — "JEDIDO")
+### SR. RAFAEL (PAPÁ de Mariano — SIEMPRE llamarlo "Sr. Rafael")
 - Mariano lo admira profundamente
 - Fan de Colapinto, hincha de Boca
 - Le encanta hacer asados

@@ -44,6 +44,7 @@ const {
 } = require('../core/prompt_builder');
 
 const miiaInvocation = require('../core/miia_invocation');
+const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
 const { applyMiiaEmoji } = require('../core/miia_emoji');
 
@@ -787,19 +788,35 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
 
   // Acción: notificar al owner sobre contacto desconocido sin keywords
+  // REGLA: Si el owner tiene 1 solo negocio → auto-clasificar como lead (no preguntar)
   if (gateDecision.action === 'notify_owner') {
-    const ownerJid = tenantState.sock?.user?.id;
-    if (ownerJid) {
-      // Detectar LID: número con 14+ dígitos es imposible para teléfono real
-      const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
-      const isLid = phoneDigits.length > 13;
-      const pushName = messageContext?.pushName || '';
-      const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
-      try {
-        await sendTenantMessage(tenantState, ownerJid, alertMsg);
-        console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin keyword match`);
-      } catch (e) {
-        console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
+    const businesses = ctx.businesses || [];
+    if (businesses.length <= 1) {
+      // 1 negocio (o ninguno) → auto-clasificar como lead y dejar que MIIA responda
+      const bizId = businesses[0]?.id || null;
+      const bizName = businesses[0]?.name || 'Mi Negocio';
+      console.log(`${logPrefix} 🏷️ Auto-clasificando desconocido ${basePhone} como lead → ${bizName} (1 solo negocio, sin preguntar al owner)`);
+      contactType = 'lead';
+      ctx.contactTypes[phone] = 'lead';
+      if (bizId) await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: messageContext?.pushName || '' });
+      // Sobreescribir gateDecision para que MIIA responda
+      gateDecision.respond = true;
+      gateDecision.reason = 'auto_classified_lead';
+      gateDecision.action = 'none';
+    } else {
+      // 2+ negocios → notificar al owner para que clasifique
+      const ownerJid = tenantState.sock?.user?.id;
+      if (ownerJid) {
+        const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
+        const isLid = phoneDigits.length > 13;
+        const pushName = messageContext?.pushName || '';
+        const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
+        try {
+          await sendTenantMessage(tenantState, ownerJid, alertMsg);
+          console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin keyword match (${businesses.length} negocios)`);
+        } catch (e) {
+          console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
+        }
       }
     }
   }
@@ -1169,7 +1186,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   // PASO 1: Regex rápida (6 auditors, ~0ms)
   const postChatType = isSelfChat ? 'self' : contactType === 'lead' ? 'lead' : 'family';
   const postContactName = ctx.leadNames?.[phone] || basePhone;
-  const regexAudit = runPostprocess(aiMessage, { chatType: postChatType, contactName: postContactName });
+  const regexAudit = runPostprocess(aiMessage, { chatType: postChatType, contactName: postContactName, revealAsAI: ctx.ownerProfile?.revealAsAI || false });
 
   if (!regexAudit.approved) {
     if (regexAudit.action === 'veto') {
@@ -1284,8 +1301,35 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   const { cleanMessage, pendingQuestions } = await processLearningTags(aiMessage, tagCtx, tagCallbacks);
   aiMessage = cleanMessage;
 
-  // 11b. Tag de agenda
-  aiMessage = await processAgendaTag(aiMessage, tagCtx, saveAgendaEvent, ctx.leadNames);
+  // ═══ RED DE SEGURIDAD: Instrucciones del owner en selfchat sin tag de aprendizaje ═══
+  if (isSelfChat && role === 'owner' && messageBody) {
+    const hadLearningTag = /\[(APRENDIZAJE_NEGOCIO|APRENDIZAJE_PERSONAL|APRENDIZAJE_DUDOSO|GUARDAR_APRENDIZAJE):/.test(cleanMessage || '');
+    if (!hadLearningTag) {
+      const instructionPatterns = /\b(siempre deb[eé]s|nunca deb[eé]s|aprend[eé] que|record[aá] que|de ahora en m[aá]s|a partir de ahora|cuando un lead|cuando alguien|tu prioridad es|quiero que|necesito que|no vuelvas a|dej[aá] de|empez[aá] a|cambi[aá] tu|tu tono debe|habl[aá] m[aá]s|se[aá] m[aá]s|cada lead es|todos los leads)\b/i;
+      if (instructionPatterns.test(messageBody)) {
+        const instruction = messageBody.substring(0, 500).trim();
+        try {
+          if (tagCallbacks.saveBusinessLearning) {
+            await tagCallbacks.saveBusinessLearning(ownerUid, instruction, 'SERVER_SAFETY_NET');
+            console.log(`${logPrefix} [LEARNING:SAFETY-NET] 🛡️ Instrucción del owner guardada automáticamente: "${instruction.substring(0, 80)}..."`);
+          }
+        } catch (e) {
+          console.error(`${logPrefix} [LEARNING:SAFETY-NET] ❌ Error:`, e.message);
+        }
+      }
+    }
+  }
+
+  // 11b. Tag de agenda — con Google Calendar si el owner tiene Calendar conectado
+  aiMessage = await processAgendaTag(aiMessage, tagCtx, saveAgendaEvent, ctx.leadNames, {
+    createCalendarEvent,
+    getTimezone: async (uid) => {
+      try {
+        const schedCfg = await getCalScheduleConfig(uid);
+        return schedCfg?.timezone || 'America/Bogota';
+      } catch { return 'America/Bogota'; }
+    }
+  });
 
   // 11c. Tag de suscripción
   aiMessage = processSubscriptionTag(aiMessage, phone, ctx.subscriptionState);

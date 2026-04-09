@@ -476,14 +476,19 @@ async function processLearningTags(aiMessage, ctx, callbacks) {
 }
 
 /**
- * Procesa el tag [AGENDAR_EVENTO:contacto|fecha|razón|hint]
+ * Procesa el tag [AGENDAR_EVENTO:contacto|fecha|razón|hint|modo|ubicacion]
+ * Guarda en Firestore Y crea evento en Google Calendar si el owner tiene Calendar conectado.
+ *
  * @param {string} aiMessage
- * @param {Object} ctx - { uid, ownerUid, role }
+ * @param {Object} ctx - { uid, ownerUid, role, isSelfChat, basePhone, phone }
  * @param {Function} saveEvent - (ownerUid, eventData) => Promise
  * @param {Object} leadNames - mapa phone→nombre
+ * @param {Object} [calendarOpts] - Opciones de Google Calendar (opcional)
+ * @param {Function} [calendarOpts.createCalendarEvent] - Función para crear evento en Calendar
+ * @param {Function} [calendarOpts.getTimezone] - (uid) => timezone string
  * @returns {string} mensaje limpio sin tags de agenda
  */
-async function processAgendaTag(aiMessage, ctx, saveEvent, leadNames) {
+async function processAgendaTag(aiMessage, ctx, saveEvent, leadNames, calendarOpts) {
   const agendarMatch = aiMessage.match(/\[AGENDAR_EVENTO:([^\]]+)\]/g);
   if (!agendarMatch) return aiMessage;
 
@@ -493,25 +498,65 @@ async function processAgendaTag(aiMessage, ctx, saveEvent, leadNames) {
     const inner = tag.replace('[AGENDAR_EVENTO:', '').replace(']', '');
     const parts = inner.split('|').map(p => p.trim());
     if (parts.length >= 3) {
-      const [contacto, fecha, razon, hint] = parts;
+      const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
       try {
         // FIX: Si contacto no es un teléfono válido (ej: "Mariano"), usar el phone real del chat
         const isValidPhone = contacto && /^\d{8,15}$/.test(contacto.replace(/\D/g, ''));
         const isSelfChat = ctx.isSelfChat || false;
         const resolvedPhone = isValidPhone ? contacto :
           (isSelfChat ? 'self' : (ctx.basePhone || ctx.phone || contacto));
+        const contactName = (leadNames || {})[`${contacto}@s.whatsapp.net`] || contacto;
+
+        // ═══ PASO 1: Crear evento en Google Calendar (si disponible) ═══
+        let calendarOk = false;
+        let meetLink = null;
+        const eventMode = (modo || 'presencial').toLowerCase();
+
+        if (calendarOpts?.createCalendarEvent) {
+          try {
+            const parsedDate = new Date(fecha);
+            if (!isNaN(parsedDate)) {
+              const ownerTz = calendarOpts.getTimezone ? await calendarOpts.getTimezone(targetUid) : 'America/Bogota';
+              const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
+              const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+              const calResult = await calendarOpts.createCalendarEvent({
+                summary: razon || 'Evento MIIA',
+                dateStr: fecha.split('T')[0],
+                startHour: startH,
+                endHour: startH + 1,
+                description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
+                uid: targetUid,
+                timezone: ownerTz,
+                eventMode: eventMode,
+                location: eventMode === 'presencial' ? (ubicacion || '') : '',
+                phoneNumber: (eventMode === 'telefono' || eventMode === 'telefónico') ? (ubicacion || contacto) : '',
+                reminderMinutes: 10
+              });
+              calendarOk = true;
+              meetLink = calResult.meetLink || null;
+              console.log(`[AGENDA] 📅 Google Calendar OK para uid=${targetUid}: "${razon}" el ${fecha} modo=${eventMode}${meetLink ? ` meet=${meetLink}` : ''}`);
+            }
+          } catch (calErr) {
+            console.warn(`[AGENDA] ⚠️ Google Calendar no disponible para uid=${targetUid}: ${calErr.message}. Solo Firestore.`);
+          }
+        }
+
+        // ═══ PASO 2: Guardar en Firestore (SIEMPRE, Calendar o no) ═══
         await saveEvent(targetUid, {
           contactPhone: resolvedPhone,
-          contactName: (leadNames || {})[`${contacto}@s.whatsapp.net`] || contacto,
+          contactName,
           scheduledFor: fecha,
           reason: razon,
           promptHint: hint || '',
+          eventMode,
+          meetLink,
+          calendarSynced: calendarOk,
           status: 'pending',
           searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
           createdAt: new Date().toISOString(),
           source: `auto_detected_${ctx.role}`
         });
-        console.log(`[AGENDA] 📅 Evento agendado para uid=${targetUid}: ${contacto} el ${fecha} — ${razon}`);
+        console.log(`[AGENDA] 📅 Evento agendado para uid=${targetUid}: ${contacto} el ${fecha} — ${razon} (calendar=${calendarOk})`);
       } catch (e) {
         console.error(`[AGENDA] ❌ Error agendando:`, e.message);
       }

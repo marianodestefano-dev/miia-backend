@@ -158,6 +158,7 @@ const patternEngine = require('./core/pattern_engine');
 const linkTracker = require('./core/link_tracker');
 const ttsEngine = require('./voice/tts_engine');
 const kidsMode = require('./voice/kids_mode');
+const googleCalendar = require('./core/google_calendar');
 
 // ═══ LIBS EXTERNAS ═══
 const multer = require('multer');
@@ -278,9 +279,9 @@ const FAMILY_CONTACTS = {
   'SILVIA': { name: 'Silvia', relation: 'mamá', emoji: '👵❤️' },
   'ALE': { name: 'Alejandra', relation: 'esposa', emoji: '👸💕' },
   'ALEJANDRA': { name: 'Alejandra', relation: 'esposa', emoji: '👸💕' },
-  'RAFA': { name: 'Jedido', relation: 'papá', emoji: '👴❤️' },
-  'RAFAEL': { name: 'Jedido', relation: 'papá', emoji: '👴❤️' },
-  'JEDIDO': { name: 'Jedido', relation: 'papá', emoji: '👴❤️' },
+  'RAFA': { name: 'Sr. Rafael', relation: 'papá', emoji: '👴❤️' },
+  'RAFAEL': { name: 'Sr. Rafael', relation: 'papá', emoji: '👴❤️' },
+  'JEDIDO': { name: 'Sr. Rafael', relation: 'papá', emoji: '👴❤️' },
   'ANA': { name: 'Anabella', relation: 'hermana de Mariano', emoji: '👧❤️' },
   'ANABELLA': { name: 'Anabella', relation: 'hermana de Mariano', emoji: '👧❤️' },
   'CONSU': { name: 'Consu', relation: 'suegra', emoji: '👵⛪📿' },
@@ -388,7 +389,7 @@ let familyContacts = {
   // Sistema de affinity (stages): el nivel de cercanía se guarda en conversationMetadata[phone].affinity
   // isHandshakeDone: false = MIIA nunca habló con esta persona (stage 0 se presenta)
   '573137501884': { name: 'Alejandra', fullName: 'Alejandra Sánchez', relation: 'esposa de Mariano', emoji: '👸💕', personality: 'Spicy, F1 (Leclerc/Colapinto), Parcera, interés en Libros', isHandshakeDone: false },
-  '5491131313325': { name: 'Jedido', fullName: 'Mario Rafael De Stefano', relation: 'papá de Mariano', emoji: '👴❤️', personality: 'Respetuosa, cariñosa. Muy admirado por Mariano.', isHandshakeDone: false },
+  '5491131313325': { name: 'Sr. Rafael', fullName: 'Mario Rafael De Stefano', relation: 'papá de Mariano', emoji: '👴❤️', personality: 'Respetuosa, cariñosa. Muy admirado por Mariano. SIEMPRE llamarlo Sr. Rafael.', isHandshakeDone: false },
   '56994128069': { name: 'Vivi', fullName: 'Viviana Gaviria', relation: 'JEFA de Mariano', emoji: '👩‍💼👑', personality: 'Profesional, ejecutiva, técnica. Solo responde si ella dice Hola MIIA.', isHandshakeDone: false },
   '573128908895': { name: 'Jota', fullName: 'Jorge Mario', relation: 'hermano de Ale', emoji: '⚖️💚', personality: 'Abogado, fan del Nacional, padre de Renata', isHandshakeDone: false },
   '573012761138': { name: 'Maria Isabel', fullName: 'Maria Isabel', relation: 'esposa de Jota', emoji: '🐶🤱', personality: 'Madre de Renata, ama los perros (Kiara). Preguntarle siempre por Kiara.', isHandshakeDone: false },
@@ -565,8 +566,7 @@ taskScheduler.initTaskScheduler({
 // REGLA: Respeta keywords cold, modo silencio, y max seguimientos.
 async function runFollowupEngine() {
   if (!OWNER_UID) return;
-  const scheduleConfig = await getScheduleConfig(OWNER_UID);
-  if (!scheduleConfig || !scheduleConfig.followupDays) return;
+  const scheduleConfig = await getScheduleConfig(OWNER_UID) || {};
 
   // Ventana horaria segura: 10:00-22:00
   const tz = scheduleConfig.timezone || 'America/Bogota';
@@ -577,7 +577,8 @@ async function runFollowupEngine() {
     return;
   }
 
-  const followupDays = scheduleConfig.followupDays || 3;
+  // Defaults sensatos: 1 día para primer follow-up, máximo 3 intentos
+  const followupDays = scheduleConfig.followupDays || 1;
   const followupMax = scheduleConfig.followupMax || 3;
   const followupMsg1 = scheduleConfig.followupMsg1 || 'Hola, ¿pudiste revisar la información? Quedo atento.';
   const followupMsgLast = scheduleConfig.followupMsgLast || 'Solo quería saber si seguís interesado. Si no es el momento, no hay problema.';
@@ -638,7 +639,7 @@ async function runFollowupEngine() {
       // Generar follow-up contextual con IA — breve, cálido, no robótico
       const followupPrompt = isLast
         ? `Sos MIIA, asistente IA por WhatsApp. Este es tu ÚLTIMO follow-up a un lead que no respondió. Despedite con gracia, sin resentimiento, dejando la puerta abierta. Nombre: ${firstName || 'sin nombre'}. Último mensaje del lead: "${lastUserMsg.substring(0, 100)}". Tu último mensaje: "${lastMiiaMsg.substring(0, 100)}". Máximo 3 líneas, 200 chars. Terminá con algo como "Si algún día me necesitás, acá estoy 💕" y el link www.miia-app.com. NO digas "seguimiento" ni "te escribo de nuevo". Sé natural.`
-        : `Sos MIIA, asistente IA por WhatsApp. Un lead te habló pero no respondió tu último mensaje. Retomá la conversación de forma natural, sin sonar a robot ni a "ventas". ${firstName ? `Se llama ${firstName}.` : ''} Último mensaje del lead: "${lastUserMsg.substring(0, 100)}". Tu último mensaje: "${lastMiiaMsg.substring(0, 100)}". Follow-up #${fData.count + 1}. Máximo 2 líneas, 150 chars. NO digas "seguimiento" ni "te escribo de nuevo". HACÉ algo útil: si hablaron de algo concreto, retomalo. Si no, ofrecé una probadita nueva.`;
+        : `Sos MIIA, asistente IA por WhatsApp. Un lead te habló pero no respondió tu último mensaje. Retomá la conversación de forma natural, sin sonar a robot ni a "ventas". ${firstName ? `Se llama ${firstName}.` : ''} Último mensaje del lead: "${lastUserMsg.substring(0, 100)}". Tu último mensaje: "${lastMiiaMsg.substring(0, 100)}". Follow-up #${fData.count + 1}. Máximo 2 líneas, 150 chars. NO digas "seguimiento" ni "te escribo de nuevo". HACÉ algo útil: si hablaron de algo concreto, retomalo. Si no, ofrecé una demo nueva de lo que podés hacer.`;
       const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, followupPrompt, {}, { enableSearch: false });
       msg = aiResult?.text?.trim();
       if (!msg || msg.length < 10) throw new Error('IA no generó follow-up válido');
@@ -722,17 +723,22 @@ async function runAgendaEngine() {
         // Solo avisar si no se envió reminder previo aún
         if (evt.preReminderSent) continue;
 
+        // Guard: si no tiene reason, el evento está incompleto — no enviar reminder roto
+        const reason = evt.reason || evt.title || 'Evento programado';
         const hora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : '';
         const modeEmoji = evt.eventMode === 'virtual' ? '📹' : (evt.eventMode === 'telefono' || evt.eventMode === 'telefónico') ? '📞' : '📍';
         const modeLabel = evt.eventMode === 'virtual' ? 'Virtual (Meet)' : (evt.eventMode === 'telefono' || evt.eventMode === 'telefónico') ? 'Telefónico' : 'Presencial';
         const locationInfo = evt.eventLocation ? ` — ${evt.eventLocation}` : '';
         const meetInfo = evt.meetLink ? `\n🔗 ${evt.meetLink}` : '';
-        const contactInfo = evt.contactPhone !== 'self' ? ` con *${evt.contactName || evt.contactPhone}*` : '';
+        const contactName = evt.contactName || '';
+        const contactInfo = evt.contactPhone && evt.contactPhone !== 'self' && contactName
+          ? ` con *${contactName}*`
+          : (evt.contactPhone && evt.contactPhone !== 'self' ? ` con *${evt.contactPhone}*` : '');
 
-        const reminderMsg = `⏰ *En ${REMINDER_MINUTES} minutos:*\n${modeEmoji} ${evt.reason}${contactInfo}\n🕐 ${hora || 'Hora no especificada'} | ${modeLabel}${locationInfo}${meetInfo}`;
+        const reminderMsg = `⏰ *En ${REMINDER_MINUTES} minutos:*\n${modeEmoji} ${reason}${contactInfo}\n🕐 ${hora || 'Hora no especificada'} | ${modeLabel}${locationInfo}${meetInfo}`;
 
         try {
-          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, reminderMsg, { isSelfChat: true, skipEmoji: true });
+          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, reminderMsg, { isSelfChat: true });
           await doc.ref.update({ preReminderSent: true });
           console.log(`[AGENDA] ⏰ Pre-recordatorio 10min enviado: "${evt.reason}" a las ${hora}`);
         } catch (remErr) {
@@ -767,11 +773,13 @@ async function runAgendaEngine() {
         continue;
       }
 
-      // Generar mensaje contextualizado
+      // Generar mensaje contextualizado — NUNCA undefined
       const mentioned = evt.mentionedContact || '';
+      const evtReason = evt.reason || evt.title || 'Evento programado';
+      const evtContact = evt.contactName || 'este contacto';
       const prompt = isOwnerReminder
-        ? `Sos MIIA. Recordale a tu owner (${evt.contactName}) este evento de su agenda: "${evt.reason}"${mentioned ? ` (con ${mentioned})` : ''}. Mensaje breve en self-chat, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`
-        : `Sos MIIA. Tenés que recordarle a ${evt.contactName || 'este contacto'} sobre: "${evt.reason}". Mensaje breve, natural, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`;
+        ? `Sos MIIA. Recordale a tu owner (${evtContact}) este evento de su agenda: "${evtReason}"${mentioned ? ` (con ${mentioned})` : ''}. Mensaje breve en self-chat, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`
+        : `Sos MIIA. Tenés que recordarle a ${evtContact} sobre: "${evtReason}". Mensaje breve, natural, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`;
 
       let enableSearch = evt.searchBefore || false;
 
@@ -779,8 +787,9 @@ async function runAgendaEngine() {
         // SLEEP MODE: Si MIIA está dormida, enviar recordatorio crudo sin IA ni emoji
         if (isMiiaSleeping() && isOwnerReminder) {
           const hora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : '';
-          const rawReminder = `📖 ${hora ? hora + ' : ' : ''}${evt.reason}${mentioned ? ` (con ${mentioned})` : ''}`;
-          await safeSendMessage(phone, rawReminder, { isSelfChat: true, skipEmoji: true });
+          const rawReason = evt.reason || evt.title || 'Evento programado';
+          const rawReminder = `📖 ${hora ? hora + ' : ' : ''}${rawReason}${mentioned ? ` (con ${mentioned})` : ''}`;
+          await safeSendMessage(phone, rawReminder, { isSelfChat: true });
           console.log(`[AGENDA-SLEEP] 📖 Recordatorio crudo enviado: "${rawReminder}"`);
           await doc.ref.update({ status: 'sent', sentAt: new Date().toISOString() });
           await new Promise(r => setTimeout(r, 2000));
@@ -4901,22 +4910,22 @@ Nuevo resumen actualizado:`;
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
 
-      // Inyectar contexto de probaditas según contador
+      // Inyectar contexto de demos gratis según contador
       if (miiaResponseCount >= 10) {
-        activeSystemPrompt += `\n\n## 🚨 PROBADITA #${miiaResponseCount + 1} — YA SE ACABARON LAS 10 GRATIS
-Este lead ya usó sus 10 probaditas. Ahora:
+        activeSystemPrompt += `\n\n## 🚨 DEMO #${miiaResponseCount + 1} — YA SE ACABARON LAS 10 GRATIS
+Este lead ya usó sus 10 demos gratis. Ahora:
 - Si pregunta algo, respondé BREVEMENTE (1-2 líneas) y cerrá con gracia.
 - Usá tu estilo propio, con sentido común. NO copies frases textuales.
 - La idea: "Ya te mostré de qué soy capaz. Si querés tenerme todos los días: www.miia-app.com — 7 días gratis."
 - Si insiste sin registrarse: "Me encantaría seguir ayudándote, pero necesito que seas mi dueño/a oficial 😉 www.miia-app.com"
 - Tono: amigable, segura de sí misma. MIIA es valiosa. No suplica.`;
       } else if (miiaResponseCount >= 7) {
-        activeSystemPrompt += `\n\n## 💡 PROBADITA #${miiaResponseCount + 1} de 10 — SE ACERCAN AL FINAL
-Quedan ${10 - miiaResponseCount} probaditas. Seguí haciendo cosas reales, pero mencioná sutilmente:
-- "Esto que estoy haciendo es una probadita gratis... quedan pocas 😉"
+        activeSystemPrompt += `\n\n## 💡 DEMO #${miiaResponseCount + 1} de 10 — SE ACERCAN AL FINAL
+Quedan ${10 - miiaResponseCount} demos. Seguí haciendo cosas reales, pero mencioná sutilmente:
+- "Esto es una demo gratis de lo que puedo hacer... quedan pocas 😉"
 - NO presiones. Seguí demostrando poder real.`;
       } else {
-        activeSystemPrompt += `\n\n## PROBADITA #${miiaResponseCount + 1} de 10
+        activeSystemPrompt += `\n\n## DEMO #${miiaResponseCount + 1} de 10
 Estás en modo demo. HACÉ cosas reales (buscar, recordar, agendar, recetas, clima, deporte, etc.).
 NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con hechos.`;
       }
@@ -5493,6 +5502,27 @@ REGLAS:
 
     const { cleanMessage: learnCleanMsg, pendingQuestions } = await messageLogic.processLearningTags(aiMessage, adminCtx, adminCallbacks);
     aiMessage = learnCleanMsg;
+
+    // ═══ RED DE SEGURIDAD: Instrucciones del owner que Gemini no capturó con tags ═══
+    // Si es selfchat del admin, el mensaje original tiene patrón de instrucción,
+    // y Gemini NO emitió ningún tag de aprendizaje → guardarlo automáticamente
+    if (isAdmin && isSelfChat && effectiveMsg) {
+      const hadLearningTag = /\[(APRENDIZAJE_NEGOCIO|APRENDIZAJE_PERSONAL|APRENDIZAJE_DUDOSO|GUARDAR_APRENDIZAJE):/.test(aiMessage || learnCleanMsg || '');
+      if (!hadLearningTag) {
+        const instructionPatterns = /\b(siempre deb[eé]s|nunca deb[eé]s|aprend[eé] que|record[aá] que|de ahora en m[aá]s|a partir de ahora|cuando un lead|cuando alguien|tu prioridad es|quiero que|necesito que|no vuelvas a|dej[aá] de|empez[aá] a|cambi[aá] tu|tu tono debe|habl[aá] m[aá]s|se[aá] m[aá]s|cada lead es|todos los leads)\b/i;
+        if (instructionPatterns.test(effectiveMsg)) {
+          const instruction = effectiveMsg.substring(0, 500).trim();
+          try {
+            if (adminCallbacks.saveBusinessLearning) {
+              await adminCallbacks.saveBusinessLearning(OWNER_UID, instruction, 'SERVER_SAFETY_NET');
+              console.log(`[LEARNING:SAFETY-NET] 🛡️ Instrucción del owner guardada automáticamente (Gemini no emitió tag): "${instruction.substring(0, 80)}..."`);
+            }
+          } catch (e) {
+            console.error(`[LEARNING:SAFETY-NET] ❌ Error guardando:`, e.message);
+          }
+        }
+      }
+    }
 
     // ── TAG [HARTAZGO_CONFIRMADO:contactName] — Contacto Grupo harto → affinity 0 + silencio ──
     const hartazgoMatch = aiMessage.match(/\[HARTAZGO_CONFIRMADO:([^\]]+)\]/);
@@ -7700,54 +7730,61 @@ async function handleIncomingMessage(message) {
     }
 
     if (!isAllowed && !existsInCRM && !fromMe) {
-      // Silent digest: aún así registrar el contacto como pendiente
+      // Silent digest: registrar el contacto como pendiente y salir
       if (message._baileysMsg?._silentDigest) {
         console.log(`[SILENT-DIGEST] 📋 Contacto no-allowed registrado: ${effectiveTarget} body="${(body||'').substring(0,40)}"`);
-      } else {
-        // ═══ FIX: Resolver LID a número real ANTES de notificar al owner ═══
-        let displayPhone = effectiveTarget.split('@')[0];
-        const pushName = message._baileysMsg?.pushName || message.pushName || '';
-        let isLidUnresolved = false;
+        return;
+      }
 
-        // Detectar LID: explícitamente @lid O número con 14+ dígitos (imposible para teléfono real)
-        const phoneDigits = displayPhone.replace(/[^0-9]/g, '');
-        const looksLikeLid = effectiveTarget.includes('@lid') || phoneDigits.length > 13;
+      // ═══ FIX: Resolver LID a número real ANTES de notificar al owner ═══
+      let displayPhone = effectiveTarget.split('@')[0];
+      const pushName = message._baileysMsg?.pushName || message.pushName || '';
+      let isLidUnresolved = false;
 
-        if (looksLikeLid) {
-          if (effectiveTarget.includes('@lid')) {
-            const resolved = resolveLid(effectiveTarget);
-            if (resolved !== effectiveTarget) {
-              displayPhone = resolved.split('@')[0];
-              console.log(`[LID-RESOLVE] ✅ LID resuelto para alerta: ${effectiveTarget} → ${displayPhone}`);
-            } else {
-              isLidUnresolved = true;
-            }
+      // Detectar LID: explícitamente @lid O número con 14+ dígitos (imposible para teléfono real)
+      const phoneDigits = displayPhone.replace(/[^0-9]/g, '');
+      const looksLikeLid = effectiveTarget.includes('@lid') || phoneDigits.length > 13;
+
+      if (looksLikeLid) {
+        if (effectiveTarget.includes('@lid')) {
+          const resolved = resolveLid(effectiveTarget);
+          if (resolved !== effectiveTarget) {
+            displayPhone = resolved.split('@')[0];
+            console.log(`[LID-RESOLVE] ✅ LID resuelto para alerta: ${effectiveTarget} → ${displayPhone}`);
           } else {
-            // Número con 14+ dígitos pero no @lid → tratarlo como LID no resuelto
             isLidUnresolved = true;
           }
-
-          if (isLidUnresolved) {
-            // REGLA ABSOLUTA: NUNCA mostrar número LID al owner
-            console.log(`[LID-RESOLVE] ⚠️ LID/número largo ${phoneDigits.substring(0,8)}... sin resolver. pushName="${pushName || 'ninguno'}"`);
-          }
+        } else {
+          // Número con 14+ dígitos pero no @lid → tratarlo como LID no resuelto
+          isLidUnresolved = true;
         }
 
-        console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${isLidUnresolved ? (pushName || 'desconocido') : displayPhone}. Sin keywords. body="${(body||'').substring(0,60)}"`);
-        // buildUnknownContactAlert ya maneja LID internamente — NUNCA muestra números LID
-        const alertMsg = buildUnknownContactAlert(displayPhone, body, pushName, { isLid: isLidUnresolved });
-        // GUARDAR alerta en conversations del self-chat para que "respondele" la encuentre
-        const ownerSelfJid = `${OWNER_PHONE}@s.whatsapp.net`;
-        if (!conversations[ownerSelfJid]) conversations[ownerSelfJid] = [];
-        conversations[ownerSelfJid].push({
-          role: 'assistant',
-          content: alertMsg,
-          timestamp: Date.now(),
-          _contactJid: effectiveTarget, // JID original del contacto (puede ser LID)
-        });
-        safeSendMessage(ownerSelfJid, alertMsg, { isSelfChat: true }).catch(() => {});
+        if (isLidUnresolved) {
+          // REGLA ABSOLUTA: NUNCA mostrar número LID al owner
+          console.log(`[LID-RESOLVE] ⚠️ LID/número largo ${phoneDigits.substring(0,8)}... sin resolver. pushName="${pushName || 'ninguno'}"`);
+        }
       }
-      return;
+
+      // REGLA: Auto-clasificar como lead en vez de bloquear (MIIA CENTER = 1 solo negocio)
+      // Si alguien escribe a MIIA CENTER, ES un lead potencial de MIIA
+      console.log(`[CONTACT-GATE] 🏷️ Auto-clasificando desconocido ${isLidUnresolved ? (pushName || 'desconocido') : displayPhone} como lead (sin keywords, auto-clasificación). body="${(body||'').substring(0,60)}"`);
+      contactTypes[effectiveTarget] = 'lead';
+      isAllowed = true;
+      // Notificar al owner de forma informativa (no bloqueante)
+      const alertMsg = `📱 *Nuevo lead detectado*\n\n` +
+        `${pushName ? `Contacto: *${pushName}*` : `Número: +${displayPhone}`}\n` +
+        `Dice: "${(body || '').substring(0, 200)}"\n\n` +
+        `Lo clasifiqué como *lead* y le estoy respondiendo 💬`;
+      const ownerSelfJid = `${OWNER_PHONE}@s.whatsapp.net`;
+      if (!conversations[ownerSelfJid]) conversations[ownerSelfJid] = [];
+      conversations[ownerSelfJid].push({
+        role: 'assistant',
+        content: alertMsg,
+        timestamp: Date.now(),
+        _contactJid: effectiveTarget,
+      });
+      safeSendMessage(ownerSelfJid, alertMsg, { isSelfChat: true }).catch(() => {});
+      // NO return — continuar con el flujo normal para responder al lead
     }
 
     // ── SILENT DIGEST: extraer datos sin responder ──────────────────────
@@ -13771,13 +13808,8 @@ async function checkEmailInbox() {
 // FIX 4 — GOOGLE CALENDAR: OAUTH + CITAS
 // ============================================
 
-function getOAuth2Client() {
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI || 'https://api.miia-app.com/api/auth/google/callback'
-  );
-}
+// getOAuth2Client — delegado al módulo compartido google_calendar.js
+const getOAuth2Client = googleCalendar.getOAuth2Client;
 
 // uid se pasa como query param ?uid=... desde el dashboard (el usuario ya está autenticado en el browser)
 app.get('/api/auth/google', (req, res) => {
@@ -13922,166 +13954,10 @@ app.post('/api/gmail/enable', requireRole('owner', 'agent'), express.json(), asy
   }
 });
 
-async function getCalendarClient(uid) {
-  const doc = await admin.firestore().collection('users').doc(uid).get();
-  const data = doc.exists ? doc.data() : {};
-  if (!data.googleTokens) throw new Error('Google Calendar no conectado para este usuario');
-  const oauth2Client = getOAuth2Client();
-  oauth2Client.setCredentials(data.googleTokens);
-  // Auto-refresh token si expiró
-  oauth2Client.on('tokens', async (tokens) => {
-    const updated = { ...data.googleTokens, ...tokens };
-    await admin.firestore().collection('users').doc(uid).set({ googleTokens: updated }, { merge: true });
-  });
-  return { cal: google.calendar({ version: 'v3', auth: oauth2Client }), calId: data.googleCalendarId || 'primary' };
-}
-
-async function checkCalendarAvailability(dateStr, uid) {
-  // dateStr: 'YYYY-MM-DD'
-  const { cal, calId } = await getCalendarClient(uid);
-
-  // Parsear fecha
-  let targetDate = new Date(dateStr);
-  if (isNaN(targetDate)) targetDate = new Date(); // fallback a hoy
-
-  const timeMin = new Date(targetDate);
-  timeMin.setHours(9, 0, 0, 0);
-  const timeMax = new Date(targetDate);
-  timeMax.setHours(18, 0, 0, 0);
-
-  const response = await cal.events.list({
-    calendarId: calId,
-    timeMin: timeMin.toISOString(),
-    timeMax: timeMax.toISOString(),
-    singleEvents: true,
-    orderBy: 'startTime'
-  });
-
-  const events = response.data.items || [];
-  const busySlots = events.map(e => ({
-    start: new Date(e.start.dateTime || e.start.date),
-    end: new Date(e.end.dateTime || e.end.date),
-    title: e.summary
-  }));
-
-  // Calcular slots libres de 1 hora entre 9am-6pm
-  const freeSlots = [];
-  for (let h = 9; h < 18; h++) {
-    const slotStart = new Date(targetDate);
-    slotStart.setHours(h, 0, 0, 0);
-    const slotEnd = new Date(targetDate);
-    slotEnd.setHours(h + 1, 0, 0, 0);
-    const overlap = busySlots.some(b => b.start < slotEnd && b.end > slotStart);
-    if (!overlap) freeSlots.push(`${h}:00 - ${h + 1}:00`);
-  }
-
-  return { date: targetDate.toLocaleDateString('es-ES'), busySlots: busySlots.length, freeSlots };
-}
-
-/**
- * createCalendarEvent — Crea evento en Google Calendar
- * @param {Object} opts
- * @param {string} opts.summary - Título del evento
- * @param {string} opts.dateStr - Fecha 'YYYY-MM-DD' o 'YYYY-MM-DDTHH:mm'
- * @param {number} opts.startHour - Hora inicio (0-23)
- * @param {number} opts.endHour - Hora fin (0-23)
- * @param {string} opts.attendeeEmail - Email del invitado (opcional)
- * @param {string} opts.description - Descripción del evento
- * @param {string} opts.uid - UID del owner en Firestore
- * @param {string} opts.timezone - Timezone IANA (ej: 'America/Bogota')
- * @param {string} opts.eventMode - 'presencial' | 'virtual' | 'telefono' (default: 'presencial')
- * @param {string} opts.location - Dirección física para presencial (opcional)
- * @param {string} opts.phoneNumber - Número de teléfono para modo telefónico (opcional)
- * @param {number} opts.reminderMinutes - Minutos antes para recordatorio (default: 10)
- */
-async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description, uid, timezone, eventMode, location, phoneNumber, reminderMinutes }) {
-  const { cal, calId } = await getCalendarClient(uid);
-
-  // Determinar timezone: parámetro explícito > scheduleConfig del user > default Bogotá
-  let tz = timezone;
-  if (!tz) {
-    try {
-      const schedCfg = await getScheduleConfig(uid);
-      tz = schedCfg?.timezone || 'America/Bogota';
-    } catch { tz = 'America/Bogota'; }
-  }
-
-  // Construir fecha/hora en timezone local del usuario
-  const targetDate = new Date(dateStr);
-  const year = targetDate.getUTCFullYear() || new Date().getFullYear();
-  const month = String((targetDate.getUTCMonth() || new Date().getMonth()) + 1).padStart(2, '0');
-  const day = String(targetDate.getUTCDate() || new Date().getDate()).padStart(2, '0');
-  const sH = String(startHour || 10).padStart(2, '0');
-  const eH = String(endHour || (startHour || 10) + 1).padStart(2, '0');
-
-  // ═══ MODO DEL EVENTO: presencial / virtual / teléfono ═══
-  const mode = (eventMode || 'presencial').toLowerCase().trim();
-  let eventDescription = description || 'Agendado automáticamente por MIIA';
-  let eventLocation = '';
-  let conferenceData = null;
-
-  if (mode === 'virtual') {
-    // Google Meet — conferenceData genera link automáticamente
-    conferenceData = {
-      createRequest: {
-        requestId: `miia-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        conferenceSolutionKey: { type: 'hangoutsMeet' }
-      }
-    };
-    eventDescription += '\n\n📹 Reunión virtual — el link de Google Meet se adjunta automáticamente.';
-    console.log(`[GCAL] 📹 Modo VIRTUAL: se generará link de Google Meet`);
-  } else if (mode === 'telefono' || mode === 'telefónico') {
-    // Llamada telefónica — incluir número en descripción
-    const phone = phoneNumber || '';
-    eventLocation = phone ? `Llamada telefónica: ${phone}` : 'Llamada telefónica';
-    eventDescription += phone
-      ? `\n\n📞 Llamada telefónica al: ${phone}`
-      : '\n\n📞 Llamada telefónica (número pendiente de confirmar)';
-    console.log(`[GCAL] 📞 Modo TELÉFONO: ${phone || 'sin número especificado'}`);
-  } else {
-    // Presencial — incluir dirección si existe
-    if (location) {
-      eventLocation = location;
-      eventDescription += `\n\n📍 Ubicación: ${location}`;
-    }
-    console.log(`[GCAL] 📍 Modo PRESENCIAL: ${location || 'sin dirección especificada'}`);
-  }
-
-  // ═══ RECORDATORIO: 10 minutos por defecto (hardcodeado, owner puede cambiar) ═══
-  const reminder = reminderMinutes ?? 10;
-
-  const event = {
-    summary: summary || 'Reunión con MIIA',
-    description: eventDescription,
-    start: { dateTime: `${year}-${month}-${day}T${sH}:00:00`, timeZone: tz },
-    end: { dateTime: `${year}-${month}-${day}T${eH}:00:00`, timeZone: tz },
-    attendees: attendeeEmail ? [{ email: attendeeEmail }] : [],
-    reminders: {
-      useDefault: false,
-      overrides: [
-        { method: 'popup', minutes: reminder }
-      ]
-    }
-  };
-
-  // Agregar ubicación si existe
-  if (eventLocation) event.location = eventLocation;
-
-  // Agregar conferenceData para Google Meet
-  if (conferenceData) event.conferenceData = conferenceData;
-
-  // Insert con conferenceDataVersion si es virtual (requerido por API)
-  const insertParams = { calendarId: calId, resource: event, sendUpdates: 'all' };
-  if (conferenceData) insertParams.conferenceDataVersion = 1;
-
-  const response = await cal.events.insert(insertParams);
-
-  // Extraer link de Meet si se creó
-  const meetLink = response.data?.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri || null;
-
-  console.log(`[GCAL] ✅ Evento creado: "${summary}" el ${dateStr} ${sH}:00 (${tz}) modo=${mode} reminder=${reminder}min uid=${uid}${meetLink ? ` meet=${meetLink}` : ''}`);
-  return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink, meetLink, mode };
-}
+// getCalendarClient, checkCalendarAvailability, createCalendarEvent — delegados a módulo compartido google_calendar.js
+const getCalendarClient = googleCalendar.getCalendarClient;
+const checkCalendarAvailability = googleCalendar.checkCalendarAvailability;
+const createCalendarEvent = googleCalendar.createCalendarEvent;
 
 /**
  * proposeCalendarSlot — Busca el próximo hueco libre en Calendar y propone horarios.

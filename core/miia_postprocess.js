@@ -131,10 +131,11 @@ function auditPromesa(aiMessage, opts = {}) {
 /**
  * MIIA IDENTIDAD — ¿Se delata como IA? (solo relevante con leads)
  */
-function auditIdentidad(aiMessage, chatType) {
+function auditIdentidad(aiMessage, chatType, revealAsAI) {
   // Con familia, MIIA puede admitir que es IA (ellos saben)
   // Con miia_lead, MIIA SE VENDE A SÍ MISMA — puede decir que es IA, es su producto
-  if (chatType === 'selfchat' || chatType === 'family' || chatType === 'miia_lead') return { pass: true, action: 'ok', auditor: 'identidad' };
+  // Si el owner configuró revealAsAI=true, también puede revelar
+  if (chatType === 'selfchat' || chatType === 'self' || chatType === 'family' || chatType === 'miia_lead' || chatType === 'team' || revealAsAI) return { pass: true, action: 'ok', auditor: 'identidad' };
 
   for (const pattern of AI_REVEAL_PATTERNS) {
     if (pattern.test(aiMessage)) {
@@ -289,11 +290,15 @@ function auditMecanicaInterna(aiMessage, chatType) {
  * NOTA: Este es el único auditor que PODRÍA necesitar IA en casos sospechosos.
  * Por ahora, solo detecta patrones regex. En futuro, escalar a IA verify.
  */
-function auditVerdad(aiMessage, hasSearchData) {
+function auditVerdad(aiMessage, hasSearchData, chatType) {
   const issues = [];
 
+  // Self-chat del owner y familia: no vetar por datos deportivos/clima
+  // El owner puede hablar de deportes libremente, Gemini tiene contexto directo
+  const isTrustedChat = ['self', 'family', 'team', 'miia_lead'].includes(chatType);
+
   // Si NO hay datos de búsqueda pero la respuesta menciona scores/resultados deportivos
-  if (!hasSearchData) {
+  if (!hasSearchData && !isTrustedChat) {
     // Scores tipo "2-1", "3-0" en contexto deportivo
     const scoreInSportContext = /(?:(?:va|van|está|están|ganando|perdiendo|empat)\s+)?(\d{1,2})\s*[-–a]\s*(\d{1,2})/i;
     if (scoreInSportContext.test(aiMessage) && /(?:partido|gol|juega|cancha|equipo|fútbol|boca|river)/i.test(aiMessage)) {
@@ -403,7 +408,7 @@ function parseAuditResponse(text) {
  * @returns {{ approved: boolean, finalMessage: string, audits: object[], action: string }}
  */
 function runPostprocess(aiMessage, opts = {}) {
-  const { chatType = 'selfchat', contactName = '', hasSearchData = false } = opts;
+  const { chatType = 'selfchat', contactName = '', hasSearchData = false, revealAsAI = false } = opts;
   const audits = [];
   let finalMessage = aiMessage;
   let worstAction = 'ok'; // ok < strip < regenerate < veto
@@ -413,11 +418,11 @@ function runPostprocess(aiMessage, opts = {}) {
   // Ejecutar todos los auditores regex
   const results = [
     auditPromesa(finalMessage, { contactPhone: opts.contactPhone, contactName }),
-    auditIdentidad(finalMessage, chatType),
+    auditIdentidad(finalMessage, chatType, revealAsAI),
     auditMecanicaInterna(finalMessage, chatType),
     auditTono(finalMessage, contactName, chatType),
     auditAprendizaje(finalMessage, chatType),
-    auditVerdad(finalMessage, hasSearchData),
+    auditVerdad(finalMessage, hasSearchData, chatType),
   ];
 
   let repairedTags = [];
