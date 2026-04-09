@@ -139,6 +139,7 @@ const contactClassifier = require('./core/contact_classifier');
 const slotPrivacy = require('./core/slot_privacy');
 const weekendMode = require('./core/weekend_mode');
 const probadita = require('./core/probadita');
+const instagramHandler = require('./core/instagram_handler');
 const numberMigration = require('./core/number_migration');
 const privacyReport = require('./core/privacy_report');
 const auditLogger = require('./core/audit_logger');
@@ -12707,6 +12708,202 @@ ${websiteAnalysis ? websiteAnalysis.substring(0, 3000) : 'No disponible'}
   } catch (err) {
     console.error(`[ENTERPRISE-LEAD] 🔴 ERROR FATAL:`, err.message, err.stack);
     res.status(500).json({ error: 'Error procesando lead enterprise' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// INSTAGRAM DMs — Webhook + OAuth + Status endpoints
+// ═══════════════════════════════════════════════════════════════════
+
+// Verificación del webhook (Meta envía GET con challenge al configurar)
+app.get('/api/instagram/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  const VERIFY_TOKEN = process.env.INSTAGRAM_VERIFY_TOKEN || 'miia-instagram-verify-2026';
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log(`[INSTAGRAM] ✅ Webhook verificado por Meta`);
+    return res.status(200).send(challenge);
+  }
+  console.warn(`[INSTAGRAM] ❌ Webhook verification failed (mode=${mode}, token=${token})`);
+  return res.sendStatus(403);
+});
+
+// Recibir mensajes entrantes de Instagram DMs
+app.post('/api/instagram/webhook', express.json(), async (req, res) => {
+  // Responder 200 inmediatamente (Meta requiere respuesta rápida)
+  res.sendStatus(200);
+
+  try {
+    const messages = instagramHandler.parseWebhookMessages(req.body);
+    if (messages.length === 0) return;
+
+    for (const msg of messages) {
+      // Ignorar ecos (mensajes enviados por nosotros)
+      if (msg.isEcho) continue;
+      // Ignorar mensajes vacíos
+      if (!msg.text && (!msg.attachments || msg.attachments.length === 0)) continue;
+
+      console.log(`[INSTAGRAM] 📨 Mensaje de ${msg.senderId} → ${msg.recipientId}: "${(msg.text || '').substring(0, 80)}"`);
+
+      // Encontrar tenant por recipientId (el IG business account que recibe el DM)
+      const tenant = await instagramHandler.findTenantByIgUserId(msg.recipientId);
+      if (!tenant) {
+        console.warn(`[INSTAGRAM] ⚠️ No hay tenant para igUserId=${msg.recipientId}. Mensaje ignorado.`);
+        continue;
+      }
+
+      const { uid, tokenData } = tenant;
+      const pageToken = tokenData.pageAccessToken || tokenData.accessToken;
+
+      // Guardar mensaje entrante en historial
+      await instagramHandler.saveIgMessage(uid, msg.senderId, 'user', msg.text || '[attachment]');
+
+      // Obtener historial de conversación
+      const history = await instagramHandler.getIgConversationHistory(uid, msg.senderId, 15);
+
+      // Obtener perfil del contacto (nombre, username)
+      let contactName = 'Usuario Instagram';
+      try {
+        const profile = await instagramHandler.getInstagramProfile(msg.senderId, pageToken);
+        if (profile?.name) contactName = profile.name;
+      } catch (_) {}
+
+      // Cargar datos del negocio del owner
+      let businessContext = '';
+      try {
+        const userDoc = await admin.firestore().collection('users').doc(uid).get();
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          businessContext = `Negocio: ${userData.business_name || 'Sin nombre'}. ${userData.business_description || ''}`;
+        }
+      } catch (_) {}
+
+      // Construir historial para el prompt
+      const historyStr = history.map(m => `${m.role === 'user' ? contactName : 'MIIA'}: ${m.content}`).join('\n');
+
+      // Generar respuesta con IA
+      const igPrompt = `Sos MIIA, asistente IA del negocio. Un contacto te escribe por Instagram DM.
+${businessContext}
+
+REGLAS INSTAGRAM:
+- Respondé como si fueras parte del equipo del negocio. NO reveles que sos IA.
+- Mensajes CORTOS (máx 3 líneas). Instagram es informal y rápido.
+- Si preguntan por productos/servicios, respondé con lo que sabés del negocio.
+- Si preguntan algo que no sabés, decí que consultás con el equipo y le avisás.
+- Si piden WhatsApp, podés dar el número del negocio.
+- NUNCA uses hashtags ni emojis excesivos. Máximo 1-2 emojis.
+- Tono: profesional pero cercano, como responde un community manager estrella.
+
+HISTORIAL:
+${historyStr || '(Primera interacción)'}
+
+MENSAJE NUEVO de ${contactName}: ${msg.text}
+
+Respondé de forma natural y útil:`;
+
+      try {
+        const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, igPrompt, {}, { enableSearch: false });
+        const response = aiResult?.text?.trim();
+
+        if (response && response.length > 2) {
+          // Enviar respuesta por Instagram DM
+          const sent = await instagramHandler.sendInstagramMessage(msg.senderId, response, pageToken);
+          if (sent) {
+            // Guardar respuesta en historial
+            await instagramHandler.saveIgMessage(uid, msg.senderId, 'assistant', response);
+            console.log(`[INSTAGRAM] 📤 Respuesta enviada a ${contactName} (${msg.senderId}): "${response.substring(0, 60)}..."`);
+          }
+        }
+      } catch (aiErr) {
+        console.error(`[INSTAGRAM] ❌ Error generando respuesta IA:`, aiErr.message);
+      }
+    }
+  } catch (err) {
+    console.error(`[INSTAGRAM] ❌ Error procesando webhook:`, err.message);
+  }
+});
+
+// OAuth callback — redirigido desde Meta después de autorización
+app.get('/api/instagram/oauth', async (req, res) => {
+  const { code, state } = req.query;
+  // state = uid del owner (enviado en el OAuth URL)
+  if (!code || !state) {
+    return res.status(400).send('Faltan parámetros (code/state). Cerrá esta ventana y reintentá desde el dashboard.');
+  }
+
+  const appId = process.env.INSTAGRAM_APP_ID;
+  const appSecret = process.env.INSTAGRAM_APP_SECRET;
+  const redirectUri = `${process.env.BACKEND_URL || 'https://api.miia-app.com'}/api/instagram/oauth`;
+
+  if (!appId || !appSecret) {
+    return res.status(500).send('Instagram App no configurada. Contactá al administrador.');
+  }
+
+  try {
+    const tokenData = await instagramHandler.exchangeCodeForToken(code, redirectUri, appId, appSecret);
+    await instagramHandler.saveInstagramToken(state, tokenData);
+
+    console.log(`[INSTAGRAM] ✅ Owner ${state.substring(0, 8)}... conectó Instagram (igUser=${tokenData.igUserId})`);
+
+    // Redirigir al dashboard con éxito
+    res.redirect(`${process.env.FRONTEND_URL || 'https://www.miia-app.com'}/owner-dashboard.html#connections?instagram=connected`);
+  } catch (err) {
+    console.error(`[INSTAGRAM] ❌ Error en OAuth:`, err.message);
+    res.redirect(`${process.env.FRONTEND_URL || 'https://www.miia-app.com'}/owner-dashboard.html#connections?instagram=error&msg=${encodeURIComponent(err.message)}`);
+  }
+});
+
+// Estado de conexión Instagram de un tenant
+app.get('/api/tenant/:uid/instagram/status', async (req, res) => {
+  try {
+    const tokenData = await instagramHandler.getInstagramToken(req.params.uid);
+    if (!tokenData) {
+      return res.json({ connected: false });
+    }
+
+    res.json({
+      connected: true,
+      igUserId: tokenData.igUserId,
+      connectedAt: tokenData.connectedAt,
+      expiresAt: tokenData.expiresAt
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Obtener OAuth URL para conectar Instagram
+app.get('/api/tenant/:uid/instagram/connect-url', (req, res) => {
+  const appId = process.env.INSTAGRAM_APP_ID;
+  if (!appId) {
+    return res.status(500).json({ error: 'Instagram App no configurada' });
+  }
+
+  const redirectUri = encodeURIComponent(`${process.env.BACKEND_URL || 'https://api.miia-app.com'}/api/instagram/oauth`);
+  const state = req.params.uid;
+  // Permisos necesarios: mensajes, perfil básico, pages
+  const scope = 'instagram_basic,instagram_manage_messages,pages_manage_metadata,pages_messaging';
+
+  const url = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`;
+
+  res.json({ url });
+});
+
+// Desconectar Instagram
+app.delete('/api/tenant/:uid/instagram', async (req, res) => {
+  try {
+    await admin.firestore()
+      .collection('users').doc(req.params.uid)
+      .collection('integrations').doc('instagram')
+      .delete();
+
+    console.log(`[INSTAGRAM] 🔌 Owner ${req.params.uid.substring(0, 8)}... desconectó Instagram`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
