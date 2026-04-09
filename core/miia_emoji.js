@@ -149,11 +149,28 @@ function getMiiaEmoji(message, ctx = {}) {
   // Work Street → 👩‍💼 (price tracker, travel, noticias, clima, delivery, transporte)
   if (ctx.trigger === 'street' || ctx.topic === 'street') return '👩‍💼';
 
-  // ═══ PRIORIDAD 6: Tema del mensaje (auto-detectado) ═══
+  // ═══ PRIORIDAD 6: Tema del mensaje — PERSONA-EMOJIS como PREFIX ═══
 
-  if (ctx.topic === 'music') return '👩‍🎤';
-  if (ctx.topic === 'food') return '👩‍🍳';
-  if (ctx.topic === 'health' || ctx.topic === 'gym') return '🧘‍♀️';
+  // Estos van DELANTE del mensaje como emoji de estado de MIIA (persona-emoji)
+  if (ctx.topic === 'music') return '👩‍🎤';        // MIIA cantante
+  if (ctx.topic === 'food') return '👩‍🍳';          // MIIA cocinera
+  if (ctx.topic === 'health' || ctx.topic === 'gym') return '🧘‍♀️'; // MIIA yoga/salud
+
+  // Cine — MIIA adopta el personaje del género
+  if (ctx.topic === 'cinema') {
+    switch (ctx.cinemaSub) {
+      case 'scifi': case 'superhero': return '🦹‍♀️';  // MIIA superheroína
+      case 'terror': case 'horror': return '🧟‍♀️';    // MIIA zombie
+      case 'thriller': case 'police': return '👮‍♀️';   // MIIA policía
+      case 'suspense': return '🕵️‍♀️';                 // MIIA detective
+      case 'action': return '🥷';                      // MIIA ninja
+      case 'romance': return '🧖‍♀️';                   // MIIA relajada
+      default: return '🦹‍♀️';
+    }
+  }
+
+  // ═══ PRIORIDAD 7: Temas con EMOJI-OBJETO (NO persona) ═══
+  // Estos van como prefix pero son emojis temáticos (objetos/actividades)
   if (ctx.topic === 'travel') return '🧳';
   if (ctx.topic === 'weather') return '🌦️';
   if (ctx.topic === 'news') return '📰';
@@ -173,18 +190,6 @@ function getMiiaEmoji(message, ctx = {}) {
   if (ctx.topic === 'sleep') return '😴';
   if (ctx.topic === 'coffee') return '☕';
   if (ctx.topic === 'alcohol') return '🍷';
-
-  if (ctx.topic === 'cinema') {
-    switch (ctx.cinemaSub) {
-      case 'scifi': case 'superhero': return '🦹‍♀️';
-      case 'terror': case 'horror': return '🧟‍♀️';
-      case 'thriller': case 'police': return '👮‍♀️';
-      case 'suspense': return '🕵️‍♀️';
-      case 'action': return '🥷';
-      case 'romance': return '🧖‍♀️';
-      default: return '🦹‍♀️'; // default cine
-    }
-  }
 
   // ═══ DEFAULT ═══
   return DEFAULT_EMOJI;
@@ -211,15 +216,12 @@ const MIIA_OFFICIAL_EMOJIS = new Set([
 function applyMiiaEmoji(message, ctx = {}) {
   if (!message || typeof message !== 'string') return message;
 
-  // Si la IA generó un emoji random al inicio seguido de ":", QUITARLO y poner el correcto
-  // Solo respetar si es un emoji OFICIAL de MIIA
-  const emojiPrefixMatch = message.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)\s*:\s*/u);
+  // REGLA ABSOLUTA: SIEMPRE quitar cualquier emoji al inicio que haya puesto la IA (Gemini/Claude)
+  // y reemplazar con el emoji OFICIAL correcto según contexto.
+  // La IA NO decide el emoji — el sistema lo decide.
+  const emojiPrefixMatch = message.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)\s*:?\s*/u);
   if (emojiPrefixMatch) {
-    const existingEmoji = emojiPrefixMatch[1];
-    if (MIIA_OFFICIAL_EMOJIS.has(existingEmoji)) {
-      return message; // Ya tiene un emoji oficial de MIIA, no tocar
-    }
-    // Emoji random de Gemini → quitar y reemplazar con el correcto
+    // SIEMPRE quitar el emoji que puso la IA — el sistema pone el correcto
     message = message.substring(emojiPrefixMatch[0].length);
   }
 

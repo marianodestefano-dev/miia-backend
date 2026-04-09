@@ -237,18 +237,25 @@ function shouldMiiaRespond(opts) {
  */
 function buildUnknownContactAlert(basePhone, messageBody, pushName, opts = {}) {
   const preview = (messageBody || '').substring(0, 200);
-  const isLid = opts.isLid || basePhone.includes('LID:') || basePhone.includes('lid') || /^8829\d{8,}$/.test(basePhone.replace(/[^0-9]/g, ''));
+  // Detección robusta de LID: flag explícito, contiene "lid", empieza con 8829,
+  // O tiene más de 13 dígitos (ningún número de teléfono real tiene 14+ dígitos)
+  const digitsOnly = (basePhone || '').replace(/[^0-9]/g, '');
+  const isLid = opts.isLid
+    || (basePhone || '').toLowerCase().includes('lid')
+    || /^8829\d{8,}$/.test(digitsOnly)
+    || digitsOnly.length > 13;
 
+  // REGLA ABSOLUTA: NUNCA mostrar números LID al owner. NUNCA.
   let contactLine;
-  if (pushName && isLid) {
-    // LID sin resolver: mostrar SOLO el nombre, NUNCA el número LID interno
-    contactLine = `Contacto: *${pushName}*`;
-  } else if (pushName && !isLid) {
+  if (isLid) {
+    // LID → SOLO pushName si existe, NUNCA el número
+    contactLine = pushName
+      ? `Contacto: *${pushName}*`
+      : `Alguien te escribió`;
+  } else if (pushName) {
     contactLine = `Contacto: *${pushName}* (+${basePhone})`;
-  } else if (!isLid) {
-    contactLine = `Número: +${basePhone}`;
   } else {
-    contactLine = `Contacto nuevo (sin nombre ni número disponible)`;
+    contactLine = `Número: +${basePhone}`;
   }
 
   return `📱 *Nuevo mensaje*\n\n` +

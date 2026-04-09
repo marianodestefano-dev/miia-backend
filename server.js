@@ -7682,25 +7682,33 @@ async function handleIncomingMessage(message) {
         let displayPhone = effectiveTarget.split('@')[0];
         const pushName = message._baileysMsg?.pushName || message.pushName || '';
         let isLidUnresolved = false;
-        if (effectiveTarget.includes('@lid')) {
-          const resolved = resolveLid(effectiveTarget);
-          if (resolved !== effectiveTarget) {
-            displayPhone = resolved.split('@')[0];
-            console.log(`[LID-RESOLVE] ✅ LID resuelto para alerta: ${effectiveTarget} → ${displayPhone}`);
-          } else {
-            isLidUnresolved = true;
-            // LID sin resolver — NO mostrar el número LID al owner, solo pushName
-            if (pushName) {
-              displayPhone = pushName; // Usar pushName como display principal
-              console.log(`[LID-RESOLVE] ⚠️ LID ${effectiveTarget.split('@')[0]} sin resolver. Usando pushName="${pushName}" para alerta`);
+
+        // Detectar LID: explícitamente @lid O número con 14+ dígitos (imposible para teléfono real)
+        const phoneDigits = displayPhone.replace(/[^0-9]/g, '');
+        const looksLikeLid = effectiveTarget.includes('@lid') || phoneDigits.length > 13;
+
+        if (looksLikeLid) {
+          if (effectiveTarget.includes('@lid')) {
+            const resolved = resolveLid(effectiveTarget);
+            if (resolved !== effectiveTarget) {
+              displayPhone = resolved.split('@')[0];
+              console.log(`[LID-RESOLVE] ✅ LID resuelto para alerta: ${effectiveTarget} → ${displayPhone}`);
             } else {
-              displayPhone = 'desconocido';
-              console.log(`[LID-RESOLVE] ⚠️ LID ${effectiveTarget.split('@')[0]} sin resolver y sin pushName. Alerta genérica`);
+              isLidUnresolved = true;
             }
+          } else {
+            // Número con 14+ dígitos pero no @lid → tratarlo como LID no resuelto
+            isLidUnresolved = true;
+          }
+
+          if (isLidUnresolved) {
+            // REGLA ABSOLUTA: NUNCA mostrar número LID al owner
+            console.log(`[LID-RESOLVE] ⚠️ LID/número largo ${phoneDigits.substring(0,8)}... sin resolver. pushName="${pushName || 'ninguno'}"`);
           }
         }
-        console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${displayPhone}${pushName ? ` (${pushName})` : ''}. Sin keywords. body="${(body||'').substring(0,60)}"`);
-        // Notificar al owner con número real + pushName si disponible
+
+        console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${isLidUnresolved ? (pushName || 'desconocido') : displayPhone}. Sin keywords. body="${(body||'').substring(0,60)}"`);
+        // buildUnknownContactAlert ya maneja LID internamente — NUNCA muestra números LID
         const alertMsg = buildUnknownContactAlert(displayPhone, body, pushName, { isLid: isLidUnresolved });
         // GUARDAR alerta en conversations del self-chat para que "respondele" la encuentre
         const ownerSelfJid = `${OWNER_PHONE}@s.whatsapp.net`;
@@ -12416,6 +12424,305 @@ app.post('/api/forgot-password', express.json(), async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// OTP AGENT LOGIN — Acceso de agentes por código temporal enviado por email
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/auth/send-otp
+ * Owner/Admin envía OTP al email del agente.
+ * Body: { agentEmail }
+ * Crea usuario Firebase Auth si no existe, genera OTP 6 dígitos, guarda en Firestore, envía por email.
+ */
+app.post('/api/auth/send-otp', express.json(), async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
+    const decoded = await admin.auth().verifyIdToken(authHeader.substring(7));
+
+    // Verificar que quien invita es owner o admin
+    const callerDoc = await admin.firestore().collection('users').doc(decoded.uid).get();
+    const callerRole = callerDoc.exists ? (callerDoc.data().role || 'owner') : 'owner';
+    if (callerRole === 'agent') return res.status(403).json({ error: 'Los agentes no pueden invitar otros agentes' });
+
+    const { agentEmail } = req.body;
+    if (!agentEmail || !agentEmail.includes('@')) return res.status(400).json({ error: 'Email del agente requerido' });
+
+    const normalizedEmail = agentEmail.trim().toLowerCase();
+    console.log(`[OTP] 📧 Owner ${decoded.email} solicita OTP para agente: ${normalizedEmail}`);
+
+    // 1. Buscar o crear usuario Firebase Auth para el agente
+    let agentUid;
+    let isNewUser = false;
+    try {
+      const existingUser = await admin.auth().getUserByEmail(normalizedEmail);
+      agentUid = existingUser.uid;
+      console.log(`[OTP] ✅ Usuario existente encontrado: ${agentUid}`);
+    } catch (e) {
+      if (e.code === 'auth/user-not-found') {
+        // Crear usuario con password temporal random
+        const tempPw = crypto.randomBytes(16).toString('hex');
+        const newUser = await admin.auth().createUser({
+          email: normalizedEmail,
+          password: tempPw,
+          emailVerified: true, // OTP funciona como verificación
+          displayName: normalizedEmail.split('@')[0]
+        });
+        agentUid = newUser.uid;
+        isNewUser = true;
+        console.log(`[OTP] ✅ Usuario creado: ${agentUid}`);
+      } else {
+        throw e;
+      }
+    }
+
+    // 2. Crear/actualizar doc Firestore del agente
+    const agentDocRef = admin.firestore().collection('users').doc(agentUid);
+    const agentDoc = await agentDocRef.get();
+    if (!agentDoc.exists || isNewUser) {
+      await agentDocRef.set({
+        email: normalizedEmail,
+        name: normalizedEmail.split('@')[0],
+        role: 'agent',
+        createdBy: decoded.uid,
+        ownerUid: decoded.uid,
+        created_at: new Date().toISOString(),
+        otp_pending: true
+      }, { merge: true });
+    } else {
+      // Asegurar que tiene role agent y está vinculado al owner correcto
+      await agentDocRef.update({
+        role: 'agent',
+        createdBy: decoded.uid,
+        ownerUid: decoded.uid,
+        otp_pending: true,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    // 3. Generar OTP de 6 dígitos
+    const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000); // 72 horas
+
+    await agentDocRef.collection('auth').doc('otp').set({
+      code: otpCode,
+      createdAt: new Date().toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      createdBy: decoded.uid,
+      used: false,
+      attempts: 0
+    });
+
+    console.log(`[OTP] 🔑 OTP generado para ${normalizedEmail} — expira ${expiresAt.toISOString()}`);
+
+    // 4. Enviar email con OTP
+    const mailService = require('./services/mail_service');
+    if (!mailService.isConfigured()) {
+      console.warn('[OTP] ⚠️ SMTP no configurado — OTP generado pero NO enviado por email');
+      return res.json({ success: true, otpCode, message: 'OTP generado. SMTP no configurado — código incluido en respuesta.' });
+    }
+
+    const ownerName = callerDoc.data()?.name || decoded.email?.split('@')[0] || 'Tu jefe';
+
+    const otpHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head><meta charset="utf-8"></head>
+        <body style="margin:0;padding:0;background:#f4f4f5;font-family:'Inter',-apple-system,sans-serif;">
+          <div style="max-width:560px;margin:40px auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+            <!-- Header con gradient MIIA -->
+            <div style="background:linear-gradient(135deg,#00E5FF 0%,#7C3AED 50%,#FF1744 100%);padding:32px 40px;text-align:center;">
+              <h1 style="margin:0;color:#fff;font-size:28px;font-weight:900;letter-spacing:-1px;">MIIA</h1>
+              <p style="margin:8px 0 0;color:rgba(255,255,255,0.85);font-size:14px;">Tu asistente IA en WhatsApp</p>
+            </div>
+
+            <!-- Contenido -->
+            <div style="padding:36px 40px;">
+              <h2 style="margin:0 0 12px;color:#1a1a2e;font-size:20px;font-weight:700;">Tu código de acceso</h2>
+              <p style="color:#64748b;font-size:15px;line-height:1.7;margin:0 0 24px;">
+                <strong style="color:#1a1a2e;">${ownerName}</strong> te invitó como agente en MIIA.
+                Usa este código para acceder por primera vez:
+              </p>
+
+              <!-- Código OTP -->
+              <div style="text-align:center;margin:0 0 28px;">
+                <div style="display:inline-block;padding:18px 40px;background:#f8f9fa;border:2px dashed #7C3AED;border-radius:12px;">
+                  <span style="font-size:36px;font-weight:900;letter-spacing:8px;color:#1a1a2e;font-family:monospace;">${otpCode}</span>
+                </div>
+              </div>
+
+              <p style="color:#64748b;font-size:14px;line-height:1.7;margin:0 0 8px;">
+                <strong>¿Cómo usar el código?</strong>
+              </p>
+              <ol style="color:#64748b;font-size:14px;line-height:2;margin:0 0 20px;padding-left:20px;">
+                <li>Ve a <a href="https://www.miia-app.com/login.html" style="color:#7C3AED;text-decoration:none;font-weight:600;">miia-app.com/login</a></li>
+                <li>Haz clic en <strong>"Acceso con código"</strong></li>
+                <li>Ingresa tu email y el código de arriba</li>
+                <li>Una vez adentro, puedes crear tu propia contraseña</li>
+              </ol>
+
+              <div style="padding:14px 18px;background:#fffbeb;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0;margin:0 0 20px;">
+                <p style="margin:0;color:#92400e;font-size:13px;">
+                  ⏰ Este código es válido por <strong>72 horas</strong>. Después de ese tiempo, tu jefe deberá generar uno nuevo.
+                </p>
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <div style="background:#f8f9fa;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb;">
+              <p style="margin:0;color:#94a3b8;font-size:12px;">
+                MIIA — Tu asistente IA que vende, organiza y conecta<br>
+                <a href="https://www.miia-app.com" style="color:#7C3AED;text-decoration:none;">www.miia-app.com</a>
+              </p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const mailResult = await mailService.sendCustomEmail(normalizedEmail, 'Tu código de acceso a MIIA', otpHtml, {
+      fromName: 'MIIA',
+      replyTo: 'hola@miia-app.com'
+    });
+
+    if (mailResult.success) {
+      console.log(`[OTP] ✅ Email OTP enviado a ${normalizedEmail}`);
+      res.json({ success: true, message: `Código enviado a ${normalizedEmail}` });
+    } else {
+      console.error(`[OTP] ❌ Error enviando email: ${mailResult.error}`);
+      // Devolver OTP en respuesta como fallback
+      res.json({ success: true, otpCode, message: `Error enviando email. Código: ${otpCode}` });
+    }
+  } catch (e) {
+    console.error(`[OTP] ❌ Error en send-otp:`, e.message);
+    res.status(500).json({ error: 'Error interno: ' + e.message });
+  }
+});
+
+/**
+ * POST /api/auth/verify-otp
+ * Agente verifica OTP y recibe custom token de Firebase para login.
+ * Body: { email, otpCode }
+ */
+app.post('/api/auth/verify-otp', express.json(), async (req, res) => {
+  try {
+    const { email, otpCode } = req.body;
+    if (!email || !otpCode) return res.status(400).json({ error: 'Email y código son requeridos' });
+
+    const normalizedEmail = email.trim().toLowerCase();
+    console.log(`[OTP] 🔍 Verificando OTP para ${normalizedEmail}...`);
+
+    // 1. Buscar usuario por email
+    let agentUid;
+    try {
+      const userRecord = await admin.auth().getUserByEmail(normalizedEmail);
+      agentUid = userRecord.uid;
+    } catch (e) {
+      console.log(`[OTP] ❌ Usuario no encontrado: ${normalizedEmail}`);
+      return res.status(404).json({ error: 'No existe una cuenta con ese email. Contacta a tu jefe para que te invite.' });
+    }
+
+    // 2. Verificar OTP en Firestore
+    const otpDoc = await admin.firestore().collection('users').doc(agentUid).collection('auth').doc('otp').get();
+    if (!otpDoc.exists) {
+      console.log(`[OTP] ❌ No hay OTP pendiente para ${normalizedEmail}`);
+      return res.status(400).json({ error: 'No hay código pendiente. Pide a tu jefe que genere uno nuevo.' });
+    }
+
+    const otpData = otpDoc.data();
+
+    // Verificar intentos (max 5)
+    if (otpData.attempts >= 5) {
+      console.log(`[OTP] 🚫 Demasiados intentos para ${normalizedEmail}`);
+      return res.status(429).json({ error: 'Demasiados intentos fallidos. Pide un código nuevo.' });
+    }
+
+    // Verificar expiración
+    if (new Date(otpData.expiresAt) < new Date()) {
+      console.log(`[OTP] ⏰ OTP expirado para ${normalizedEmail}`);
+      return res.status(400).json({ error: 'El código expiró. Pide a tu jefe que genere uno nuevo.' });
+    }
+
+    // Verificar si ya fue usado
+    if (otpData.used) {
+      console.log(`[OTP] ⚠️ OTP ya usado para ${normalizedEmail}`);
+      return res.status(400).json({ error: 'Este código ya fue usado. Pide uno nuevo.' });
+    }
+
+    // Verificar código
+    if (otpData.code !== otpCode.trim()) {
+      // Incrementar intentos
+      await admin.firestore().collection('users').doc(agentUid).collection('auth').doc('otp').update({
+        attempts: (otpData.attempts || 0) + 1
+      });
+      const remaining = 5 - (otpData.attempts || 0) - 1;
+      console.log(`[OTP] ❌ Código incorrecto para ${normalizedEmail}. Intentos restantes: ${remaining}`);
+      return res.status(400).json({ error: `Código incorrecto. Te quedan ${remaining} intentos.` });
+    }
+
+    // 3. OTP válido — marcar como usado
+    await admin.firestore().collection('users').doc(agentUid).collection('auth').doc('otp').update({
+      used: true,
+      usedAt: new Date().toISOString()
+    });
+
+    // Actualizar estado del agente
+    await admin.firestore().collection('users').doc(agentUid).update({
+      otp_pending: false,
+      otp_verified: true,
+      last_login: new Date().toISOString()
+    });
+
+    // 4. Generar custom token de Firebase para login
+    const customToken = await admin.auth().createCustomToken(agentUid);
+    console.log(`[OTP] ✅ OTP verificado para ${normalizedEmail} — custom token generado`);
+
+    res.json({
+      success: true,
+      customToken,
+      uid: agentUid,
+      email: normalizedEmail,
+      message: 'Código verificado. Bienvenido!'
+    });
+  } catch (e) {
+    console.error(`[OTP] ❌ Error en verify-otp:`, e.message);
+    res.status(500).json({ error: 'Error interno: ' + e.message });
+  }
+});
+
+/**
+ * POST /api/auth/set-password
+ * Agente establece su propia contraseña después de login OTP.
+ * Headers: Authorization Bearer <token>
+ * Body: { newPassword }
+ */
+app.post('/api/auth/set-password', express.json(), async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
+    const decoded = await admin.auth().verifyIdToken(authHeader.substring(7));
+
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+    }
+
+    await admin.auth().updateUser(decoded.uid, { password: newPassword });
+
+    // Marcar que el agente ya tiene password propio
+    await admin.firestore().collection('users').doc(decoded.uid).update({
+      has_own_password: true,
+      password_set_at: new Date().toISOString()
+    });
+
+    console.log(`[OTP] ✅ Contraseña establecida para ${decoded.email}`);
+    res.json({ success: true, message: 'Contraseña creada. Ahora puedes usarla para iniciar sesión.' });
+  } catch (e) {
+    console.error(`[OTP] ❌ Error en set-password:`, e.message);
+    res.status(500).json({ error: 'Error interno: ' + e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // NEW REGISTRATION — Welcome email + admin notification
 // ═══════════════════════════════════════════════════════════════════════════════
 app.post('/api/admin/new-registration', express.json(), async (req, res) => {
@@ -12457,7 +12764,7 @@ app.post('/api/admin/new-registration', express.json(), async (req, res) => {
             <div class="step"><div class="step-num">3</div><div class="step-text">Entrena a MIIA con la info de tu negocio</div></div>
             <div class="step"><div class="step-num">4</div><div class="step-text">MIIA empieza a responder por ti</div></div>
             <p style="text-align:center"><a href="https://www.miia-app.com/login.html" class="cta">Ir a mi Dashboard</a></p>
-            <p style="color:#666;font-size:.82rem;">Tu plan: <strong>${plan === 'trial' ? 'Trial gratuito (7 días)' : plan}</strong></p>
+            <p style="color:#666;font-size:.82rem;">Tu plan: <strong>${plan === 'trial' ? 'Trial gratuito (15 días)' : plan}</strong></p>
           </div>
           <div class="footer">
             <p>MIIA Center &copy; 2026 | <a href="https://www.miia-app.com">miia-app.com</a></p>

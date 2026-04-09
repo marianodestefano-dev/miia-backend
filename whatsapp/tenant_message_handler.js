@@ -764,10 +764,14 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   if (gateDecision.action === 'notify_owner') {
     const ownerJid = tenantState.sock?.user?.id;
     if (ownerJid) {
-      const alertMsg = buildUnknownContactAlert(basePhone, messageBody);
+      // Detectar LID: número con 14+ dígitos es imposible para teléfono real
+      const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
+      const isLid = phoneDigits.length > 13;
+      const pushName = messageContext?.pushName || '';
+      const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
       try {
         await sendTenantMessage(tenantState, ownerJid, alertMsg);
-        console.log(`${logPrefix} 📢 Owner notificado: desconocido ${basePhone} sin keyword match`);
+        console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin keyword match`);
       } catch (e) {
         console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
       }
