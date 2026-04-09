@@ -336,7 +336,16 @@ function registerLidMapping(lid, phone) {
   if (!lid || !phone || phone.includes('@lid')) return;
   const lidBase = lid.split('@')[0].split(':')[0];
   const phoneFull = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
-  if (lidToPhone[lidBase] && lidToPhone[lidBase] === phoneFull) return; // ya existe
+  if (lidToPhone[lidBase] && lidToPhone[lidBase] === phoneFull) return; // ya existe, mismo valor
+
+  // BLINDAJE ANTI-OVERWRITE (Sesión 34): Si ya hay un mapping DIFERENTE, NO sobreescribir
+  // Un LID mapeado incorrectamente contamina TODAS las conversaciones futuras de esa persona
+  if (lidToPhone[lidBase] && lidToPhone[lidBase] !== phoneFull) {
+    console.log(`[LID-MAP] 🚨 CONFLICTO: ${lidBase} ya mapeado a ${lidToPhone[lidBase]}, se intentó sobreescribir con ${phoneFull} — BLOQUEADO`);
+    console.log(`[LID-MAP] 🚨 Si el mapping viejo es incorrecto, hay que limpiarlo manualmente (migration script)`);
+    return; // NO sobreescribir — mejor un mapping viejo que uno nuevo potencialmente incorrecto
+  }
+
   lidToPhone[lidBase] = phoneFull;
   phoneToLid[phoneFull] = lidBase;
   console.log(`[LID-MAP] 🔗 ${lidBase} → ${phoneFull}`);
@@ -7608,41 +7617,29 @@ async function handleIncomingMessage(message) {
         if (message.pushName) {
           const pushLower = message.pushName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-          // 1A: Buscar en leadNames
-          for (const [knownPhone, knownName] of Object.entries(leadNames || {})) {
-            if (knownName && knownName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === pushLower && knownPhone.includes('@s.whatsapp.net')) {
-              console.log(`[LID-MAP] 🔗 Matched LID via leadNames pushName: ${phone} → ${knownPhone} (${message.pushName})`);
-              registerLidMapping(phone, knownPhone);
-              phone = knownPhone;
-              lidResolved = true;
-              break;
-            }
-          }
-
-          // 1B: Buscar en familyContacts (por name o fullName)
-          if (!lidResolved) {
-            for (const [baseNum, fData] of Object.entries(familyContacts || {})) {
-              const fName = (fData.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-              const fFull = (fData.fullName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-              if (fName === pushLower || fFull === pushLower || pushLower.includes(fName) || fName.includes(pushLower)) {
-                const resolvedJid = `${baseNum}@s.whatsapp.net`;
-                console.log(`[LID-MAP] 🔗 Matched LID via familyContacts: ${phone} → ${resolvedJid} (pushName="${message.pushName}" matched family="${fData.name}")`);
-                registerLidMapping(phone, resolvedJid);
-                phone = resolvedJid;
+          // LID FALLBACK POR PUSHNAME — SOLO MATCH EXACTO (fix sesión 34)
+          // NUNCA usar includes() — "." matchearía "Sr. Rafael", "Ana" matchearía "Anabella"
+          // Solo pushNames de 3+ caracteres (punto, guion, espacio no son nombres reales)
+          if (pushLower.length >= 3) {
+            // 1A: Buscar en leadNames (match EXACTO)
+            for (const [knownPhone, knownName] of Object.entries(leadNames || {})) {
+              if (knownName && knownName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === pushLower && knownPhone.includes('@s.whatsapp.net')) {
+                console.log(`[LID-MAP] 🔗 Matched LID via leadNames (EXACTO): ${phone} → ${knownPhone} (${message.pushName})`);
+                registerLidMapping(phone, knownPhone);
+                phone = knownPhone;
                 lidResolved = true;
                 break;
               }
             }
-          }
 
-          // 1C: Buscar en equipoMedilink (por name)
-          if (!lidResolved) {
-            for (const [baseNum, eData] of Object.entries(equipoMedilink || {})) {
-              if (eData.name) {
-                const eName = eData.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-                if (eName === pushLower || pushLower.includes(eName) || eName.includes(pushLower)) {
+            // 1B: Buscar en familyContacts (match EXACTO por name o fullName)
+            if (!lidResolved) {
+              for (const [baseNum, fData] of Object.entries(familyContacts || {})) {
+                const fName = (fData.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                const fFull = (fData.fullName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                if (fName && fName.length >= 3 && (fName === pushLower || fFull === pushLower)) {
                   const resolvedJid = `${baseNum}@s.whatsapp.net`;
-                  console.log(`[LID-MAP] 🔗 Matched LID via equipoMedilink: ${phone} → ${resolvedJid} (pushName="${message.pushName}" matched equipo="${eData.name}")`);
+                  console.log(`[LID-MAP] 🔗 Matched LID via familyContacts (EXACTO): ${phone} → ${resolvedJid} (pushName="${message.pushName}" matched family="${fData.name}")`);
                   registerLidMapping(phone, resolvedJid);
                   phone = resolvedJid;
                   lidResolved = true;
@@ -7650,6 +7647,25 @@ async function handleIncomingMessage(message) {
                 }
               }
             }
+
+            // 1C: Buscar en equipoMedilink (match EXACTO por name)
+            if (!lidResolved) {
+              for (const [baseNum, eData] of Object.entries(equipoMedilink || {})) {
+                if (eData.name) {
+                  const eName = eData.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                  if (eName.length >= 3 && eName === pushLower) {
+                    const resolvedJid = `${baseNum}@s.whatsapp.net`;
+                    console.log(`[LID-MAP] 🔗 Matched LID via equipoMedilink (EXACTO): ${phone} → ${resolvedJid} (pushName="${message.pushName}" matched equipo="${eData.name}")`);
+                    registerLidMapping(phone, resolvedJid);
+                    phone = resolvedJid;
+                    lidResolved = true;
+                    break;
+                  }
+                }
+              }
+            }
+          } else {
+            console.log(`[LID-MAP] ⚠️ pushName "${message.pushName}" demasiado corto (${pushLower.length} chars) — NO se intenta match por nombre`);
           }
         }
 
@@ -7689,25 +7705,11 @@ async function handleIncomingMessage(message) {
 
     const baseTarget = effectiveTarget.replace(/[^0-9]/g, '');
     let isAllowed = allowedLeads.some(l => l.replace(/[^0-9]/g, '') === baseTarget) || !!familyContacts[baseTarget];
-    // SAFETY NET: Si aún es LID no resuelto, intentar match por pushName en familyContacts
-    // Esto cubre el caso donde el fallback anterior no encontró match (pushName parcial, acentos, etc.)
-    const lidPushName = message.pushName || message._baileysMsg?.pushName;
-    if (!isAllowed && effectiveTarget.includes('@lid') && lidPushName) {
-      const pn = lidPushName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      for (const [baseNum, fData] of Object.entries(familyContacts)) {
-        const fn = (fData.name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        const ffn = (fData.fullName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        if (fn && (pn === fn || pn === ffn || pn.includes(fn) || fn.includes(pn))) {
-          const resolvedJid = `${baseNum}@s.whatsapp.net`;
-          console.log(`[LID-MAP] 🛡️ SAFETY NET: LID ${effectiveTarget} matched family "${fData.name}" via pushName "${lidPushName}" → ${resolvedJid}`);
-          registerLidMapping(effectiveTarget, resolvedJid);
-          phone = resolvedJid;
-          effectiveTarget = resolvedJid;
-          isAllowed = true;
-          break;
-        }
-      }
-    }
+    // SAFETY NET ELIMINADO (2026-04-09, Sesión 34)
+    // RAZÓN: El matching por pushName con includes() causó que Mamá (pushName ".") fuera
+    // mapeada a Papá ("Sr. Rafael" contiene "."). Fuga de privacidad CRÍTICA.
+    // Los LID no resueltos se procesan como contacto desconocido — cada MIIA decide según sus reglas.
+    // La resolución confiable SOLO ocurre por: resolveLid() (mapa confirmado) o contactos de WhatsApp.
     const existsInCRM = !!conversations[effectiveTarget];
 
     // NUEVO: Si no está en allowedLeads, verificar si está registrado en Firestore como usuario/cliente MIIA
