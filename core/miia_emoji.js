@@ -307,8 +307,8 @@ function detectMessageTopic(message, extraCtx = {}) {
   // ─── STREET (👩‍💼): precio, vuelo, clima, noticias, delivery, transporte ───
   if (/precio|oferta|descuento|promo|stock|tienda|comprar|producto|mercado/i.test(lower)) return { topic: 'price' };
   if (/vuelo|avion|aeropuerto|pasaje|boarding|escala|reserva.*hotel/i.test(lower)) return { topic: 'travel' };
-  if (/clima|lluvia|tormenta|sol|nublado|temperatura|calor|fr[ií]o|pron[oó]stico/i.test(lower)) return { topic: 'weather' };
-  if (/noticia|titular|periódico|periodico|diario|actualidad|prensa/i.test(lower)) return { topic: 'news' };
+  if (/clima|lluvia|tormenta|\bsol\b|nublado|temperatura|calor|fr[ií]o|pron[oó]stico/i.test(lower)) return { topic: 'weather' };
+  if (/noticia|titular|periódico|periodico|\bdiario\b|actualidad|prensa/i.test(lower)) return { topic: 'news' };
   if (/rappi|pedidosya|pedidos\s*ya|delivery|domicilio|pedir\s+comida/i.test(lower)) return { topic: 'delivery' };
   if (/uber|didi|taxi|cabify|transporte|viaje.*auto|llegada|conductor/i.test(lower)) return { topic: 'transport' };
   if (/acci[oó]n|bolsa|cripto|bitcoin|inversi[oó]n|dolar|divisa|mercado.*valor/i.test(lower)) return { topic: 'finance' };
@@ -317,14 +317,14 @@ function detectMessageTopic(message, extraCtx = {}) {
   if (/agenda|reuni[oó]n|cita|mail|correo|email|recordatorio|tarea|pendiente|deadline/i.test(lower)) return { topic: 'office' };
 
   // ─── Temas de vida ───
-  if (/spotify|playlist|cancion|album|disco|musica|lanzamiento.*(single|ep)|artista/i.test(lower)) return { topic: 'music' };
+  if (/spotify|playlist|cancion|album|\bdisco\b|musica|lanzamiento.*(single|ep)|artista/i.test(lower)) return { topic: 'music' };
   if (/receta|cocinar?|ingrediente|almuerzo|cena|comida|plato/i.test(lower)) return { topic: 'food' };
   if (/ejercicio|entrena|gym|gimnasio|correr|running|yoga|cardio|dieta|nutri/i.test(lower)) return { topic: 'health' };
   if (/estudiar|examen|parcial|tarea.*escuela|universidad|materia|clase/i.test(lower)) return { topic: 'study' };
   if (/juego|gaming|ps[45]|xbox|nintendo|gamer|fortnite|minecraft/i.test(lower)) return { topic: 'gaming' };
   if (/foto|selfie|c[aá]mara|instagram|filtro/i.test(lower)) return { topic: 'photo' };
-  if (/pintar|dibujar|arte|museo|exposici/i.test(lower)) return { topic: 'art' };
-  if (/programar|c[oó]digo|app|software|bug|server|api|base\s*de\s*datos/i.test(lower)) return { topic: 'tech' };
+  if (/pintar|dibujar|\barte\b|museo|exposici/i.test(lower)) return { topic: 'art' };
+  if (/programar|c[oó]digo|\bapp\b|software|\bbug\b|server|\bapi\b|base\s*de\s*datos/i.test(lower)) return { topic: 'tech' };
   if (/perro|gato|mascota|veterinari|cachorro|gatito/i.test(lower)) return { topic: 'pet' };
   if (/beb[eé]|embaraz|pañal|pediatr|nene|nena/i.test(lower)) return { topic: 'baby' };
   if (/fiesta|cumplea|celebra|brindis|evento.*social/i.test(lower)) return { topic: 'party' };
