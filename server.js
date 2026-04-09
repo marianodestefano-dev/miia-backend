@@ -10023,8 +10023,15 @@ const db = admin.firestore();
 app.get('/api/tenant/:uid/businesses', async (req, res) => {
   try {
     const { uid } = req.params;
-    const snap = await db.collection('users').doc(uid).collection('businesses').orderBy('createdAt', 'desc').get();
+    // Sin orderBy para no excluir docs que no tengan createdAt
+    const snap = await db.collection('users').doc(uid).collection('businesses').get();
     const businesses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Ordenar en JS: docs con createdAt primero (más recientes arriba), sin createdAt al final
+    businesses.sort((a, b) => {
+      const ta = a.createdAt?._seconds || a.createdAt?.seconds || 0;
+      const tb = b.createdAt?._seconds || b.createdAt?.seconds || 0;
+      return tb - ta;
+    });
     console.log(`[BIZ] 📋 Listados ${businesses.length} negocios para ${uid}`);
     res.json(businesses);
   } catch (e) {
