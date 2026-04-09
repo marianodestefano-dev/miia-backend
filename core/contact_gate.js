@@ -235,32 +235,30 @@ function shouldMiiaRespond(opts) {
  * @param {string} messageBody - Lo que escribió
  * @returns {string} Mensaje para el self-chat del owner
  */
-function buildUnknownContactAlert(basePhone, messageBody, pushName) {
+function buildUnknownContactAlert(basePhone, messageBody, pushName, opts = {}) {
   const preview = (messageBody || '').substring(0, 200);
+  const isLid = opts.isLid || basePhone.includes('LID:') || basePhone.includes('lid') || /^8829\d{8,}$/.test(basePhone.replace(/[^0-9]/g, ''));
 
-  // Formatear nombre y número de forma amigable
-  // Si el número contiene "LID:" es un identificador interno — ocultarlo al owner
-  const isLid = basePhone.includes('LID:') || basePhone.includes('lid');
   let contactLine;
   if (pushName && isLid) {
-    // Tenemos nombre pero no número real → mostrar nombre prominente
-    contactLine = `Nombre: *${pushName}*\nNúmero: _pendiente de resolver_`;
+    // LID sin resolver: mostrar SOLO el nombre, NUNCA el número LID interno
+    contactLine = `Contacto: *${pushName}*`;
   } else if (pushName && !isLid) {
-    contactLine = `Nombre: *${pushName}*\nNúmero: +${basePhone}`;
+    contactLine = `Contacto: *${pushName}* (+${basePhone})`;
   } else if (!isLid) {
     contactLine = `Número: +${basePhone}`;
   } else {
-    contactLine = `Contacto nuevo (número pendiente de resolver)`;
+    contactLine = `Contacto nuevo (sin nombre ni número disponible)`;
   }
 
-  return `📱 *Alguien te escribió*\n\n` +
+  return `📱 *Nuevo mensaje*\n\n` +
     `${contactLine}\n` +
-    `Mensaje: "${preview}"\n\n` +
-    `No respondí porque no detecté palabras de tu negocio.\n\n` +
+    `Dice: "${preview}"\n\n` +
+    `No respondí porque no lo tengo clasificado.\n\n` +
     `¿Quién es? Respondé:\n` +
-    `• *amigo* → lo agrego a amigos\n` +
-    `• *familia* → lo agrego a familia\n` +
-    `• *lead* → lo agrego como lead de tu negocio\n` +
+    `• *amigo* / *es mi primo* / *conocido*\n` +
+    `• *familia* / *es mi hermano* / *es mi tío*\n` +
+    `• *lead* → lo agrego como lead\n` +
     `• *respondele* → le escribo presentándome\n` +
     `• *ignorar* → no le respondo nunca más`;
 }

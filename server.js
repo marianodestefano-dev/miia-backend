@@ -3310,28 +3310,30 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
         // PRIORIDAD 1: Buscar alerta "Alguien te escribió" en historial reciente
         const twoHoursAgo = Date.now() - 7200000;
         const recentMsgs = (conversations[phone] || []).slice(-20).filter(m => !m.timestamp || m.timestamp > twoHoursAgo);
-        const alertMsg = recentMsgs.find(m => m.role === 'assistant' && /Alguien te escribi[oó]/.test(m.content));
+        // Busca tanto el formato nuevo ("Nuevo mensaje") como el viejo ("Alguien te escribió")
+        const alertMsg = recentMsgs.find(m => m.role === 'assistant' && (/Nuevo mensaje/.test(m.content) || /Alguien te escribi[oó]/.test(m.content)));
 
         let contactJid = null;
         let leadPhone = '';
         let leadOriginalMsg = '';
 
         if (alertMsg) {
-          // Caso 1: Hay alerta — extraer JID de ahí
+          // Caso 1: Hay _contactJid guardado (siempre la fuente más confiable)
           contactJid = alertMsg._contactJid || null;
           if (contactJid) {
             leadPhone = contactJid.split('@')[0];
             console.log(`[RESPONDELE] 🎯 Usando _contactJid guardado: ${contactJid}`);
           } else {
-            const phoneMatch = alertMsg.content.match(/Número:\s*\+?(LID:)?(\d{10,18})/);
+            // Buscar número en formato nuevo "Contacto: *nombre* (+NUMERO)" o viejo "Número: +NUMERO"
+            const phoneMatch = alertMsg.content.match(/(?:Número:\s*\+?|Contacto:.*?\(\+?)(\d{10,18})/);
             if (phoneMatch) {
-              leadPhone = phoneMatch[2];
-              const isLid = !!phoneMatch[1];
-              contactJid = isLid ? `${leadPhone}@lid` : `${leadPhone}@s.whatsapp.net`;
-              console.log(`[RESPONDELE] 📋 Extraído de alerta: ${contactJid} (isLid=${isLid})`);
+              leadPhone = phoneMatch[1];
+              contactJid = `${leadPhone}@s.whatsapp.net`;
+              console.log(`[RESPONDELE] 📋 Extraído de alerta: ${contactJid}`);
             }
           }
-          const leadMsgMatch = alertMsg.content.match(/Mensaje:\s*"([^"]+)"/);
+          // Buscar mensaje original: formato nuevo "Dice:" o viejo "Mensaje:"
+          const leadMsgMatch = alertMsg.content.match(/(?:Dice|Mensaje):\s*"([^"]+)"/);
           leadOriginalMsg = leadMsgMatch?.[1] || '';
         }
 
@@ -7414,29 +7416,27 @@ async function handleIncomingMessage(message) {
         // ═══ FIX: Resolver LID a número real ANTES de notificar al owner ═══
         let displayPhone = effectiveTarget.split('@')[0];
         const pushName = message._baileysMsg?.pushName || message.pushName || '';
+        let isLidUnresolved = false;
         if (effectiveTarget.includes('@lid')) {
           const resolved = resolveLid(effectiveTarget);
           if (resolved !== effectiveTarget) {
             displayPhone = resolved.split('@')[0];
+            console.log(`[LID-RESOLVE] ✅ LID resuelto para alerta: ${effectiveTarget} → ${displayPhone}`);
           } else {
-            // ÚLTIMO RECURSO: Intentar resolver via sock.onWhatsApp() (consulta directa a WhatsApp)
-            try {
-              const sock = getOwnerSock();
-              if (sock && typeof sock.onWhatsApp === 'function') {
-                const lidBase = effectiveTarget.split('@')[0].split(':')[0];
-                // onWhatsApp no acepta LIDs directamente, pero si hay pushName podemos buscar
-                console.log(`[LID-RESOLVE] ⏳ LID ${lidBase} sin resolver. pushName="${pushName}". Intentando resolución alternativa...`);
-              }
-            } catch (_) {}
-            // Si no se pudo resolver, mostrar lo que tenemos (pushName o número parcial)
+            isLidUnresolved = true;
+            // LID sin resolver — NO mostrar el número LID al owner, solo pushName
             if (pushName) {
-              displayPhone = `${displayPhone} (${pushName})`;
+              displayPhone = pushName; // Usar pushName como display principal
+              console.log(`[LID-RESOLVE] ⚠️ LID ${effectiveTarget.split('@')[0]} sin resolver. Usando pushName="${pushName}" para alerta`);
+            } else {
+              displayPhone = 'desconocido';
+              console.log(`[LID-RESOLVE] ⚠️ LID ${effectiveTarget.split('@')[0]} sin resolver y sin pushName. Alerta genérica`);
             }
           }
         }
         console.log(`[CONTACT-GATE] 🚫 MIIA NO EXISTE para ${displayPhone}${pushName ? ` (${pushName})` : ''}. Sin keywords. body="${(body||'').substring(0,60)}"`);
         // Notificar al owner con número real + pushName si disponible
-        const alertMsg = buildUnknownContactAlert(displayPhone, body, pushName);
+        const alertMsg = buildUnknownContactAlert(displayPhone, body, pushName, { isLid: isLidUnresolved });
         // GUARDAR alerta en conversations del self-chat para que "respondele" la encuentre
         const ownerSelfJid = `${OWNER_PHONE}@s.whatsapp.net`;
         if (!conversations[ownerSelfJid]) conversations[ownerSelfJid] = [];
