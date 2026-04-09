@@ -45,6 +45,7 @@ const {
 
 const miiaInvocation = require('../core/miia_invocation');
 const outreachEngine = require('../core/outreach_engine');
+const { applyMiiaEmoji } = require('../core/miia_emoji');
 
 const aiGateway = require('../ai/ai_gateway');
 const promptCache = require('../ai/prompt_cache');
@@ -103,10 +104,21 @@ async function loadOwnerProfile(ownerUid) {
       return { ...DEFAULT_OWNER_PROFILE };
     }
     const data = doc.data();
+    // Cargar businessName del defaultBusiness si no está en el perfil raíz
+    let businessName = data.businessName || data.companyName || '';
+    if (!businessName && data.defaultBusinessId) {
+      try {
+        const bizDoc = await db().collection('users').doc(ownerUid)
+          .collection('businesses').doc(data.defaultBusinessId).get();
+        if (bizDoc.exists) {
+          businessName = bizDoc.data().name || '';
+        }
+      } catch (_) {}
+    }
     const profile = {
       fullName: data.name || data.displayName || 'Owner',
       shortName: (data.name || data.displayName || 'Owner').split(' ')[0],
-      businessName: data.businessName || data.companyName || 'Mi Negocio',
+      businessName: businessName || 'Mi Negocio',
       role: data.businessRole || 'Director/a',
       country: data.country || 'Colombia',
       demoLink: data.demoLink || '',
@@ -128,9 +140,23 @@ async function loadOwnerProfile(ownerUid) {
  */
 async function loadBusinessCerebro(ownerUid) {
   try {
+    // PASO 1: Buscar cerebro del defaultBusiness (nueva arquitectura multi-negocio)
+    const userDoc = await db().collection('users').doc(ownerUid).get();
+    const defaultBizId = userDoc.exists ? userDoc.data().defaultBusinessId : null;
+    if (defaultBizId) {
+      const bizBrainDoc = await db().collection('users').doc(ownerUid)
+        .collection('businesses').doc(defaultBizId)
+        .collection('brain').doc('business_cerebro').get();
+      if (bizBrainDoc.exists && bizBrainDoc.data().content) {
+        const content = bizBrainDoc.data().content;
+        console.log(`[TMH:${ownerUid}] 🧠 Business cerebro (biz:${defaultBizId.substring(0,8)}): ${content.length} chars`);
+        return content;
+      }
+    }
+    // PASO 2: Fallback al path legacy users/{uid}/brain/business_cerebro
     const doc = await db().collection('users').doc(ownerUid).collection('brain').doc('business_cerebro').get();
     const content = doc.exists ? (doc.data().content || '') : '';
-    console.log(`[TMH:${ownerUid}] 🧠 Business cerebro: ${content.length} chars`);
+    console.log(`[TMH:${ownerUid}] 🧠 Business cerebro (legacy): ${content.length} chars`);
     return content;
   } catch (e) {
     console.error(`[TMH:${ownerUid}] ❌ Error cargando business_cerebro:`, e.message);
@@ -1305,6 +1331,14 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     console.warn(`${logPrefix} ⚠️ Mensaje final vacío después de procesar tags. No se envía.`);
     return;
   }
+
+  // ── PASO 12b: Emoji de estado MIIA ──
+  // applyMiiaEmoji SIEMPRE quita el emoji que puso la IA y pone el oficial
+  aiMessage = applyMiiaEmoji(aiMessage, {
+    isSelfChat,
+    contactType: contactType || 'lead',
+    messageBody,
+  });
 
   // MSG_SPLIT: dividir en 2 mensajes humanos
   const parts = splitMessage(aiMessage);
