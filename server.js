@@ -3618,20 +3618,25 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
 
         if (contactJid && leadPhone) {
           // Generar respuesta como MIIA representando al owner
-          const ownerName = userProfile.name || 'el equipo';
+          // FIX: fallback robusto para nombre — NUNCA dejar vacío
+          const ownerName = userProfile.name || userProfile.shortName || userProfile.displayName || OWNER_PHONE || 'el equipo';
           const businessName = userProfile.businessName || '';
           // Extraer instrucción específica del owner (lo que viene después del número/nombre)
           const instruccion = effectiveMsg.replace(respondeleMatch[0], '').replace(/\+?\d{7,18}/, '').replace(/^[\s,a]+/i, '').trim();
-          const respondPrompt = `Sos MIIA, la asistente de ${ownerName}${businessName ? ` de ${businessName}` : ''}.
+          // Inyectar training_data si existe (para que MIIA use lo que aprendió del owner)
+          const trainingContext = cerebroAbsoluto.getTrainingData();
+          const trainingHint = trainingContext ? `\nCONTEXTO APRENDIDO DEL NEGOCIO (úsalo para dar contexto, NO lo cites textualmente):\n${trainingContext.substring(0, 500)}` : '';
+          const respondPrompt = `Sos MIIA, asistente virtual de ${ownerName}${businessName ? ` en ${businessName}` : ''}.
 ${leadOriginalMsg ? `Un contacto escribió: "${leadOriginalMsg}"` : 'Un contacto te escribió anteriormente.'}
-${effectiveMsg.includes('preséntate') || effectiveMsg.includes('presentate') ? `Tu jefe te pide que te presentes como si fueras un asesor de ${businessName || 'su negocio'} y preguntes en qué podés ayudar.` : instruccion ? `Tu jefe te pide: "${instruccion}"` : `Tu jefe te pide que le respondas de forma profesional y preguntes en qué podés ayudar.`}
-
+${effectiveMsg.includes('preséntate') || effectiveMsg.includes('presentate') ? `Tu jefe te pide que te presentes y preguntes en qué podés ayudar.` : instruccion ? `Tu jefe te pide: "${instruccion}"` : `Tu jefe te pide que le respondas de forma profesional y preguntes en qué podés ayudar.`}
+${trainingHint}
 REGLAS:
 - Máx 3 líneas, cálido y profesional
-- JAMÁS decir que sos IA
-- JAMÁS mencionar "me pidieron", "mi jefe", "el owner"
-- Presentate con el nombre del negocio si lo tenés
-- Preguntá en qué podés ayudar
+- Preséntate como "Soy MIIA${businessName ? `, de ${businessName}` : ''}" — corto y claro
+- JAMÁS decir "del equipo", "asistente personal de", ni frases genéricas cortadas
+- JAMÁS decir que sos IA, inteligencia artificial, bot, ni programa
+- JAMÁS mencionar "me pidieron", "mi jefe", "el owner", "me encargaron"
+- Si no tenés nombre de negocio, solo decí "Soy MIIA" y preguntá en qué podés ayudar
 ${(() => { const lc = leadPhone.substring(0, 2); if (lc === '57') return '- DIALECTO: TÚ colombiano. "cuéntame", "dime". NUNCA "contame/decime".'; if (lc === '52') return '- DIALECTO: TÚ mexicano. "cuéntame", "platícame". NUNCA "contame/decime".'; if (lc === '54') return '- DIALECTO: VOS rioplatense. "contame", "decime", "mirá".'; if (lc === '34') return '- DIALECTO: TÚ español. "cuéntame", "dime". NUNCA "vos". Expresiones: "vale", "genial".'; return '- DIALECTO: TÚ español neutro. "cuéntame", "dime". NUNCA "contame/decime".'; })()}`;
 
           try {
@@ -3674,6 +3679,57 @@ ${(() => { const lc = leadPhone.substring(0, 2); if (lc === '57') return '- DIAL
           } catch (genErr) {
             console.error(`[RESPONDELE] ❌ Error generando respuesta: ${genErr.message}`);
           }
+        }
+      }
+    }
+
+    // ═══ RESPONDELE IMPLÍCITO — Detecta números con intención de enviar sin verbo explícito ═══
+    // Ejemplos: "Y también al +573137501884", "Al +573137501884 también", "A +573137501884"
+    // Condición: mensaje contiene un número de 10+ dígitos + contexto de envío reciente (RESPONDELE en últimos 5min)
+    if (isAdmin && effectiveMsg && !effectiveMsg.match(/(?:respond|escrib|mand[aá]|contest|atiend)/i)) {
+      const implicitPhoneMatch = effectiveMsg.match(/(?:(?:y\s+)?(?:tambi[eé]n\s+)?(?:al?|a\s+el)\s+)?\+?(\d{10,18})/i);
+      if (implicitPhoneMatch) {
+        // Verificar que hubo un RESPONDELE exitoso en los últimos 5 minutos (contexto de envío)
+        const fiveMinAgo = Date.now() - 300000;
+        const recentHistory = (conversations[phone] || []).slice(-10);
+        const hadRecentSend = recentHistory.some(m => m.role === 'assistant' && m.timestamp > fiveMinAgo && /le escrib[ií]|le mand[eé]|le respond[ií]|Listo.*escrib|✅.*escrib|✅.*contacto/i.test(m.content));
+        if (hadRecentSend) {
+          const implicitPhone = implicitPhoneMatch[1];
+          const implicitJid = `${implicitPhone}@s.whatsapp.net`;
+          // Extraer instrucción si hay algo además del número
+          const implicitInstruccion = effectiveMsg.replace(implicitPhoneMatch[0], '').replace(/^[\s,y]+|[\s,]+$/gi, '').trim();
+          console.log(`[RESPONDELE-IMPLICIT] 📱 Número detectado en contexto de envío reciente: ${implicitJid} instrucción="${implicitInstruccion}"`);
+          const ownerName = userProfile.name || userProfile.shortName || userProfile.displayName || OWNER_PHONE || 'el equipo';
+          const businessName = userProfile.businessName || '';
+          const trainingContext = cerebroAbsoluto.getTrainingData();
+          const trainingHint = trainingContext ? `\nCONTEXTO APRENDIDO:\n${trainingContext.substring(0, 500)}` : '';
+          const implicitPrompt = `Sos MIIA, asistente virtual de ${ownerName}${businessName ? ` en ${businessName}` : ''}.
+${implicitInstruccion ? `Tu jefe te pide: "${implicitInstruccion}"` : 'Tu jefe te pide que te presentes y preguntes en qué podés ayudar.'}
+${trainingHint}
+REGLAS:
+- Máx 3 líneas, cálido y profesional
+- Preséntate como "Soy MIIA${businessName ? `, de ${businessName}` : ''}" — corto y claro
+- JAMÁS decir "del equipo", "asistente personal de", ni frases genéricas
+- JAMÁS decir que sos IA ni mencionar "me pidieron", "mi jefe", "el owner"
+${(() => { const lc = implicitPhone.substring(0, 2); if (lc === '57') return '- DIALECTO: TÚ colombiano.'; if (lc === '54') return '- DIALECTO: VOS rioplatense.'; if (lc === '52') return '- DIALECTO: TÚ mexicano.'; return '- DIALECTO: TÚ español neutro.'; })()}`;
+          try {
+            const implicitMsg = await generateAIContent(implicitPrompt);
+            if (implicitMsg) {
+              await safeSendMessage(implicitJid, implicitMsg.trim());
+              conversations[implicitJid] = conversations[implicitJid] || [];
+              conversations[implicitJid].push({ role: 'assistant', content: implicitMsg.trim(), timestamp: Date.now() });
+              if (!allowedLeads.includes(implicitJid)) allowedLeads.push(implicitJid);
+              saveDB();
+              await safeSendMessage(phone, `✅ Listo, le escribí al contacto.`, { isSelfChat: true, noDelay: true });
+              console.log(`[RESPONDELE-IMPLICIT] ✅ Mensaje enviado a ${implicitJid}`);
+            } else {
+              await safeSendMessage(phone, `❌ No pude generar el mensaje para +${implicitPhone}.`, { isSelfChat: true });
+            }
+          } catch (e) {
+            console.error(`[RESPONDELE-IMPLICIT] ❌ Error: ${e.message}`);
+            await safeSendMessage(phone, `❌ Error enviando a +${implicitPhone}: ${e.message}`, { isSelfChat: true });
+          }
+          return;
         }
       }
     }

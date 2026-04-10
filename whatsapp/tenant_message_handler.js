@@ -124,7 +124,10 @@ async function loadOwnerProfile(ownerUid) {
       country: data.country || 'Colombia',
       demoLink: data.demoLink || '',
       hasCustomPricing: false, // Solo admin (Mariano) tiene pricing custom
-      aiProvider: data.aiProvider || null,
+      // aiProvider: null = dejar que AI Gateway use CONTEXT_CONFIG automáticamente
+      // Si el owner NO configuró un provider específico, dejar en null
+      // 'gemini' como valor guardado = legacy, tratarlo como null para que CONTEXT_CONFIG decida
+      aiProvider: (data.aiProvider && data.aiProvider !== 'gemini') ? data.aiProvider : null,
       aiApiKey: data.aiApiKey || data.geminiApiKey || process.env.GEMINI_API_KEY,
     };
     console.log(`[TMH:${ownerUid}] ✅ Perfil cargado: ${profile.fullName} (${profile.businessName})`);
@@ -386,7 +389,7 @@ async function classifyContact(ctx, basePhone, messageBody, tenantState) {
 
   // PASO 4: IA detecta match con descripción de negocio
   try {
-    const aiProvider = ctx.ownerProfile.aiProvider || 'gemini';
+    const aiProvider = ctx.ownerProfile.aiProvider || null;
     const aiApiKey = ctx.ownerProfile.aiApiKey || process.env.GEMINI_API_KEY;
     if (aiApiKey && businesses.length >= 2) {
       const bizDescriptions = businesses.map(b => `- "${b.name}": ${b.description || 'sin descripción'}`).join('\n');
@@ -1223,7 +1226,8 @@ ${history}
 MIIA, genera tu respuesta breve, estratégica y humana:`;
 
   // ── PASO 10: Llamar a la IA via AI Gateway (P5.3 — failover cross-provider) ──
-  const aiProvider = ctx.ownerProfile.aiProvider || 'gemini';
+  // aiProvider: null = dejar que AI Gateway use CONTEXT_CONFIG (owner_chat→claude, leads→gemini, etc.)
+  const aiProvider = ctx.ownerProfile.aiProvider || null;
   const aiApiKey = ctx.ownerProfile.aiApiKey || process.env.GEMINI_API_KEY;
 
   if (!aiApiKey || aiApiKey === 'YOUR_GEMINI_API_KEY_HERE') {
@@ -1251,12 +1255,16 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     promptCache.set('SYSTEM_PROMPT', ownerUid, activeSystemPrompt, cacheKey);
   }
 
+  // Google Search: activo en self-chat del owner (clima, deportes, noticias, etc.)
+  const enableSearch = isSelfChat || contactType === 'familia';
+  if (enableSearch) console.log(`${logPrefix} 🔍 Google Search activo — ${isSelfChat ? 'self-chat' : contactType}`);
+
   let aiMessage;
   const aiResult = await aiGateway.smartCall(
     aiContext,
     fullPrompt,
     { aiProvider, aiApiKey },
-    {}
+    { enableSearch }
   );
 
   aiMessage = aiResult.text;
@@ -1319,7 +1327,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       // Intentar regenerar con hint del auditor
       try {
         const hint = `\n\n⚠️ CORRECCIÓN: ${regexAudit.vetoReason}. Corregí esto en tu nueva respuesta.`;
-        const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + hint, { aiProvider, aiApiKey });
+        const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + hint, { aiProvider, aiApiKey }, { enableSearch });
         if (regenResult.text?.trim()) {
           aiMessage = regenResult.text;
           console.log(`${logPrefix} ♻️ Regeneración exitosa (${regenResult.latencyMs}ms)`);
@@ -1348,7 +1356,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         console.warn(`${logPrefix} ♻️ AI AUDITOR: regeneración — ${aiAuditResult.issues.join('; ')}`);
         try {
           const hint = `\n\n⚠️ CORRECCIÓN DEL AUDITOR: ${aiAuditResult.issues.join('. ')}. Corregí estos problemas.`;
-          const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + hint, { aiProvider, aiApiKey });
+          const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + hint, { aiProvider, aiApiKey }, { enableSearch });
           if (regenResult.text?.trim()) aiMessage = regenResult.text;
         } catch (_) {
           aiMessage = getFallbackMessage('AUDITOR', postChatType);
