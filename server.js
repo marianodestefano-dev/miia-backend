@@ -9923,6 +9923,15 @@ app.post('/api/admin-chat', express.json(), async (req, res) => {
     const trainOwner = userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Owner';
     const historyStr = history.slice(-10).map(m => `${m.role === 'user' ? trainOwner : 'MIIA'}: ${m.content}`).join('\n');
 
+    const hasProducts = adnStr && (adnStr.includes('precio') || adnStr.includes('servicio') || adnStr.includes('producto') || adnStr.includes('costo') || adnStr.includes('tarifa') || adnStr.length > 200);
+    const cotizacionKeywords = /cotizaci[oó]n|presupuesto|precio|cuanto.*cobr|cuanto.*cost|lista.*precio|tarifas/i;
+    const isCotizacionRequest = cotizacionKeywords.test(message);
+
+    let cotizacionWarning = '';
+    if (isCotizacionRequest && !hasProducts) {
+      cotizacionWarning = `\n\nIMPORTANTE: ${trainOwner} te pide algo relacionado a cotizaciones/precios, pero NO tenés productos, precios ni servicios cargados todavía. Decile amablemente que primero necesitás que te enseñe: qué servicios/productos ofrece, los precios, y las reglas de cotización. Sugerile usar "APRENDE:" o simplemente contarte en el chat. Sé proactiva ofreciendo ayuda paso a paso.`;
+    }
+
     const prompt = `# PROMPT MAESTRO — MIIA Admin Chat
 Sos MIIA, asistente de ${trainOwner}. Estás en el panel de entrenamiento donde ${trainOwner} puede conversar con vos, hacerte preguntas, testear respuestas, y enseñarte cosas nuevas.
 
@@ -9930,8 +9939,11 @@ ANTI-BOT: NUNCA empieces con "Entendido", "Perfecto", "Claro", "Por supuesto". V
 
 AUTO-APRENDIZAJE: Si en la conversación ${trainOwner} te cuenta información NUEVA sobre su negocio (productos, precios, clientes, reglas de venta, procedimientos, información importante), incluí al FINAL de tu respuesta el tag [GUARDAR_APRENDIZAJE:texto breve a guardar]. Solo si la info es genuinamente nueva y útil para recordar en futuros chats de WhatsApp. No guardes preguntas, tests, ni información obvia. Para información que ${trainOwner} quiere guardar explícitamente, usa el prefijo APRENDE: que dispara el guardado directo.
 
+ARCHIVOS ADJUNTOS: Si el mensaje incluye "[Archivo adjunto:" o contenido de archivo, analizalo en detalle. Si es una lista de precios, estructura de cotización, o catálogo, aprendé la información relevante y guardala con [GUARDAR_APRENDIZAJE:].
+${cotizacionWarning}
+
 ## Tu conocimiento actual:
-${adnStr || '(sin aprendizajes cargados aún)'}
+${adnStr || '(sin aprendizajes cargados aún — decile a ' + trainOwner + ' que te enseñe sobre su negocio)'}
 
 ## Historial de esta sesión:
 ${historyStr || '(inicio de sesión)'}
@@ -9939,7 +9951,7 @@ ${historyStr || '(inicio de sesión)'}
 ## ${trainOwner} dice ahora:
 ${message}
 
-Respondé natural, concisa y útil. Si pregunta qué sabés, mostrá ejemplos. Si no sabés algo, decilo.`;
+Respondé natural, concisa y útil. Si pregunta qué sabés, mostrá ejemplos concretos de lo que tenés cargado. Si no sabés algo, decilo honestamente y pedile que te enseñe.`;
 
     let response = await generateAIContent(prompt);
     let autoSaved = null;
