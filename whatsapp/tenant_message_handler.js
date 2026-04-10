@@ -124,7 +124,7 @@ async function loadOwnerProfile(ownerUid) {
       country: data.country || 'Colombia',
       demoLink: data.demoLink || '',
       hasCustomPricing: false, // Solo admin (Mariano) tiene pricing custom
-      aiProvider: data.aiProvider || 'gemini',
+      aiProvider: data.aiProvider || null,
       aiApiKey: data.aiApiKey || data.geminiApiKey || process.env.GEMINI_API_KEY,
     };
     console.log(`[TMH:${ownerUid}] ✅ Perfil cargado: ${profile.fullName} (${profile.businessName})`);
