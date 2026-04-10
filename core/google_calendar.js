@@ -106,11 +106,18 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
 
   // Construir fecha/hora en timezone local del usuario
   const targetDate = new Date(dateStr);
-  const year = targetDate.getUTCFullYear() || new Date().getFullYear();
-  const month = String((targetDate.getUTCMonth() || new Date().getMonth()) + 1).padStart(2, '0');
-  const day = String(targetDate.getUTCDate() || new Date().getDate()).padStart(2, '0');
+  // FIX Sesión 34: getUTCMonth() devuelve 0 para Enero → 0 es falsy → usaba mes actual.
+  // Ahora: verificar isNaN explícitamente en vez de usar || como fallback.
+  const isValidDate = !isNaN(targetDate.getTime());
+  const now = new Date();
+  const year = isValidDate ? targetDate.getUTCFullYear() : now.getFullYear();
+  const month = String((isValidDate ? targetDate.getUTCMonth() : now.getMonth()) + 1).padStart(2, '0');
+  const day = String(isValidDate ? targetDate.getUTCDate() : now.getDate()).padStart(2, '0');
   const sH = String(startHour || 10).padStart(2, '0');
   const eH = String(endHour || (startHour || 10) + 1).padStart(2, '0');
+  if (!isValidDate) {
+    console.warn(`[GCAL] ⚠️ dateStr inválido: "${dateStr}" — usando fecha actual ${year}-${month}-${day}`);
+  }
 
   // ═══ MODO DEL EVENTO: presencial / virtual / teléfono ═══
   const mode = (eventMode || 'presencial').toLowerCase().trim();
@@ -216,6 +223,120 @@ async function checkCalendarAvailability(dateStr, uid) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// DIAGNÓSTICO DE CALENDAR — Para debug de "eventos no aparecen"
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * diagnoseCalendar — Verifica salud completa de Google Calendar para un usuario.
+ * Retorna: tokens status, calendar list, test event creation.
+ * @param {string} uid - UID del owner
+ */
+async function diagnoseCalendar(uid) {
+  const result = { uid, steps: [], ok: false };
+
+  // PASO 1: Verificar tokens en Firestore
+  try {
+    const doc = await admin.firestore().collection('users').doc(uid).get();
+    const data = doc.exists ? doc.data() : {};
+    if (!data.googleTokens) {
+      result.steps.push({ step: 'tokens', ok: false, error: 'No hay googleTokens en Firestore' });
+      return result;
+    }
+    const tokens = data.googleTokens;
+    const hasRefresh = !!tokens.refresh_token;
+    const hasAccess = !!tokens.access_token;
+    const expiry = tokens.expiry_date ? new Date(tokens.expiry_date) : null;
+    const isExpired = expiry ? expiry < new Date() : 'unknown';
+    result.steps.push({
+      step: 'tokens',
+      ok: hasRefresh && hasAccess,
+      hasRefreshToken: hasRefresh,
+      hasAccessToken: hasAccess,
+      expiryDate: expiry?.toISOString() || 'N/A',
+      isExpired,
+      calendarId: data.googleCalendarId || 'primary',
+      calendarEnabled: !!data.calendarEnabled
+    });
+    if (!hasRefresh) {
+      result.steps.push({ step: 'warning', message: 'SIN refresh_token — reconectar Google Calendar desde el dashboard (revocar acceso en myaccount.google.com primero)' });
+    }
+  } catch (e) {
+    result.steps.push({ step: 'tokens', ok: false, error: e.message });
+    return result;
+  }
+
+  // PASO 2: Obtener cliente autenticado
+  try {
+    const { cal, calId } = await getCalendarClient(uid);
+    result.steps.push({ step: 'auth', ok: true, calendarId: calId });
+
+    // PASO 3: Listar calendarios disponibles
+    try {
+      const calList = await cal.calendarList.list();
+      const calendars = (calList.data.items || []).map(c => ({
+        id: c.id,
+        summary: c.summary,
+        primary: c.primary || false,
+        accessRole: c.accessRole
+      }));
+      result.steps.push({ step: 'calendars', ok: true, count: calendars.length, list: calendars });
+    } catch (e) {
+      result.steps.push({ step: 'calendars', ok: false, error: e.message });
+    }
+
+    // PASO 4: Listar eventos de hoy
+    try {
+      const now = new Date();
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+      const eventsRes = await cal.events.list({
+        calendarId: calId,
+        timeMin: startOfDay.toISOString(),
+        timeMax: endOfDay.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 20
+      });
+      const events = (eventsRes.data.items || []).map(e => ({
+        id: e.id,
+        summary: e.summary,
+        start: e.start?.dateTime || e.start?.date,
+        status: e.status,
+        creator: e.creator?.email
+      }));
+      result.steps.push({ step: 'events_today', ok: true, count: events.length, events });
+    } catch (e) {
+      result.steps.push({ step: 'events_today', ok: false, error: e.message });
+    }
+
+    // PASO 5: Crear evento de prueba y eliminarlo
+    try {
+      const testEvent = {
+        summary: '[TEST] MIIA Calendar Diagnostic',
+        description: 'Evento de prueba creado por MIIA para verificar Calendar. Se elimina automáticamente.',
+        start: { dateTime: new Date(Date.now() + 86400000).toISOString(), timeZone: 'America/Bogota' },
+        end: { dateTime: new Date(Date.now() + 86400000 + 3600000).toISOString(), timeZone: 'America/Bogota' }
+      };
+      const created = await cal.events.insert({ calendarId: calId, resource: testEvent });
+      const eventId = created.data.id;
+      result.steps.push({ step: 'test_create', ok: true, eventId, htmlLink: created.data.htmlLink });
+
+      // Eliminar inmediatamente
+      await cal.events.delete({ calendarId: calId, eventId });
+      result.steps.push({ step: 'test_delete', ok: true });
+    } catch (e) {
+      result.steps.push({ step: 'test_create', ok: false, error: e.message });
+    }
+
+    result.ok = result.steps.every(s => s.ok !== false);
+  } catch (e) {
+    result.steps.push({ step: 'auth', ok: false, error: e.message });
+  }
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════
 
@@ -224,5 +345,6 @@ module.exports = {
   getCalendarClient,
   getScheduleConfig,
   createCalendarEvent,
-  checkCalendarAvailability
+  checkCalendarAvailability,
+  diagnoseCalendar
 };

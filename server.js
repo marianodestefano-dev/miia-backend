@@ -394,26 +394,11 @@ let pendingResponses = {};  // re-trigger cuando llegan mensajes mientras se pro
 let messageTimers = {};     // debounce 3s por contacto — acumula mensajes antes de responder
 const RESET_ALLOWED_PHONES = ['573163937365', '573054169969'];
 let keywordsSet = [];
-// BLINDAJE GENEALÓGICO MIIA FAMILY v4.0 — pre-inicializado con datos ricos
-// loadDB() hace Object.assign encima → preserva affinity e isHandshakeDone actualizados de la DB
-let familyContacts = {
-  // Sistema de affinity (stages): el nivel de cercanía se guarda en conversationMetadata[phone].affinity
-  // isHandshakeDone: false = MIIA nunca habló con esta persona (stage 0 se presenta)
-  '573137501884': { name: 'Alejandra', fullName: 'Alejandra Sánchez', relation: 'esposa de Mariano', emoji: '👸💕', personality: 'Spicy, F1 (Leclerc/Colapinto), Parcera, interés en Libros', isHandshakeDone: false },
-  '5491131313325': { name: 'Sr. Rafael', fullName: 'Mario Rafael De Stefano', relation: 'papá de Mariano', emoji: '👴❤️', personality: 'Respetuosa, cariñosa. Muy admirado por Mariano. SIEMPRE llamarlo Sr. Rafael.', isHandshakeDone: false },
-  '56994128069': { name: 'Vivi', fullName: 'Viviana Gaviria', relation: 'JEFA de Mariano', emoji: '👩‍💼👑', personality: 'Profesional, ejecutiva, técnica. Solo responde si ella dice Hola MIIA.', isHandshakeDone: false },
-  '573128908895': { name: 'Jota', fullName: 'Jorge Mario', relation: 'hermano de Ale', emoji: '⚖️💚', personality: 'Abogado, fan del Nacional, padre de Renata', isHandshakeDone: false },
-  '573012761138': { name: 'Maria Isabel', fullName: 'Maria Isabel', relation: 'esposa de Jota', emoji: '🐶🤱', personality: 'Madre de Renata, ama los perros (Kiara). Preguntarle siempre por Kiara.', isHandshakeDone: false },
-  '5491164431700': { name: 'Silvia', fullName: 'Silvia', relation: 'mamá de Mariano', emoji: '👵❤️', personality: 'Super dulce, amistosa, disponibilidad 24/7 para ayudar', isHandshakeDone: false },
-  '5491134236348': { name: 'Anabella', fullName: 'Anabella Florencia De Stefano', relation: 'hermana de Mariano', emoji: '👧❤️', personality: 'Le gusta Boca Juniors, leer y libros de autoayuda. Necesita ayuda con amores (ser discreta). Cuidarla siempre.', isHandshakeDone: false },
-  '556298316219': { name: 'Flako', fullName: 'Jorge Luis Gianni', relation: 'amigo del papá de Mariano', emoji: '😎', personality: 'Amigo cercano de la familia', isHandshakeDone: false },
-  '5491140293119': { name: 'Chapy', fullName: 'Juan Pablo', relation: 'primo de Mariano', emoji: '💻💪', personality: 'Capo en programación, fan del gym', isHandshakeDone: false },
-  '573145868362': { name: 'Juancho', fullName: 'Juan Diego', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️', personality: 'Amistoso. Experto en leyes colombianas. Le gusta viajar en moto y tiene campo de aguacates.', isHandshakeDone: false },
-  '573108221373': { name: 'Maria', fullName: 'Maria Clara', relation: 'concuñada, esposa de Juancho', emoji: '🏠🏍️🙏', personality: 'Muy amistosa y agradable. Tiene inmobiliaria. Le encanta viajar en moto con Juancho. Ayudarle con deseos de rezar.', isHandshakeDone: false },
-  '573217976029': { name: 'Consu', fullName: 'Consuelo', relation: 'suegra, mamá de Ale y Juancho', emoji: '👵⛪📿', personality: 'Mujer súper dulce. Fanática de Dios, la religión y rezar. Cuidarla y ayudarle en todo.', isHandshakeDone: false },
-  '573014822744': { name: 'Kamila', fullName: 'Kamila', relation: 'amiga de Alejandra y Mariano', emoji: '💜🤗', personality: 'Amiga cercana de Ale y Mariano. Colombiana. Conocerla, ser cálida y curiosa.', isHandshakeDone: false },
-  '573015392753': { name: 'Liliana', fullName: 'Liliana', relation: 'amiga de Alejandra y Mariano', emoji: '💛🤗', personality: 'Amiga cercana de Ale y Mariano. Colombiana. Conocerla, ser cálida y curiosa.', isHandshakeDone: false }
-};
+// FAMILY CONTACTS — Se carga dinámicamente desde Firestore (miia_persistent/contacts)
+// YA NO tiene datos hardcodeados. Toda la data vive en Firestore per-tenant.
+// loadDB() y loadFromFirestore() pueblan este objeto al arrancar.
+// MIGRACIÓN Sesión 34: Eliminados 14 contactos hardcodeados → fuente única = Firestore.
+let familyContacts = {};
 // EQUIPO MEDILINK — compañeros de trabajo de Mariano
 const equipoMedilink = {
   '56971251474': { name: null, presented: false },
@@ -1472,6 +1457,16 @@ async function loadFromFirestore() {
           }
         }
       } catch (e) { console.warn('[FIRESTORE] No se pudo cargar nombre del owner:', e.message); }
+    }
+
+    // ═══ ALERTA: familyContacts vacío post-load ═══
+    // Desde sesión 34, familyContacts NO tiene defaults hardcodeados.
+    // Si está vacío después de cargar = Firestore no tiene los datos = PROBLEMA.
+    const fcCount = Object.keys(familyContacts).length;
+    if (fcCount === 0) {
+      console.error('[FIRESTORE] 🚨🚨🚨 familyContacts VACÍO después de cargar! Los familiares serán tratados como desconocidos. Verificar miia_persistent/contacts en Firestore.');
+    } else {
+      console.log(`[FIRESTORE] 👨‍👩‍👧‍👦 familyContacts cargados: ${fcCount} contactos`);
     }
 
     console.log('[FIRESTORE] ✅ Datos cargados desde Firestore (sobrevivió deploy)');
@@ -12386,6 +12381,7 @@ app.get('/api/health/rate-limiter', (req, res) => res.json({
 }));
 
 // ═══ P5 HEALTH ENDPOINTS ═══
+app.get('/api/health/key-pool', (req, res) => res.json(keyPool.getAllStats()));
 app.get('/api/health/wa-gateway', (req, res) => res.json(waGateway.healthCheck()));
 app.get('/api/health/ai-gateway', (req, res) => res.json(aiGateway.healthCheck()));
 app.get('/api/health/prompt-cache', (req, res) => res.json(promptCache.healthCheck()));
@@ -14261,6 +14257,20 @@ app.post('/api/calendar/event', requireRole('owner', 'agent'), express.json(), a
     const result = await createCalendarEvent({ ...(req.body || {}), uid: req.user.uid });
     res.json(result);
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══ DIAGNÓSTICO DE CALENDAR — Para resolver "eventos no aparecen" ═══
+app.get('/api/calendar/diagnose', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.query.uid || req.user.uid;
+    console.log(`[GCAL-DIAG] 🔍 Ejecutando diagnóstico para uid=${uid}`);
+    const result = await googleCalendar.diagnoseCalendar(uid);
+    console.log(`[GCAL-DIAG] ${result.ok ? '✅' : '❌'} Diagnóstico completado: ${result.steps.length} pasos`);
+    res.json(result);
+  } catch (e) {
+    console.error(`[GCAL-DIAG] ❌ Error:`, e.message);
     res.status(500).json({ error: e.message });
   }
 });
