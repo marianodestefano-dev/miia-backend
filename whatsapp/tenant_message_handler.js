@@ -1343,9 +1343,10 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     promptCache.set('SYSTEM_PROMPT', ownerUid, activeSystemPrompt, cacheKey);
   }
 
-  // Google Search: activo en self-chat del owner (clima, deportes, noticias, etc.)
-  const enableSearch = isSelfChat || contactType === 'familia';
-  if (enableSearch) console.log(`${logPrefix} 🔍 Google Search activo — ${isSelfChat ? 'self-chat' : contactType}`);
+  // Google Search: activo en TODOS los contextos (self-chat, familia, leads, clientes)
+  // Sin Search, MIIA no puede responder preguntas casuales ("cuándo juega Boca?") ni dar info actualizada
+  const enableSearch = true;
+  console.log(`${logPrefix} 🔍 Google Search activo — ${isSelfChat ? 'self-chat' : contactType}`);
 
   let aiMessage;
   const aiResult = await aiGateway.smartCall(
