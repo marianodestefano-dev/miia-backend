@@ -1340,53 +1340,50 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             const pushName = msg.pushName || '';
             const pending = tenant._pendingLids[lidBase];
 
-            // ¿Ya le preguntamos al owner y está esperando respuesta?
-            if (pending && pending.phase === 'waiting_owner') {
-              // Acumular mensajes del contacto mientras esperamos
+            // ═══ PENDING_SILENT: Contacto ya en Pendientes — bufferear + re-intentar clasificación ═══
+            if (pending && (pending.phase === 'pending_silent' || pending.phase === 'waiting_owner' || pending.phase === 'waiting_contact' || pending.phase === 'waiting_owner_confirm')) {
               if (!pending.bufferedMsgs) pending.bufferedMsgs = [];
               pending.bufferedMsgs.push({ body, timestamp: Date.now() });
-              console.log(`[TM:${uid}] 🔍 LID-ID: ${lidBase} — mensaje buffereado (esperando owner). Total: ${pending.bufferedMsgs.length}`);
-              // No procesar — esperar resolución
-              continue;
-            }
+              console.log(`[TM:${uid}] 🔕 LID-ID: ${lidBase} — mensaje buffereado (pendiente silencioso). Total: ${pending.bufferedMsgs.length}`);
 
-            // ¿Ya le preguntamos al contacto directamente?
-            if (pending && pending.phase === 'waiting_contact') {
-              // El contacto responde — podría ser su nombre/identificación
-              // Guardar y dejar que el timeout lo procese, o procesar si es corto (probable nombre)
-              if (!pending.bufferedMsgs) pending.bufferedMsgs = [];
-              pending.bufferedMsgs.push({ body, timestamp: Date.now() });
-              // Si la respuesta es corta (< 50 chars), probablemente es un nombre
-              if (body.length < 50 && !/^(hola|si|no|ok|buenas|que|como|hey)\b/i.test(body.trim())) {
-                const contactName = body.trim();
-                console.log(`[TM:${uid}] 🔍 LID-ID: Contacto se identificó como "${contactName}" — notificando al owner para confirmar`);
-                // Notificar al owner para confirmar
-                const selfJid = tenant.sock?.user?.id;
-                if (tenant.sock && selfJid) {
-                  const whatsAppHint = pushName && pushName !== contactName ? ` (en WhatsApp aparece como ${pushName})` : '';
-                  tenant.sock.sendMessage(selfJid, {
-                    text: `El contacto que no ten\u00eda registrado me dijo que se llama *${contactName}*${whatsAppHint}. \u00bfEs correcto? Si no, decime el nombre real.`
-                  }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando confirmaci\u00f3n:`, e.message));
+              // Re-intentar clasificación autónoma con el mensaje nuevo (más contexto = mejor clasificación)
+              const allMessages = pending.bufferedMsgs.map(b => b.body).join('\n');
+              const reClassification = await _tryAutonomousClassification(uid, tenant, lidBase, pending.pushName || pushName, allMessages);
+
+              if (reClassification.classified) {
+                console.log(`[TM:${uid}] 🧠 LID-ID: Auto-reclasificación exitosa con ${pending.bufferedMsgs.length} msgs: "${reClassification.name}" → ${reClassification.contactType}`);
+                // Guardar en contact_index
+                try {
+                  await admin.firestore().collection('users').doc(tenant.ownerUid || uid)
+                    .collection('contact_index').doc(lidBase)
+                    .set({
+                      name: reClassification.name || pending.pushName || pushName || 'Contacto',
+                      type: reClassification.contactType || 'lead',
+                      ...(reClassification.businessId && { businessId: reClassification.businessId }),
+                      ...(reClassification.businessName && { businessName: reClassification.businessName }),
+                      source: 'miia_reclass_auto',
+                      updatedAt: new Date().toISOString()
+                    }, { merge: true });
+                } catch (e) {
+                  console.error(`[TM:${uid}] ⚠️ Error guardando reclasificación:`, e.message);
                 }
-                pending.phase = 'waiting_owner_confirm';
-                pending.contactSaidName = contactName;
-                pending.confirmAt = Date.now();
-                // Timeout confirmación: 30 min → mapear automáticamente
-                setTimeout(() => {
-                  if (tenant._pendingLids?.[lidBase]?.phase === 'waiting_owner_confirm') {
-                    console.log(`[TM:${uid}] 🔍 LID-ID: Owner no confirmó en 30min — aceptando "${contactName}" como identidad`);
-                    _resolvePendingLid(uid, tenant, lidBase, from, contactName, null);
-                  }
-                }, 30 * 60 * 1000);
-              }
-              continue;
-            }
 
-            // ¿Owner respondió confirmación?
-            if (pending && pending.phase === 'waiting_owner_confirm') {
-              // Este mensaje es del contacto, no del owner — bufferear
-              if (!pending.bufferedMsgs) pending.bufferedMsgs = [];
-              pending.bufferedMsgs.push({ body, timestamp: Date.now() });
+                // Resolver: procesar todos los mensajes buffereados
+                _resolvePendingLid(uid, tenant, lidBase, from, reClassification.name || pending.pushName || pushName, null, {
+                  contactType: reClassification.contactType,
+                  businessId: reClassification.businessId,
+                  businessName: reClassification.businessName
+                }, { suppressNotification: true });
+
+                // Eliminar de grupo Pendientes en Firestore
+                _removeFromPendientesGroup(tenant.ownerUid || uid, lidBase).catch(() => {});
+
+                _addToDailySummary(uid, tenant, `*${reClassification.name || pushName}* reclasificado automáticamente como ${reClassification.contactType}${reClassification.businessName ? ' de ' + reClassification.businessName : ''} tras ${pending.bufferedMsgs.length} mensajes`);
+                continue;
+              }
+
+              // No pudo reclasificar — actualizar último mensaje en grupo Pendientes
+              _updatePendientesLastMsg(tenant.ownerUid || uid, lidBase, body).catch(() => {});
               continue;
             }
 
@@ -1490,9 +1487,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               continue; // Procesado — siguiente mensaje
             }
 
-            // ═══ MIIA NO PUDO CLASIFICAR SOLA → Preguntar al owner NATURALMENTE ═══
+            // ═══ MIIA NO PUDO CLASIFICAR SOLA → SILENCIO + PENDIENTES ═══
+            // NO preguntar al owner en self-chat. Guardar en grupo "Pendientes" del dashboard.
             tenant._pendingLids[lidBase] = {
-              phase: 'waiting_owner',
+              phase: 'pending_silent',
               firstMsg: body,
               pushName,
               originalFrom: from,
@@ -1501,35 +1499,18 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             };
             _savePendingLids(uid, tenant);
 
-            // Notificación NATURAL — MIIA habla como persona, NO como formulario
-            const selfJid = tenant.sock?.user?.id;
-            if (tenant.sock && selfJid) {
-              const preview = body.length > 120 ? body.substring(0, 120) + '...' : body;
-              const nameHint = pushName ? ` (en WhatsApp aparece como *${pushName}*)` : '';
-              const aiReason = autoClassification.reason || '';
-              const naturalMsg = _buildNaturalLidQuestion(pushName, preview, nameHint, aiReason, tenant._businesses || []);
-              tenant.sock.sendMessage(selfJid, { text: naturalMsg })
-                .catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando consulta natural al owner:`, e.message));
-            }
+            // Guardar en Firestore grupo "Pendientes" para que el dashboard lo muestre
+            const ownerUidPend = tenant.ownerUid || uid;
+            _saveToPendientesGroup(ownerUidPend, lidBase, pushName, body).catch(e =>
+              console.error(`[TM:${uid}] ⚠️ Error guardando en grupo Pendientes:`, e.message)
+            );
 
-            // Timeout 2h → preguntar al contacto directamente
-            setTimeout(async () => {
-              const p = tenant._pendingLids?.[lidBase];
-              if (!p || p.phase !== 'waiting_owner') return;
-              console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 2h para ${lidBase} — preguntando al contacto directamente`);
-              p.phase = 'waiting_contact';
-              if (tenant.sock) {
-                try {
-                  await tenant.sock.sendMessage(from, {
-                    text: `¡Hola! 👋 Disculpá, ¿con quién tengo el gusto? Es que no tengo guardado tu número 😊`
-                  });
-                } catch (e) {
-                  console.error(`[TM:${uid}] ⚠️ Error preguntando identidad a ${lidBase}:`, e.message);
-                }
-              }
-            }, 2 * 60 * 60 * 1000);
+            // Agregar al resumen diario (silencioso — owner lo ve cuando quiera)
+            const preview = body.length > 80 ? body.substring(0, 80) + '...' : body;
+            _addToDailySummary(uid, tenant, `Contacto desconocido${pushName ? ` (${pushName})` : ''} escribió: "${preview}" — queda en Pendientes del dashboard`);
+            console.log(`[TM:${uid}] 🔕 LID-ID: ${lidBase} → Pendientes (silencioso, sin notificar al owner en self-chat)`);
 
-            continue; // No procesar hasta que se identifique
+            continue; // No procesar hasta que se clasifique desde dashboard o auto-reclasifique
           }
 
         const resolvedFromNumber = resolvedFrom?.split('@')[0]?.split(':')[0];
@@ -2563,6 +2544,85 @@ function _addToDailySummary(uid, tenant, entry) {
   console.log(`[TM:${uid}] 📋 Resumen diario: +1 entrada (total: ${tenant._dailySummary.length})`);
 }
 
+// ═══ GRUPO PENDIENTES — Helpers para Firestore ═══
+
+/** Blacklist de nombres fantasma — NUNCA crear contacto con estos nombres */
+const PHANTOM_NAME_BLACKLIST = new Set([
+  'quien', 'quién', 'que', 'qué', 'como', 'cómo', 'donde', 'dónde', 'cuando', 'cuándo',
+  'miia', 'listo', 'ok', 'si', 'sí', 'no', 'hola', 'chau', 'buenas', 'gracias',
+  'contacto', 'desconocido', 'unknown', 'undefined', 'null', 'test', 'prueba'
+]);
+
+function _isPhantomName(name) {
+  if (!name) return true;
+  const clean = name.trim().toLowerCase();
+  if (clean.length < 2) return true;
+  if (PHANTOM_NAME_BLACKLIST.has(clean)) return true;
+  if (/^[0-9@:]+$/.test(clean)) return true; // Solo números/símbolos
+  return false;
+}
+
+/**
+ * Guardar contacto desconocido en grupo "Pendientes" del dashboard.
+ * Auto-crea el grupo si no existe.
+ */
+async function _saveToPendientesGroup(ownerUid, lidBase, pushName, firstMsg) {
+  const groupRef = admin.firestore().collection('users').doc(ownerUid)
+    .collection('contact_groups').doc('pendientes');
+
+  // Auto-crear grupo si no existe
+  const groupDoc = await groupRef.get();
+  if (!groupDoc.exists) {
+    await groupRef.set({
+      name: 'Pendientes',
+      icon: '📋',
+      tone: '',
+      autoRespond: false,
+      proactiveEnabled: false,
+      systemGroup: true,
+      createdAt: new Date().toISOString()
+    });
+    console.log(`[TM:${ownerUid}] 📋 Grupo "Pendientes" creado automáticamente`);
+  }
+
+  // Guardar contacto dentro del grupo
+  const displayName = (!_isPhantomName(pushName)) ? pushName : `Contacto ${lidBase.substring(0, 6)}`;
+  await groupRef.collection('contacts').doc(lidBase).set({
+    name: displayName,
+    pushName: pushName || null,
+    lidBase,
+    firstMsg: (firstMsg || '').substring(0, 200),
+    lastMsg: (firstMsg || '').substring(0, 200),
+    messageCount: 1,
+    addedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    status: 'pending'
+  }, { merge: true });
+
+  console.log(`[TM:${ownerUid}] 📋 Contacto ${lidBase} (${displayName}) agregado a grupo Pendientes`);
+}
+
+/** Actualizar último mensaje de un contacto en Pendientes */
+async function _updatePendientesLastMsg(ownerUid, lidBase, lastMsg) {
+  await admin.firestore().collection('users').doc(ownerUid)
+    .collection('contact_groups').doc('pendientes')
+    .collection('contacts').doc(lidBase)
+    .update({
+      lastMsg: (lastMsg || '').substring(0, 200),
+      messageCount: admin.firestore.FieldValue.increment(1),
+      updatedAt: new Date().toISOString()
+    });
+}
+
+/** Eliminar contacto de Pendientes (cuando se reclasifica) */
+async function _removeFromPendientesGroup(ownerUid, lidBase) {
+  await admin.firestore().collection('users').doc(ownerUid)
+    .collection('contact_groups').doc('pendientes')
+    .collection('contacts').doc(lidBase)
+    .delete();
+  console.log(`[TM:${ownerUid}] 📋 Contacto ${lidBase} removido de Pendientes (reclasificado)`);
+}
+
 /**
  * Persistir LIDs pendientes en Firestore (sobrevive caídas/restarts del servidor).
  * Persiste TODOS los LIDs pendientes (sin filtro de día). Se llama cada vez que _pendingLids cambia.
@@ -2648,24 +2708,28 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
     } catch (_) {}
   }
 
-  // Notificar al owner
-  const selfJid = tenant.sock?.user?.id;
-  if (tenant.sock && selfJid) {
-    // Notificación NATURAL — sin LID, sin formularios
-    const typeLabels = { client: 'cliente', lead: 'lead', familia: 'familia', equipo: 'equipo', group: 'amigo/conocido' };
-    const typeLabel = classification.contactType ? typeLabels[classification.contactType] || classification.contactType : '';
-    const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
-    const bufferCount = pending.bufferedMsgs?.length || 0;
-    let confirmMsg = `Listo, *${contactName}*`;
-    if (typeLabel) confirmMsg += ` es ${typeLabel}${bizSuffix}`;
-    confirmMsg += `. Lo tengo registrado.`;
-    if (bufferCount > 0) {
-      confirmMsg += suppressAutoReply
-        ? `\n\nTiene ${bufferCount} mensaje${bufferCount > 1 ? 's' : ''} pendiente${bufferCount > 1 ? 's' : ''} — esperando tu indicación.`
-        : `\n\nYa estoy atendiendo sus ${bufferCount} mensaje${bufferCount > 1 ? 's' : ''} pendiente${bufferCount > 1 ? 's' : ''} 💬`;
+  // Notificar al owner — SOLO si no es resolución silenciosa
+  const suppressNotification = opts.suppressNotification || false;
+  if (!suppressNotification) {
+    const selfJid = tenant.sock?.user?.id;
+    if (tenant.sock && selfJid) {
+      const typeLabels = { client: 'cliente', lead: 'lead', familia: 'familia', equipo: 'equipo', group: 'amigo/conocido' };
+      const typeLabel = classification.contactType ? typeLabels[classification.contactType] || classification.contactType : '';
+      const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
+      const bufferCount = pending.bufferedMsgs?.length || 0;
+      let confirmMsg = `Listo, *${contactName}*`;
+      if (typeLabel) confirmMsg += ` es ${typeLabel}${bizSuffix}`;
+      confirmMsg += `. Lo tengo registrado.`;
+      if (bufferCount > 0) {
+        confirmMsg += suppressAutoReply
+          ? `\n\nTiene ${bufferCount} mensaje${bufferCount > 1 ? 's' : ''} pendiente${bufferCount > 1 ? 's' : ''} — esperando tu indicación.`
+          : `\n\nYa estoy atendiendo sus ${bufferCount} mensaje${bufferCount > 1 ? 's' : ''} pendiente${bufferCount > 1 ? 's' : ''} 💬`;
+      }
+      tenant.sock.sendMessage(selfJid, { text: confirmMsg })
+        .catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando resolución:`, e.message));
     }
-    tenant.sock.sendMessage(selfJid, { text: confirmMsg })
-      .catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando resolución:`, e.message));
+  } else {
+    console.log(`[TM:${uid}] 🔕 LID-ID: Resolución silenciosa de ${lidBase} → "${contactName}" — sin notificar al owner`);
   }
 
   // ═══ PROCESAR MENSAJES BUFFEREADOS ═══
@@ -2855,202 +2919,10 @@ function _extractLidClassification(text, tenant) {
  * @returns {boolean} true si el mensaje fue consumido (no pasar a IA), false si debe seguir a IA
  */
 function checkOwnerLidResponse(uid, messageBody) {
-  const tenant = tenants.get(uid);
-  if (!tenant || !tenant._pendingLids) return false;
-
-  const text = (messageBody || '').trim();
-  if (!text) return false;
-
-  // Buscar LIDs en fase waiting_owner o waiting_owner_confirm
-  for (const [lidBase, pending] of Object.entries(tenant._pendingLids)) {
-    if (pending.phase === 'waiting_owner') {
-      // "no sé" → preguntar al contacto directamente
-      const noSeMatch = /^no\s+s[eé]$/i.test(text);
-      if (noSeMatch) {
-        console.log(`[TM:${uid}] 🔍 LID-ID: Owner dijo "no sé" para ${lidBase} — preguntando al contacto`);
-        pending.phase = 'waiting_contact';
-        if (tenant.sock) {
-          tenant.sock.sendMessage(pending.originalFrom, {
-            text: `¡Hola! 👋 Disculpá, ¿con quién tengo el gusto? Es que no tengo guardado tu número 😊`
-          }).catch(e => console.error(`[TM:${uid}] ⚠️ Error preguntando identidad:`, e.message));
-        }
-        setTimeout(() => {
-          if (tenant._pendingLids?.[lidBase]?.phase === 'waiting_contact') {
-            console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 24h esperando contacto — descartando ${lidBase}`);
-            delete tenant._pendingLids[lidBase];
-            _savePendingLids(uid, tenant);
-          }
-        }, 24 * 60 * 60 * 1000);
-        return true; // Consumir — no necesita IA
-      }
-
-      // FILTRO: NO es clasificación si es pregunta, comando a MIIA, reclamo, o mensaje largo
-      const looksLikeInstruction = /!!|¡|debes|siempre|nunca|para que|por qu[eé]/i.test(text);
-      const looksLikeQuestion = /\?/.test(text) || /^(?:quien|quién|qué|que|cómo|como|dónde|donde|cuándo|cuando|por que|porqu[eé])\b/i.test(text);
-      const looksLikeCommand = /^(?:miia|dile|respondele|respond[eé]|env[ií]a|agenda|recordar|recu[eé]rdame|programa|pon\s)/i.test(text);
-      const tooLongForName = text.length > 80;
-      if (looksLikeInstruction || looksLikeQuestion || looksLikeCommand || tooLongForName) {
-        console.log(`[TM:${uid}] 🔍 LID-ID: Texto NO es clasificación (${looksLikeInstruction ? 'instrucción' : looksLikeQuestion ? 'pregunta' : looksLikeCommand ? 'comando' : 'muy largo'}) — ignorando para LID ${lidBase}`);
-        continue;
-      }
-
-      // ═══ EXTRACCIÓN INTELIGENTE: nombre + tipo + negocio ═══
-      // Patrones: "Se llama Yaneth. Es cliente de Medilink. No respondas."
-      //           "Es Juan, lead de MiTienda"
-      //           "Yaneth, cliente medilink"
-      //           "Es mi mamá" / "es familia" / "es del equipo"
-      const classification = _extractLidClassification(text, tenant);
-
-      if (classification.name || classification.contactType || classification.businessId || classification._needsTypeConfirmation) {
-        // Detectar si el owner dice "no respondas" / "no le escribas" / "yo me encargo"
-        const suppressPatterns = /\bno\s+respond|no\s+le\s+escrib|no\s+le\s+dig|no\s+le\s+habl|no\s+le\s+mand|yo\s+me\s+encargo|yo\s+le\s+respond|yo\s+le\s+escrib|luego\s+le\s+respond|después\s+le|despues\s+le|no\s+hagas\s+nada|no\s+le\s+contest/i;
-        const shouldSuppress = suppressPatterns.test(text);
-
-        const resolvedName = classification.name || pending.pushName || 'este contacto';
-
-        // ═══ SHORTCUT NEGOCIO: owner dijo solo "Medilink" → PREGUNTAR si lead/cliente ═══
-        if (classification._needsTypeConfirmation) {
-          pending.phase = 'waiting_owner_type';
-          pending.resolvedName = resolvedName;
-          pending.classification = classification;
-          pending.phone = classification.phone;
-          const selfJid = tenant.sock?.user?.id;
-          if (tenant.sock && selfJid) {
-            tenant.sock.sendMessage(selfJid, {
-              text: `Ok, es de *${classification.businessName}*. \u00bfPero es lead nuevo, cliente, o acompa\u00f1ante/conocido?`
-            }).catch(() => {});
-          }
-          _savePendingLids(uid, tenant);
-          return true;
-        }
-
-        // ═══ CURIOSIDAD INTELIGENTE: preguntar lo NO obvio, lo obvio NO ═══
-        const hasType = !!classification.contactType;
-        const hasBiz = !!classification.businessId;
-        const businesses = tenant._businesses || [];
-
-        if (classification.name && !hasType && !hasBiz) {
-          if (businesses.length === 1) {
-            classification.contactType = 'lead';
-            classification.businessId = businesses[0].id;
-            classification.businessName = businesses[0].name;
-            console.log(`[TM:${uid}] 🔍 LID-ID: Solo nombre "${resolvedName}" + 1 negocio → asumir lead de ${businesses[0].name}`);
-          } else if (businesses.length === 0) {
-            classification.contactType = 'group';
-            console.log(`[TM:${uid}] 🔍 LID-ID: Solo nombre "${resolvedName}" + 0 negocios → contacto personal`);
-          } else {
-            pending.phase = 'waiting_owner_type';
-            pending.resolvedName = resolvedName;
-            pending.classification = classification;
-            pending.phone = classification.phone;
-            const bizNames = businesses.map(b => b.name).join(', ');
-            const selfJid = tenant.sock?.user?.id;
-            if (tenant.sock && selfJid) {
-              tenant.sock.sendMessage(selfJid, {
-                text: `Dale, *${resolvedName}*. \u00bfEs de alguno de tus negocios (${bizNames}) o es contacto personal?`
-              }).catch(() => {});
-            }
-            _savePendingLids(uid, tenant);
-            return true;
-          }
-        }
-
-        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, resolvedName, classification.phone, classification, { suppressAutoReply: shouldSuppress });
-
-        // Si hay contexto adicional (instrucciones para la IA) → NO consumir, la IA del self-chat procesa
-        if (classification.hasAdditionalContext) {
-          console.log(`[TM:${uid}] 🔍 LID-ID: Nombre="${resolvedName}" tipo=${classification.contactType || '?'} biz=${classification.businessName || '?'}${shouldSuppress ? ' ⛔ SUPRIMIR' : ''} + contexto → pasa a IA`);
-          return false;
-        }
-
-        // Confirmar al owner con sentido común (no preguntar lo obvio)
-        const selfJid2 = tenant.sock?.user?.id;
-        if (tenant.sock && selfJid2 && classification.contactType) {
-          const typeLabels = { client: 'cliente', lead: 'lead', familia: 'familia', equipo: 'equipo', group: 'amigo/conocido' };
-          const label = typeLabels[classification.contactType] || classification.contactType;
-          const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
-          tenant.sock.sendMessage(selfJid2, {
-            text: `✅ Listo, *${resolvedName}* es ${label}${bizSuffix}. Lo trataré como tal.`
-          }).catch(() => {});
-        }
-        return true; // Clasificación completa, consumir
-      }
-
-      // ═══ FASE waiting_owner_type: Owner responde al "¿de cuál negocio?" ═══
-      if (pending.phase === 'waiting_owner_type') {
-        const resolvedName = pending.resolvedName;
-        const classification = pending.classification || {};
-
-        // Buscar si respondió con nombre de negocio
-        const businesses = tenant._businesses || [];
-        const bizMatch = businesses.find(b =>
-          b.name && b.name.toLowerCase().includes(text.toLowerCase())
-        );
-        if (bizMatch) {
-          classification.contactType = classification.contactType || 'lead';
-          classification.businessId = bizMatch.id;
-          classification.businessName = bizMatch.name;
-        } else if (/\b(?:amigo|amiga|conocido|vecino)\b/i.test(text)) {
-          classification.contactType = 'group';
-        } else if (/\b(?:familia|familiar|mi\s+\w+)\b/i.test(text)) {
-          classification.contactType = 'familia';
-        } else if (/\b(?:equipo|empleado|colega|compa[ñn]ero)\b/i.test(text)) {
-          classification.contactType = 'equipo';
-        } else if (/\blead\b/i.test(text)) {
-          classification.contactType = 'lead';
-        } else if (/\bcliente?\b/i.test(text)) {
-          classification.contactType = 'client';
-        } else if (/\bacompa[ñn]ante?\b/i.test(text)) {
-          classification.contactType = 'group';
-        }
-
-        if (classification.contactType) {
-          _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, resolvedName, pending.phone, classification);
-          const typeLabels = { client: 'cliente', lead: 'lead', familia: 'familia', equipo: 'equipo', group: 'amigo/conocido' };
-          const label = typeLabels[classification.contactType] || classification.contactType;
-          const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
-          const selfJid = tenant.sock?.user?.id;
-          if (tenant.sock && selfJid) {
-            tenant.sock.sendMessage(selfJid, {
-              text: `✅ Listo, *${resolvedName}* es ${label}${bizSuffix}. Lo trataré como tal.`
-            }).catch(() => {});
-          }
-          return true;
-        }
-        // No entendió → re-preguntar
-        return false; // Pasa a IA como conversación normal
-      }
-    }
-
-    if (pending.phase === 'waiting_owner_confirm') {
-      const siMatch = /^s[ií]\b/i.test(text);
-      const noMatch = /^no\b/i.test(text);
-      if (siMatch) {
-        const nameOverride = text.match(/s[ií],?\s+es\s+(.+)/i);
-        const finalName = nameOverride ? nameOverride[1].trim() : pending.contactSaidName;
-        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, finalName, null);
-        return true;
-      }
-      if (noMatch) {
-        pending.phase = 'waiting_contact';
-        if (tenant.sock) {
-          tenant.sock.sendMessage(pending.originalFrom, {
-            text: `Disculpá, no te identifiqué bien. ¿Me decís tu nombre completo? 😊`
-          }).catch(e => console.error(`[TM:${uid}] ⚠️ Error re-preguntando identidad:`, e.message));
-        }
-        return true;
-      }
-      // Nombre directo (override) — solo letras, max 40 chars, sin instrucciones
-      if (!/!!|¡|debes|siempre|nunca/i.test(text)) {
-        const nameMatch = text.match(/^([A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40})(?:\s+\+?(\d{10,18}))?$/);
-        if (nameMatch) {
-          _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, nameMatch[1].trim(), nameMatch[2] || null);
-          return true;
-        }
-      }
-    }
-  }
-
+  // ═══ GUTTED: LID Silent Mode ═══
+  // Los contactos desconocidos ya NO se clasifican desde self-chat.
+  // Se clasifican desde el dashboard (grupo "Pendientes") o auto-reclasifican con IA.
+  // Esta función existe solo por backward compat — siempre retorna false.
   return false;
 }
 
