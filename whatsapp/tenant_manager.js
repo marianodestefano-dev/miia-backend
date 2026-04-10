@@ -1007,10 +1007,22 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
           }, delay);
         } else {
-          // Logged out desde el teléfono — sock muerto, solo notificar
+          // Logged out desde el teléfono — sock muerto, limpiar TODO
           console.log(`[TM:${uid}] 🔌 Logged out desde teléfono — cleaning session`);
           tenant.isAuthenticated = false;
           tenant.sock = null;
+          // Limpiar pending LIDs — teléfono desvinculado = reset
+          if (tenant._pendingLids && Object.keys(tenant._pendingLids).length > 0) {
+            console.log(`[TM:${uid}] 🧹 Limpiando ${Object.keys(tenant._pendingLids).length} LIDs pendientes por desvinculación`);
+            tenant._pendingLids = {};
+            admin.firestore().collection('users').doc(uid)
+              .collection('miia_persistent').doc('pending_lids')
+              .delete().catch(() => {});
+          }
+          if (tenant._lidReminderInterval) {
+            clearInterval(tenant._lidReminderInterval);
+            tenant._lidReminderInterval = null;
+          }
           tenants.delete(uid);
           await deleteFirestoreSession(`tenant-${uid}`);
 
@@ -1309,9 +1321,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                 // Notificar al owner para confirmar
                 const selfJid = tenant.sock?.user?.id;
                 if (tenant.sock && selfJid) {
+                  const whatsAppHint = pushName && pushName !== contactName ? ` (en WhatsApp aparece como ${pushName})` : '';
                   tenant.sock.sendMessage(selfJid, {
-                    text: `🔍 *Identificación de contacto*\n\nEl contacto desconocido (LID: ...${lidBase.slice(-6)}) se identificó como *"${contactName}"*${pushName ? ` (nombre WhatsApp: ${pushName})` : ''}.\n\n¿Es correcto? Respondé:\n• "Si, es [nombre]" → confirmo y lo mapeo\n• "No" → le pregunto de nuevo\n• "[nombre] [+número]" → lo mapeo con ese número`
-                  }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando LID-ID confirmación:`, e.message));
+                    text: `El contacto que no ten\u00eda registrado me dijo que se llama *${contactName}*${whatsAppHint}. \u00bfEs correcto? Si no, decime el nombre real.`
+                  }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando confirmaci\u00f3n:`, e.message));
                 }
                 pending.phase = 'waiting_owner_confirm';
                 pending.contactSaidName = contactName;
@@ -1335,12 +1348,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               continue;
             }
 
-            // PRIMERA VEZ que vemos este LID → iniciar flujo
-            console.log(`[TM:${uid}] 🔍 LID-ID: NUEVO LID desconocido ${lidBase}${pushName ? ` (pushName: ${pushName})` : ''} — iniciando identificación`);
+            // PRIMERA VEZ que vemos este LID → CLASIFICACIÓN AUTÓNOMA
+            console.log(`[TM:${uid}] 🔍 LID-ID: NUEVO contacto desconocido ${lidBase}${pushName ? ` (pushName: ${pushName})` : ''} — iniciando clasificación autónoma`);
 
             // ═══ AUTO-MATCH: ¿El pushName coincide con alguien en contact_index? ═══
-            // Si el contacto ya fue identificado antes (desde otro dispositivo/LID),
-            // mapearlo automáticamente sin molestar al owner.
             if (pushName) {
               try {
                 const ownerUid = tenant.ownerUid || uid;
@@ -1351,7 +1362,6 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                   const existingPhone = existingDoc.id;
                   const existingData = existingDoc.data();
                   console.log(`[TM:${uid}] 🔗 LID-ID: AUTO-MATCH por pushName "${pushName}" → ${existingPhone} (${existingData.type})`);
-                  // Mapear este nuevo LID al JID conocido
                   const knownJid = `${existingPhone}@s.whatsapp.net`;
                   if (!tenant._lidMap) tenant._lidMap = {};
                   tenant._lidMap[lidBase] = knownJid;
@@ -1359,18 +1369,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                     .collection('miia_persistent').doc('lid_map')
                     .set({ mappings: tenant._lidMap, updatedAt: new Date().toISOString() }, { merge: true })
                     .catch(e => console.error(`[TM:${uid}] ⚠️ Error persistiendo auto-match LID:`, e.message));
-                  // Notificar brevemente al owner
-                  const selfJid = tenant.sock?.user?.id;
-                  if (tenant.sock && selfJid) {
-                    tenant.sock.sendMessage(selfJid, {
-                      text: `🔗 *${pushName}* escribió desde otro dispositivo. Ya lo identifiqué — es ${existingData.type === 'client' ? 'cliente' : existingData.type}${existingData.businessName ? ' de ' + existingData.businessName : ''}.`
-                    }).catch(() => {});
-                  }
-                  // Procesar el mensaje normalmente con el JID resuelto
+                  // Procesar el mensaje normalmente con el JID resuelto — sin notificar al owner
                   resolvedFrom = knownJid;
-                  // NO crear pendingLid — ya está resuelto
-                  // El continue al final del bloque if lo saltea
-                  // Necesitamos re-procesar este mensaje con el JID correcto
                   const { handleTenantMessage } = require('./tenant_message_handler');
                   const ownerRole = tenant.role || 'owner';
                   try {
@@ -1378,6 +1378,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                   } catch (e) {
                     console.error(`[TM:${uid}] ⚠️ Error re-procesando auto-match:`, e.message);
                   }
+                  // Agregar al resumen diario (silencioso)
+                  _addToDailySummary(uid, tenant, `${pushName} escribió desde otro dispositivo — ya identificado como ${existingData.type === 'client' ? 'cliente' : existingData.type}${existingData.businessName ? ' de ' + existingData.businessName : ''}`);
                   continue;
                 }
               } catch (e) {
@@ -1385,13 +1387,68 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               }
             }
 
-            // Lazy-load businesses para clasificación inteligente del owner
+            // ═══ CLASIFICACIÓN AUTÓNOMA CON IA ═══
+            // MIIA lee los mensajes, el pushName, e INTENTA clasificar sola.
+            // Solo si NO puede → le pregunta al owner de forma NATURAL.
             if (!tenant._businesses) {
               try {
                 const { loadBusinesses } = require('./tenant_message_handler');
                 tenant._businesses = await loadBusinesses(tenant.ownerUid || uid);
               } catch (_) { tenant._businesses = []; }
             }
+
+            // Intentar clasificar autónomamente
+            const autoClassification = await _tryAutonomousClassification(uid, tenant, lidBase, pushName, body);
+
+            if (autoClassification.classified) {
+              // ═══ MIIA CLASIFICÓ SOLA — NO molestar al owner ═══
+              console.log(`[TM:${uid}] 🧠 LID-ID: Clasificación autónoma exitosa: "${autoClassification.name}" → ${autoClassification.contactType}${autoClassification.businessName ? ' de ' + autoClassification.businessName : ''}`);
+
+              // Guardar en contact_index
+              const resolvedPhone = lidBase;
+              try {
+                await admin.firestore().collection('users').doc(tenant.ownerUid || uid)
+                  .collection('contact_index').doc(resolvedPhone)
+                  .set({
+                    name: autoClassification.name || pushName || `Contacto desconocido`,
+                    type: autoClassification.contactType || 'lead',
+                    ...(autoClassification.businessId && { businessId: autoClassification.businessId }),
+                    ...(autoClassification.businessName && { businessName: autoClassification.businessName }),
+                    source: 'miia_autonomous',
+                    updatedAt: new Date().toISOString()
+                  }, { merge: true });
+              } catch (e) {
+                console.error(`[TM:${uid}] ⚠️ Error guardando clasificación autónoma:`, e.message);
+              }
+
+              // Setear tipo en TMH para que el mensaje se procese con prompt correcto
+              try {
+                const { setContactType, setLeadName } = require('./tenant_message_handler');
+                if (setContactType) setContactType(uid, resolvedPhone, autoClassification.contactType || 'lead');
+                if (setLeadName && autoClassification.name) setLeadName(uid, resolvedPhone, autoClassification.name);
+              } catch (_) {}
+
+              // Mapear LID para futuros mensajes
+              if (!tenant._lidMap) tenant._lidMap = {};
+              // No tenemos JID real, pero guardamos referencia para no volver a preguntar
+              tenant._lidMap[lidBase] = from; // mapea al LID mismo — lo importante es que quede registrado
+
+              // Procesar el mensaje con el prompt correcto INMEDIATAMENTE
+              const { handleTenantMessage: handleMsg } = require('./tenant_message_handler');
+              const ownerRole = tenant.role || 'owner';
+              try {
+                await handleMsg(uid, tenant.ownerUid || uid, ownerRole, from, body, false, false, tenant, messageContext || {});
+              } catch (e) {
+                console.error(`[TM:${uid}] ⚠️ Error procesando mensaje post-clasificación autónoma:`, e.message);
+              }
+
+              // Agregar al resumen diario (silencioso, no notificar)
+              _addToDailySummary(uid, tenant, `Nuevo contacto: *${autoClassification.name || pushName || 'desconocido'}* — lo clasifiqué como ${autoClassification.contactType}${autoClassification.businessName ? ' de ' + autoClassification.businessName : ''}. Dijo: "${body.substring(0, 80)}${body.length > 80 ? '...' : ''}"`);
+
+              continue; // Procesado — siguiente mensaje
+            }
+
+            // ═══ MIIA NO PUDO CLASIFICAR SOLA → Preguntar al owner NATURALMENTE ═══
             tenant._pendingLids[lidBase] = {
               phase: 'waiting_owner',
               firstMsg: body,
@@ -1400,42 +1457,34 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               startedAt: Date.now(),
               bufferedMsgs: [{ body, timestamp: Date.now() }]
             };
-            _savePendingLids(uid, tenant); // Persistir en Firestore
+            _savePendingLids(uid, tenant);
 
-            // PASO 1: Notificar al owner en self-chat
+            // Notificación NATURAL — MIIA habla como persona, NO como formulario
             const selfJid = tenant.sock?.user?.id;
             if (tenant.sock && selfJid) {
-              const preview = body.length > 100 ? body.substring(0, 100) + '...' : body;
-              tenant.sock.sendMessage(selfJid, {
-                text: `🔍 *Contacto no identificado*\n\n${pushName ? `Nombre WhatsApp: *${pushName}*\n` : ''}Mensaje: "${preview}"\nLID: ...${lidBase.slice(-6)}\n\n¿Quién es? Respondé con:\n• El nombre: "Es [nombre]"\n• Nombre + número: "[nombre] +573001234567"\n• "No sé" → le pregunto directamente`
-              }).catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando LID-ID query al owner:`, e.message));
+              const preview = body.length > 120 ? body.substring(0, 120) + '...' : body;
+              const nameHint = pushName ? ` (en WhatsApp aparece como *${pushName}*)` : '';
+              const aiReason = autoClassification.reason || '';
+              const naturalMsg = _buildNaturalLidQuestion(pushName, preview, nameHint, aiReason, tenant._businesses || []);
+              tenant.sock.sendMessage(selfJid, { text: naturalMsg })
+                .catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando consulta natural al owner:`, e.message));
             }
 
-            // PASO 2: Timeout 2h → preguntar al contacto directamente
+            // Timeout 2h → preguntar al contacto directamente
             setTimeout(async () => {
               const p = tenant._pendingLids?.[lidBase];
-              if (!p || p.phase !== 'waiting_owner') return; // Ya resuelto
+              if (!p || p.phase !== 'waiting_owner') return;
               console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 2h para ${lidBase} — preguntando al contacto directamente`);
               p.phase = 'waiting_contact';
-              // Enviar mensaje al contacto preguntando quién es
               if (tenant.sock) {
                 try {
                   await tenant.sock.sendMessage(from, {
                     text: `¡Hola! 👋 Disculpá, ¿con quién tengo el gusto? Es que no tengo guardado tu número 😊`
                   });
-                  console.log(`[TM:${uid}] 🔍 LID-ID: Pregunta enviada al contacto ${lidBase}`);
                 } catch (e) {
                   console.error(`[TM:${uid}] ⚠️ Error preguntando identidad a ${lidBase}:`, e.message);
                 }
               }
-              // Timeout final: 24h → descartar si nadie responde
-              setTimeout(() => {
-                if (tenant._pendingLids?.[lidBase]) {
-                  console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 24h — descartando ${lidBase} como no identificado`);
-                  delete tenant._pendingLids[lidBase];
-                  _savePendingLids(uid, tenant);
-                }
-              }, 24 * 60 * 60 * 1000);
             }, 2 * 60 * 60 * 1000);
 
             continue; // No procesar hasta que se identifique
@@ -1781,37 +1830,21 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         .collection('miia_persistent').doc('pending_lids').get();
       if (pendingDoc.exists) {
         const saved = pendingDoc.data()?.lids || {};
-        const now = Date.now();
-        const todayStr = new Date().toISOString().split('T')[0];
         let restored = 0;
-        let expired = 0;
         if (!tenant._pendingLids) tenant._pendingLids = {};
         for (const [lidBase, data] of Object.entries(saved)) {
-          const savedDay = (data.startedAt ? new Date(data.startedAt).toISOString().split('T')[0] : null);
-          // Si es de otro día → NO restaurar (regla: solo persiste dentro del mismo día)
-          if (savedDay && savedDay !== todayStr) {
-            expired++;
-            continue;
-          }
-          // Si tiene más de 24h → no restaurar
-          if (data.startedAt && (now - data.startedAt > 24 * 60 * 60 * 1000)) {
-            expired++;
-            continue;
-          }
+          // Restaurar TODOS — persisten entre días hasta resolución o desvinculación
           tenant._pendingLids[lidBase] = data;
           restored++;
         }
-        if (restored > 0) console.log(`[TM:${uid}] 📇 LIDs pendientes restaurados: ${restored} (${expired} expirados)`);
-        // Limpiar expirados de Firestore
-        if (expired > 0) {
-          _savePendingLids(uid, tenant);
-        }
+        if (restored > 0) console.log(`[TM:${uid}] 📇 LIDs pendientes restaurados: ${restored} (persisten hasta resolución)`);
       }
     } catch (e) {
       console.error(`[TM:${uid}] ⚠️ Error restaurando pending_lids:`, e.message);
     }
 
-    // Recordatorio de LIDs pendientes al owner: cada 60 min en horario laboral, mismo día
+    // Recordatorio de contactos pendientes: cada 60 min en horario laboral
+    // Persiste ENTRE DÍAS hasta que el owner resuelva o se desvincule el teléfono
     tenant._lidReminderInterval = setInterval(() => {
       if (!tenant._pendingLids || !tenant.sock) return;
       const pendingEntries = Object.entries(tenant._pendingLids).filter(([, p]) => p.phase === 'waiting_owner');
@@ -1822,27 +1855,26 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       const h = nowBogota.getHours();
       if (h < 7 || h >= 23) return;
 
-      // Solo del mismo día
-      const todayStr = new Date().toISOString().split('T')[0];
-      const todayPending = pendingEntries.filter(([, p]) => {
-        const day = p.startedAt ? new Date(p.startedAt).toISOString().split('T')[0] : null;
-        return day === todayStr;
-      });
-      if (todayPending.length === 0) return;
-
       const selfJid = tenant.sock?.user?.id;
       if (!selfJid) return;
 
-      const names = todayPending.map(([lid, p]) =>
-        `• ${p.pushName || `LID ...${lid.slice(-6)}`} — "${(p.firstMsg || '').substring(0, 40)}..."`
-      ).join('\n');
+      // Mensaje NATURAL — sin LIDs, sin formularios
+      const names = pendingEntries.map(([, p]) => {
+        const name = p.pushName || 'alguien sin nombre';
+        const preview = (p.firstMsg || '').substring(0, 50);
+        const daysAgo = Math.floor((Date.now() - (p.startedAt || Date.now())) / (24 * 60 * 60 * 1000));
+        const timeHint = daysAgo > 0 ? ` (hace ${daysAgo} d\u00eda${daysAgo > 1 ? 's' : ''})` : '';
+        return `• *${name}*${timeHint}: _"${preview}${preview.length >= 50 ? '...' : ''}"_`;
+      }).join('\n');
 
+      const count = pendingEntries.length;
+      const plural = count > 1;
       tenant.sock.sendMessage(selfJid, {
-        text: `🔔 *Recordatorio: ${todayPending.length} contacto(s) sin identificar*\n\n${names}\n\nRespond\u00e9 con el nombre del contacto para que pueda atenderlo.`
-      }).catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando recordatorio LID:`, e.message));
+        text: `Tengo ${count} contacto${plural ? 's' : ''} pendiente${plural ? 's' : ''} de identificar:\n\n${names}\n\n\u00bfLos conoc\u00e9s? Decime qui\u00e9n${plural ? 'es son' : ' es'} as\u00ed ${plural ? 'los' : 'lo'} atiendo bien 😊`
+      }).catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando recordatorio:`, e.message));
 
-      console.log(`[TM:${uid}] 🔔 LID Reminder: ${todayPending.length} pendientes recordados al owner`);
-    }, 60 * 60 * 1000); // cada 60 minutos
+      console.log(`[TM:${uid}] 🔔 Reminder: ${count} pendientes recordados al owner (persisten entre d\u00edas)`);
+    }, 60 * 60 * 1000);
 
     // Debounce para guardar _lidMap en Firestore (no en cada contacto, sino max 1 vez cada 60s)
     let _lidMapDirty = false;
@@ -2318,33 +2350,199 @@ async function transcribeMediaForTenant(uid, baileysMsg, tenant) {
  * @param {Object} [classification] - { contactType, businessId, businessName, hasAdditionalContext, additionalContext } del owner
  * @param {Object} [opts] - { suppressAutoReply: bool } si true, NO procesar buffereados (owner dijo "no respondas")
  */
+// ═══════════════════════════════════════════════════════════════════════════
+// CLASIFICACIÓN AUTÓNOMA — MIIA intenta entender quién es ANTES de preguntar
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * MIIA lee el mensaje, el pushName, y el contexto del owner para intentar
+ * clasificar al contacto desconocido SIN molestar al owner.
+ * Usa IA (Gemini) para interpretar con sentido común.
+ *
+ * @returns {{ classified: boolean, name?, contactType?, businessId?, businessName?, reason? }}
+ */
+async function _tryAutonomousClassification(uid, tenant, lidBase, pushName, messageBody) {
+  const businesses = tenant._businesses || [];
+  const result = { classified: false, reason: '' };
+
+  // ── CASO 1: pushName + 1 solo negocio → asumir lead con sentido común ──
+  if (pushName && businesses.length === 1) {
+    // Si el mensaje parece de un cliente/lead (pregunta por servicio, precio, horarios, etc.)
+    const businessKeywords = /\b(?:precio|costo|cuanto|cotiz|servicio|turno|cita|horario|agenda|reserv|consult|atien|disponib|trabaj|abierto|cerrado|ubica|direcc|info|inform)\b/i;
+    if (businessKeywords.test(messageBody)) {
+      result.classified = true;
+      result.name = pushName;
+      result.contactType = 'lead';
+      result.businessId = businesses[0].id;
+      result.businessName = businesses[0].name;
+      result.reason = `Mensaje parece consulta de negocio + pushName disponible + 1 solo negocio`;
+      return result;
+    }
+  }
+
+  // ── CASO 2: pushName + 0 negocios → contacto personal ──
+  if (pushName && businesses.length === 0) {
+    result.classified = true;
+    result.name = pushName;
+    result.contactType = 'group';
+    result.reason = 'pushName disponible + owner sin negocios → contacto personal';
+    return result;
+  }
+
+  // ── CASO 3: Usar IA para interpretar el mensaje ──
+  // Solo si tenemos suficiente contexto (mensaje > 10 chars o pushName)
+  if ((messageBody.length > 10 || pushName) && businesses.length > 0) {
+    try {
+      const bizList = businesses.map(b => `- ${b.name}: ${b.description || b.ownerRole || 'sin descripción'}`).join('\n');
+      const prompt = `Eres MIIA, asistente inteligente de WhatsApp. Un contacto desconocido escribió:
+
+Nombre WhatsApp: "${pushName || 'sin nombre'}"
+Mensaje: "${messageBody.substring(0, 300)}"
+
+El owner tiene estos negocios:
+${bizList}
+
+Basándote en el mensaje y el nombre, ¿podés deducir quién es este contacto?
+Respondé SOLO con un JSON (sin markdown, sin explicación):
+{
+  "canClassify": true/false,
+  "name": "nombre del contacto" o null,
+  "type": "lead" | "client" | "personal",
+  "businessMatch": "nombre exacto del negocio" o null,
+  "confidence": "high" | "medium" | "low",
+  "reason": "explicación breve"
+}
+
+Reglas:
+- Si el mensaje es un saludo genérico ("hola", "buenos días") SIN contexto de negocio → canClassify: false
+- Si el mensaje menciona servicios/productos/precios → probablemente lead
+- Si menciona seguimiento, factura, contrato → probablemente client
+- Si es conversación casual/personal → type: "personal"
+- Si hay solo 1 negocio y parece consulta → asumí lead de ese negocio
+- confidence "high" solo si estás muy seguro. "low" = mejor preguntar al owner
+- Solo canClassify: true si confidence es "high" o "medium"`;
+
+      const aiResponse = await callAIForTenant(uid, prompt);
+      if (aiResponse) {
+        // Parsear JSON de la respuesta
+        const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.canClassify && (parsed.confidence === 'high' || parsed.confidence === 'medium')) {
+            result.classified = true;
+            result.name = parsed.name || pushName || null;
+            result.contactType = parsed.type === 'client' ? 'client' : parsed.type === 'personal' ? 'group' : 'lead';
+            result.reason = parsed.reason || 'IA clasificó autónomamente';
+
+            // Match business por nombre
+            if (parsed.businessMatch) {
+              const biz = businesses.find(b => b.name && b.name.toLowerCase().includes(parsed.businessMatch.toLowerCase()));
+              if (biz) {
+                result.businessId = biz.id;
+                result.businessName = biz.name;
+              }
+            }
+            // Si es lead/client y no matcheó negocio pero hay 1 solo → asignar
+            if ((result.contactType === 'lead' || result.contactType === 'client') && !result.businessId && businesses.length === 1) {
+              result.businessId = businesses[0].id;
+              result.businessName = businesses[0].name;
+            }
+
+            console.log(`[TM:${uid}] 🧠 LID-ID: IA clasificó "${result.name}" como ${result.contactType} (confianza: ${parsed.confidence}) — ${result.reason}`);
+            return result;
+          } else {
+            result.reason = parsed.reason || 'IA no pudo clasificar con suficiente confianza';
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`[TM:${uid}] ⚠️ Error en clasificación autónoma con IA:`, e.message);
+      result.reason = 'Error en IA, no pudo clasificar';
+    }
+  }
+
+  // ── CASO 4: pushName solo + múltiples negocios → no es suficiente para clasificar ──
+  if (pushName && !result.classified) {
+    result.reason = result.reason || 'Información insuficiente para clasificar autónomamente';
+  }
+
+  return result;
+}
+
+/**
+ * Construye un mensaje NATURAL para preguntarle al owner quién es un contacto.
+ * MIIA habla con su personalidad — NUNCA como formulario ni comando.
+ * NUNCA muestra LID.
+ */
+function _buildNaturalLidQuestion(pushName, preview, nameHint, aiReason, businesses) {
+  // MIIA habla natural, curiosa pero organizada
+  let msg = '';
+
+  if (pushName) {
+    msg = `Che, me escribió alguien que no tengo registrado${nameHint}. `;
+    msg += `Me dijo: _"${preview}"_\n\n`;
+    msg += `¿Lo conocés? ¿Quién es?`;
+  } else {
+    msg = `Me escribió alguien que no tengo registrado y no tiene nombre en WhatsApp. `;
+    msg += `Me dijo: _"${preview}"_\n\n`;
+    msg += `¿Sabés quién puede ser?`;
+  }
+
+  // Si hay negocios, dar hint sutil
+  if (businesses.length > 0) {
+    const bizNames = businesses.map(b => b.name).join(', ');
+    msg += `\n\n_Decime el nombre y si es de ${businesses.length === 1 ? bizNames : 'algún negocio'} o contacto personal, así lo atiendo bien_ 😊`;
+  }
+
+  return msg;
+}
+
+/**
+ * Agrega una entrada al resumen diario del tenant.
+ * El resumen se envía al owner al final del día o cuando lo pida.
+ * NO notifica inmediatamente — es silencioso.
+ */
+function _addToDailySummary(uid, tenant, entry) {
+  if (!tenant._dailySummary) tenant._dailySummary = [];
+  tenant._dailySummary.push({
+    text: entry,
+    timestamp: new Date().toISOString()
+  });
+  // Persistir en Firestore (async, no bloquea)
+  const todayStr = new Date().toISOString().split('T')[0];
+  admin.firestore().collection('users').doc(uid)
+    .collection('miia_persistent').doc('daily_summary')
+    .set({
+      date: todayStr,
+      entries: tenant._dailySummary,
+      updatedAt: new Date().toISOString()
+    }, { merge: true })
+    .catch(e => console.error(`[TM:${uid}] ⚠️ Error persistiendo resumen diario:`, e.message));
+  console.log(`[TM:${uid}] 📋 Resumen diario: +1 entrada (total: ${tenant._dailySummary.length})`);
+}
+
 /**
  * Persistir LIDs pendientes en Firestore (sobrevive caídas/restarts del servidor).
- * Solo guarda LIDs del día actual. Se llama cada vez que _pendingLids cambia.
+ * Persiste TODOS los LIDs pendientes (sin filtro de día). Se llama cada vez que _pendingLids cambia.
  */
 function _savePendingLids(uid, tenant) {
   if (!tenant._pendingLids) return;
-  const todayStr = new Date().toISOString().split('T')[0];
-  // Solo persistir LIDs de hoy (los de ayer se descartan)
-  const todayLids = {};
+  // Persistir TODOS los LIDs pendientes — persisten entre días hasta que el owner resuelva o el teléfono se desvincule
+  const allLids = {};
   for (const [lid, data] of Object.entries(tenant._pendingLids)) {
-    const day = data.startedAt ? new Date(data.startedAt).toISOString().split('T')[0] : todayStr;
-    if (day === todayStr) {
-      todayLids[lid] = {
-        phase: data.phase,
-        firstMsg: data.firstMsg,
-        pushName: data.pushName,
-        originalFrom: data.originalFrom,
-        startedAt: data.startedAt,
-        contactSaidName: data.contactSaidName || null,
-        // NO guardar bufferedMsgs completos (muy pesado) — solo conteo
-        bufferedCount: data.bufferedMsgs?.length || 0
-      };
-    }
+    allLids[lid] = {
+      phase: data.phase,
+      firstMsg: data.firstMsg,
+      pushName: data.pushName,
+      originalFrom: data.originalFrom,
+      startedAt: data.startedAt,
+      contactSaidName: data.contactSaidName || null,
+      bufferedCount: data.bufferedMsgs?.length || 0
+    };
   }
   admin.firestore().collection('users').doc(uid)
     .collection('miia_persistent').doc('pending_lids')
-    .set({ lids: todayLids, updatedAt: new Date().toISOString() }, { merge: false })
+    .set({ lids: allLids, updatedAt: new Date().toISOString() }, { merge: false })
     .catch(e => console.error(`[TM:${uid}] ⚠️ Error persistiendo pending_lids:`, e.message));
 }
 
@@ -2411,17 +2609,21 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
   // Notificar al owner
   const selfJid = tenant.sock?.user?.id;
   if (tenant.sock && selfJid) {
-    const typeLabel = classification.contactType
-      ? ` (${classification.contactType}${classification.businessName ? ' de ' + classification.businessName : ''})`
-      : '';
-    const bufferInfo = pending.bufferedMsgs?.length
-      ? (suppressAutoReply
-        ? `\n\n📋 ${pending.bufferedMsgs.length} mensaje(s) pendiente(s) — esperando tu instrucción`
-        : `\n\n📨 Procesando ${pending.bufferedMsgs.length} mensaje(s) pendiente(s)...`)
-      : '';
-    tenant.sock.sendMessage(selfJid, {
-      text: `✅ *Contacto identificado*\n\n${contactName}${typeLabel}${phoneNumber ? `\n📱 ${phoneNumber}` : ''}\nLID: ...${lidBase.slice(-6)}${bufferInfo}`
-    }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando resolución LID:`, e.message));
+    // Notificación NATURAL — sin LID, sin formularios
+    const typeLabels = { client: 'cliente', lead: 'lead', familia: 'familia', equipo: 'equipo', group: 'amigo/conocido' };
+    const typeLabel = classification.contactType ? typeLabels[classification.contactType] || classification.contactType : '';
+    const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
+    const bufferCount = pending.bufferedMsgs?.length || 0;
+    let confirmMsg = `Listo, *${contactName}*`;
+    if (typeLabel) confirmMsg += ` es ${typeLabel}${bizSuffix}`;
+    confirmMsg += `. Lo tengo registrado.`;
+    if (bufferCount > 0) {
+      confirmMsg += suppressAutoReply
+        ? `\n\nTiene ${bufferCount} mensaje${bufferCount > 1 ? 's' : ''} pendiente${bufferCount > 1 ? 's' : ''} — esperando tu indicación.`
+        : `\n\nYa estoy atendiendo sus ${bufferCount} mensaje${bufferCount > 1 ? 's' : ''} pendiente${bufferCount > 1 ? 's' : ''} 💬`;
+    }
+    tenant.sock.sendMessage(selfJid, { text: confirmMsg })
+      .catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando resolución:`, e.message));
   }
 
   // ═══ PROCESAR MENSAJES BUFFEREADOS ═══
@@ -2552,8 +2754,8 @@ function _extractLidClassification(text, tenant) {
     }
   }
 
-  // SHORTCUT: Owner solo dice nombre del negocio ("Medilink") → es lead de ese negocio
-  // Si lo que capturamos como "nombre" en realidad es un negocio conocido, corregir
+  // SHORTCUT: Owner solo dice nombre del negocio ("Medilink") → detectar el negocio
+  // pero NO asumir tipo — PREGUNTAR si es lead, cliente o acompañante
   if (result.name && !result.businessId) {
     const businesses = tenant._businesses || [];
     const bizByName = businesses.find(b =>
@@ -2564,7 +2766,9 @@ function _extractLidClassification(text, tenant) {
       result.businessId = bizByName.id;
       result.businessName = bizByName.name;
       result.name = null; // Limpiar — el nombre del contacto no fue dado
-      if (!result.contactType) result.contactType = 'lead'; // Default: lead
+      // NO asignar tipo — que el flujo pregunte si es lead, cliente, etc.
+      // result.contactType se queda sin definir → el caller preguntará
+      result._needsTypeConfirmation = true;
     }
   }
 
@@ -2652,51 +2856,57 @@ function checkOwnerLidResponse(uid, messageBody) {
       //           "Es mi mamá" / "es familia" / "es del equipo"
       const classification = _extractLidClassification(text, tenant);
 
-      if (classification.name || classification.contactType || classification.businessId) {
+      if (classification.name || classification.contactType || classification.businessId || classification._needsTypeConfirmation) {
         // Detectar si el owner dice "no respondas" / "no le escribas" / "yo me encargo"
         const suppressPatterns = /\bno\s+respond|no\s+le\s+escrib|no\s+le\s+dig|no\s+le\s+habl|no\s+le\s+mand|yo\s+me\s+encargo|yo\s+le\s+respond|yo\s+le\s+escrib|luego\s+le\s+respond|después\s+le|despues\s+le|no\s+hagas\s+nada|no\s+le\s+contest/i;
         const shouldSuppress = suppressPatterns.test(text);
 
-        const resolvedName = classification.name || pending.pushName || `Contacto ${lidBase.slice(-6)}`;
+        const resolvedName = classification.name || pending.pushName || 'este contacto';
+
+        // ═══ SHORTCUT NEGOCIO: owner dijo solo "Medilink" → PREGUNTAR si lead/cliente ═══
+        if (classification._needsTypeConfirmation) {
+          pending.phase = 'waiting_owner_type';
+          pending.resolvedName = resolvedName;
+          pending.classification = classification;
+          pending.phone = classification.phone;
+          const selfJid = tenant.sock?.user?.id;
+          if (tenant.sock && selfJid) {
+            tenant.sock.sendMessage(selfJid, {
+              text: `Ok, es de *${classification.businessName}*. \u00bfPero es lead nuevo, cliente, o acompa\u00f1ante/conocido?`
+            }).catch(() => {});
+          }
+          _savePendingLids(uid, tenant);
+          return true;
+        }
 
         // ═══ CURIOSIDAD INTELIGENTE: preguntar lo NO obvio, lo obvio NO ═══
-        // Si tiene nombre PERO no tiene tipo NI negocio → preguntar UNA vez
-        // Excepciones (sentido común):
-        //   - "Carlos es mi amigo" → tipo=group, NO preguntar (obvio)
-        //   - "Es mi mamá" → tipo=familia, NO preguntar (obvio)
-        //   - Solo tiene 1 negocio y 0 contactos personales → asumir lead (sentido común)
-        //   - Solo nombre sin nada → preguntar
         const hasType = !!classification.contactType;
         const hasBiz = !!classification.businessId;
         const businesses = tenant._businesses || [];
 
         if (classification.name && !hasType && !hasBiz) {
-          // Solo nombre, sin contexto → ¿preguntar o asumir?
           if (businesses.length === 1) {
-            // Sentido común: 1 solo negocio → asumir lead de ese negocio
             classification.contactType = 'lead';
             classification.businessId = businesses[0].id;
             classification.businessName = businesses[0].name;
             console.log(`[TM:${uid}] 🔍 LID-ID: Solo nombre "${resolvedName}" + 1 negocio → asumir lead de ${businesses[0].name}`);
           } else if (businesses.length === 0) {
-            // Sin negocios → contacto personal, no preguntar
             classification.contactType = 'group';
             console.log(`[TM:${uid}] 🔍 LID-ID: Solo nombre "${resolvedName}" + 0 negocios → contacto personal`);
           } else {
-            // 2+ negocios y solo dio nombre → PREGUNTAR (no es obvio)
             pending.phase = 'waiting_owner_type';
             pending.resolvedName = resolvedName;
             pending.classification = classification;
             pending.phone = classification.phone;
-            const bizList = businesses.map((b, i) => `${i + 1}. ${b.name}`).join('\n');
+            const bizNames = businesses.map(b => b.name).join(', ');
             const selfJid = tenant.sock?.user?.id;
             if (tenant.sock && selfJid) {
               tenant.sock.sendMessage(selfJid, {
-                text: `👤 *${resolvedName}* — anotado.\n\n¿Es lead/cliente de algún negocio o es contacto personal?\n\n${bizList}\n\n• Respondé el nombre del negocio (ej: "Medilink")\n• O: "amigo", "familia", "equipo"\n• O: "lead" (si no sabés de cuál negocio)`
-              }).catch(e => console.error(`[TM:${uid}] ⚠️ Error preguntando tipo:`, e.message));
+                text: `Dale, *${resolvedName}*. \u00bfEs de alguno de tus negocios (${bizNames}) o es contacto personal?`
+              }).catch(() => {});
             }
             _savePendingLids(uid, tenant);
-            return true; // Consumir — esperar respuesta del owner
+            return true;
           }
         }
 
@@ -2745,6 +2955,8 @@ function checkOwnerLidResponse(uid, messageBody) {
           classification.contactType = 'lead';
         } else if (/\bcliente?\b/i.test(text)) {
           classification.contactType = 'client';
+        } else if (/\bacompa[ñn]ante?\b/i.test(text)) {
+          classification.contactType = 'group';
         }
 
         if (classification.contactType) {

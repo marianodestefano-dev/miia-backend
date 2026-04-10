@@ -8532,6 +8532,14 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Unirse al room del tenant para recibir eventos en tiempo real (mining, etc.)
+  socket.on('join_tenant_room', (uid) => {
+    if (uid && typeof uid === 'string') {
+      socket.join(`tenant:${uid}`);
+      console.log(`[Socket.IO] Cliente unido al room tenant:${uid}`);
+    }
+  });
+
   // Enviar mensaje manual desde frontend (Baileys API) — requiere Firebase token
   socket.on('send_message', async (data) => {
     const { to, message, token } = data;
@@ -10407,13 +10415,53 @@ app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, r
 const db = admin.firestore();
 
 // GET /api/tenant/:uid/businesses — Listar todos los negocios del owner
+// Si no hay negocios pero sí hay training data (owner legacy), auto-crear el negocio por defecto
 app.get('/api/tenant/:uid/businesses', async (req, res) => {
   try {
     const { uid } = req.params;
-    // Sin orderBy para no excluir docs que no tengan createdAt
     const snap = await db.collection('users').doc(uid).collection('businesses').get();
-    const businesses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    // Ordenar en JS: docs con createdAt primero (más recientes arriba), sin createdAt al final
+    let businesses = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // ═══ AUTO-MIGRACIÓN: si no hay negocios, intentar crear uno desde datos legacy ═══
+    if (businesses.length === 0) {
+      console.log(`[BIZ] ⚠️ ${uid} sin negocios — intentando auto-migración desde datos legacy`);
+      try {
+        const userDoc = await db.collection('users').doc(uid).get();
+        const userData = userDoc.exists ? userDoc.data() : {};
+        // Buscar training data legacy
+        const brainDoc = await db.collection('users').doc(uid)
+          .collection('miia_persistent').doc('training_data').get();
+        const hasBrain = brainDoc.exists && brainDoc.data()?.content;
+        // Buscar nombre del negocio en el cerebro o en el perfil
+        let bizName = userData.businessName || userData.name || 'Mi Negocio';
+        // Si hay algún dato que sugiera un negocio existente → crear automáticamente
+        if (userData.name || hasBrain || userData.role) {
+          const newBiz = {
+            name: bizName,
+            description: userData.businessDescription || userData.role || '',
+            ownerRole: userData.role || '',
+            email: userData.email || '',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            autoMigrated: true
+          };
+          const docRef = await db.collection('users').doc(uid).collection('businesses').add(newBiz);
+          // Copiar cerebro al negocio si existe
+          if (hasBrain) {
+            await db.collection('users').doc(uid).collection('businesses').doc(docRef.id)
+              .collection('brain').doc('business_cerebro')
+              .set({ content: brainDoc.data().content, updatedAt: new Date().toISOString() });
+          }
+          // Setear como default
+          await db.collection('users').doc(uid).update({ defaultBusinessId: docRef.id });
+          console.log(`[BIZ] ✅ Auto-migración: creado "${bizName}" (${docRef.id}) para ${uid}`);
+          businesses = [{ id: docRef.id, ...newBiz }];
+        }
+      } catch (migErr) {
+        console.error(`[BIZ] ⚠️ Error en auto-migración:`, migErr.message);
+      }
+    }
+
     businesses.sort((a, b) => {
       const ta = a.createdAt?._seconds || a.createdAt?.seconds || 0;
       const tb = b.createdAt?._seconds || b.createdAt?.seconds || 0;
