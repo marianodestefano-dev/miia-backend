@@ -718,6 +718,38 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     if (!ctx.ownerActiveChats) ctx.ownerActiveChats = {};
     ctx.ownerActiveChats[phone] = Date.now();
     console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} registrado (owner activo — MIIA callada por 30min).`);
+
+    // ═══ AUTO-RECLASIFICACIÓN PROACTIVA: lead → client ═══
+    // Si el owner dice palabras clave de cierre de venta a un lead → reclasificar a client
+    // MIIA aprende silenciosamente. No pregunta. Lo reportará en el resumen matutino.
+    const currentType = ctx.contactTypes[phone];
+    if (currentType === 'lead') {
+      const body = (messageBody || '').toLowerCase();
+      const clientSignals = /\bbienvenid[oa]\b|\bacceso\s+activ|\bcontrato\b|\bcerramos\b|\bcliente\s+nuevo\b|\bya\s+(?:est[aá]s?|ten[eé]s)\b|\bte\s+(?:damos|dimos)\s+(?:la\s+)?bienvenida\b|\bactivamos\b|\btu\s+cuenta\b|\btu\s+usuario\b|\btu\s+acceso\b/i;
+      if (clientSignals.test(body)) {
+        console.log(`${logPrefix} 🔄 AUTO-RECLASIFICACIÓN: ${basePhone} de LEAD → CLIENT (owner dijo keyword de cierre)`);
+        ctx.contactTypes[phone] = 'client';
+        ctx.contactTypes[`${basePhone}@s.whatsapp.net`] = 'client';
+        // Guardar en contact_index
+        saveContactIndex(ctx.ownerUid, basePhone, {
+          type: 'client',
+          name: ctx.leadNames[phone] || '',
+          source: 'auto_reclassified_from_lead',
+          reclassifiedAt: new Date().toISOString()
+        }).catch(() => {});
+        // Acumular para reporte matutino (no notificar ahora — sentido común)
+        if (!ctx._reclassifications) ctx._reclassifications = [];
+        ctx._reclassifications.push({
+          phone: basePhone,
+          name: ctx.leadNames[phone] || basePhone,
+          from: 'lead',
+          to: 'client',
+          trigger: messageBody.substring(0, 50),
+          at: new Date().toISOString()
+        });
+      }
+    }
+
     return;
   }
 

@@ -712,7 +712,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       printQRInTerminal: false,
       browser: engineProfile.browser,
       generateHighQualityLinkPreview: false,
-      syncFullHistory: false,
+      syncFullHistory: true,
       markOnlineOnConnect: engineProfile.markOnlineOnConnect,
       // ── Stability options (engine-specific) ──
       retryRequestDelayMs: engineProfile.retryRequestDelayMs,
@@ -1337,6 +1337,54 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
             // PRIMERA VEZ que vemos este LID → iniciar flujo
             console.log(`[TM:${uid}] 🔍 LID-ID: NUEVO LID desconocido ${lidBase}${pushName ? ` (pushName: ${pushName})` : ''} — iniciando identificación`);
+
+            // ═══ AUTO-MATCH: ¿El pushName coincide con alguien en contact_index? ═══
+            // Si el contacto ya fue identificado antes (desde otro dispositivo/LID),
+            // mapearlo automáticamente sin molestar al owner.
+            if (pushName) {
+              try {
+                const ownerUid = tenant.ownerUid || uid;
+                const indexSnap = await admin.firestore().collection('users').doc(ownerUid)
+                  .collection('contact_index').where('name', '==', pushName).limit(1).get();
+                if (!indexSnap.empty) {
+                  const existingDoc = indexSnap.docs[0];
+                  const existingPhone = existingDoc.id;
+                  const existingData = existingDoc.data();
+                  console.log(`[TM:${uid}] 🔗 LID-ID: AUTO-MATCH por pushName "${pushName}" → ${existingPhone} (${existingData.type})`);
+                  // Mapear este nuevo LID al JID conocido
+                  const knownJid = `${existingPhone}@s.whatsapp.net`;
+                  if (!tenant._lidMap) tenant._lidMap = {};
+                  tenant._lidMap[lidBase] = knownJid;
+                  admin.firestore().collection('users').doc(uid)
+                    .collection('miia_persistent').doc('lid_map')
+                    .set({ mappings: tenant._lidMap, updatedAt: new Date().toISOString() }, { merge: true })
+                    .catch(e => console.error(`[TM:${uid}] ⚠️ Error persistiendo auto-match LID:`, e.message));
+                  // Notificar brevemente al owner
+                  const selfJid = tenant.sock?.user?.id;
+                  if (tenant.sock && selfJid) {
+                    tenant.sock.sendMessage(selfJid, {
+                      text: `🔗 *${pushName}* escribió desde otro dispositivo. Ya lo identifiqué — es ${existingData.type === 'client' ? 'cliente' : existingData.type}${existingData.businessName ? ' de ' + existingData.businessName : ''}.`
+                    }).catch(() => {});
+                  }
+                  // Procesar el mensaje normalmente con el JID resuelto
+                  resolvedFrom = knownJid;
+                  // NO crear pendingLid — ya está resuelto
+                  // El continue al final del bloque if lo saltea
+                  // Necesitamos re-procesar este mensaje con el JID correcto
+                  const { handleTenantMessage } = require('./tenant_message_handler');
+                  const ownerRole = tenant.role || 'owner';
+                  try {
+                    await handleTenantMessage(uid, ownerUid, ownerRole, knownJid, body, false, false, tenant, messageContext || {});
+                  } catch (e) {
+                    console.error(`[TM:${uid}] ⚠️ Error re-procesando auto-match:`, e.message);
+                  }
+                  continue;
+                }
+              } catch (e) {
+                console.error(`[TM:${uid}] ⚠️ Error buscando auto-match en contact_index:`, e.message);
+              }
+            }
+
             // Lazy-load businesses para clasificación inteligente del owner
             if (!tenant._businesses) {
               try {
@@ -1605,11 +1653,41 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           if (chatLog.length < 50) continue;
 
           const phone = jid.split('@')[0];
+
+          // ═══ INDEXACIÓN PER-CONTACTO: guardar en contact_index ═══
+          // Nombre: primer mensaje del contacto que sea corto, o pushName de allMsgs
+          let contactName = '';
+          for (const m of allMsgs) {
+            if (m.pushName) { contactName = m.pushName; break; }
+          }
+
+          // Resumen: primeros 3 mensajes del contacto + último mensaje (para contexto)
+          const contactMsgs = allMsgs.filter(m => !m.key?.fromMe).map(m =>
+            m.message?.conversation || m.message?.extendedTextMessage?.text || ''
+          ).filter(Boolean);
+          const summaryParts = contactMsgs.slice(0, 3);
+          if (contactMsgs.length > 3) summaryParts.push(contactMsgs[contactMsgs.length - 1]);
+          const conversationSummary = summaryParts.join(' | ').substring(0, 300);
+
+          // Guardar en contact_index (async, no bloquea el loop)
+          const ownerUid = tenant.ownerUid || uid;
+          admin.firestore().collection('users').doc(ownerUid)
+            .collection('contact_index').doc(phone)
+            .set({
+              name: contactName || '',
+              type: classification === 'cliente' ? 'client' : 'lead',
+              source: 'history_mining',
+              conversationSummary,
+              messageCount: allMsgs.length,
+              minedAt: new Date().toISOString()
+            }, { merge: true })
+            .catch(e => console.error(`[TM:${uid}] ⚠️ Error indexando contacto ${phone}:`, e.message));
+
           if (classification === 'lead') {
-            adnAccumulatorLeads += `\n[LEAD ${phone}]\n${chatLog}\n`;
+            adnAccumulatorLeads += `\n[LEAD ${phone}${contactName ? ' — ' + contactName : ''}]\n${chatLog}\n`;
             historyStats.leads++;
           } else {
-            adnAccumulatorClients += `\n[CLIENTE ${phone}]\n${chatLog}\n`;
+            adnAccumulatorClients += `\n[CLIENTE ${phone}${contactName ? ' — ' + contactName : ''}]\n${chatLog}\n`;
             historyStats.clients++;
           }
           historyStats.total++;
@@ -1634,7 +1712,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               leads: historyStats.leads,
               clients: historyStats.clients,
               skipped: historyStats.skipped,
-              totalChars: adnBatch.length
+              totalChars: adnBatch.length,
+              phase: 'processing'
             });
           }
         }
@@ -1647,8 +1726,20 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       if (isLatest) {
         tenant._historyMined = true;
         console.log(`[TM:${uid}] 🧬 ADN Mining COMPLETO: ${historyStats.leads} leads, ${historyStats.clients} clientes, ${historyStats.skipped} omitidos`);
+
+        // Notificar al owner en self-chat
+        const selfJid = tenant.sock?.user?.id;
+        if (tenant.sock && selfJid) {
+          tenant.sock.sendMessage(selfJid, {
+            text: `🧬 *Análisis de historial completo*\n\n✅ Conocí ${historyStats.leads} leads y ${historyStats.clients} clientes de tu historial.\n${historyStats.skipped} conversaciones sin relevancia fueron omitidas.\n\nYa sé quiénes son tus contactos y cómo te comunicas con ellos. Cuando escriban, sabré cómo tratarlos. 💪`
+          }).catch(() => {});
+        }
+
         if (ioInstance) {
-          ioInstance.to(`tenant:${uid}`).emit('adn_mining_complete', historyStats);
+          ioInstance.to(`tenant:${uid}`).emit('adn_mining_complete', {
+            ...historyStats,
+            phase: 'complete'
+          });
         }
         // Liberar acumuladores
         adnAccumulatorLeads = '';
@@ -2567,6 +2658,48 @@ function checkOwnerLidResponse(uid, messageBody) {
         const shouldSuppress = suppressPatterns.test(text);
 
         const resolvedName = classification.name || pending.pushName || `Contacto ${lidBase.slice(-6)}`;
+
+        // ═══ CURIOSIDAD INTELIGENTE: preguntar lo NO obvio, lo obvio NO ═══
+        // Si tiene nombre PERO no tiene tipo NI negocio → preguntar UNA vez
+        // Excepciones (sentido común):
+        //   - "Carlos es mi amigo" → tipo=group, NO preguntar (obvio)
+        //   - "Es mi mamá" → tipo=familia, NO preguntar (obvio)
+        //   - Solo tiene 1 negocio y 0 contactos personales → asumir lead (sentido común)
+        //   - Solo nombre sin nada → preguntar
+        const hasType = !!classification.contactType;
+        const hasBiz = !!classification.businessId;
+        const businesses = tenant._businesses || [];
+
+        if (classification.name && !hasType && !hasBiz) {
+          // Solo nombre, sin contexto → ¿preguntar o asumir?
+          if (businesses.length === 1) {
+            // Sentido común: 1 solo negocio → asumir lead de ese negocio
+            classification.contactType = 'lead';
+            classification.businessId = businesses[0].id;
+            classification.businessName = businesses[0].name;
+            console.log(`[TM:${uid}] 🔍 LID-ID: Solo nombre "${resolvedName}" + 1 negocio → asumir lead de ${businesses[0].name}`);
+          } else if (businesses.length === 0) {
+            // Sin negocios → contacto personal, no preguntar
+            classification.contactType = 'group';
+            console.log(`[TM:${uid}] 🔍 LID-ID: Solo nombre "${resolvedName}" + 0 negocios → contacto personal`);
+          } else {
+            // 2+ negocios y solo dio nombre → PREGUNTAR (no es obvio)
+            pending.phase = 'waiting_owner_type';
+            pending.resolvedName = resolvedName;
+            pending.classification = classification;
+            pending.phone = classification.phone;
+            const bizList = businesses.map((b, i) => `${i + 1}. ${b.name}`).join('\n');
+            const selfJid = tenant.sock?.user?.id;
+            if (tenant.sock && selfJid) {
+              tenant.sock.sendMessage(selfJid, {
+                text: `👤 *${resolvedName}* — anotado.\n\n¿Es lead/cliente de algún negocio o es contacto personal?\n\n${bizList}\n\n• Respondé el nombre del negocio (ej: "Medilink")\n• O: "amigo", "familia", "equipo"\n• O: "lead" (si no sabés de cuál negocio)`
+              }).catch(e => console.error(`[TM:${uid}] ⚠️ Error preguntando tipo:`, e.message));
+            }
+            _savePendingLids(uid, tenant);
+            return true; // Consumir — esperar respuesta del owner
+          }
+        }
+
         _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, resolvedName, classification.phone, classification, { suppressAutoReply: shouldSuppress });
 
         // Si hay contexto adicional (instrucciones para la IA) → NO consumir, la IA del self-chat procesa
@@ -2574,7 +2707,61 @@ function checkOwnerLidResponse(uid, messageBody) {
           console.log(`[TM:${uid}] 🔍 LID-ID: Nombre="${resolvedName}" tipo=${classification.contactType || '?'} biz=${classification.businessName || '?'}${shouldSuppress ? ' ⛔ SUPRIMIR' : ''} + contexto → pasa a IA`);
           return false;
         }
-        return true; // Solo clasificación, consumir
+
+        // Confirmar al owner con sentido común (no preguntar lo obvio)
+        const selfJid2 = tenant.sock?.user?.id;
+        if (tenant.sock && selfJid2 && classification.contactType) {
+          const typeLabels = { client: 'cliente', lead: 'lead', familia: 'familia', equipo: 'equipo', group: 'amigo/conocido' };
+          const label = typeLabels[classification.contactType] || classification.contactType;
+          const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
+          tenant.sock.sendMessage(selfJid2, {
+            text: `✅ Listo, *${resolvedName}* es ${label}${bizSuffix}. Lo trataré como tal.`
+          }).catch(() => {});
+        }
+        return true; // Clasificación completa, consumir
+      }
+
+      // ═══ FASE waiting_owner_type: Owner responde al "¿de cuál negocio?" ═══
+      if (pending.phase === 'waiting_owner_type') {
+        const resolvedName = pending.resolvedName;
+        const classification = pending.classification || {};
+
+        // Buscar si respondió con nombre de negocio
+        const businesses = tenant._businesses || [];
+        const bizMatch = businesses.find(b =>
+          b.name && b.name.toLowerCase().includes(text.toLowerCase())
+        );
+        if (bizMatch) {
+          classification.contactType = classification.contactType || 'lead';
+          classification.businessId = bizMatch.id;
+          classification.businessName = bizMatch.name;
+        } else if (/\b(?:amigo|amiga|conocido|vecino)\b/i.test(text)) {
+          classification.contactType = 'group';
+        } else if (/\b(?:familia|familiar|mi\s+\w+)\b/i.test(text)) {
+          classification.contactType = 'familia';
+        } else if (/\b(?:equipo|empleado|colega|compa[ñn]ero)\b/i.test(text)) {
+          classification.contactType = 'equipo';
+        } else if (/\blead\b/i.test(text)) {
+          classification.contactType = 'lead';
+        } else if (/\bcliente?\b/i.test(text)) {
+          classification.contactType = 'client';
+        }
+
+        if (classification.contactType) {
+          _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, resolvedName, pending.phone, classification);
+          const typeLabels = { client: 'cliente', lead: 'lead', familia: 'familia', equipo: 'equipo', group: 'amigo/conocido' };
+          const label = typeLabels[classification.contactType] || classification.contactType;
+          const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
+          const selfJid = tenant.sock?.user?.id;
+          if (tenant.sock && selfJid) {
+            tenant.sock.sendMessage(selfJid, {
+              text: `✅ Listo, *${resolvedName}* es ${label}${bizSuffix}. Lo trataré como tal.`
+            }).catch(() => {});
+          }
+          return true;
+        }
+        // No entendió → re-preguntar
+        return false; // Pasa a IA como conversación normal
       }
     }
 
