@@ -2884,10 +2884,13 @@ function checkOwnerLidResponse(uid, messageBody) {
         return true; // Consumir — no necesita IA
       }
 
-      // FILTRO: reclamos/instrucciones a MIIA → NO es clasificación
+      // FILTRO: NO es clasificación si es pregunta, comando a MIIA, reclamo, o mensaje largo
       const looksLikeInstruction = /!!|¡|debes|siempre|nunca|para que|por qu[eé]/i.test(text);
-      if (looksLikeInstruction) {
-        console.log(`[TM:${uid}] 🔍 LID-ID: Texto parece instrucción, no nombre — ignorando para LID ${lidBase}`);
+      const looksLikeQuestion = /\?/.test(text) || /^(?:quien|quién|qué|que|cómo|como|dónde|donde|cuándo|cuando|por que|porqu[eé])\b/i.test(text);
+      const looksLikeCommand = /^(?:miia|dile|respondele|respond[eé]|env[ií]a|agenda|recordar|recu[eé]rdame|programa|pon\s)/i.test(text);
+      const tooLongForName = text.length > 80;
+      if (looksLikeInstruction || looksLikeQuestion || looksLikeCommand || tooLongForName) {
+        console.log(`[TM:${uid}] 🔍 LID-ID: Texto NO es clasificación (${looksLikeInstruction ? 'instrucción' : looksLikeQuestion ? 'pregunta' : looksLikeCommand ? 'comando' : 'muy largo'}) — ignorando para LID ${lidBase}`);
         continue;
       }
 
