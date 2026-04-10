@@ -14262,12 +14262,32 @@ app.post('/api/calendar/event', requireRole('owner', 'agent'), express.json(), a
 });
 
 // ═══ DIAGNÓSTICO DE CALENDAR — Para resolver "eventos no aparecen" ═══
+// Ruta autenticada (desde dashboard)
 app.get('/api/calendar/diagnose', requireRole('owner', 'admin'), async (req, res) => {
   try {
     const uid = req.query.uid || req.user.uid;
     console.log(`[GCAL-DIAG] 🔍 Ejecutando diagnóstico para uid=${uid}`);
     const result = await googleCalendar.diagnoseCalendar(uid);
     console.log(`[GCAL-DIAG] ${result.ok ? '✅' : '❌'} Diagnóstico completado: ${result.steps.length} pasos`);
+    res.json(result);
+  } catch (e) {
+    console.error(`[GCAL-DIAG] ❌ Error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Ruta pública con UID explícito (solo admin UIDs permitidos)
+app.get('/api/tenant/:uid/calendar/diagnose', async (req, res) => {
+  const { uid } = req.params;
+  // Solo permitir diagnóstico para UIDs admin conocidos
+  const ADMIN_UIDS = [OWNER_UID, 'bq2BbtCVF8cZo30tum584zrGATJ3', 'A5pMESWlfmPWCoCPRbwy85EzUzy2'];
+  if (!ADMIN_UIDS.includes(uid)) {
+    return res.status(403).json({ error: 'Solo disponible para cuentas admin' });
+  }
+  try {
+    console.log(`[GCAL-DIAG] 🔍 Diagnóstico público para uid=${uid}`);
+    const result = await googleCalendar.diagnoseCalendar(uid);
+    console.log(`[GCAL-DIAG] ${result.ok ? '✅' : '❌'} Completado: ${result.steps.length} pasos`);
     res.json(result);
   } catch (e) {
     console.error(`[GCAL-DIAG] ❌ Error:`, e.message);
