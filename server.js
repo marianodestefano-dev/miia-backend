@@ -3545,10 +3545,12 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       //   responde, respondé, respóndele, respondele, respondale, contestale, contéstale,
       //   escribile, escríbele, mandále, mándale, atiéndelo, dale responde, dale contestá
       // ⚠️ EXCLUIR "presentate a [nombres]" — es un comando distinto (presentarIndividual)
-      // ⚠️ EXCLUIR mensajes que empiezan con recordar/agendar/agenda — son comandos de agenda, NO respondele
+      // ⚠️ EXCLUIR comandos que NO son respondele pero contienen verbos similares
       const isPresentarANombres = effectiveMsg && /(?:presenta(?:te)?|preséntate|presentá(?:te)?)\s+(?:miia\s+)?(?:a|con)\s+\w/i.test(effectiveMsg);
       const isAgendaCommand = effectiveMsg && /^\s*(?:miia\s+)?(?:recordar|recuerdame|recuérdame|agendar|agenda|recordatorio|programar|pon\s+en\s+agenda)/i.test(effectiveMsg);
-      const respondeleMatch = !isPresentarANombres && !isAgendaCommand && effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
+      // Excluir: "envíale/mándale la cotización/el documento/un email/la info" → NO es respondele, es una orden a MIIA
+      const isEnviarContenido = effectiveMsg && /(?:env[ií]a|mand[aá]|m[aá]nda)(?:le|les|selo)?\s+(?:la|el|un|una|los|las|mi|su|ese|esa|esto|eso)\s+/i.test(effectiveMsg);
+      const respondeleMatch = !isPresentarANombres && !isAgendaCommand && !isEnviarContenido && effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
       if (respondeleMatch) {
         // PRIORIDAD 1: Buscar alerta "Alguien te escribió" en historial reciente
         const twoHoursAgo = Date.now() - 7200000;
