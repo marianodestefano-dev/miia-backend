@@ -1277,6 +1277,113 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
           }
         }
+
+          // ═══ @LID DESCONOCIDO: Flujo de identificación progresiva ═══
+          // Si el LID no se resolvió Y no es fromMe → contacto desconocido con LID
+          if (resolvedFrom === from && !isFromMe) {
+            if (!tenant._pendingLids) tenant._pendingLids = {};
+            const lidBase = from.split('@')[0].split(':')[0];
+            const pushName = msg.pushName || '';
+            const pending = tenant._pendingLids[lidBase];
+
+            // ¿Ya le preguntamos al owner y está esperando respuesta?
+            if (pending && pending.phase === 'waiting_owner') {
+              // Acumular mensajes del contacto mientras esperamos
+              if (!pending.bufferedMsgs) pending.bufferedMsgs = [];
+              pending.bufferedMsgs.push({ body, timestamp: Date.now() });
+              console.log(`[TM:${uid}] 🔍 LID-ID: ${lidBase} — mensaje buffereado (esperando owner). Total: ${pending.bufferedMsgs.length}`);
+              // No procesar — esperar resolución
+              continue;
+            }
+
+            // ¿Ya le preguntamos al contacto directamente?
+            if (pending && pending.phase === 'waiting_contact') {
+              // El contacto responde — podría ser su nombre/identificación
+              // Guardar y dejar que el timeout lo procese, o procesar si es corto (probable nombre)
+              if (!pending.bufferedMsgs) pending.bufferedMsgs = [];
+              pending.bufferedMsgs.push({ body, timestamp: Date.now() });
+              // Si la respuesta es corta (< 50 chars), probablemente es un nombre
+              if (body.length < 50 && !/^(hola|si|no|ok|buenas|que|como|hey)\b/i.test(body.trim())) {
+                const contactName = body.trim();
+                console.log(`[TM:${uid}] 🔍 LID-ID: Contacto se identificó como "${contactName}" — notificando al owner para confirmar`);
+                // Notificar al owner para confirmar
+                const selfJid = tenant.sock?.user?.id;
+                if (tenant.sock && selfJid) {
+                  tenant.sock.sendMessage(selfJid, {
+                    text: `🔍 *Identificación de contacto*\n\nEl contacto desconocido (LID: ...${lidBase.slice(-6)}) se identificó como *"${contactName}"*${pushName ? ` (nombre WhatsApp: ${pushName})` : ''}.\n\n¿Es correcto? Respondé:\n• "Si, es [nombre]" → confirmo y lo mapeo\n• "No" → le pregunto de nuevo\n• "[nombre] [+número]" → lo mapeo con ese número`
+                  }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando LID-ID confirmación:`, e.message));
+                }
+                pending.phase = 'waiting_owner_confirm';
+                pending.contactSaidName = contactName;
+                pending.confirmAt = Date.now();
+                // Timeout confirmación: 30 min → mapear automáticamente
+                setTimeout(() => {
+                  if (tenant._pendingLids?.[lidBase]?.phase === 'waiting_owner_confirm') {
+                    console.log(`[TM:${uid}] 🔍 LID-ID: Owner no confirmó en 30min — aceptando "${contactName}" como identidad`);
+                    _resolvePendingLid(uid, tenant, lidBase, from, contactName, null);
+                  }
+                }, 30 * 60 * 1000);
+              }
+              continue;
+            }
+
+            // ¿Owner respondió confirmación?
+            if (pending && pending.phase === 'waiting_owner_confirm') {
+              // Este mensaje es del contacto, no del owner — bufferear
+              if (!pending.bufferedMsgs) pending.bufferedMsgs = [];
+              pending.bufferedMsgs.push({ body, timestamp: Date.now() });
+              continue;
+            }
+
+            // PRIMERA VEZ que vemos este LID → iniciar flujo
+            console.log(`[TM:${uid}] 🔍 LID-ID: NUEVO LID desconocido ${lidBase}${pushName ? ` (pushName: ${pushName})` : ''} — iniciando identificación`);
+            tenant._pendingLids[lidBase] = {
+              phase: 'waiting_owner',
+              firstMsg: body,
+              pushName,
+              originalFrom: from,
+              startedAt: Date.now(),
+              bufferedMsgs: [{ body, timestamp: Date.now() }]
+            };
+
+            // PASO 1: Notificar al owner en self-chat
+            const selfJid = tenant.sock?.user?.id;
+            if (tenant.sock && selfJid) {
+              const preview = body.length > 100 ? body.substring(0, 100) + '...' : body;
+              tenant.sock.sendMessage(selfJid, {
+                text: `🔍 *Contacto no identificado*\n\n${pushName ? `Nombre WhatsApp: *${pushName}*\n` : ''}Mensaje: "${preview}"\nLID: ...${lidBase.slice(-6)}\n\n¿Quién es? Respondé con:\n• El nombre: "Es [nombre]"\n• Nombre + número: "[nombre] +573001234567"\n• "No sé" → le pregunto directamente`
+              }).catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando LID-ID query al owner:`, e.message));
+            }
+
+            // PASO 2: Timeout 2h → preguntar al contacto directamente
+            setTimeout(async () => {
+              const p = tenant._pendingLids?.[lidBase];
+              if (!p || p.phase !== 'waiting_owner') return; // Ya resuelto
+              console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 2h para ${lidBase} — preguntando al contacto directamente`);
+              p.phase = 'waiting_contact';
+              // Enviar mensaje al contacto preguntando quién es
+              if (tenant.sock) {
+                try {
+                  await tenant.sock.sendMessage(from, {
+                    text: `¡Hola! 👋 Disculpá, ¿con quién tengo el gusto? Es que no tengo guardado tu número 😊`
+                  });
+                  console.log(`[TM:${uid}] 🔍 LID-ID: Pregunta enviada al contacto ${lidBase}`);
+                } catch (e) {
+                  console.error(`[TM:${uid}] ⚠️ Error preguntando identidad a ${lidBase}:`, e.message);
+                }
+              }
+              // Timeout final: 24h → descartar si nadie responde
+              setTimeout(() => {
+                if (tenant._pendingLids?.[lidBase]) {
+                  console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 24h — descartando ${lidBase} como no identificado`);
+                  delete tenant._pendingLids[lidBase];
+                }
+              }, 24 * 60 * 60 * 1000);
+            }, 2 * 60 * 60 * 1000);
+
+            continue; // No procesar hasta que se identifique
+          }
+
         const resolvedFromNumber = resolvedFrom?.split('@')[0]?.split(':')[0];
         const isSelfChat = isFromMe && myNumber && (myNumber === fromNumber || myNumber === resolvedFromNumber);
 
@@ -2023,6 +2130,162 @@ async function transcribeMediaForTenant(uid, baileysMsg, tenant) {
   return text.trim();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// @LID DESCONOCIDO: Funciones de identificación progresiva
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Resolver un LID pendiente: mapear permanentemente y procesar mensajes buffereados.
+ * @param {string} uid - UID del tenant
+ * @param {Object} tenant - Referencia al tenant
+ * @param {string} lidBase - Base numérica del LID
+ * @param {string} originalFrom - JID original del LID (xxx@lid)
+ * @param {string} contactName - Nombre identificado
+ * @param {string|null} phoneNumber - Número de teléfono (si se proporcionó)
+ */
+async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactName, phoneNumber) {
+  const pending = tenant._pendingLids?.[lidBase];
+  if (!pending) return;
+
+  console.log(`[TM:${uid}] 🔍 LID-ID: ✅ Resolviendo ${lidBase} → "${contactName}"${phoneNumber ? ` (${phoneNumber})` : ''}`);
+
+  // Si tenemos número, mapear en _lidMap
+  if (phoneNumber) {
+    const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+    const jid = `${cleanPhone}@s.whatsapp.net`;
+    if (!tenant._lidMap) tenant._lidMap = {};
+    tenant._lidMap[lidBase] = jid;
+    // Persistir inmediatamente
+    try {
+      await admin.firestore().collection('users').doc(uid)
+        .collection('miia_persistent').doc('lid_map')
+        .set({ mappings: tenant._lidMap, updatedAt: new Date().toISOString() }, { merge: true });
+      console.log(`[TM:${uid}] 💾 LID-MAP: ${lidBase} → ${jid} persistido (nombre: ${contactName})`);
+    } catch (e) {
+      console.error(`[TM:${uid}] ⚠️ Error persistiendo LID mapping:`, e.message);
+    }
+  }
+
+  // Guardar nombre en contact_index (para referencia futura)
+  try {
+    await admin.firestore().collection('users').doc(uid)
+      .collection('miia_persistent').doc('lid_contacts')
+      .set({ [lidBase]: { name: contactName, phone: phoneNumber || null, resolvedAt: new Date().toISOString(), originalFrom } }, { merge: true });
+  } catch (e) {
+    console.error(`[TM:${uid}] ⚠️ Error guardando lid_contacts:`, e.message);
+  }
+
+  // Notificar al owner
+  const selfJid = tenant.sock?.user?.id;
+  if (tenant.sock && selfJid) {
+    tenant.sock.sendMessage(selfJid, {
+      text: `✅ *Contacto identificado*\n\n${contactName}${phoneNumber ? ` (${phoneNumber})` : ''}\nLID: ...${lidBase.slice(-6)}\n\n${pending.bufferedMsgs?.length ? `Tiene ${pending.bufferedMsgs.length} mensaje(s) pendiente(s) que ahora se procesarán.` : ''}`
+    }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando resolución LID:`, e.message));
+  }
+
+  // Procesar mensajes buffereados
+  if (pending.bufferedMsgs?.length && tenant.sock) {
+    const resolvedJid = phoneNumber ? `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net` : originalFrom;
+    console.log(`[TM:${uid}] 🔍 LID-ID: Procesando ${pending.bufferedMsgs.length} mensajes buffereados de ${contactName}`);
+    for (const buffered of pending.bufferedMsgs) {
+      const handleTenantMessage = require('./tenant_message_handler');
+      const ownerUid = tenant.ownerUid || uid;
+      const role = tenant.role || 'owner';
+      try {
+        await handleTenantMessage(uid, ownerUid, role, resolvedJid, buffered.body, false, false, tenant, {});
+      } catch (e) {
+        console.error(`[TM:${uid}] ⚠️ Error procesando mensaje buffereado:`, e.message);
+      }
+    }
+  }
+
+  // Limpiar
+  delete tenant._pendingLids[lidBase];
+}
+
+/**
+ * Verificar si un mensaje del owner en self-chat es una respuesta a una consulta de LID pendiente.
+ * Llamar desde el handler de mensajes cuando el owner escribe en self-chat.
+ * @param {string} uid - UID del tenant
+ * @param {string} messageBody - Texto del mensaje del owner
+ * @returns {boolean} true si el mensaje fue procesado como respuesta LID
+ */
+function checkOwnerLidResponse(uid, messageBody) {
+  const tenant = tenants.get(uid);
+  if (!tenant || !tenant._pendingLids) return false;
+
+  const text = (messageBody || '').trim();
+  if (!text) return false;
+
+  // Buscar LIDs en fase waiting_owner o waiting_owner_confirm
+  for (const [lidBase, pending] of Object.entries(tenant._pendingLids)) {
+    if (pending.phase === 'waiting_owner') {
+      // Patrones: "Es Juan", "es maria", "Juan", "no sé", "no se"
+      const noSeMatch = /^no\s+s[eé]$/i.test(text);
+      if (noSeMatch) {
+        // Owner no sabe → pasar a preguntar al contacto directamente
+        console.log(`[TM:${uid}] 🔍 LID-ID: Owner dijo "no sé" para ${lidBase} — preguntando al contacto`);
+        pending.phase = 'waiting_contact';
+        if (tenant.sock) {
+          tenant.sock.sendMessage(pending.originalFrom, {
+            text: `¡Hola! 👋 Disculpá, ¿con quién tengo el gusto? Es que no tengo guardado tu número 😊`
+          }).catch(e => console.error(`[TM:${uid}] ⚠️ Error preguntando identidad:`, e.message));
+        }
+        // Timeout: 24h → descartar
+        setTimeout(() => {
+          if (tenant._pendingLids?.[lidBase]?.phase === 'waiting_contact') {
+            console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 24h esperando contacto — descartando ${lidBase}`);
+            delete tenant._pendingLids[lidBase];
+          }
+        }, 24 * 60 * 60 * 1000);
+        return true;
+      }
+
+      // "Es [nombre]" o "es [nombre] +número" o simplemente "[nombre]"
+      const esMatch = text.match(/^(?:es\s+)?(.+?)(?:\s+\+?(\d{10,18}))?$/i);
+      if (esMatch) {
+        const name = esMatch[1].replace(/^["']|["']$/g, '').trim();
+        const phone = esMatch[2] || null;
+        if (name.length >= 2 && name.length < 100) {
+          _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, name, phone);
+          return true;
+        }
+      }
+    }
+
+    if (pending.phase === 'waiting_owner_confirm') {
+      // Confirmar identidad que dio el contacto
+      const siMatch = /^s[ií]\b/i.test(text);
+      const noMatch = /^no\b/i.test(text);
+      // "si, es [nombre]" o "si" (acepta el nombre que dio el contacto)
+      if (siMatch) {
+        const nameOverride = text.match(/s[ií],?\s+es\s+(.+)/i);
+        const finalName = nameOverride ? nameOverride[1].trim() : pending.contactSaidName;
+        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, finalName, null);
+        return true;
+      }
+      if (noMatch) {
+        // Re-preguntar al contacto
+        pending.phase = 'waiting_contact';
+        if (tenant.sock) {
+          tenant.sock.sendMessage(pending.originalFrom, {
+            text: `Disculpá, no te identifiqué bien. ¿Me decís tu nombre completo? 😊`
+          }).catch(e => console.error(`[TM:${uid}] ⚠️ Error re-preguntando identidad:`, e.message));
+        }
+        return true;
+      }
+      // Si el owner responde con un nombre directo (override)
+      const nameMatch = text.match(/^(.{2,50})(?:\s+\+?(\d{10,18}))?$/);
+      if (nameMatch) {
+        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, nameMatch[1].trim(), nameMatch[2] || null);
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 module.exports = {
   initTenant,
   destroyTenant,
@@ -2036,5 +2299,6 @@ module.exports = {
   getAllTenants,
   getConnectionMetrics,
   resolveLidFromContacts,
-  getConnectedTenants
+  getConnectedTenants,
+  checkOwnerLidResponse
 };

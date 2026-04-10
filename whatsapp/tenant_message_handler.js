@@ -635,6 +635,20 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   const basePhone = getBasePhone(phone);
 
+  // ── PASO 1b: @LID — Verificar si el owner responde a una consulta de identificación ──
+  if (isSelfChat && role === 'owner') {
+    try {
+      const { checkOwnerLidResponse } = require('./tenant_manager');
+      if (checkOwnerLidResponse(uid, messageBody)) {
+        console.log(`${logPrefix} 🔍 LID-ID: Mensaje del owner procesado como respuesta LID — no enviar a IA`);
+        return; // Mensaje consumido por el flujo de identificación
+      }
+    } catch (e) {
+      // Si falla, seguir con el flujo normal
+      console.error(`${logPrefix} ⚠️ Error en checkOwnerLidResponse:`, e.message);
+    }
+  }
+
   // ── PASO 2: Verificar horario (no aplica a self-chat) ──
   if (!isSelfChat && !isWithinScheduleConfig(ctx.scheduleConfig)) {
     console.log(`${logPrefix} ⏸️ Fuera de horario. Mensaje de ${basePhone} ignorado.`);
