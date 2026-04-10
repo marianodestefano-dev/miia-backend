@@ -1253,6 +1253,31 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
             // Tiene keys reales pero body vacío = probable error de descifrado
             console.log(`[TM:${uid}] 🔴 Mensaje NO descifrado de ${msg.key.remoteJid} — keys: [${msgKeys.join(', ')}]. El contacto escribió algo pero no pudimos leerlo.`);
+
+            // ═══ NOTIFICAR AL OWNER: 3+ mensajes vacíos del mismo contacto en 2 min ═══
+            if (!tenant._emptyBodyTracker) tenant._emptyBodyTracker = {};
+            const ebFrom = msg.key.remoteJid;
+            if (!tenant._emptyBodyTracker[ebFrom]) tenant._emptyBodyTracker[ebFrom] = { count: 0, firstAt: Date.now(), notified: false };
+            const ebTrack = tenant._emptyBodyTracker[ebFrom];
+            ebTrack.count++;
+            const ebElapsed = Date.now() - ebTrack.firstAt;
+            if (ebTrack.count >= 3 && ebElapsed < 120000 && !ebTrack.notified) {
+              ebTrack.notified = true;
+              const selfJid = tenant.sock?.user?.id;
+              if (tenant.sock && selfJid) {
+                const contactId = ebFrom.split('@')[0];
+                const pushName = msg.pushName || contactId;
+                const alertText = `📱 *${pushName}* intentó escribirte pero no pudimos leer su mensaje (${ebTrack.count} intentos).\n\nEsto pasa cuando WhatsApp está actualizando la seguridad del contacto. Escribile vos primero y después va a funcionar normal.`;
+                tenant.sock.sendMessage(selfJid, { text: alertText }).catch(e =>
+                  console.error(`[TM:${uid}] ❌ Error notificando body vacío al owner:`, e.message)
+                );
+                console.log(`[TM:${uid}] 📢 Owner notificado: ${pushName} no descifrado (${ebTrack.count}x en ${Math.round(ebElapsed / 1000)}s)`);
+              }
+            }
+            // Limpiar tracker cada 5 min para no acumular memoria
+            if (ebElapsed > 300000) {
+              delete tenant._emptyBodyTracker[ebFrom];
+            }
           }
           continue;
         }
