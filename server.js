@@ -6748,17 +6748,55 @@ REGLAS:
           if (contactJid) console.log(`[RESPONDELE-TAG] 🎯 Último contacto: ${contactJid}`);
         }
 
-        // 3. Si es un nombre → buscar en conversaciones recientes
+        // 3. Si es un nombre → buscar en contactos registrados (familia, equipo, grupos) + conversaciones
         if (!contactJid && destinatario.length >= 2) {
-          for (const [convJid, msgs] of Object.entries(conversations)) {
-            if (convJid === phone || !convJid.includes('@')) continue;
-            const lastMsg = msgs.slice(-5).find(m => m.role === 'user');
-            if (lastMsg?._pushName && lastMsg._pushName.toLowerCase().includes(destinatario.toLowerCase())) {
-              contactJid = convJid;
-              leadPhone = convJid.split('@')[0];
-              console.log(`[RESPONDELE-TAG] 👤 Encontrado por nombre "${destinatario}" → ${contactJid}`);
-              break;
+          const destLower = destinatario.toLowerCase();
+          // 3a. Buscar en Firestore contact_groups (equipo, familia, etc.)
+          try {
+            const groupsSnap = await db.collection('users').doc(uid).collection('contact_groups').get();
+            for (const gDoc of groupsSnap.docs) {
+              const contactsSnap = await db.collection('users').doc(uid)
+                .collection('contact_groups').doc(gDoc.id).collection('contacts').get();
+              for (const cDoc of contactsSnap.docs) {
+                const cData = cDoc.data();
+                if (cData.name && cData.name.toLowerCase().includes(destLower)) {
+                  leadPhone = cDoc.id;
+                  contactJid = `${leadPhone}@s.whatsapp.net`;
+                  console.log(`[RESPONDELE-TAG] 👤 Encontrado en grupo "${gDoc.id}" por nombre "${destinatario}" → ${contactJid}`);
+                  break;
+                }
+              }
+              if (contactJid) break;
             }
+          } catch (groupErr) {
+            console.error(`[RESPONDELE-TAG] ⚠️ Error buscando en contact_groups:`, groupErr.message);
+          }
+
+          // 3b. Buscar en conversaciones recientes (pushName)
+          if (!contactJid) {
+            for (const [convJid, msgs] of Object.entries(conversations)) {
+              if (convJid === phone || !convJid.includes('@')) continue;
+              const lastMsg = msgs.slice(-5).find(m => m.role === 'user');
+              if (lastMsg?._pushName && lastMsg._pushName.toLowerCase().includes(destLower)) {
+                contactJid = convJid;
+                leadPhone = convJid.split('@')[0];
+                console.log(`[RESPONDELE-TAG] 👤 Encontrado por pushName "${destinatario}" → ${contactJid}`);
+                break;
+              }
+            }
+          }
+
+          // 3c. Buscar en contact_index por nombre
+          if (!contactJid) {
+            try {
+              const indexSnap = await db.collection('users').doc(uid).collection('contact_index')
+                .where('name', '>=', destinatario).where('name', '<=', destinatario + '\uf8ff').limit(1).get();
+              if (!indexSnap.empty) {
+                leadPhone = indexSnap.docs[0].id;
+                contactJid = `${leadPhone}@s.whatsapp.net`;
+                console.log(`[RESPONDELE-TAG] 👤 Encontrado en contact_index "${destinatario}" → ${contactJid}`);
+              }
+            } catch (e) { /* no pasa nada */ }
           }
         }
 
