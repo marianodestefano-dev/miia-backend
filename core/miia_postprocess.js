@@ -26,24 +26,26 @@ const { attemptAutoRepair } = require('./integrity_engine');
 
 // Frases que confirman acciones — SOLO válidas si el tag correspondiente existe
 const ACTION_CONFIRMATIONS = [
-  { phrases: [/ya (?:te |lo )?agend[eé]/i, /listo.*agend/i, /te.*agend[eé]/i, /queda.*agendad/i],
+  // NOTA: los patrones /listo/ deben estar CERCA de la acción (max ~30 chars) para no causar falsos positivos.
+  // Antes /listo.*agend/i cruzaba TODO el mensaje. Ahora usa .{0,30} para limitar la distancia.
+  { phrases: [/ya (?:te |lo )?agend[eé]/i, /listo.{0,30}agend[eé]/i, /te.*agend[eé]/i, /queda.*agendad/i],
     requiredTag: /\[AGENDAR_EVENTO:|\[SOLICITAR_TURNO:/ },
-  { phrases: [/ya (?:le |te )?(?:mandé|envié).*(?:mail|correo|email)/i, /listo.*(?:mail|correo|email)/i, /te.*(?:envié|mandé).*correo/i],
+  { phrases: [/ya (?:le |te )?(?:mandé|envié).*(?:mail|correo|email)/i, /listo.{0,30}(?:mail|correo|email)/i, /te.*(?:envié|mandé).*correo/i],
     requiredTag: /\[ENVIAR_CORREO:/ },
-  { phrases: [/ya le avisé/i, /ya le dije/i, /listo.*le (?:avisé|dije)/i],
+  { phrases: [/ya le avisé/i, /ya le dije/i, /listo.{0,30}le (?:avisé|dije)/i],
     requiredTag: /\[MENSAJE_PARA_OWNER:|DILE_A_/ },
-  { phrases: [/ya.*te.*recordar/i, /anotado.*te.*recuerdo/i, /listo.*recordatorio/i],
+  { phrases: [/ya.*te.*recordar/i, /anotado.*te.*recuerdo/i, /listo.{0,30}recordatorio/i],
     requiredTag: /\[RECORDAR_(?:CONTACTO|OWNER):|\[AGENDAR_EVENTO:/ },
-  { phrases: [/ya.*te.*(?:mandé|envié).*cotizaci[oó]n/i, /listo.*cotizaci[oó]n/i],
+  { phrases: [/ya.*te.*(?:mandé|envié).*cotizaci[oó]n/i, /listo.{0,30}cotizaci[oó]n/i],
     requiredTag: /\[GENERAR_COTIZACION_PDF:/ },
   // CANCELAR_EVENTO: "ya eliminé/cancelé/borré" sin tag
-  { phrases: [/ya (?:lo |la |te )?(?:eliminé|cancelé|borré|quité)/i, /listo.*(?:eliminé|cancelé|borré)/i, /(?:cancelad[oa]|eliminad[oa]).*agenda/i],
+  { phrases: [/ya (?:lo |la |te )?(?:eliminé|cancelé|borré|quité)/i, /listo.{0,30}(?:eliminé|cancelé|borré)/i, /(?:cancelad[oa]|eliminad[oa]).*agenda/i],
     requiredTag: /\[CANCELAR_EVENTO:/ },
   // MOVER_EVENTO: "ya lo moví/cambié de hora" sin tag
-  { phrases: [/ya (?:lo |la |te )?(?:moví|cambié|pasé).*(?:hora|horario|fecha|día)/i, /listo.*(?:moví|cambié|pasé)/i],
+  { phrases: [/ya (?:lo |la |te )?(?:moví|cambié|pasé).*(?:hora|horario|fecha|día)/i, /listo.{0,30}(?:moví|cambié|pasé)/i],
     requiredTag: /\[MOVER_EVENTO:/ },
   // RESPONDELE: "ya le respondí/dije/escribí/mandé" sin tag
-  { phrases: [/ya le (?:respondí|dije|escribí|mandé|contesté|avisé)/i, /listo.*le (?:respondí|dije|escribí|mandé)/i],
+  { phrases: [/ya le (?:respondí|dije|escribí|mandé|contesté|avisé)/i, /listo.{0,30}le (?:respondí|dije|escribí|mandé)/i],
     requiredTag: /\[RESPONDELE:|\[MENSAJE_PARA_OWNER:/ },
 ];
 

@@ -392,6 +392,7 @@ let conversationMetadata = {};
 let isProcessing = {};
 let pendingResponses = {};  // re-trigger cuando llegan mensajes mientras se procesa
 let messageTimers = {};     // debounce 3s por contacto — acumula mensajes antes de responder
+let pendingQuotedText = {}; // quotedText del último mensaje por phone (para pasar a processMiiaResponse)
 const RESET_ALLOWED_PHONES = ['573163937365', '573054169969'];
 let keywordsSet = [];
 // FAMILY CONTACTS — Se carga dinámicamente desde Firestore (miia_persistent/contacts)
@@ -4698,7 +4699,9 @@ El body debe ser texto plano, sin HTML. Firmá como ${ownerName}.`;
     }
 
     if (!isAlreadySavedParam && userMessage !== null) {
-      conversations[phone].push({ role: 'user', content: userMessage, timestamp: Date.now() });
+      const pmrEntry = { role: 'user', content: userMessage, timestamp: Date.now() };
+      if (pendingQuotedText[phone]) { pmrEntry.quotedText = pendingQuotedText[phone]; delete pendingQuotedText[phone]; }
+      conversations[phone].push(pmrEntry);
       // +1 trustPoint por mensaje del contacto (MIIA no suma, solo el contacto)
       addAffinityPoint(phone);
       // Reset followup counter cuando el lead responde
@@ -4789,7 +4792,11 @@ Nuevo resumen actualizado:`;
       }
     }
 
-    const history = (conversations[phone] || []).map(m => `${m.role === 'user' ? 'Cliente' : 'Agente'}: ${m.content}`).join('\n');
+    const history = (conversations[phone] || []).map(m => {
+      const speaker = m.role === 'user' ? 'Cliente' : 'Agente';
+      if (m.quotedText) return `${speaker} [respondiendo a: "${m.quotedText.substring(0, 120)}"]: ${m.content}`;
+      return `${speaker}: ${m.content}`;
+    }).join('\n');
 
     // ── PROTOCOLO QUEJAS E INSULTOS ──────────────────────────────────────────
     if (!isAdmin && !isFamilyContact && effectiveMsg) {
@@ -8067,7 +8074,9 @@ async function handleIncomingMessage(message) {
       if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
       const exists = conversations[effectiveTarget].some(m => m.content === body && Math.abs(m.timestamp - Date.now()) < 5000);
       if (!exists) {
-        conversations[effectiveTarget].push({ role: 'user', content: body, timestamp: Date.now() });
+        const entry = { role: 'user', content: body, timestamp: Date.now() };
+        if (message._quotedText) entry.quotedText = message._quotedText;
+        conversations[effectiveTarget].push(entry);
         saveDB();
       }
     }
@@ -8080,7 +8089,9 @@ async function handleIncomingMessage(message) {
     // Si es self-chat y MIIA NO está activa ni mencionada → guardar como nota y salir
     if (isSelfChatMsg && !isMIIAActive && !isFamily) {
       if (!conversations[effectiveTarget]) conversations[effectiveTarget] = [];
-      conversations[effectiveTarget].push({ role: 'user', content: body, timestamp: Date.now() });
+      const noteEntry = { role: 'user', content: body, timestamp: Date.now() };
+      if (message._quotedText) noteEntry.quotedText = message._quotedText;
+      conversations[effectiveTarget].push(noteEntry);
       saveDB();
       return;
     }
@@ -8106,7 +8117,14 @@ async function handleIncomingMessage(message) {
       const userContent = mediaContext
         ? `[El lead envió un ${mediaLabel[mediaContext.mediaType] || 'archivo'}. Transcripción/descripción: "${body}"]`
         : body;
-      history.push({ role: 'user', content: userContent, timestamp: Date.now() });
+      const histEntry = { role: 'user', content: userContent, timestamp: Date.now() };
+      if (message._quotedText) {
+        histEntry.quotedText = message._quotedText;
+        pendingQuotedText[effectiveTarget] = message._quotedText;
+      } else {
+        delete pendingQuotedText[effectiveTarget];
+      }
+      history.push(histEntry);
       if (history.length > 40) conversations[effectiveTarget] = history.slice(-40);
 
       // Extracción de nombre en background — solo para leads reales, nunca para self-chat
@@ -8822,6 +8840,22 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
       const adaptedFrom = isFromMe ? ownerJid : resolvedRemote;
       const adaptedTo = isFromMe ? resolvedRemote : ownerJid;
       // Adapter: convert Baileys message to whatsapp-web.js-like format for handleIncomingMessage
+      // Extraer quotedText del contextInfo para que el historial incluya contexto de replies
+      const ctxInfo = baileysMsg.message?.extendedTextMessage?.contextInfo
+        || baileysMsg.message?.imageMessage?.contextInfo
+        || baileysMsg.message?.videoMessage?.contextInfo
+        || baileysMsg.message?.documentMessage?.contextInfo
+        || null;
+      let adaptedQuotedText = null;
+      if (ctxInfo?.quotedMessage) {
+        const qm = ctxInfo.quotedMessage;
+        adaptedQuotedText = qm.conversation
+          || qm.extendedTextMessage?.text
+          || qm.imageMessage?.caption
+          || qm.videoMessage?.caption
+          || qm.documentMessage?.caption
+          || '[media]';
+      }
       const adapted = {
         from: adaptedFrom,
         to: adaptedTo,
@@ -8833,7 +8867,8 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
         isStatus: from === 'status@broadcast',
         timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
         pushName: baileysMsg.pushName || null,  // Para LID resolution por pushName
-        _baileysMsg: baileysMsg  // Para que processMediaMessage pueda descargar media
+        _baileysMsg: baileysMsg,  // Para que processMediaMessage pueda descargar media
+        _quotedText: adaptedQuotedText  // Contexto de mensaje citado para historial
       };
       handleIncomingMessage(adapted);
     },
@@ -13774,6 +13809,17 @@ server.listen(PORT, () => {
                 const ownerNum2 = ownerSock2?.user?.id?.split('@')[0]?.split(':')[0] || OWNER_PHONE;
                 const ownerJid2 = `${ownerNum2}@s.whatsapp.net`;
                 const isFromMe2 = !!baileysMsg.key.fromMe;
+                // Extraer quotedText del contextInfo
+                const ctxInfo2 = baileysMsg.message?.extendedTextMessage?.contextInfo
+                  || baileysMsg.message?.imageMessage?.contextInfo
+                  || baileysMsg.message?.videoMessage?.contextInfo
+                  || baileysMsg.message?.documentMessage?.contextInfo
+                  || null;
+                let quotedText2 = null;
+                if (ctxInfo2?.quotedMessage) {
+                  const qm2 = ctxInfo2.quotedMessage;
+                  quotedText2 = qm2.conversation || qm2.extendedTextMessage?.text || qm2.imageMessage?.caption || qm2.videoMessage?.caption || '[media]';
+                }
                 const adapted = {
                   from: isFromMe2 ? ownerJid2 : resolvedRemote,
                   to: isFromMe2 ? resolvedRemote : ownerJid2,
@@ -13784,7 +13830,8 @@ server.listen(PORT, () => {
                   type: baileysMsg.message?.imageMessage ? 'image' : baileysMsg.message?.audioMessage ? 'audio' : baileysMsg.message?.videoMessage ? 'video' : baileysMsg.message?.documentMessage ? 'document' : baileysMsg.message?.stickerMessage ? 'sticker' : 'chat',
                   isStatus: from === 'status@broadcast',
                   timestamp: baileysMsg.messageTimestamp || Math.floor(Date.now() / 1000),
-                  _baileysMsg: baileysMsg
+                  _baileysMsg: baileysMsg,
+                  _quotedText: quotedText2
                 };
                 handleIncomingMessage(adapted);
               },
