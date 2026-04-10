@@ -639,23 +639,43 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   const basePhone = getBasePhone(phone);
 
   // ── PASO 1b: @LID — Verificar si el owner responde a una consulta de identificación ──
+  // checkOwnerLidResponse retorna:
+  //   true  = mensaje consumido (solo clasificación, ej: "Es Juan") → no enviar a IA
+  //   false = puede que haya resuelto LID pero el mensaje tiene contexto adicional → seguir a IA
   if (isSelfChat && role === 'owner') {
     try {
       const { checkOwnerLidResponse } = require('./tenant_manager');
       if (checkOwnerLidResponse(uid, messageBody)) {
-        console.log(`${logPrefix} 🔍 LID-ID: Mensaje del owner procesado como respuesta LID — no enviar a IA`);
-        return; // Mensaje consumido por el flujo de identificación
+        console.log(`${logPrefix} 🔍 LID-ID: Mensaje consumido como clasificación — no enviar a IA`);
+        return;
       }
+      // Si retornó false, el mensaje sigue al flujo normal (puede haber resuelto LID en background)
     } catch (e) {
-      // Si falla, seguir con el flujo normal
       console.error(`${logPrefix} ⚠️ Error en checkOwnerLidResponse:`, e.message);
     }
   }
 
-  // ── PASO 2: Verificar horario (no aplica a self-chat) ──
-  if (!isSelfChat && !isWithinScheduleConfig(ctx.scheduleConfig)) {
-    console.log(`${logPrefix} ⏸️ Fuera de horario. Mensaje de ${basePhone} ignorado.`);
-    return;
+  // ── PASO 2: Verificar horario ──
+  // Excluidos del check: self-chat, familia, equipo, fromMe (mensajes del propio owner)
+  if (!isSelfChat && !isFromMe && !isWithinScheduleConfig(ctx.scheduleConfig)) {
+    // Check rápido: ¿es familia, equipo o contacto de grupo personal? → nunca bloquear por horario
+    const isFamilyLegacy = ctx.familyContacts && ctx.familyContacts[basePhone];
+    const isTeamLegacy = ctx.teamContacts && ctx.teamContacts[basePhone];
+    // También buscar en contact_groups (familia, equipo, amigos, etc.)
+    let isInContactGroup = false;
+    if (ctx.contactGroups) {
+      for (const gid of Object.keys(ctx.contactGroups)) {
+        if (ctx.contactGroups[gid].contacts && ctx.contactGroups[gid].contacts[basePhone]) {
+          isInContactGroup = true;
+          break;
+        }
+      }
+    }
+    if (!isFamilyLegacy && !isTeamLegacy && !isInContactGroup) {
+      console.log(`${logPrefix} ⏸️ Fuera de horario. Mensaje de ${basePhone} ignorado.`);
+      return;
+    }
+    console.log(`${logPrefix} 🕐 Fuera de horario pero contacto es familia/equipo/grupo — permitido`);
   }
 
   // ── PASO 3: Filtrar bots ──
@@ -1675,6 +1695,16 @@ module.exports = {
   savePersonalLearning,
   queueDubiousLearning,
   saveAgendaEvent,
+
+  // Setear clasificación desde fuera (LID resolution, etc.)
+  setContactType: (uid, phone, type) => {
+    const ctx = tenantContexts.get(uid);
+    if (ctx) { ctx.contactTypes[phone] = type; ctx.contactTypes[`${phone}@s.whatsapp.net`] = type; }
+  },
+  setLeadName: (uid, phone, name) => {
+    const ctx = tenantContexts.get(uid);
+    if (ctx) { ctx.leadNames[phone] = name; ctx.leadNames[`${phone}@s.whatsapp.net`] = name; }
+  },
 
   // Inyección de funciones de aprobación dinámica (llamar desde server.js al inicio)
   setApprovalFunctions,

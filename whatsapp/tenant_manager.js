@@ -1337,6 +1337,13 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
             // PRIMERA VEZ que vemos este LID → iniciar flujo
             console.log(`[TM:${uid}] 🔍 LID-ID: NUEVO LID desconocido ${lidBase}${pushName ? ` (pushName: ${pushName})` : ''} — iniciando identificación`);
+            // Lazy-load businesses para clasificación inteligente del owner
+            if (!tenant._businesses) {
+              try {
+                const { loadBusinesses } = require('./tenant_message_handler');
+                tenant._businesses = await loadBusinesses(tenant.ownerUid || uid);
+              } catch (_) { tenant._businesses = []; }
+            }
             tenant._pendingLids[lidBase] = {
               phase: 'waiting_owner',
               firstMsg: body,
@@ -2136,18 +2143,23 @@ async function transcribeMediaForTenant(uid, baileysMsg, tenant) {
 
 /**
  * Resolver un LID pendiente: mapear permanentemente y procesar mensajes buffereados.
+ * Si el owner proporcionó clasificación (tipo + negocio), se guarda en contact_index
+ * para que los mensajes buffereados se procesen con el prompt correcto.
+ *
  * @param {string} uid - UID del tenant
  * @param {Object} tenant - Referencia al tenant
  * @param {string} lidBase - Base numérica del LID
  * @param {string} originalFrom - JID original del LID (xxx@lid)
  * @param {string} contactName - Nombre identificado
  * @param {string|null} phoneNumber - Número de teléfono (si se proporcionó)
+ * @param {Object} [classification] - { contactType, businessId, businessName } del owner
  */
-async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactName, phoneNumber) {
+async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactName, phoneNumber, classification = {}) {
   const pending = tenant._pendingLids?.[lidBase];
   if (!pending) return;
 
-  console.log(`[TM:${uid}] 🔍 LID-ID: ✅ Resolviendo ${lidBase} → "${contactName}"${phoneNumber ? ` (${phoneNumber})` : ''}`);
+  const hasClassification = classification.contactType || classification.businessId;
+  console.log(`[TM:${uid}] 🔍 LID-ID: ✅ Resolviendo ${lidBase} → "${contactName}"${phoneNumber ? ` (${phoneNumber})` : ''}${hasClassification ? ` [tipo=${classification.contactType || '?'}, biz=${classification.businessName || '?'}]` : ''}`);
 
   // Si tenemos número, mapear en _lidMap
   if (phoneNumber) {
@@ -2155,7 +2167,6 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
     const jid = `${cleanPhone}@s.whatsapp.net`;
     if (!tenant._lidMap) tenant._lidMap = {};
     tenant._lidMap[lidBase] = jid;
-    // Persistir inmediatamente
     try {
       await admin.firestore().collection('users').doc(uid)
         .collection('miia_persistent').doc('lid_map')
@@ -2166,7 +2177,7 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
     }
   }
 
-  // Guardar nombre en contact_index (para referencia futura)
+  // Guardar nombre en lid_contacts (referencia interna)
   try {
     await admin.firestore().collection('users').doc(uid)
       .collection('miia_persistent').doc('lid_contacts')
@@ -2175,20 +2186,50 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
     console.error(`[TM:${uid}] ⚠️ Error guardando lid_contacts:`, e.message);
   }
 
+  // ═══ CLASIFICACIÓN INTELIGENTE: guardar tipo + negocio en contact_index ═══
+  const resolvedPhone = phoneNumber ? phoneNumber.replace(/[^0-9]/g, '') : lidBase;
+  if (hasClassification) {
+    try {
+      const indexData = {
+        name: contactName,
+        type: classification.contactType || 'lead', // Default: lead si no se especifica
+        ...(classification.businessId && { businessId: classification.businessId }),
+        ...(classification.businessName && { businessName: classification.businessName }),
+        source: 'owner_lid_response'
+      };
+      await admin.firestore().collection('users').doc(uid)
+        .collection('contact_index').doc(resolvedPhone)
+        .set({ ...indexData, updatedAt: new Date().toISOString() }, { merge: true });
+      console.log(`[TM:${uid}] 📇 LID-ID: Clasificación guardada en contact_index: ${resolvedPhone} → type=${indexData.type}, biz=${indexData.businessId || '-'}`);
+    } catch (e) {
+      console.error(`[TM:${uid}] ⚠️ Error guardando clasificación en contact_index:`, e.message);
+    }
+
+    // También setear en el contexto de TMH para que los mensajes buffereados lo usen inmediatamente
+    try {
+      const { setContactType, setLeadName } = require('./tenant_message_handler');
+      if (setContactType) setContactType(uid, resolvedPhone, classification.contactType || 'lead');
+      if (setLeadName) setLeadName(uid, resolvedPhone, contactName);
+    } catch (_) { /* TMH puede no exportar estas funciones aún */ }
+  }
+
   // Notificar al owner
   const selfJid = tenant.sock?.user?.id;
   if (tenant.sock && selfJid) {
+    const typeLabel = classification.contactType
+      ? ` (${classification.contactType}${classification.businessName ? ' de ' + classification.businessName : ''})`
+      : '';
     tenant.sock.sendMessage(selfJid, {
-      text: `✅ *Contacto identificado*\n\n${contactName}${phoneNumber ? ` (${phoneNumber})` : ''}\nLID: ...${lidBase.slice(-6)}\n\n${pending.bufferedMsgs?.length ? `Tiene ${pending.bufferedMsgs.length} mensaje(s) pendiente(s) que ahora se procesarán.` : ''}`
+      text: `✅ *Contacto identificado*\n\n${contactName}${typeLabel}${phoneNumber ? `\n📱 ${phoneNumber}` : ''}\nLID: ...${lidBase.slice(-6)}${pending.bufferedMsgs?.length ? `\n\n📨 Procesando ${pending.bufferedMsgs.length} mensaje(s) pendiente(s)...` : ''}`
     }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando resolución LID:`, e.message));
   }
 
   // Procesar mensajes buffereados
   if (pending.bufferedMsgs?.length && tenant.sock) {
     const resolvedJid = phoneNumber ? `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net` : originalFrom;
-    console.log(`[TM:${uid}] 🔍 LID-ID: Procesando ${pending.bufferedMsgs.length} mensajes buffereados de ${contactName}`);
+    console.log(`[TM:${uid}] 🔍 LID-ID: Procesando ${pending.bufferedMsgs.length} mensajes buffereados de ${contactName}${hasClassification ? ` (${classification.contactType})` : ''}`);
     for (const buffered of pending.bufferedMsgs) {
-      const handleTenantMessage = require('./tenant_message_handler');
+      const { handleTenantMessage } = require('./tenant_message_handler');
       const ownerUid = tenant.ownerUid || uid;
       const role = tenant.role || 'owner';
       try {
@@ -2204,11 +2245,93 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
 }
 
 /**
+ * Extrae nombre, tipo de contacto y negocio del texto del owner.
+ * Ejemplos:
+ *   "Se llama Yaneth" → { name: 'Yaneth' }
+ *   "Es Juan, cliente de Medilink" → { name: 'Juan', contactType: 'client', businessName: 'Medilink' }
+ *   "Yaneth. Es cliente de Medilink. No respondas." → { name: 'Yaneth', contactType: 'client', businessName: 'Medilink', hasAdditionalContext: true }
+ *   "Es mi mamá" → { name: 'mi mamá', contactType: 'familia' }
+ *   "Es del equipo" → { contactType: 'equipo' }
+ * @param {string} text - Texto del owner
+ * @param {Object} tenant - Referencia al tenant (para buscar negocios)
+ * @returns {{ name?: string, phone?: string, contactType?: string, businessId?: string, businessName?: string, hasAdditionalContext: boolean }}
+ */
+function _extractLidClassification(text, tenant) {
+  const result = { hasAdditionalContext: false };
+
+  // ── Extraer nombre ──
+  // "Se llama X" / "Es X" / solo "X"
+  const seLlamaMatch = text.match(/^se\s+llama\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40})/i);
+  const esMatch = text.match(/^(?:es\s+)?([A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40})(?:\s+\+?(\d{10,18}))?/i);
+
+  if (seLlamaMatch) {
+    result.name = seLlamaMatch[1].replace(/\.\s*$/, '').trim();
+  } else if (esMatch && text.length <= 60) {
+    // Solo para mensajes cortos (evitar capturar frases largas como nombres)
+    result.name = esMatch[1].trim();
+    result.phone = esMatch[2] || null;
+  }
+
+  if (!result.name) return result;
+
+  // ── Extraer tipo de contacto ──
+  const tipoPatterns = [
+    { pattern: /\b(?:cliente?|customer)\b/i, type: 'client' },
+    { pattern: /\b(?:lead|prospecto|interesado)\b/i, type: 'lead' },
+    { pattern: /\b(?:familia|familiar|mi\s+(?:mam[aá]|pap[aá]|hermano|hermana|t[ií]o|t[ií]a|primo|prima|esposa|esposo|novia|novio|pareja|abuela|abuelo|hijo|hija|sobrino|sobrina|cu[ñn]ado|cu[ñn]ada|suegro|suegra))\b/i, type: 'familia' },
+    { pattern: /\b(?:equipo|empleado|trabajador|colega|compa[ñn]ero|del\s+equipo)\b/i, type: 'equipo' },
+    { pattern: /\b(?:amigo|amiga|conocido|vecino)\b/i, type: 'group' }  // grupo genérico
+  ];
+
+  for (const { pattern, type } of tipoPatterns) {
+    if (pattern.test(text)) {
+      result.contactType = type;
+      break;
+    }
+  }
+
+  // ── Extraer negocio ──
+  // "cliente de Medilink" / "lead de MiTienda"
+  const bizMatch = text.match(/(?:cliente?|lead|prospecto)\s+(?:de|del)\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s\-]{2,30})/i);
+  if (bizMatch) {
+    const bizNameRaw = bizMatch[1].replace(/\.\s*$/, '').trim();
+    // Buscar en los negocios del tenant
+    const businesses = tenant._businesses || [];
+    const matchedBiz = businesses.find(b =>
+      b.name && b.name.toLowerCase().includes(bizNameRaw.toLowerCase())
+    );
+    if (matchedBiz) {
+      result.businessId = matchedBiz.id;
+      result.businessName = matchedBiz.name;
+    } else {
+      result.businessName = bizNameRaw; // Guardar nombre aunque no matchee exacto
+    }
+  }
+
+  // ── Si hay 1 solo negocio y es cliente/lead, asignar automáticamente ──
+  if ((result.contactType === 'client' || result.contactType === 'lead') && !result.businessId) {
+    const businesses = tenant._businesses || [];
+    if (businesses.length === 1) {
+      result.businessId = businesses[0].id;
+      result.businessName = businesses[0].name;
+    }
+  }
+
+  // ── Detectar si hay contexto adicional (instrucciones para la IA) ──
+  // Si el texto continúa después del nombre + tipo con frases como "no respondas", "dime", "quiero saber"
+  const afterClassification = text.replace(/^(?:se\s+llama|es)\s+[^.!?]+/i, '').replace(/^[\s.,;]+/, '');
+  if (afterClassification.length > 10) {
+    result.hasAdditionalContext = true;
+  }
+
+  return result;
+}
+
+/**
  * Verificar si un mensaje del owner en self-chat es una respuesta a una consulta de LID pendiente.
- * Llamar desde el handler de mensajes cuando el owner escribe en self-chat.
  * @param {string} uid - UID del tenant
  * @param {string} messageBody - Texto del mensaje del owner
- * @returns {boolean} true si el mensaje fue procesado como respuesta LID
+ * @returns {boolean} true si el mensaje fue consumido (no pasar a IA), false si debe seguir a IA
  */
 function checkOwnerLidResponse(uid, messageBody) {
   const tenant = tenants.get(uid);
@@ -2220,10 +2343,9 @@ function checkOwnerLidResponse(uid, messageBody) {
   // Buscar LIDs en fase waiting_owner o waiting_owner_confirm
   for (const [lidBase, pending] of Object.entries(tenant._pendingLids)) {
     if (pending.phase === 'waiting_owner') {
-      // Patrones: "Es Juan", "es maria", "Juan", "no sé", "no se"
+      // "no sé" → preguntar al contacto directamente
       const noSeMatch = /^no\s+s[eé]$/i.test(text);
       if (noSeMatch) {
-        // Owner no sabe → pasar a preguntar al contacto directamente
         console.log(`[TM:${uid}] 🔍 LID-ID: Owner dijo "no sé" para ${lidBase} — preguntando al contacto`);
         pending.phase = 'waiting_contact';
         if (tenant.sock) {
@@ -2231,33 +2353,43 @@ function checkOwnerLidResponse(uid, messageBody) {
             text: `¡Hola! 👋 Disculpá, ¿con quién tengo el gusto? Es que no tengo guardado tu número 😊`
           }).catch(e => console.error(`[TM:${uid}] ⚠️ Error preguntando identidad:`, e.message));
         }
-        // Timeout: 24h → descartar
         setTimeout(() => {
           if (tenant._pendingLids?.[lidBase]?.phase === 'waiting_contact') {
             console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 24h esperando contacto — descartando ${lidBase}`);
             delete tenant._pendingLids[lidBase];
           }
         }, 24 * 60 * 60 * 1000);
-        return true;
+        return true; // Consumir — no necesita IA
       }
 
-      // "Es [nombre]" o "es [nombre] +número" o simplemente "[nombre]"
-      const esMatch = text.match(/^(?:es\s+)?(.+?)(?:\s+\+?(\d{10,18}))?$/i);
-      if (esMatch) {
-        const name = esMatch[1].replace(/^["']|["']$/g, '').trim();
-        const phone = esMatch[2] || null;
-        if (name.length >= 2 && name.length < 100) {
-          _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, name, phone);
-          return true;
+      // FILTRO: reclamos/instrucciones a MIIA → NO es clasificación
+      const looksLikeInstruction = /!!|¡|debes|siempre|nunca|para que|por qu[eé]/i.test(text);
+      if (looksLikeInstruction) {
+        console.log(`[TM:${uid}] 🔍 LID-ID: Texto parece instrucción, no nombre — ignorando para LID ${lidBase}`);
+        continue;
+      }
+
+      // ═══ EXTRACCIÓN INTELIGENTE: nombre + tipo + negocio ═══
+      // Patrones: "Se llama Yaneth. Es cliente de Medilink. No respondas."
+      //           "Es Juan, lead de MiTienda"
+      //           "Yaneth, cliente medilink"
+      //           "Es mi mamá" / "es familia" / "es del equipo"
+      const classification = _extractLidClassification(text, tenant);
+
+      if (classification.name) {
+        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, classification.name, classification.phone, classification);
+        // Si hay más texto (instrucciones al IA) → NO consumir, dejar que la IA procese
+        if (classification.hasAdditionalContext) {
+          console.log(`[TM:${uid}] 🔍 LID-ID: Nombre="${classification.name}" tipo=${classification.contactType || '?'} biz=${classification.businessName || '?'} + contexto adicional → pasa a IA`);
+          return false;
         }
+        return true; // Solo clasificación, consumir
       }
     }
 
     if (pending.phase === 'waiting_owner_confirm') {
-      // Confirmar identidad que dio el contacto
       const siMatch = /^s[ií]\b/i.test(text);
       const noMatch = /^no\b/i.test(text);
-      // "si, es [nombre]" o "si" (acepta el nombre que dio el contacto)
       if (siMatch) {
         const nameOverride = text.match(/s[ií],?\s+es\s+(.+)/i);
         const finalName = nameOverride ? nameOverride[1].trim() : pending.contactSaidName;
@@ -2265,7 +2397,6 @@ function checkOwnerLidResponse(uid, messageBody) {
         return true;
       }
       if (noMatch) {
-        // Re-preguntar al contacto
         pending.phase = 'waiting_contact';
         if (tenant.sock) {
           tenant.sock.sendMessage(pending.originalFrom, {
@@ -2274,11 +2405,13 @@ function checkOwnerLidResponse(uid, messageBody) {
         }
         return true;
       }
-      // Si el owner responde con un nombre directo (override)
-      const nameMatch = text.match(/^(.{2,50})(?:\s+\+?(\d{10,18}))?$/);
-      if (nameMatch) {
-        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, nameMatch[1].trim(), nameMatch[2] || null);
-        return true;
+      // Nombre directo (override) — solo letras, max 40 chars, sin instrucciones
+      if (!/!!|¡|debes|siempre|nunca/i.test(text)) {
+        const nameMatch = text.match(/^([A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40})(?:\s+\+?(\d{10,18}))?$/);
+        if (nameMatch) {
+          _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, nameMatch[1].trim(), nameMatch[2] || null);
+          return true;
+        }
       }
     }
   }

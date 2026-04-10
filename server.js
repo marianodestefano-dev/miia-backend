@@ -1777,6 +1777,21 @@ if (process.env.OPENAI_API_KEY) keyPool.register('openai', [process.env.OPENAI_A
 if (process.env.CLAUDE_API_KEY) keyPool.register('claude', [process.env.CLAUDE_API_KEY]);
 const CLAUDE_BACKUP_KEYS = [process.env.CLAUDE_API_KEY_2, process.env.CLAUDE_API_KEY_3].filter(Boolean);
 if (CLAUDE_BACKUP_KEYS.length) keyPool.registerBackup('claude', CLAUDE_BACKUP_KEYS);
+
+// Notificar al owner en self-chat cuando la key primaria de Claude se agota
+keyPool.onBackupActivated('claude', (provider) => {
+  const ownerSelf = `${OWNER_PHONE}@s.whatsapp.net`;
+  const msg = `⚠️ *Alerta de API Key*\n\n` +
+    `La API key de Claude (mariano.destefano@gmail.com) se agotó o falló.\n` +
+    `MIIA cambió automáticamente a la key de respaldo (hola@miia-app.com).\n\n` +
+    `Todo sigue funcionando normal con la key de MIIA-APP. 🛡️\n` +
+    `Cuando quieras, podés eliminar la key vieja y dejar solo la de MIIA-APP.`;
+  console.log(`[KEY-POOL-NOTIFY] 📢 Enviando notificación de backup Claude al self-chat del owner`);
+  safeSendMessage(ownerSelf, msg, { isSelfChat: true }).catch(err => {
+    console.error(`[KEY-POOL-NOTIFY] ❌ Error enviando notificación: ${err.message}`);
+  });
+});
+
 // Groq: soporta múltiples keys via GROQ_API_KEY, GROQ_API_KEY_2, etc.
 const GROQ_KEYS = [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2, process.env.GROQ_API_KEY_3].filter(Boolean);
 if (GROQ_KEYS.length) keyPool.register('groq', GROQ_KEYS);

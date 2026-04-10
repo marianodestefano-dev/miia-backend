@@ -131,8 +131,8 @@ function isWithinScheduleConfig(scheduleConfig) {
 
   if (scheduleConfig.activeDays && !scheduleConfig.activeDays.includes(day)) return false;
 
-  const start = scheduleConfig.startTime || '09:00';
-  const end = scheduleConfig.endTime || '21:00';
+  const start = scheduleConfig.startTime || '07:00';
+  const end = scheduleConfig.endTime || '23:00';
   if (currentTime < start || currentTime >= end) return false;
 
   return true;

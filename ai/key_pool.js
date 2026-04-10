@@ -26,6 +26,10 @@ const MAX_CONSECUTIVE_FAILS = 3;    // Tras N fallos consecutivos → cooldown
 // Estructura: { provider: { keys: [{ key, fails, lastFail, cooldownUntil, totalCalls, totalFails, tier }], index: 0 } }
 const pools = {};
 
+// Callbacks para notificar cuando se activa backup por primera vez
+// { provider: { callback: fn, notified: boolean } }
+const backupCallbacks = {};
+
 /**
  * Registra N keys para un proveedor. Se puede llamar múltiples veces (agrega, no reemplaza).
  * Ignora keys vacías, duplicadas o inválidas.
@@ -130,6 +134,8 @@ function getKey(provider) {
     const backupResult = _getAvailableKey(backupKeys, pool, now, provider, 'backup');
     if (backupResult) {
       console.warn(`[KEY-POOL] 🛡️ ${provider}: Primarias agotadas → usando key de EMERGENCIA`);
+      // Disparar callback de notificación (solo la primera vez)
+      _fireBackupCallback(provider);
       return backupResult;
     }
   }
@@ -264,6 +270,34 @@ function hasKeys(provider) {
   return !!(pools[provider] && pools[provider].keys.length > 0);
 }
 
+/**
+ * Registra un callback que se ejecuta LA PRIMERA VEZ que un provider usa keys de backup.
+ * Útil para notificar al owner que la key primaria se agotó.
+ * @param {string} provider - 'claude', 'gemini', etc.
+ * @param {Function} callback - fn(provider) — se ejecuta una sola vez
+ */
+function onBackupActivated(provider, callback) {
+  if (!provider || typeof callback !== 'function') {
+    console.error(`[KEY-POOL] ❌ onBackupActivated() parámetros inválidos`);
+    return;
+  }
+  backupCallbacks[provider] = { callback, notified: false };
+  console.log(`[KEY-POOL] 📢 Callback de backup registrado para ${provider}`);
+}
+
+/** Dispara el callback de backup si existe y no fue notificado aún */
+function _fireBackupCallback(provider) {
+  const entry = backupCallbacks[provider];
+  if (!entry || entry.notified) return;
+  entry.notified = true;
+  console.log(`[KEY-POOL] 📢 Disparando notificación de backup activado para ${provider}`);
+  try {
+    entry.callback(provider);
+  } catch (err) {
+    console.error(`[KEY-POOL] ❌ Error en callback de backup para ${provider}: ${err.message}`);
+  }
+}
+
 module.exports = {
   register,
   registerBackup,
@@ -272,5 +306,6 @@ module.exports = {
   markSuccess,
   getStats,
   getAllStats,
-  hasKeys
+  hasKeys,
+  onBackupActivated
 };
