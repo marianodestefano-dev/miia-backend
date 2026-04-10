@@ -172,8 +172,10 @@ function detectOutfitCommand(message, hasImage) {
   const msgLower = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   // Imagen + "guardar" / "agregar" / "nueva prenda" → agregar al guardarropa
+  // FIX Sesión 34: "guardá" solo → demasiado genérico (podría ser "guardá este doc").
+  // Ahora: requiere contexto de ropa/prenda O palabra exacta "guardarropa".
   if (hasImage) {
-    if (/\b(guard[áa]|agrega|nueva\s+prenda|sum[áa]|a[ñn]ad[ií]|para\s+mi\s+guardarropa|al\s+guardarropa)\b/i.test(msgLower)) {
+    if (/\b(nueva\s+prenda|sum[áa]\s+(?:esta\s+)?(?:ropa|prenda)|a[ñn]ad[ií]\s+(?:esta\s+)?(?:ropa|prenda)|para\s+mi\s+guardarropa|al\s+guardarropa|guard[áa]\s+(?:esta\s+)?(?:ropa|prenda)|agrega\s+(?:esta\s+)?(?:ropa|prenda))\b/i.test(msgLower)) {
       return { isOutfit: true, type: 'add_garment' };
     }
 
@@ -184,7 +186,10 @@ function detectOutfitCommand(message, hasImage) {
   }
 
   // "qué me pongo" / "outfit para..." → sugerencia
-  const suggestMatch = msgLower.match(/\b(qu[ée]\s+me\s+pongo|outfit\s+para|qu[ée]\s+usar|c[óo]mo\s+me\s+visto|vestirme\s+para|ropa\s+para)\s*(.+)?/i);
+  // FIX Sesión 34: "ropa para" eliminado — era demasiado genérico.
+  // "dejar ropa para Sandra" → matcheaba como outfit suggest en vez de recordatorio.
+  // Ahora: solo patrones con INTENCIÓN EXPLÍCITA de moda.
+  const suggestMatch = msgLower.match(/\b(qu[ée]\s+me\s+pongo|outfit\s+para|qu[ée]\s+(?:ropa\s+)?usar\s+para|c[óo]mo\s+me\s+visto|vestirme\s+para|qu[ée]\s+ropa\s+(?:me\s+pongo|llevo|uso)\s+para|necesito\s+ropa\s+para|buscar?\s+ropa\s+para)\s*(.+)?/i);
   if (suggestMatch) {
     const occasion = suggestMatch[2]?.trim() || null;
     return { isOutfit: true, type: 'suggest', occasion };
