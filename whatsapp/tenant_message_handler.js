@@ -183,13 +183,29 @@ async function loadPersonalBrain(uid) {
 
 /**
  * Carga contactos de familia del owner (solo owner los ve, agents NO).
- * Ruta: users/{ownerUid}/familyContacts/
+ * Busca en 2 rutas (la subcollección legacy Y el doc miia_persistent/contacts):
+ *   1. users/{ownerUid}/familyContacts/  (subcollección, cada doc = 1 contacto)
+ *   2. users/{ownerUid}/miia_persistent/contacts → campo familyContacts (objeto plano)
+ * FIX Sesión 35: TMH solo buscaba en la subcollección, pero server.js guarda en miia_persistent.
  */
 async function loadFamilyContacts(ownerUid) {
   try {
-    const snap = await db().collection('users').doc(ownerUid).collection('familyContacts').get();
     const contacts = {};
+
+    // Fuente 1: Subcollección legacy (familyContacts/{phone})
+    const snap = await db().collection('users').doc(ownerUid).collection('familyContacts').get();
     snap.forEach(doc => { contacts[doc.id] = doc.data(); });
+
+    // Fuente 2: miia_persistent/contacts (objeto familyContacts en un solo doc)
+    if (Object.keys(contacts).length === 0) {
+      const persistentDoc = await db().collection('users').doc(ownerUid)
+        .collection('miia_persistent').doc('contacts').get();
+      if (persistentDoc.exists) {
+        const fc = persistentDoc.data()?.familyContacts || {};
+        Object.assign(contacts, fc);
+      }
+    }
+
     console.log(`[TMH:${ownerUid}] 👨‍👩‍👧 Family contacts: ${Object.keys(contacts).length}`);
     return contacts;
   } catch (e) {

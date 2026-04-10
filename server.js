@@ -3545,8 +3545,10 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       //   responde, respondé, respóndele, respondele, respondale, contestale, contéstale,
       //   escribile, escríbele, mandále, mándale, atiéndelo, dale responde, dale contestá
       // ⚠️ EXCLUIR "presentate a [nombres]" — es un comando distinto (presentarIndividual)
+      // ⚠️ EXCLUIR mensajes que empiezan con recordar/agendar/agenda — son comandos de agenda, NO respondele
       const isPresentarANombres = effectiveMsg && /(?:presenta(?:te)?|preséntate|presentá(?:te)?)\s+(?:miia\s+)?(?:a|con)\s+\w/i.test(effectiveMsg);
-      const respondeleMatch = !isPresentarANombres && effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
+      const isAgendaCommand = effectiveMsg && /^\s*(?:miia\s+)?(?:recordar|recuerdame|recuérdame|agendar|agenda|recordatorio|programar|pon\s+en\s+agenda)/i.test(effectiveMsg);
+      const respondeleMatch = !isPresentarANombres && !isAgendaCommand && effectiveMsg.match(/(?:respond[eéí](?:le|les|me)?|responde$|respond[eé]$|env[ií]a(?:selo|le|les)?|pres[eé]ntate|cont[eé]sta(?:le|les)?|contest[aá](?:le|les)?|escr[ií]b[ie](?:le|les)?|mand[aá](?:le|les)?|m[aá]nda(?:le|les)?|atiend[eé](?:lo|la|le|los)?|dale\s+(?:respond|contest|escrib|mand))/i);
       if (respondeleMatch) {
         // PRIORIDAD 1: Buscar alerta "Alguien te escribió" en historial reciente
         const twoHoursAgo = Date.now() - 7200000;
@@ -3580,15 +3582,11 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
 
         // PRIORIDAD 2: Extraer número directamente del mensaje del owner
         // Soporta: "respondele a +573163937365", "respondele a 573163937365", "respondele al 3163937365"
+        // FIX Sesión 35: Requiere mínimo 10 dígitos para evitar matchear secuencias cortas (hora, fecha, etc.)
         if (!contactJid) {
-          const directPhoneMatch = effectiveMsg.match(/\+?(\d{7,18})/);
+          const directPhoneMatch = effectiveMsg.match(/\+?(\d{10,18})/);
           if (directPhoneMatch) {
             leadPhone = directPhoneMatch[1];
-            // Si no empieza con código de país (menos de 10 dígitos), intentar agregar código del owner
-            if (leadPhone.length < 10) {
-              const ownerCountry = phone.split('@')[0].substring(0, 2);
-              leadPhone = ownerCountry + leadPhone;
-            }
             contactJid = `${leadPhone}@s.whatsapp.net`;
             console.log(`[RESPONDELE] 📱 Número extraído directo del mensaje: ${contactJid}`);
           }

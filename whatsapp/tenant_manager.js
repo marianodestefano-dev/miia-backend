@@ -1268,6 +1268,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                 if (!tenant._lidMap) tenant._lidMap = {};
                 tenant._lidMap[lidBase] = resolvedFrom;
                 console.log(`[TM:${uid}] 🔗 P6-LID: Owner LID matched via sock.user.lid: ${lidBase} → ${resolvedFrom}`);
+                // Persistir inmediatamente (owner LID es crítico)
+                admin.firestore().collection('users').doc(uid)
+                  .collection('miia_persistent').doc('lid_map')
+                  .set({ mappings: tenant._lidMap, updatedAt: new Date().toISOString() }, { merge: true })
+                  .catch(e => console.error(`[TM:${uid}] ⚠️ Error persistiendo owner LID:`, e.message));
               }
             }
           }
@@ -1546,7 +1551,39 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     // ═══ LID MAP: Capturar TODOS los mapeos LID→JID de contactos ═══
     // WhatsApp envía mensajes con LID en vez de JID real. Sin este mapa,
     // familia y contactos conocidos se pierden (bug Alejandra sesión 14).
+    // FIX Sesión 35: Persistir en Firestore para sobrevivir restarts.
     if (!tenant._lidMap) tenant._lidMap = {};
+
+    // Cargar _lidMap guardado previamente en Firestore
+    try {
+      const lidDoc = await admin.firestore().collection('users').doc(uid)
+        .collection('miia_persistent').doc('lid_map').get();
+      if (lidDoc.exists) {
+        const saved = lidDoc.data()?.mappings || {};
+        Object.assign(tenant._lidMap, saved);
+        console.log(`[TM:${uid}] 📇 LID-MAP cargado de Firestore: ${Object.keys(saved).length} mappings`);
+      }
+    } catch (e) {
+      console.error(`[TM:${uid}] ⚠️ Error cargando lid_map de Firestore:`, e.message);
+    }
+
+    // Debounce para guardar _lidMap en Firestore (no en cada contacto, sino max 1 vez cada 60s)
+    let _lidMapDirty = false;
+    const _saveLidMapDebounced = () => {
+      if (_lidMapDirty) return; // ya hay un save pendiente
+      _lidMapDirty = true;
+      setTimeout(async () => {
+        _lidMapDirty = false;
+        try {
+          await admin.firestore().collection('users').doc(uid)
+            .collection('miia_persistent').doc('lid_map')
+            .set({ mappings: tenant._lidMap, updatedAt: new Date().toISOString() }, { merge: true });
+          console.log(`[TM:${uid}] 💾 LID-MAP persistido en Firestore: ${Object.keys(tenant._lidMap).length} mappings`);
+        } catch (e) {
+          console.error(`[TM:${uid}] ⚠️ Error guardando lid_map:`, e.message);
+        }
+      }, 60000); // 60 segundos debounce
+    };
 
     sock.ev.on('contacts.upsert', (contacts) => {
       if (tenant.onContacts) {
@@ -1562,7 +1599,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           lidCount++;
         }
       }
-      if (lidCount > 0) console.log(`[TM:${uid}] 📇 Contacts sync: ${lidCount} LID→JID mappings (total: ${Object.keys(tenant._lidMap).length})`);
+      if (lidCount > 0) {
+        console.log(`[TM:${uid}] 📇 Contacts sync: ${lidCount} LID→JID mappings (total: ${Object.keys(tenant._lidMap).length})`);
+        _saveLidMapDebounced();
+      }
     });
     sock.ev.on('contacts.update', (contacts) => {
       if (tenant.onContacts) {
@@ -1570,12 +1610,15 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           console.error(`[TM:${uid}] onContacts update error:`, e.message);
         }
       }
+      let newMappings = false;
       for (const c of contacts) {
         if (c.id && c.lid) {
           const lidBase = c.lid.split(':')[0].split('@')[0];
           tenant._lidMap[lidBase] = c.id;
+          newMappings = true;
         }
       }
+      if (newMappings) _saveLidMapDebounced();
     });
     sock.ev.on('message-receipt.update', () => {});
     sock.ev.on('groups.upsert', () => {});

@@ -295,7 +295,7 @@ function auditVerdad(aiMessage, hasSearchData, chatType) {
 
   // Self-chat del owner y familia: no vetar por datos deportivos/clima
   // El owner puede hablar de deportes libremente, Gemini tiene contexto directo
-  const isTrustedChat = ['self', 'family', 'team', 'miia_lead', 'miia_client'].includes(chatType);
+  const isTrustedChat = ['self', 'selfchat', 'family', 'team', 'equipo', 'miia_lead', 'miia_client'].includes(chatType);
 
   // Si NO hay datos de búsqueda pero la respuesta menciona scores/resultados deportivos
   if (!hasSearchData && !isTrustedChat) {
@@ -509,6 +509,20 @@ async function runAIAudit(aiMessage, opts = {}) {
 
     if (!result.pass) {
       console.warn(`[POSTPROCESS:AI] 🤖 Auditor IA detectó: [${result.severity}] ${result.issues.join('; ')}`);
+
+      // Self-chat/familia con search activo: NO regenerar por datos fácticos/deportivos
+      // El owner preguntó directamente y Gemini buscó — confiar en los datos
+      const isTrustedWithSearch = hasSearchData && ['selfchat', 'self', 'family', 'team', 'equipo'].includes(chatType);
+      if (isTrustedWithSearch && result.severity === 'major') {
+        const onlyFactualIssues = result.issues.every(i =>
+          /(?:dato|fáctic|búsqueda|deport|score|clima|noticias|fecha|evento|inventa)/i.test(i)
+        );
+        if (onlyFactualIssues) {
+          console.log(`[POSTPROCESS:AI] ✅ Override: self-chat + search activo → datos fácticos permitidos (no regenerar)`);
+          result.pass = true;
+          result.severity = 'minor';
+        }
+      }
     } else {
       console.log(`[POSTPROCESS:AI] ✅ Auditor IA: OK`);
     }
