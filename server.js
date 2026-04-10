@@ -6588,6 +6588,90 @@ REGLAS:
       aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
     }
 
+    // ═══ TAG [RESPONDELE:destinatario|instrucción] — MIIA envía mensaje a contacto por orden del owner ═══
+    const respondeleTagMatch = aiMessage.match(/\[RESPONDELE:([^\]]+)\]/);
+    if (respondeleTagMatch && isSelfChat) {
+      const tagParts = respondeleTagMatch[1].split('|').map(p => p.trim());
+      const destinatario = tagParts[0] || '';
+      const instruccion = tagParts[1] || 'responder profesionalmente';
+      console.log(`[RESPONDELE-TAG] 📨 Tag detectado: destino="${destinatario}", instrucción="${instruccion}"`);
+
+      try {
+        let contactJid = null;
+        let leadPhone = '';
+
+        // 1. Si es un número directo
+        const phoneDigits = destinatario.replace(/[^0-9]/g, '');
+        if (phoneDigits.length >= 10) {
+          leadPhone = phoneDigits;
+          contactJid = `${leadPhone}@s.whatsapp.net`;
+          console.log(`[RESPONDELE-TAG] 📱 Número directo: ${contactJid}`);
+        }
+
+        // 2. Si es "último_contacto" → buscar última alerta
+        if (!contactJid && /^[uú]ltimo|^last|^reciente/i.test(destinatario)) {
+          const twoHoursAgo = Date.now() - 7200000;
+          const recentMsgs = (conversations[phone] || []).slice(-20).filter(m => !m.timestamp || m.timestamp > twoHoursAgo);
+          const alertMsg = recentMsgs.find(m => m.role === 'assistant' && (/Nuevo mensaje/.test(m.content) || /Alguien te escribi[oó]/.test(m.content)));
+          if (alertMsg) {
+            contactJid = alertMsg._contactJid || null;
+            if (contactJid) leadPhone = contactJid.split('@')[0];
+            if (!contactJid) {
+              const pm = alertMsg.content.match(/(?:Número:\s*\+?|Contacto:.*?\(\+?)(\d{10,18})/);
+              if (pm) { leadPhone = pm[1]; contactJid = `${leadPhone}@s.whatsapp.net`; }
+            }
+          }
+          if (contactJid) console.log(`[RESPONDELE-TAG] 🎯 Último contacto: ${contactJid}`);
+        }
+
+        // 3. Si es un nombre → buscar en conversaciones recientes
+        if (!contactJid && destinatario.length >= 2) {
+          for (const [convJid, msgs] of Object.entries(conversations)) {
+            if (convJid === phone || !convJid.includes('@')) continue;
+            const lastMsg = msgs.slice(-5).find(m => m.role === 'user');
+            if (lastMsg?._pushName && lastMsg._pushName.toLowerCase().includes(destinatario.toLowerCase())) {
+              contactJid = convJid;
+              leadPhone = convJid.split('@')[0];
+              console.log(`[RESPONDELE-TAG] 👤 Encontrado por nombre "${destinatario}" → ${contactJid}`);
+              break;
+            }
+          }
+        }
+
+        // 4. BROADCAST: FAMILIA o EQUIPO
+        if (/^FAMILIA$/i.test(destinatario) || /^EQUIPO$/i.test(destinatario)) {
+          console.log(`[RESPONDELE-TAG] 📢 Broadcast a ${destinatario} — delegando al handler existente`);
+          // No resolver aquí — el DILE A handler existente ya lo maneja
+        }
+
+        if (contactJid && leadPhone) {
+          // Generar respuesta personalizada
+          const ownerName = userProfile?.name || 'el equipo';
+          const businessName = userProfile?.businessName || '';
+          const leadOriginalMsg = (conversations[contactJid] || []).slice(-3).find(m => m.role === 'user')?.content || '';
+          const respondPrompt = `Sos MIIA, la asistente de ${ownerName}${businessName ? ` de ${businessName}` : ''}.
+${leadOriginalMsg ? `El contacto escribió antes: "${leadOriginalMsg.substring(0, 200)}"` : ''}
+Tu jefe te pide: "${instruccion}"
+
+REGLAS:
+- Máx 3 líneas, cálido y profesional
+- JAMÁS decir que sos IA
+- JAMÁS mencionar "me pidieron", "mi jefe", "el owner"`;
+
+          const responseMsg = await generateAIContent(respondPrompt);
+          if (responseMsg) {
+            await safeSendMessage(sock, contactJid, { text: responseMsg });
+            console.log(`[RESPONDELE-TAG] ✅ Mensaje enviado a ${contactJid}: "${responseMsg.substring(0, 60)}..."`);
+          }
+        } else if (!/^FAMILIA$|^EQUIPO$/i.test(destinatario)) {
+          console.warn(`[RESPONDELE-TAG] ⚠️ No se encontró contacto para "${destinatario}"`);
+        }
+      } catch (e) {
+        console.error(`[RESPONDELE-TAG] ❌ Error:`, e.message);
+      }
+      aiMessage = aiMessage.replace(/\[RESPONDELE:[^\]]+\]/g, '').trim();
+    }
+
     // ═══ TAG [PROPONER_HORARIO:duración] — MIIA propone slots libres del Calendar ═══
     const proponerMatch = aiMessage.match(/\[PROPONER_HORARIO(?::(\d+))?\]/);
     if (proponerMatch) {

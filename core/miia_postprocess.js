@@ -36,6 +36,15 @@ const ACTION_CONFIRMATIONS = [
     requiredTag: /\[RECORDAR_(?:CONTACTO|OWNER):|\[AGENDAR_EVENTO:/ },
   { phrases: [/ya.*te.*(?:mandé|envié).*cotizaci[oó]n/i, /listo.*cotizaci[oó]n/i],
     requiredTag: /\[GENERAR_COTIZACION_PDF:/ },
+  // CANCELAR_EVENTO: "ya eliminé/cancelé/borré" sin tag
+  { phrases: [/ya (?:lo |la |te )?(?:eliminé|cancelé|borré|quité)/i, /listo.*(?:eliminé|cancelé|borré)/i, /(?:cancelad[oa]|eliminad[oa]).*agenda/i],
+    requiredTag: /\[CANCELAR_EVENTO:/ },
+  // MOVER_EVENTO: "ya lo moví/cambié de hora" sin tag
+  { phrases: [/ya (?:lo |la |te )?(?:moví|cambié|pasé).*(?:hora|horario|fecha|día)/i, /listo.*(?:moví|cambié|pasé)/i],
+    requiredTag: /\[MOVER_EVENTO:/ },
+  // RESPONDELE: "ya le respondí/dije/escribí/mandé" sin tag
+  { phrases: [/ya le (?:respondí|dije|escribí|mandé|contesté|avisé)/i, /listo.*le (?:respondí|dije|escribí|mandé)/i],
+    requiredTag: /\[RESPONDELE:|\[MENSAJE_PARA_OWNER:/ },
 ];
 
 // Frases que exponen mecánica interna de MIIA (PELIGROSO con leads)

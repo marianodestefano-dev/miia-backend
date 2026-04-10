@@ -119,6 +119,23 @@ function attemptAutoRepair(aiMessage, action, contactPhone, contactName) {
     return null;
   }
 
+  if (action === 'cancelar') {
+    // Intentar extraer razón y fecha del mensaje para reconstruir [CANCELAR_EVENTO:]
+    // Ejemplo: "Ya eliminé esa tarea de tu agenda para mañana a las 9:15 AM"
+    const reasonMatch = aiMessage.match(/(?:elimin[eé]|cancel[eé]|borr[eé]).*?(?:la|el|tu|esa?)?\s*(.+?)(?:\s+(?:de tu agenda|para|del|de la|\.))/i);
+    const dateMatch = aiMessage.match(/(?:para\s+)?(?:mañana|hoy|(?:el\s+)?\d{1,2}\s+(?:de\s+)?\w+)(?:\s+a\s+las?\s+(\d{1,2}):?(\d{2})?\s*(am|pm)?)?/i);
+    const reason = reasonMatch?.[1]?.trim() || 'evento';
+    const dateStr = dateMatch?.[0]?.trim() || '';
+    console.log(`[INTEGRITY:REPAIR] 🔧 Auto-repair CANCELAR: [CANCELAR_EVENTO:${reason}|${dateStr}|avisar]`);
+    return `[CANCELAR_EVENTO:${reason}|${dateStr}|avisar]`;
+  }
+
+  if (action === 'mover') {
+    // Para mover, necesitamos fecha vieja y nueva — más difícil de extraer, logear
+    console.log(`[INTEGRITY:REPAIR] ℹ️ Auto-repair para MOVER_EVENTO requiere 2 fechas — no disponible aún`);
+    return null;
+  }
+
   // Para otros tipos de acción, no auto-repair por ahora (requieren más contexto)
   console.log(`[INTEGRITY:REPAIR] ℹ️ Auto-repair no disponible para acción: ${action}`);
   return null;
