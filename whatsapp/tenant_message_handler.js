@@ -1663,8 +1663,45 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         }
       }
 
-      if (contactJid && leadPhone && tenantState.sock && tenantState.isReady) {
-        // Generar respuesta personalizada
+      // 4. BROADCAST: FAMILIA o EQUIPO — enviar a todos los contactos del grupo
+      if (!contactJid && /^FAMILIA$/i.test(destinatario)) {
+        const groupContacts = { ...(ctx.familyContacts || {}) };
+        if (ctx.contactGroups?.familia?.contacts) Object.assign(groupContacts, ctx.contactGroups.familia.contacts);
+        const targets = Object.entries(groupContacts).filter(([, c]) => c.name);
+        if (targets.length > 0 && tenantState.sock && tenantState.isReady) {
+          const ownerName = ctx.ownerProfile?.shortName || ctx.ownerProfile?.name || 'tu owner';
+          const broadcastPrompt = `Sos MIIA, la asistente de ${ownerName}. Tu jefe quiere enviar este mensaje a toda su familia: "${instruccion}". Máx 3 líneas, cálido y familiar. JAMÁS decir que sos IA.`;
+          const broadResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, broadcastPrompt, { aiProvider, aiApiKey });
+          const broadText = broadResult?.text || instruccion;
+          let sent = 0;
+          for (const [targetPh] of targets) {
+            try {
+              await tenantState.sock.sendMessage(`${targetPh}@s.whatsapp.net`, { text: broadText });
+              sent++;
+            } catch (e) { console.warn(`${logPrefix} [RESPONDELE-TAG] ⚠️ Broadcast familia: fallo enviando a ${targetPh}: ${e.message}`); }
+          }
+          console.log(`${logPrefix} [RESPONDELE-TAG] 📢 Broadcast FAMILIA: ${sent}/${targets.length} enviados`);
+        }
+      } else if (!contactJid && /^EQUIPO$/i.test(destinatario)) {
+        const groupContacts = { ...(ctx.teamContacts || {}) };
+        if (ctx.contactGroups?.equipo?.contacts) Object.assign(groupContacts, ctx.contactGroups.equipo.contacts);
+        const targets = Object.entries(groupContacts).filter(([, c]) => c.name);
+        if (targets.length > 0 && tenantState.sock && tenantState.isReady) {
+          const ownerName = ctx.ownerProfile?.shortName || ctx.ownerProfile?.name || 'tu owner';
+          const broadcastPrompt = `Sos MIIA, la asistente de ${ownerName}. Tu jefe quiere enviar este mensaje a su equipo de trabajo: "${instruccion}". Máx 3 líneas, profesional pero cálido. JAMÁS decir que sos IA.`;
+          const broadResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, broadcastPrompt, { aiProvider, aiApiKey });
+          const broadText = broadResult?.text || instruccion;
+          let sent = 0;
+          for (const [targetPh] of targets) {
+            try {
+              await tenantState.sock.sendMessage(`${targetPh}@s.whatsapp.net`, { text: broadText });
+              sent++;
+            } catch (e) { console.warn(`${logPrefix} [RESPONDELE-TAG] ⚠️ Broadcast equipo: fallo enviando a ${targetPh}: ${e.message}`); }
+          }
+          console.log(`${logPrefix} [RESPONDELE-TAG] 📢 Broadcast EQUIPO: ${sent}/${targets.length} enviados`);
+        }
+      } else if (contactJid && leadPhone && tenantState.sock && tenantState.isReady) {
+        // Envío individual — generar respuesta personalizada
         const ownerName = ctx.ownerProfile?.name || ctx.ownerProfile?.shortName || 'el equipo';
         const businessName = ctx.ownerProfile?.businessName || '';
         const leadOriginalMsg = (ctx.conversations[contactJid] || []).slice(-3).find(m => m.role === 'user')?.content || '';
@@ -1683,7 +1720,7 @@ REGLAS:
           await tenantState.sock.sendMessage(contactJid, { text: msgText });
           console.log(`${logPrefix} [RESPONDELE-TAG] ✅ Mensaje enviado a ${contactJid}: "${msgText.substring(0, 60)}..."`);
         }
-      } else if (!contactJid) {
+      } else if (!contactJid && !/^FAMILIA$|^EQUIPO$/i.test(destinatario)) {
         console.warn(`${logPrefix} [RESPONDELE-TAG] ⚠️ No se encontró contacto para "${destinatario}"`);
       } else if (!tenantState.sock || !tenantState.isReady) {
         console.warn(`${logPrefix} [RESPONDELE-TAG] ⚠️ Socket no disponible para enviar a "${destinatario}"`);
