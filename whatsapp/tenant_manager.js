@@ -1352,6 +1352,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               startedAt: Date.now(),
               bufferedMsgs: [{ body, timestamp: Date.now() }]
             };
+            _savePendingLids(uid, tenant); // Persistir en Firestore
 
             // PASO 1: Notificar al owner en self-chat
             const selfJid = tenant.sock?.user?.id;
@@ -1384,6 +1385,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                 if (tenant._pendingLids?.[lidBase]) {
                   console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 24h — descartando ${lidBase} como no identificado`);
                   delete tenant._pendingLids[lidBase];
+                  _savePendingLids(uid, tenant);
                 }
               }, 24 * 60 * 60 * 1000);
             }, 2 * 60 * 60 * 1000);
@@ -1680,6 +1682,76 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     } catch (e) {
       console.error(`[TM:${uid}] ⚠️ Error cargando lid_map de Firestore:`, e.message);
     }
+
+    // ═══ PERSISTENCIA DE LIDs PENDIENTES ═══
+    // Restaurar LIDs pendientes de Firestore (sobrevive caídas/restarts)
+    try {
+      const pendingDoc = await admin.firestore().collection('users').doc(uid)
+        .collection('miia_persistent').doc('pending_lids').get();
+      if (pendingDoc.exists) {
+        const saved = pendingDoc.data()?.lids || {};
+        const now = Date.now();
+        const todayStr = new Date().toISOString().split('T')[0];
+        let restored = 0;
+        let expired = 0;
+        if (!tenant._pendingLids) tenant._pendingLids = {};
+        for (const [lidBase, data] of Object.entries(saved)) {
+          const savedDay = (data.startedAt ? new Date(data.startedAt).toISOString().split('T')[0] : null);
+          // Si es de otro día → NO restaurar (regla: solo persiste dentro del mismo día)
+          if (savedDay && savedDay !== todayStr) {
+            expired++;
+            continue;
+          }
+          // Si tiene más de 24h → no restaurar
+          if (data.startedAt && (now - data.startedAt > 24 * 60 * 60 * 1000)) {
+            expired++;
+            continue;
+          }
+          tenant._pendingLids[lidBase] = data;
+          restored++;
+        }
+        if (restored > 0) console.log(`[TM:${uid}] 📇 LIDs pendientes restaurados: ${restored} (${expired} expirados)`);
+        // Limpiar expirados de Firestore
+        if (expired > 0) {
+          _savePendingLids(uid, tenant);
+        }
+      }
+    } catch (e) {
+      console.error(`[TM:${uid}] ⚠️ Error restaurando pending_lids:`, e.message);
+    }
+
+    // Recordatorio de LIDs pendientes al owner: cada 60 min en horario laboral, mismo día
+    tenant._lidReminderInterval = setInterval(() => {
+      if (!tenant._pendingLids || !tenant.sock) return;
+      const pendingEntries = Object.entries(tenant._pendingLids).filter(([, p]) => p.phase === 'waiting_owner');
+      if (pendingEntries.length === 0) return;
+
+      // Solo en horario laboral (07:00-23:00)
+      const nowBogota = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+      const h = nowBogota.getHours();
+      if (h < 7 || h >= 23) return;
+
+      // Solo del mismo día
+      const todayStr = new Date().toISOString().split('T')[0];
+      const todayPending = pendingEntries.filter(([, p]) => {
+        const day = p.startedAt ? new Date(p.startedAt).toISOString().split('T')[0] : null;
+        return day === todayStr;
+      });
+      if (todayPending.length === 0) return;
+
+      const selfJid = tenant.sock?.user?.id;
+      if (!selfJid) return;
+
+      const names = todayPending.map(([lid, p]) =>
+        `• ${p.pushName || `LID ...${lid.slice(-6)}`} — "${(p.firstMsg || '').substring(0, 40)}..."`
+      ).join('\n');
+
+      tenant.sock.sendMessage(selfJid, {
+        text: `🔔 *Recordatorio: ${todayPending.length} contacto(s) sin identificar*\n\n${names}\n\nRespond\u00e9 con el nombre del contacto para que pueda atenderlo.`
+      }).catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando recordatorio LID:`, e.message));
+
+      console.log(`[TM:${uid}] 🔔 LID Reminder: ${todayPending.length} pendientes recordados al owner`);
+    }, 60 * 60 * 1000); // cada 60 minutos
 
     // Debounce para guardar _lidMap en Firestore (no en cada contacto, sino max 1 vez cada 60s)
     let _lidMapDirty = false;
@@ -2152,14 +2224,46 @@ async function transcribeMediaForTenant(uid, baileysMsg, tenant) {
  * @param {string} originalFrom - JID original del LID (xxx@lid)
  * @param {string} contactName - Nombre identificado
  * @param {string|null} phoneNumber - Número de teléfono (si se proporcionó)
- * @param {Object} [classification] - { contactType, businessId, businessName } del owner
+ * @param {Object} [classification] - { contactType, businessId, businessName, hasAdditionalContext, additionalContext } del owner
+ * @param {Object} [opts] - { suppressAutoReply: bool } si true, NO procesar buffereados (owner dijo "no respondas")
  */
-async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactName, phoneNumber, classification = {}) {
+/**
+ * Persistir LIDs pendientes en Firestore (sobrevive caídas/restarts del servidor).
+ * Solo guarda LIDs del día actual. Se llama cada vez que _pendingLids cambia.
+ */
+function _savePendingLids(uid, tenant) {
+  if (!tenant._pendingLids) return;
+  const todayStr = new Date().toISOString().split('T')[0];
+  // Solo persistir LIDs de hoy (los de ayer se descartan)
+  const todayLids = {};
+  for (const [lid, data] of Object.entries(tenant._pendingLids)) {
+    const day = data.startedAt ? new Date(data.startedAt).toISOString().split('T')[0] : todayStr;
+    if (day === todayStr) {
+      todayLids[lid] = {
+        phase: data.phase,
+        firstMsg: data.firstMsg,
+        pushName: data.pushName,
+        originalFrom: data.originalFrom,
+        startedAt: data.startedAt,
+        contactSaidName: data.contactSaidName || null,
+        // NO guardar bufferedMsgs completos (muy pesado) — solo conteo
+        bufferedCount: data.bufferedMsgs?.length || 0
+      };
+    }
+  }
+  admin.firestore().collection('users').doc(uid)
+    .collection('miia_persistent').doc('pending_lids')
+    .set({ lids: todayLids, updatedAt: new Date().toISOString() }, { merge: false })
+    .catch(e => console.error(`[TM:${uid}] ⚠️ Error persistiendo pending_lids:`, e.message));
+}
+
+async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactName, phoneNumber, classification = {}, opts = {}) {
   const pending = tenant._pendingLids?.[lidBase];
   if (!pending) return;
 
   const hasClassification = classification.contactType || classification.businessId;
-  console.log(`[TM:${uid}] 🔍 LID-ID: ✅ Resolviendo ${lidBase} → "${contactName}"${phoneNumber ? ` (${phoneNumber})` : ''}${hasClassification ? ` [tipo=${classification.contactType || '?'}, biz=${classification.businessName || '?'}]` : ''}`);
+  const suppressAutoReply = opts.suppressAutoReply || false;
+  console.log(`[TM:${uid}] 🔍 LID-ID: ✅ Resolviendo ${lidBase} → "${contactName}"${phoneNumber ? ` (${phoneNumber})` : ''}${hasClassification ? ` [tipo=${classification.contactType || '?'}, biz=${classification.businessName || '?'}]` : ''}${suppressAutoReply ? ' [⛔ NO auto-responder]' : ''}`);
 
   // Si tenemos número, mapear en _lidMap
   if (phoneNumber) {
@@ -2192,7 +2296,7 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
     try {
       const indexData = {
         name: contactName,
-        type: classification.contactType || 'lead', // Default: lead si no se especifica
+        type: classification.contactType || 'lead',
         ...(classification.businessId && { businessId: classification.businessId }),
         ...(classification.businessName && { businessName: classification.businessName }),
         source: 'owner_lid_response'
@@ -2205,12 +2309,12 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
       console.error(`[TM:${uid}] ⚠️ Error guardando clasificación en contact_index:`, e.message);
     }
 
-    // También setear en el contexto de TMH para que los mensajes buffereados lo usen inmediatamente
+    // Setear en contexto de TMH para que los buffereados (si se procesan) usen el prompt correcto
     try {
       const { setContactType, setLeadName } = require('./tenant_message_handler');
       if (setContactType) setContactType(uid, resolvedPhone, classification.contactType || 'lead');
       if (setLeadName) setLeadName(uid, resolvedPhone, contactName);
-    } catch (_) { /* TMH puede no exportar estas funciones aún */ }
+    } catch (_) {}
   }
 
   // Notificar al owner
@@ -2219,13 +2323,31 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
     const typeLabel = classification.contactType
       ? ` (${classification.contactType}${classification.businessName ? ' de ' + classification.businessName : ''})`
       : '';
+    const bufferInfo = pending.bufferedMsgs?.length
+      ? (suppressAutoReply
+        ? `\n\n📋 ${pending.bufferedMsgs.length} mensaje(s) pendiente(s) — esperando tu instrucción`
+        : `\n\n📨 Procesando ${pending.bufferedMsgs.length} mensaje(s) pendiente(s)...`)
+      : '';
     tenant.sock.sendMessage(selfJid, {
-      text: `✅ *Contacto identificado*\n\n${contactName}${typeLabel}${phoneNumber ? `\n📱 ${phoneNumber}` : ''}\nLID: ...${lidBase.slice(-6)}${pending.bufferedMsgs?.length ? `\n\n📨 Procesando ${pending.bufferedMsgs.length} mensaje(s) pendiente(s)...` : ''}`
+      text: `✅ *Contacto identificado*\n\n${contactName}${typeLabel}${phoneNumber ? `\n📱 ${phoneNumber}` : ''}\nLID: ...${lidBase.slice(-6)}${bufferInfo}`
     }).catch(e => console.error(`[TM:${uid}] ⚠️ Error notificando resolución LID:`, e.message));
   }
 
-  // Procesar mensajes buffereados
-  if (pending.bufferedMsgs?.length && tenant.sock) {
+  // ═══ PROCESAR MENSAJES BUFFEREADOS ═══
+  // Si el owner dijo "no respondas" → NO procesar (la instrucción va a la IA por self-chat)
+  if (suppressAutoReply) {
+    console.log(`[TM:${uid}] 🔍 LID-ID: ⛔ Owner dijo "no respondas" — ${pending.bufferedMsgs?.length || 0} mensajes buffereados guardados pero NO procesados`);
+    // Guardar resumen de mensajes buffereados para que la IA del self-chat pueda informar al owner
+    if (pending.bufferedMsgs?.length) {
+      tenant._suppressedBuffers = tenant._suppressedBuffers || {};
+      tenant._suppressedBuffers[resolvedPhone] = {
+        contactName,
+        messages: pending.bufferedMsgs.map(b => b.body),
+        classification,
+        suppressedAt: new Date().toISOString()
+      };
+    }
+  } else if (pending.bufferedMsgs?.length && tenant.sock) {
     const resolvedJid = phoneNumber ? `${phoneNumber.replace(/[^0-9]/g, '')}@s.whatsapp.net` : originalFrom;
     console.log(`[TM:${uid}] 🔍 LID-ID: Procesando ${pending.bufferedMsgs.length} mensajes buffereados de ${contactName}${hasClassification ? ` (${classification.contactType})` : ''}`);
     for (const buffered of pending.bufferedMsgs) {
@@ -2240,8 +2362,9 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
     }
   }
 
-  // Limpiar
+  // Limpiar y persistir
   delete tenant._pendingLids[lidBase];
+  _savePendingLids(uid, tenant);
 }
 
 /**
@@ -2259,43 +2382,72 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
 function _extractLidClassification(text, tenant) {
   const result = { hasAdditionalContext: false };
 
-  // ── Extraer nombre ──
-  // "Se llama X" / "Es X" / solo "X"
-  const seLlamaMatch = text.match(/^se\s+llama\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40})/i);
-  const esMatch = text.match(/^(?:es\s+)?([A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40})(?:\s+\+?(\d{10,18}))?/i);
+  // ═══ EXTRACCIÓN INDEPENDIENTE DEL ORDEN ═══
+  // El owner puede decir en CUALQUIER orden:
+  //   "Se llama Yaneth. Es cliente de Medilink. No respondas."
+  //   "Es cliente de Medilink. Se llama Yaneth."
+  //   "Yaneth, cliente medilink"
+  //   "Es mi mamá, se llama Rosa"
+  // Cada pieza se extrae por separado del texto completo.
 
+  // ── 1. Extraer nombre (buscar en TODO el texto, no solo al inicio) ──
+  // Prioridad: "Se llama X" > "Es X" (inicio) > nombre suelto corto
+  const seLlamaMatch = text.match(/se\s+llama\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40})/i);
   if (seLlamaMatch) {
-    result.name = seLlamaMatch[1].replace(/\.\s*$/, '').trim();
-  } else if (esMatch && text.length <= 60) {
-    // Solo para mensajes cortos (evitar capturar frases largas como nombres)
-    result.name = esMatch[1].trim();
-    result.phone = esMatch[2] || null;
+    result.name = seLlamaMatch[1].replace(/[.,;:!?]+\s*$/, '').trim();
+  }
+  if (!result.name) {
+    // "Es Juan" solo al inicio
+    const esMatch = text.match(/^es\s+([A-Za-záéíóúñÁÉÍÓÚÑ]{2,30})/i);
+    if (esMatch) {
+      // Verificar que no sea "Es cliente" / "Es del equipo" (tipo, no nombre)
+      const candidate = esMatch[1].trim().toLowerCase();
+      const typeWords = ['cliente', 'lead', 'prospecto', 'familia', 'familiar', 'equipo', 'empleado', 'amigo', 'amiga', 'conocido', 'vecino', 'del'];
+      if (!typeWords.includes(candidate)) {
+        result.name = esMatch[1].trim();
+      }
+    }
+  }
+  if (!result.name) {
+    // Nombre suelto al inicio (solo si mensaje corto ≤60 chars, solo letras)
+    const shortMatch = text.match(/^([A-Za-záéíóúñÁÉÍÓÚÑ]{2,25})(?:\s|,|\.)/);
+    if (shortMatch && text.length <= 60) {
+      const candidate = shortMatch[1].trim().toLowerCase();
+      const typeWords = ['cliente', 'lead', 'prospecto', 'familia', 'familiar', 'equipo', 'empleado', 'amigo', 'amiga', 'conocido', 'vecino', 'del', 'es', 'no', 'si'];
+      if (!typeWords.includes(candidate)) {
+        result.name = shortMatch[1].trim();
+      }
+    }
   }
 
-  if (!result.name) return result;
+  // Extraer teléfono si aparece en cualquier parte
+  const phoneMatch = text.match(/\+?(\d{10,18})/);
+  if (phoneMatch) result.phone = phoneMatch[1];
 
-  // ── Extraer tipo de contacto ──
+  // ── 2. Extraer tipo de contacto (buscar en TODO el texto) ──
   const tipoPatterns = [
     { pattern: /\b(?:cliente?|customer)\b/i, type: 'client' },
     { pattern: /\b(?:lead|prospecto|interesado)\b/i, type: 'lead' },
     { pattern: /\b(?:familia|familiar|mi\s+(?:mam[aá]|pap[aá]|hermano|hermana|t[ií]o|t[ií]a|primo|prima|esposa|esposo|novia|novio|pareja|abuela|abuelo|hijo|hija|sobrino|sobrina|cu[ñn]ado|cu[ñn]ada|suegro|suegra))\b/i, type: 'familia' },
     { pattern: /\b(?:equipo|empleado|trabajador|colega|compa[ñn]ero|del\s+equipo)\b/i, type: 'equipo' },
-    { pattern: /\b(?:amigo|amiga|conocido|vecino)\b/i, type: 'group' }  // grupo genérico
+    { pattern: /\b(?:amigo|amiga|conocido|vecino)\b/i, type: 'group' }
   ];
-
   for (const { pattern, type } of tipoPatterns) {
     if (pattern.test(text)) {
       result.contactType = type;
+      // Si es familia y no hay nombre, extraer relación como nombre
+      if (type === 'familia' && !result.name) {
+        const relMatch = text.match(/mi\s+(mam[aá]|pap[aá]|hermano|hermana|t[ií]o|t[ií]a|primo|prima|esposa|esposo|novia|novio|pareja|abuela|abuelo|hijo|hija|sobrino|sobrina|cu[ñn]ado|cu[ñn]ada|suegro|suegra)/i);
+        if (relMatch) result.name = `mi ${relMatch[1]}`;
+      }
       break;
     }
   }
 
-  // ── Extraer negocio ──
-  // "cliente de Medilink" / "lead de MiTienda"
+  // ── 3. Extraer negocio (buscar en TODO el texto) ──
   const bizMatch = text.match(/(?:cliente?|lead|prospecto)\s+(?:de|del)\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s\-]{2,30})/i);
   if (bizMatch) {
-    const bizNameRaw = bizMatch[1].replace(/\.\s*$/, '').trim();
-    // Buscar en los negocios del tenant
+    const bizNameRaw = bizMatch[1].replace(/[.,;:!?]+\s*$/, '').trim();
     const businesses = tenant._businesses || [];
     const matchedBiz = businesses.find(b =>
       b.name && b.name.toLowerCase().includes(bizNameRaw.toLowerCase())
@@ -2304,11 +2456,11 @@ function _extractLidClassification(text, tenant) {
       result.businessId = matchedBiz.id;
       result.businessName = matchedBiz.name;
     } else {
-      result.businessName = bizNameRaw; // Guardar nombre aunque no matchee exacto
+      result.businessName = bizNameRaw;
     }
   }
 
-  // ── Si hay 1 solo negocio y es cliente/lead, asignar automáticamente ──
+  // Si hay 1 solo negocio y es cliente/lead → asignar automáticamente
   if ((result.contactType === 'client' || result.contactType === 'lead') && !result.businessId) {
     const businesses = tenant._businesses || [];
     if (businesses.length === 1) {
@@ -2317,11 +2469,26 @@ function _extractLidClassification(text, tenant) {
     }
   }
 
-  // ── Detectar si hay contexto adicional (instrucciones para la IA) ──
-  // Si el texto continúa después del nombre + tipo con frases como "no respondas", "dime", "quiero saber"
-  const afterClassification = text.replace(/^(?:se\s+llama|es)\s+[^.!?]+/i, '').replace(/^[\s.,;]+/, '');
-  if (afterClassification.length > 10) {
+  // Si no hay nombre NI tipo, no es una clasificación válida
+  if (!result.name && !result.contactType) return result;
+
+  // ── 4. Detectar contexto adicional (instrucciones para la IA) ──
+  // Quitar las partes de clasificación y ver si queda algo sustancial
+  let remaining = text;
+  // Quitar "se llama X"
+  remaining = remaining.replace(/se\s+llama\s+[A-Za-záéíóúñÁÉÍÓÚÑ\s]{2,40}/i, '');
+  // Quitar "es X" (nombre)
+  remaining = remaining.replace(/^es\s+[A-Za-záéíóúñÁÉÍÓÚÑ]{2,30}/i, '');
+  // Quitar "cliente/lead de Y"
+  remaining = remaining.replace(/(?:es\s+)?(?:cliente?|lead|prospecto)(?:\s+(?:de|del)\s+[A-Za-záéíóúñÁÉÍÓÚÑ\s\-]{2,30})?/i, '');
+  // Quitar "es familia/equipo/amigo"
+  remaining = remaining.replace(/(?:es\s+)?(?:familia|familiar|equipo|empleado|amigo|amiga|conocido|vecino|mi\s+\w+)/i, '');
+  // Quitar puntuación y espacios sueltos
+  remaining = remaining.replace(/^[\s.,;:!?]+/, '').replace(/[\s.,;:!?]+$/, '');
+
+  if (remaining.length > 10) {
     result.hasAdditionalContext = true;
+    result.additionalContext = remaining; // Guardar para pasar a la IA
   }
 
   return result;
@@ -2357,6 +2524,7 @@ function checkOwnerLidResponse(uid, messageBody) {
           if (tenant._pendingLids?.[lidBase]?.phase === 'waiting_contact') {
             console.log(`[TM:${uid}] 🔍 LID-ID: Timeout 24h esperando contacto — descartando ${lidBase}`);
             delete tenant._pendingLids[lidBase];
+            _savePendingLids(uid, tenant);
           }
         }, 24 * 60 * 60 * 1000);
         return true; // Consumir — no necesita IA
@@ -2376,11 +2544,17 @@ function checkOwnerLidResponse(uid, messageBody) {
       //           "Es mi mamá" / "es familia" / "es del equipo"
       const classification = _extractLidClassification(text, tenant);
 
-      if (classification.name) {
-        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, classification.name, classification.phone, classification);
-        // Si hay más texto (instrucciones al IA) → NO consumir, dejar que la IA procese
+      if (classification.name || classification.contactType) {
+        // Detectar si el owner dice "no respondas" / "no le escribas" / "yo me encargo"
+        const suppressPatterns = /\bno\s+respond|no\s+le\s+escrib|no\s+le\s+dig|no\s+le\s+habl|no\s+le\s+mand|yo\s+me\s+encargo|yo\s+le\s+respond|yo\s+le\s+escrib|luego\s+le\s+respond|después\s+le|despues\s+le|no\s+hagas\s+nada|no\s+le\s+contest/i;
+        const shouldSuppress = suppressPatterns.test(text);
+
+        const resolvedName = classification.name || pending.pushName || `Contacto ${lidBase.slice(-6)}`;
+        _resolvePendingLid(uid, tenant, lidBase, pending.originalFrom, resolvedName, classification.phone, classification, { suppressAutoReply: shouldSuppress });
+
+        // Si hay contexto adicional (instrucciones para la IA) → NO consumir, la IA del self-chat procesa
         if (classification.hasAdditionalContext) {
-          console.log(`[TM:${uid}] 🔍 LID-ID: Nombre="${classification.name}" tipo=${classification.contactType || '?'} biz=${classification.businessName || '?'} + contexto adicional → pasa a IA`);
+          console.log(`[TM:${uid}] 🔍 LID-ID: Nombre="${resolvedName}" tipo=${classification.contactType || '?'} biz=${classification.businessName || '?'}${shouldSuppress ? ' ⛔ SUPRIMIR' : ''} + contexto → pasa a IA`);
           return false;
         }
         return true; // Solo clasificación, consumir
