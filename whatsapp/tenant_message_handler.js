@@ -223,9 +223,22 @@ async function loadFamilyContacts(ownerUid) {
  */
 async function loadTeamContacts(ownerUid) {
   try {
-    const snap = await db().collection('users').doc(ownerUid).collection('teamContacts').get();
     const contacts = {};
+    // Legacy: subcollection teamContacts/
+    const snap = await db().collection('users').doc(ownerUid).collection('teamContacts').get();
     snap.forEach(doc => { contacts[doc.id] = doc.data(); });
+
+    // Nuevo: contact_groups/equipo/contacts/
+    try {
+      const equipoSnap = await db().collection('users').doc(ownerUid)
+        .collection('contact_groups').doc('equipo').collection('contacts').get();
+      equipoSnap.forEach(doc => {
+        if (!contacts[doc.id]) {
+          contacts[doc.id] = { ...doc.data(), _fromGroup: 'equipo' };
+        }
+      });
+    } catch (e2) { /* grupo equipo no existe, ok */ }
+
     console.log(`[TMH:${ownerUid}] 👥 Team contacts: ${Object.keys(contacts).length}`);
     return contacts;
   } catch (e) {
@@ -1069,6 +1082,29 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     if (ctx.businesses && ctx.businesses.length > 1) {
       const bizList = ctx.businesses.map((b, i) => `${i + 1}. ${b.name}${b.description ? ' — ' + b.description.substring(0, 60) : ''}`).join('\n');
       activeSystemPrompt += `\n\n## TUS NEGOCIOS\nTenés ${ctx.businesses.length} negocios registrados:\n${bizList}\nCuando un contacto nuevo escriba, MIIA te consultará a qué negocio asignarlo.`;
+    }
+    // Inyectar lista de contactos conocidos para que MIIA sepa quién es quién
+    const knownPeople = [];
+    if (ctx.familyContacts) {
+      for (const [ph, fc] of Object.entries(ctx.familyContacts)) {
+        if (fc.name) knownPeople.push(`- ${fc.name} (familia) — ${ph}`);
+      }
+    }
+    if (ctx.teamContacts) {
+      for (const [ph, tc] of Object.entries(ctx.teamContacts)) {
+        if (tc.name) knownPeople.push(`- ${tc.name} (equipo) — ${ph}`);
+      }
+    }
+    if (ctx.contactGroups) {
+      for (const [gid, group] of Object.entries(ctx.contactGroups)) {
+        if (gid === 'familia' || gid === 'equipo') continue; // ya cubiertos arriba
+        for (const [ph, c] of Object.entries(group.contacts || {})) {
+          if (c.name) knownPeople.push(`- ${c.name} (${group.name || gid}) — ${ph}`);
+        }
+      }
+    }
+    if (knownPeople.length > 0) {
+      activeSystemPrompt += `\n\n## CONTACTOS CONOCIDOS DE ${ctx.ownerProfile?.shortName || 'OWNER'}\n${knownPeople.join('\n')}\nSi te preguntan "¿quién es X?", buscá en esta lista. Si no está, decí que no lo conocés y preguntá si querés que lo registres.`;
     }
     // Dialecto del owner para self-chat
     if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
