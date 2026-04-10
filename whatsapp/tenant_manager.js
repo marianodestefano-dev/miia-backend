@@ -1238,7 +1238,24 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         // WhatsApp envía el mismo msgId primero con body="" (notification/receipt)
         // y luego con el body real. Si registramos el vacío como "visto",
         // el mensaje real se descarta como duplicado y MIIA nunca lo procesa.
-        if (!body.trim() && !hasMedia) continue;
+        if (!body.trim() && !hasMedia) {
+          // Log para diagnóstico: qué hay en msg.message cuando body está vacío
+          const msgKeys = msg.message ? Object.keys(msg.message) : ['(null)'];
+          if (!msg.key.fromMe && msgKeys.length > 0 && msgKeys[0] !== '(null)') {
+            console.log(`[TM:${uid}] ⚠️ Body vacío pero msg.message tiene keys: [${msgKeys.join(', ')}] from=${msg.key.remoteJid} msgId=${msg.key.id}`);
+            // Si tiene senderKeyDistributionMessage es solo handshake, ignorar silenciosamente
+            if (msgKeys.length === 1 && msgKeys[0] === 'senderKeyDistributionMessage') {
+              continue;
+            }
+            // Si tiene protocolMessage o messageContextInfo es metadata, no mensaje real
+            if (msgKeys.every(k => ['protocolMessage', 'messageContextInfo', 'senderKeyDistributionMessage'].includes(k))) {
+              continue;
+            }
+            // Tiene keys reales pero body vacío = probable error de descifrado
+            console.log(`[TM:${uid}] 🔴 Mensaje NO descifrado de ${msg.key.remoteJid} — keys: [${msgKeys.join(', ')}]. El contacto escribió algo pero no pudimos leerlo.`);
+          }
+          continue;
+        }
 
         // ─── Deduplication: skip already-processed messages ───
         // DESPUÉS de verificar que tiene contenido real
