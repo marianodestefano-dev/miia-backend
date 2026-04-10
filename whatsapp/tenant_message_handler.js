@@ -1562,6 +1562,138 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
   }
 
+  // 11d-RESPONDELE. Tag [RESPONDELE:destinatario|instrucción] — Owner pide enviar mensaje a contacto
+  const respondeleTagMatch = aiMessage.match(/\[RESPONDELE:([^\]]+)\]/);
+  if (respondeleTagMatch && isSelfChat) {
+    const tagParts = respondeleTagMatch[1].split('|').map(p => p.trim());
+    const destinatario = tagParts[0] || '';
+    const instruccion = tagParts[1] || 'responder profesionalmente';
+    console.log(`${logPrefix} [RESPONDELE-TAG] 📨 Tag detectado: destino="${destinatario}", instrucción="${instruccion}"`);
+
+    try {
+      let contactJid = null;
+      let leadPhone = '';
+
+      // 1. Si es un número directo
+      const phoneDigits = destinatario.replace(/[^0-9]/g, '');
+      if (phoneDigits.length >= 10) {
+        leadPhone = phoneDigits;
+        contactJid = `${leadPhone}@s.whatsapp.net`;
+        console.log(`${logPrefix} [RESPONDELE-TAG] 📱 Número directo: ${contactJid}`);
+      }
+
+      // 2. Si es "último_contacto" → buscar última alerta en conversación
+      if (!contactJid && /^[uú]ltimo|^last|^reciente/i.test(destinatario)) {
+        const selfConv = ctx.conversations[phone] || [];
+        const recentMsgs = selfConv.slice(-20);
+        const alertMsg = recentMsgs.find(m => m.role === 'assistant' && (/Nuevo mensaje/.test(m.content) || /Alguien te escribi[oó]/.test(m.content)));
+        if (alertMsg?._contactJid) {
+          contactJid = alertMsg._contactJid;
+          leadPhone = contactJid.split('@')[0];
+        } else if (alertMsg) {
+          const pm = alertMsg.content.match(/(?:Número:\s*\+?|Contacto:.*?\(\+?)(\d{10,18})/);
+          if (pm) { leadPhone = pm[1]; contactJid = `${leadPhone}@s.whatsapp.net`; }
+        }
+        if (contactJid) console.log(`${logPrefix} [RESPONDELE-TAG] 🎯 Último contacto: ${contactJid}`);
+      }
+
+      // 3. Si es un nombre → buscar en contactos registrados
+      if (!contactJid && destinatario.length >= 2) {
+        const destLower = destinatario.toLowerCase();
+        // 3a. Buscar en contact_groups (equipo, familia, etc.)
+        if (ctx.contactGroups) {
+          for (const [gid, group] of Object.entries(ctx.contactGroups)) {
+            for (const [ph, c] of Object.entries(group.contacts || {})) {
+              if (c.name && c.name.toLowerCase().includes(destLower)) {
+                leadPhone = ph;
+                contactJid = `${leadPhone}@s.whatsapp.net`;
+                console.log(`${logPrefix} [RESPONDELE-TAG] 👤 Encontrado en grupo "${gid}" por nombre "${destinatario}" → ${contactJid}`);
+                break;
+              }
+            }
+            if (contactJid) break;
+          }
+        }
+        // 3b. Buscar en familyContacts
+        if (!contactJid && ctx.familyContacts) {
+          for (const [ph, fc] of Object.entries(ctx.familyContacts)) {
+            if (fc.name && fc.name.toLowerCase().includes(destLower)) {
+              leadPhone = ph;
+              contactJid = `${leadPhone}@s.whatsapp.net`;
+              console.log(`${logPrefix} [RESPONDELE-TAG] 👤 Encontrado en familia por nombre "${destinatario}" → ${contactJid}`);
+              break;
+            }
+          }
+        }
+        // 3c. Buscar en teamContacts
+        if (!contactJid && ctx.teamContacts) {
+          for (const [ph, tc] of Object.entries(ctx.teamContacts)) {
+            if (tc.name && tc.name.toLowerCase().includes(destLower)) {
+              leadPhone = ph;
+              contactJid = `${leadPhone}@s.whatsapp.net`;
+              console.log(`${logPrefix} [RESPONDELE-TAG] 👤 Encontrado en equipo por nombre "${destinatario}" → ${contactJid}`);
+              break;
+            }
+          }
+        }
+        // 3d. Buscar en conversaciones por pushName
+        if (!contactJid) {
+          for (const [convJid, msgs] of Object.entries(ctx.conversations || {})) {
+            if (convJid === phone || !convJid.includes('@')) continue;
+            const lastMsg = msgs.slice(-5).find(m => m.role === 'user');
+            if (lastMsg?._pushName && lastMsg._pushName.toLowerCase().includes(destLower)) {
+              contactJid = convJid;
+              leadPhone = convJid.split('@')[0];
+              console.log(`${logPrefix} [RESPONDELE-TAG] 👤 Encontrado por pushName "${destinatario}" → ${contactJid}`);
+              break;
+            }
+          }
+        }
+        // 3e. Buscar en contact_index por nombre
+        if (!contactJid) {
+          try {
+            const indexSnap = await db().collection('users').doc(ownerUid).collection('contact_index')
+              .where('name', '>=', destinatario).where('name', '<=', destinatario + '\uf8ff').limit(1).get();
+            if (!indexSnap.empty) {
+              leadPhone = indexSnap.docs[0].id;
+              contactJid = `${leadPhone}@s.whatsapp.net`;
+              console.log(`${logPrefix} [RESPONDELE-TAG] 👤 Encontrado en contact_index "${destinatario}" → ${contactJid}`);
+            }
+          } catch (e) { /* contact_index query failed, ok */ }
+        }
+      }
+
+      if (contactJid && leadPhone && tenantState.sock && tenantState.isReady) {
+        // Generar respuesta personalizada
+        const ownerName = ctx.ownerProfile?.name || ctx.ownerProfile?.shortName || 'el equipo';
+        const businessName = ctx.ownerProfile?.businessName || '';
+        const leadOriginalMsg = (ctx.conversations[contactJid] || []).slice(-3).find(m => m.role === 'user')?.content || '';
+        const respondPrompt = `Sos MIIA, la asistente de ${ownerName}${businessName ? ` de ${businessName}` : ''}.
+${leadOriginalMsg ? `El contacto escribió antes: "${leadOriginalMsg.substring(0, 200)}"` : ''}
+Tu jefe te pide: "${instruccion}"
+
+REGLAS:
+- Máx 3 líneas, cálido y profesional
+- JAMÁS decir que sos IA
+- JAMÁS mencionar "me pidieron", "mi jefe", "el owner"`;
+
+        const responseResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, respondPrompt, { aiProvider, aiApiKey });
+        const msgText = responseResult?.text || '';
+        if (msgText) {
+          await tenantState.sock.sendMessage(contactJid, { text: msgText });
+          console.log(`${logPrefix} [RESPONDELE-TAG] ✅ Mensaje enviado a ${contactJid}: "${msgText.substring(0, 60)}..."`);
+        }
+      } else if (!contactJid) {
+        console.warn(`${logPrefix} [RESPONDELE-TAG] ⚠️ No se encontró contacto para "${destinatario}"`);
+      } else if (!tenantState.sock || !tenantState.isReady) {
+        console.warn(`${logPrefix} [RESPONDELE-TAG] ⚠️ Socket no disponible para enviar a "${destinatario}"`);
+      }
+    } catch (e) {
+      console.error(`${logPrefix} [RESPONDELE-TAG] ❌ Error:`, e.message);
+    }
+    aiMessage = aiMessage.replace(/\[RESPONDELE:[^\]]+\]/g, '').trim();
+  }
+
   // 11d. Limpiar tags residuales (correo maestro, cotización sin procesar, etc.)
   aiMessage = cleanResidualTags(aiMessage);
 
