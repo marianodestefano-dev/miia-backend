@@ -10734,10 +10734,42 @@ app.post('/api/tenant/:uid/businesses/:bizId/sessions', express.json(), async (r
 app.get('/api/tenant/:uid/contact-groups', async (req, res) => {
   try {
     const { uid } = req.params;
-    const snap = await db.collection('users').doc(uid).collection('contact_groups').orderBy('createdAt', 'asc').get();
+    const groupsRef = db.collection('users').doc(uid).collection('contact_groups');
+    let snap = await groupsRef.get();
+
+    // Auto-create default groups if none exist
+    if (snap.empty) {
+      console.log(`[GROUPS] 🔧 Auto-creando grupos predeterminados para ${uid}`);
+      const defaults = [
+        { id: 'familia', name: 'Familia', icon: '👨‍👩‍👧‍👦', tone: 'Habla con cariño y confianza, como un amigo cercano de la familia.', autoRespond: false, proactiveEnabled: false },
+        { id: 'equipo', name: 'Equipo', icon: '👥', tone: 'Habla profesional pero amigable, como un compañero de trabajo.', autoRespond: false, proactiveEnabled: false }
+      ];
+      for (const g of defaults) {
+        await groupsRef.doc(g.id).set({ name: g.name, icon: g.icon, tone: g.tone, autoRespond: g.autoRespond, proactiveEnabled: g.proactiveEnabled, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+      }
+      // Also migrate legacy familyContacts if they exist
+      try {
+        const legacyFam = await db.collection('users').doc(uid).collection('miia_persistent').doc('contacts').get();
+        if (legacyFam.exists) {
+          const famData = legacyFam.data();
+          if (famData && famData.familyContacts && Array.isArray(famData.familyContacts)) {
+            for (const fc of famData.familyContacts) {
+              if (fc.phone) {
+                await groupsRef.doc('familia').collection('contacts').doc(fc.phone).set({
+                  name: fc.name || '', phone: fc.phone, notes: fc.notes || '', proactiveEnabled: !!fc.proactiveEnabled, addedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+              }
+            }
+            console.log(`[GROUPS] ✅ Migrados ${famData.familyContacts.length} contactos familiares`);
+          }
+        }
+      } catch (migErr) { console.error('[GROUPS] ⚠️ Error migrando familia:', migErr.message); }
+      snap = await groupsRef.get();
+    }
+
     const groups = [];
     for (const doc of snap.docs) {
-      const contactsSnap = await db.collection('users').doc(uid).collection('contact_groups').doc(doc.id).collection('contacts').get();
+      const contactsSnap = await groupsRef.doc(doc.id).collection('contacts').get();
       groups.push({ id: doc.id, ...doc.data(), contactCount: contactsSnap.size });
     }
     console.log(`[GROUPS] 📋 Listados ${groups.length} grupos para ${uid}`);
