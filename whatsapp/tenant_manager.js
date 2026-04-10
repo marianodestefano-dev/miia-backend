@@ -2445,6 +2445,7 @@ function _extractLidClassification(text, tenant) {
   }
 
   // ── 3. Extraer negocio (buscar en TODO el texto) ──
+  // Primero intentar "cliente de X" / "lead de X"
   const bizMatch = text.match(/(?:cliente?|lead|prospecto)\s+(?:de|del)\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s\-]{2,30})/i);
   if (bizMatch) {
     const bizNameRaw = bizMatch[1].replace(/[.,;:!?]+\s*$/, '').trim();
@@ -2460,6 +2461,22 @@ function _extractLidClassification(text, tenant) {
     }
   }
 
+  // SHORTCUT: Owner solo dice nombre del negocio ("Medilink") → es lead de ese negocio
+  // Si lo que capturamos como "nombre" en realidad es un negocio conocido, corregir
+  if (result.name && !result.businessId) {
+    const businesses = tenant._businesses || [];
+    const bizByName = businesses.find(b =>
+      b.name && b.name.toLowerCase() === result.name.toLowerCase()
+    );
+    if (bizByName) {
+      // "Medilink" no es el nombre del contacto — es el negocio
+      result.businessId = bizByName.id;
+      result.businessName = bizByName.name;
+      result.name = null; // Limpiar — el nombre del contacto no fue dado
+      if (!result.contactType) result.contactType = 'lead'; // Default: lead
+    }
+  }
+
   // Si hay 1 solo negocio y es cliente/lead → asignar automáticamente
   if ((result.contactType === 'client' || result.contactType === 'lead') && !result.businessId) {
     const businesses = tenant._businesses || [];
@@ -2469,8 +2486,8 @@ function _extractLidClassification(text, tenant) {
     }
   }
 
-  // Si no hay nombre NI tipo, no es una clasificación válida
-  if (!result.name && !result.contactType) return result;
+  // Si no hay nombre NI tipo NI negocio, no es una clasificación válida
+  if (!result.name && !result.contactType && !result.businessId) return result;
 
   // ── 4. Detectar contexto adicional (instrucciones para la IA) ──
   // Quitar las partes de clasificación y ver si queda algo sustancial
@@ -2544,7 +2561,7 @@ function checkOwnerLidResponse(uid, messageBody) {
       //           "Es mi mamá" / "es familia" / "es del equipo"
       const classification = _extractLidClassification(text, tenant);
 
-      if (classification.name || classification.contactType) {
+      if (classification.name || classification.contactType || classification.businessId) {
         // Detectar si el owner dice "no respondas" / "no le escribas" / "yo me encargo"
         const suppressPatterns = /\bno\s+respond|no\s+le\s+escrib|no\s+le\s+dig|no\s+le\s+habl|no\s+le\s+mand|yo\s+me\s+encargo|yo\s+le\s+respond|yo\s+le\s+escrib|luego\s+le\s+respond|después\s+le|despues\s+le|no\s+hagas\s+nada|no\s+le\s+contest/i;
         const shouldSuppress = suppressPatterns.test(text);
