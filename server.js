@@ -4225,6 +4225,52 @@ ${(() => { const tc = target.phone.substring(0, 2); const tc3 = target.phone.sub
           return;
         }
 
+        // ═══ Caso número directo: "dile a +573138501884: mensaje" o "dile a 573138501884 mensaje" ═══
+        const phoneDirectMatch = rest.match(/^\+?(\d{10,15})\s*[:\-]?\s*(.*)/s);
+        if (phoneDirectMatch) {
+          const directNumber = phoneDirectMatch[1];
+          const directMessage = (phoneDirectMatch[2] || '').trim();
+          const directJid = `${directNumber}@s.whatsapp.net`;
+
+          if (!directMessage) {
+            await safeSendMessage(phone, `⚠️ Faltó el mensaje. Formato: "dile a +${directNumber}: tu mensaje aquí"`, { isSelfChat: true });
+            return;
+          }
+
+          // Verificar si el número está en familyContacts para usar su info
+          const familyEntry = Object.entries(familyContacts).find(([fp]) => fp.includes(directNumber) || directNumber.includes(fp.replace(/\D/g, '')));
+          const contactName = familyEntry ? familyEntry[1].name : `+${directNumber}`;
+          const contactRelation = familyEntry ? familyEntry[1].relation : 'contacto';
+
+          try {
+            const ownerN = userProfile?.name || 'el owner';
+            const promptDirect = `Sos MIIA. Vas a escribirle a ${contactName} (${contactRelation} de ${ownerN}).
+Contexto de lo que querés hablar: "${directMessage}".
+
+REGLAS CRÍTICAS:
+- Este mensaje es TUYO, de MIIA. Hablás con TU voz, como si se te ocurrió a vos.
+- PROHIBIDO TOTAL: "${ownerN} me pidió", "él quería saber", "me dijo que te pregunte", "te paso el recado".
+- Máximo 3 renglones, natural y humano.
+- NO repitas las palabras del contexto literalmente, reinterpretalo con tu estilo.`;
+            const directMsg = await generateAIContent(promptDirect);
+            if (directMsg) {
+              await safeSendMessage(directJid, directMsg.trim());
+              conversations[directJid] = conversations[directJid] || [];
+              conversations[directJid].push({ role: 'assistant', content: directMsg.trim(), timestamp: Date.now() });
+              if (!allowedLeads.includes(directJid)) allowedLeads.push(directJid);
+              saveDB();
+              await safeSendMessage(phone, `✅ Enviado a ${contactName}`, { isSelfChat: true, noDelay: true });
+              console.log(`[DILE A] ✅ Mensaje enviado por número directo a ${contactName} (${directJid})`);
+            } else {
+              await safeSendMessage(phone, `❌ No pude generar el mensaje para ${contactName}.`, { isSelfChat: true });
+            }
+          } catch (e) {
+            console.error(`[DILE A] Error enviando a ${directJid}:`, e.message);
+            await safeSendMessage(phone, `❌ Error enviando a ${contactName}: ${e.message}`, { isSelfChat: true });
+          }
+          return;
+        }
+
         // Caso individual: buscar el familiar por nombre normalizado
         const words = rest.split(' ');
         let foundFamily = null;

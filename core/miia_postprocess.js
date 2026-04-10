@@ -34,7 +34,10 @@ const ACTION_CONFIRMATIONS = [
     requiredTag: /\[ENVIAR_CORREO:/ },
   { phrases: [/ya le avisé/i, /ya le dije/i, /listo.{0,30}le (?:avisé|dije)/i],
     requiredTag: /\[MENSAJE_PARA_OWNER:|DILE_A_/ },
-  { phrases: [/ya.*te.*recordar/i, /anotado.*te.*recuerdo/i, /listo.{0,30}recordatorio/i],
+  // NOTA: "anotado" y "recordar" son palabras muy comunes en conversación natural.
+  // Solo matchear cuando MIIA confirma una ACCIÓN concreta: "te lo recuerdo a las X", "anotado, te recuerdo mañana".
+  // NO matchear: "me gusta recordar quién es quién", "para tenerlo bien anotado".
+  { phrases: [/ya.{0,20}te.{0,15}(?:lo )?(?:voy a )?recordar(?:é|lo)?/i, /anotado.{0,20}te.{0,15}(?:recuerdo|aviso)/i, /listo.{0,30}recordatorio/i, /te.{0,15}(?:recuerdo|aviso).{0,20}(?:mañana|después|luego|a las)/i],
     requiredTag: /\[RECORDAR_(?:CONTACTO|OWNER):|\[AGENDAR_EVENTO:/ },
   { phrases: [/ya.*te.*(?:mandé|envié).*cotizaci[oó]n/i, /listo.{0,30}cotizaci[oó]n/i],
     requiredTag: /\[GENERAR_COTIZACION_PDF:/ },
@@ -360,7 +363,7 @@ function buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSear
   return `Sos un auditor de calidad. Analizá esta respuesta de una IA que se hace pasar por humana en WhatsApp.
 
 CONTEXTO:
-- Tipo de chat: ${chatType} (${chatType === 'lead' ? 'con cliente potencial — JAMÁS revelar que es IA' : chatType === 'selfchat' ? 'con su creador — puede ser informal' : 'con familiar/equipo — saben que es IA'})
+- Tipo de chat: ${chatType} (${chatType === 'lead' ? 'con cliente potencial — JAMÁS revelar que es IA' : chatType === 'selfchat' ? 'con su creador — puede ser informal. IMPORTANTE: el creador puede pedir que envíe mensajes a terceros ("recuérdale a X", "dile a Y", "avísale a Z") — esto es LEGÍTIMO en selfchat. "Recuérdale" (3ra persona) = enviar a alguien, NO es lo mismo que "recuérdame" (1ra persona). Preguntar "¿a quién?" es correcto.' : 'con familiar/equipo — saben que es IA'})
 - Contacto: ${contactName || 'desconocido'}
 - Tiene datos de búsqueda real: ${hasSearchData ? 'SÍ' : 'NO'}
 - Mensaje del usuario: "${(userMessage || '').substring(0, 200)}"
