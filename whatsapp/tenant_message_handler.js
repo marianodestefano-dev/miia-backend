@@ -574,18 +574,43 @@ async function getOrCreateContext(uid, ownerUid, role) {
   ]);
 
   if (!ctx) {
+    // 🛡️ FIX CRÍTICO: Cargar conversaciones persistidas desde Firestore
+    // Sin esto, después de cada deploy MIIA pierde toda la info de leads
+    // y dice "no tengo esa info" cuando le preguntan.
+    let restoredConvos = {};
+    let restoredContactTypes = {};
+    let restoredLeadNames = {};
+    let restoredMeta = {};
+    try {
+      const persistRef = admin.firestore().collection('users').doc(ownerUid).collection('miia_persistent');
+      const convoDoc = await persistRef.doc('tenant_conversations').get();
+      if (convoDoc.exists) {
+        const d = convoDoc.data();
+        restoredConvos = d.conversations || {};
+        restoredContactTypes = d.contactTypes || {};
+        restoredLeadNames = d.leadNames || {};
+        restoredMeta = d.conversationMetadata || {};
+        const convCount = Object.keys(restoredConvos).length;
+        if (convCount > 0) {
+          console.log(`[TMH:${uid}] 🔄 RESTORED: ${convCount} conversaciones, ${Object.keys(restoredLeadNames).length} leadNames desde Firestore`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[TMH:${uid}] ⚠️ Error cargando conversaciones persistidas: ${e.message}`);
+    }
+
     // Primera vez: crear contexto completo
     ctx = {
       uid,
       ownerUid,
       role,
       ownerProfile,
-      conversations: {},
-      leadNames: {},
-      contactTypes: {},
+      conversations: restoredConvos,
+      leadNames: restoredLeadNames,
+      contactTypes: restoredContactTypes,
       familyContacts,
       teamContacts,
-      conversationMetadata: {},
+      conversationMetadata: restoredMeta,
       businessCerebro,
       personalBrain,
       subscriptionState: {},
@@ -1907,37 +1932,46 @@ async function sendTenantMessage(tenantState, phone, content) {
     console.log(`[TMH:${tenantState.uid}] ✂️ Respuesta recortada a ${content.length} chars para ${phone}`);
   }
 
-  // ═══ HUMAN DELAY: Secuencia correcta → leer → delay → typing → delay → enviar ═══
+  // ═══ HUMAN DELAY: SOLO para leads/clientes — NUNCA en self-chat ni grupos ═══
+  // 🛡️ FIX: sock.user.id tiene sufijo ":94" (ej: 573163937365:94@s.whatsapp.net)
+  //    vs phone es "573163937365@s.whatsapp.net" → comparación directa SIEMPRE falla
   const ctx = tenantContexts.get(tenantState.uid);
-  const ownerHour = humanDelay.getOwnerHour(ctx?.ownerProfile?.timezone);
-  const rlLevel = rateLimiter.getLevel(tenantState.uid);
-  const delayMult = rlLevel.level.delayMultiplier || 1;
-  const isSelfChatMsg = tenantState.sock?.user?.id === phone;
-  const contactTypeForDelay = isSelfChatMsg ? 'owner' : 'lead'; // Simplificado para sendTenantMessage
+  const sockUserId = tenantState.sock?.user?.id || '';
+  const sockBasePhone = sockUserId.split(':')[0].split('@')[0];
+  const targetBasePhone = phone.split('@')[0];
+  const isSelfChatMsg = sockBasePhone === targetBasePhone;
+  const isGroupMsg = phone.endsWith('@g.us');
 
-  // 1. Delay de "lectura" (antes de empezar a escribir)
-  const readMs = humanDelay.calculateReadDelay({
-    contactType: contactTypeForDelay,
-    messageLength: 50, // No tenemos el mensaje original acá, usar estimado
-    isFirstMessage: false,
-    hour: ownerHour,
-    delayMultiplier: delayMult,
-  });
-  // Posible delay extra de "ocupado" (1 de cada 8)
-  const busyMs = humanDelay.maybeBusyDelay(contactTypeForDelay);
-  await delay(readMs + busyMs);
+  if (!isSelfChatMsg && !isGroupMsg) {
+    const ownerHour = humanDelay.getOwnerHour(ctx?.ownerProfile?.timezone);
+    const rlLevel = rateLimiter.getLevel(tenantState.uid);
+    const delayMult = rlLevel.level.delayMultiplier || 1;
+    const contactTypeForDelay = 'lead';
 
-  try {
-    // 2. Typing indicator DESPUÉS del delay de lectura (no antes)
+    // 1. Delay de "lectura" (antes de empezar a escribir)
+    const readMs = humanDelay.calculateReadDelay({
+      contactType: contactTypeForDelay,
+      messageLength: 50,
+      isFirstMessage: false,
+      hour: ownerHour,
+      delayMultiplier: delayMult,
+    });
+    // Posible delay extra de "ocupado" (1 de cada 8)
+    const busyMs = humanDelay.maybeBusyDelay(contactTypeForDelay);
+    await delay(readMs + busyMs);
+
     try { await tenantState.sock.sendPresenceUpdate('composing', phone); } catch (_) {}
 
-    // 3. Delay de "escritura" proporcional al largo de la respuesta
+    // 2. Delay de "escritura" proporcional al largo de la respuesta
     const typingMs = humanDelay.calculateTypingDelay({
       responseLength: content.length,
       contactType: contactTypeForDelay,
       delayMultiplier: delayMult,
     });
     await delay(typingMs);
+  }
+
+  try {
 
     // Enviar
     await tenantState.sock.sendMessage(phone, { text: content });
@@ -1948,6 +1982,49 @@ async function sendTenantMessage(tenantState, phone, content) {
   } catch (e) {
     console.error(`[TMH:${tenantState.uid}] ❌ Error enviando mensaje a ${phone}:`, e.message);
     return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PERSISTENCIA DE CONVERSACIONES — Sobrevive deploys
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Persiste conversaciones, contactTypes y leadNames a Firestore.
+ * Se llama periódicamente desde server.js (cada 2min) para que
+ * después de un deploy MIIA sepa quién escribió.
+ */
+async function persistTenantConversations() {
+  for (const [uid, ctx] of tenantContexts.entries()) {
+    if (!ctx.ownerUid || Object.keys(ctx.conversations).length === 0) continue;
+    try {
+      // Recortar a últimos 20 contactos y últimos 5 msgs cada uno
+      const trimmed = {};
+      const sorted = Object.entries(ctx.conversations)
+        .filter(([, msgs]) => msgs.length > 0)
+        .sort((a, b) => {
+          const lastA = a[1][a[1].length - 1]?.timestamp || 0;
+          const lastB = b[1][b[1].length - 1]?.timestamp || 0;
+          return lastB - lastA;
+        })
+        .slice(0, 20);
+      for (const [ph, msgs] of sorted) {
+        trimmed[ph] = msgs.slice(-5);
+      }
+
+      await admin.firestore()
+        .collection('users').doc(ctx.ownerUid)
+        .collection('miia_persistent').doc('tenant_conversations')
+        .set({
+          conversations: trimmed,
+          contactTypes: ctx.contactTypes || {},
+          leadNames: ctx.leadNames || {},
+          conversationMetadata: ctx.conversationMetadata || {},
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+    } catch (e) {
+      console.warn(`[TMH:${uid}] ⚠️ Error persistiendo conversaciones: ${e.message}`);
+    }
   }
 }
 
@@ -1985,6 +2062,9 @@ module.exports = {
     const ctx = tenantContexts.get(uid);
     if (ctx) { ctx.leadNames[phone] = name; ctx.leadNames[`${phone}@s.whatsapp.net`] = name; }
   },
+
+  // Persistencia de conversaciones (llamar periódicamente desde server.js)
+  persistTenantConversations,
 
   // Inyección de funciones de aprobación dinámica (llamar desde server.js al inicio)
   setApprovalFunctions,

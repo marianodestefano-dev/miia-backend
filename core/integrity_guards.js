@@ -76,6 +76,38 @@ function runIntegrityChecks() {
     'Log de auditoría que detecta si search se enruta a proveedor que no es Gemini. Alerta temprana de regresión.'
   );
 
+  // GUARD 7: loadFromFirestore DESPUÉS de OWNER_UID en AUTO-INIT
+  _checkFileContains(
+    'LOAD-AFTER-AUTOINIT',
+    path.join(__dirname, '..', 'server.js'),
+    'FIX CRÍTICO: loadFromFirestore se ejecutaba ANTES',
+    'loadFromFirestore debe ejecutarse DESPUÉS de OWNER_UID auto-detectado. Sin esto, conversations=vacío → MIIA dice "no tengo esa info".'
+  );
+
+  // GUARD 8: NO human-delay en self-chat (server.js)
+  _checkFileContains(
+    'NO-DELAY-SELFCHAT-SRV',
+    path.join(__dirname, '..', 'server.js'),
+    'HUMAN-DELAY: SOLO para leads/clientes',
+    'Self-chat no debe tener human delay. Sin esto, MIIA tarda 20-45s extra en responder al owner.'
+  );
+
+  // GUARD 9: NO human-delay en self-chat (TMH) con fix de comparación :94
+  _checkFileContains(
+    'NO-DELAY-SELFCHAT-TMH',
+    path.join(__dirname, '..', 'whatsapp', 'tenant_message_handler.js'),
+    'sockBasePhone === targetBasePhone',
+    'Comparación self-chat en TMH debe extraer basePhone (sin :94). Sin esto, human delay aplica en self-chat.'
+  );
+
+  // GUARD 10: Persistencia de conversaciones TMH
+  _checkFileContains(
+    'TMH-PERSIST-CONVOS',
+    path.join(__dirname, '..', 'whatsapp', 'tenant_message_handler.js'),
+    'persistTenantConversations',
+    'TMH debe persistir conversaciones a Firestore. Sin esto, después de deploy MIIA pierde toda info de leads.'
+  );
+
   const passed = GUARD_STATUS.checks.filter(c => c.ok).length;
   const failed = GUARD_STATUS.checks.filter(c => !c.ok).length;
   GUARD_STATUS.allPassed = failed === 0;

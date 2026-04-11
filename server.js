@@ -75,6 +75,7 @@ process.on('SIGTERM', async () => {
   console.log('[SHUTDOWN] SIGTERM recibido — guardando datos en Firestore...');
   try { await saveAffinityToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error affinity:', e.message); }
   try { await saveToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error persistent:', e.message); }
+  try { const { persistTenantConversations } = require('./whatsapp/tenant_message_handler'); await persistTenantConversations(); } catch (e) { console.error('[SHUTDOWN] Error TMH convos:', e.message); }
   process.exit(0);
 });
 
@@ -1514,6 +1515,13 @@ loadFromFirestore().then(loaded => {
 // Sync periódico a Firestore cada 2 minutos (batch, no en cada cambio)
 // L1: Firestore sync — pasivo
 setInterval(() => { taskScheduler.executeWithConcentration(1, 'firestore-sync', saveToFirestore); }, 2 * 60 * 1000);
+// 🛡️ Persistir conversaciones de tenants (TMH) cada 2 min — sobrevive deploys
+setInterval(() => {
+  try {
+    const { persistTenantConversations } = require('./whatsapp/tenant_message_handler');
+    persistTenantConversations().catch(e => console.warn(`[TMH-PERSIST] ⚠️ ${e.message}`));
+  } catch (_) {}
+}, 2 * 60 * 1000);
 
 // ============================================
 // HELPERS GENERALES
@@ -6938,20 +6946,24 @@ REGLAS:
       } catch (e) { /* ignore presence errors */ }
     }
 
-    // Simular typing y enviar
-    try {
-      if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('composing', phone);
-      const typingDuration = Math.min(Math.max(aiMessage.length * 65, 2500), 15000);
-      await new Promise(r => setTimeout(r, typingDuration));
-    } catch (e) { /* ignore typing errors */ }
+    // 🛡️ HUMAN-DELAY: SOLO para leads/clientes — NUNCA en self-chat ni grupos
+    // Sin esto, MIIA tarda 20-45s extra en responder al owner en self-chat.
+    if (!isSelfChat) {
+      // Simular typing y enviar
+      try {
+        if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('composing', phone);
+        const typingDuration = Math.min(Math.max(aiMessage.length * 65, 2500), 15000);
+        await new Promise(r => setTimeout(r, typingDuration));
+      } catch (e) { /* ignore typing errors */ }
 
-    // Micro-humanizer: typo 2% + delay variable (1 en 8 mensajes: 20-45s) — respeta preferencia del usuario
-    const humanizerOn = await isHumanizerEnabled();
-    if (humanizerOn) aiMessage = maybeAddTypo(aiMessage);
-    const humanDelay = humanizerOn
-      ? (Math.random() < 0.125 ? (20000 + Math.random() * 25000) : (1500 + Math.random() * 1500))
-      : (800 + Math.random() * 400);
-    await new Promise(r => setTimeout(r, humanDelay));
+      // Micro-humanizer: typo 2% + delay variable (1 en 8 mensajes: 20-45s) — respeta preferencia del usuario
+      const humanizerOn = await isHumanizerEnabled();
+      if (humanizerOn) aiMessage = maybeAddTypo(aiMessage);
+      const humanDelayMs = humanizerOn
+        ? (Math.random() < 0.125 ? (20000 + Math.random() * 25000) : (1500 + Math.random() * 1500))
+        : (800 + Math.random() * 400);
+      await new Promise(r => setTimeout(r, humanDelayMs));
+    }
 
     lastAiSentBody[phone] = aiMessage.trim();
     console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused} | isSelfChat=${isSelfChat}`);
@@ -13990,6 +14002,18 @@ server.listen(PORT, () => {
           }
         } else {
           console.log(`[AUTO-INIT] OWNER_UID desde env: ${OWNER_UID}`);
+        }
+
+        // 🛡️ FIX CRÍTICO: loadFromFirestore se ejecutaba ANTES de que OWNER_UID existiera
+        // → conversations, contactTypes, leadNames NUNCA se cargaban de Firestore
+        // → MIIA decía "no tengo esa info" cuando le preguntaban por leads
+        if (OWNER_UID) {
+          const loaded = await loadFromFirestore();
+          if (loaded) {
+            const convCount = Object.keys(conversations).length;
+            const leadCount = Object.keys(contactTypes).filter(k => contactTypes[k] === 'lead' || contactTypes[k] === 'miia_lead').length;
+            console.log(`[AUTO-INIT] 🔄 Datos de Firestore cargados: ${convCount} conversaciones, ${leadCount} leads`);
+          }
         }
 
         // 1.5. Cargar affinity desde Firestore (ANTES de conectar WhatsApp)
