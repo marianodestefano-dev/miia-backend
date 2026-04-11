@@ -3430,12 +3430,23 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
       }
     }
 
-    // ═══ "QUÉ PODÉS HACER" — Listar todas las capacidades de MIIA ═══
+    // ═══ "QUÉ PODÉS HACER" — Listar categorías de capacidades (resumido) ═══
     if (isAdmin && effectiveMsg && featureAnnouncer.isCapabilitiesQuery(effectiveMsg)) {
-      const capMsg = featureAnnouncer.buildCapabilitiesMessage();
+      const capMsg = featureAnnouncer.buildCapabilitiesSummary();
       await safeSendMessage(phone, capMsg, { isSelfChat: true, skipEmoji: true });
-      console.log(`[FEATURES] 📋 Capacidades listadas para el owner`);
+      console.log(`[FEATURES] 📋 Categorías listadas para el owner (resumen)`);
       return;
+    }
+
+    // ═══ DETALLE DE CATEGORÍA — Owner dice "1", "agenda", "contame de email" ═══
+    if (isAdmin && effectiveMsg && featureAnnouncer.isCategoryDetailQuery(effectiveMsg)) {
+      const detail = featureAnnouncer.buildCategoryDetail(effectiveMsg);
+      if (detail) {
+        await safeSendMessage(phone, detail, { isSelfChat: true, skipEmoji: true });
+        console.log(`[FEATURES] 📋 Detalle de categoría enviado al owner`);
+        return;
+      }
+      // Si no matchea, dejar que pase a la IA normal
     }
 
     // ═══ CLASIFICACIÓN DE CONTACTOS (self-chat, P3.1) ═══

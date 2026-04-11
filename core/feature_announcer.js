@@ -251,7 +251,7 @@ function isCapabilitiesQuery(message) {
 }
 
 /**
- * Construir mensaje con TODAS las capacidades de MIIA
+ * Construir mensaje con TODAS las capacidades de MIIA (formato completo)
  * @returns {string}
  */
 function buildCapabilitiesMessage() {
@@ -267,6 +267,70 @@ function buildCapabilitiesMessage() {
 
   msg += `_v${CURRENT_VERSION} — ${CURRENT_DATE}_`;
   return msg;
+}
+
+/**
+ * Construir mensaje RESUMIDO — solo categorías, sin detallar ítems.
+ * El owner dice "contame de Agenda" y MIIA expande solo esa categoría.
+ * @returns {string}
+ */
+function buildCapabilitiesSummary() {
+  let msg = `🤖 *Estas son mis áreas de trabajo:*\n\n`;
+  CAPABILITIES.forEach((cat, i) => {
+    msg += `*${i + 1}.* ${cat.category} _(${cat.items.length} funciones)_\n`;
+  });
+  msg += `\n_Decime el número o nombre de la categoría y te detallo qué puedo hacer ahí._`;
+  return msg;
+}
+
+/**
+ * Construir detalle de UNA categoría específica
+ * @param {string} query - nombre o número de categoría
+ * @returns {string|null} null si no matchea
+ */
+function buildCategoryDetail(query) {
+  if (!query) return null;
+  const q = query.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+  // Match por número
+  const numMatch = q.match(/^(\d+)$/);
+  if (numMatch) {
+    const idx = parseInt(numMatch[1]) - 1;
+    if (idx >= 0 && idx < CAPABILITIES.length) {
+      return _formatCategory(CAPABILITIES[idx]);
+    }
+    return null;
+  }
+
+  // Match por nombre (fuzzy)
+  const cat = CAPABILITIES.find(c => {
+    const catName = c.category.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w\s]/g, '').trim();
+    return catName.includes(q) || q.includes(catName.split(' ').pop());
+  });
+
+  return cat ? _formatCategory(cat) : null;
+}
+
+function _formatCategory(cat) {
+  let msg = `*${cat.category}*\n\n`;
+  cat.items.forEach(item => {
+    msg += `  • ${item}\n`;
+  });
+  msg += `\n_¿Querés saber de otra área? Decime cuál._`;
+  return msg;
+}
+
+/**
+ * Detectar si el owner pide detalle de una categoría específica
+ * @param {string} message
+ * @returns {boolean}
+ */
+function isCategoryDetailQuery(message) {
+  if (!message) return false;
+  const m = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // "contame de agenda", "qué podés hacer con email", "detalle de seguridad", "1", "2", etc.
+  return /\b(contame|decime|detalle|detalla|explicame|que\s+pod[eé]s.*(?:con|en|de|sobre))\b/i.test(m) ||
+    /^[1-9]\d?$/.test(m.trim());
 }
 
 /**
@@ -297,7 +361,10 @@ module.exports = {
   init,
   checkAndAnnounce,
   isCapabilitiesQuery,
+  isCategoryDetailQuery,
   buildCapabilitiesMessage,
+  buildCapabilitiesSummary,
+  buildCategoryDetail,
   getVersion,
   CURRENT_VERSION,
   CHANGELOG,
