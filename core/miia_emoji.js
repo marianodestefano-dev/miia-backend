@@ -84,6 +84,10 @@ function getMiiaEmoji(message, ctx = {}) {
     return happyEmojis[Math.floor(Math.random() * happyEmojis.length)];
   }
 
+  // ═══ PRIORIDAD 1.5: MIIA CENTER — emojis específicos por tipo de contacto ═══
+  if (ctx.chatType === 'miia_client') return '👩‍🔧'; // Soporte técnico
+  if (ctx.chatType === 'miia_lead') return '👩‍💻';   // Ventas MIIA
+
   // ═══ PRIORIDAD 2: Reacciones al owner (mood) ═══
 
   if (ctx.ownerMood === 'bully') {

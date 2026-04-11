@@ -1463,8 +1463,22 @@ async function saveToFirestore() {
     });
 
     // Historial de conversaciones (para contexto de IA)
+    // 🛡️ TRIM: Limitar a top 30 contactos × últimos 10 msgs cada uno
+    // Sin trim, el doc puede exceder 1MB de Firestore y el save falla silenciosamente
+    const trimmedConvos = {};
+    const sortedConvos = Object.entries(conversations)
+      .filter(([, msgs]) => Array.isArray(msgs) && msgs.length > 0)
+      .sort((a, b) => {
+        const lastA = a[1][a[1].length - 1]?.timestamp || 0;
+        const lastB = b[1][b[1].length - 1]?.timestamp || 0;
+        return lastB - lastA;
+      })
+      .slice(0, 30);
+    for (const [ph, msgs] of sortedConvos) {
+      trimmedConvos[ph] = msgs.slice(-10);
+    }
     await ref.doc('conversations').set({
-      conversations,
+      conversations: trimmedConvos,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
@@ -1488,7 +1502,7 @@ async function saveToFirestore() {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    console.log(`[FIRESTORE] ✅ Datos persistidos correctamente (training: ${currentTrainingData?.length || 0} chars)`);
+    console.log(`[FIRESTORE] ✅ Datos persistidos correctamente (convos: ${sortedConvos.length}, training: ${currentTrainingData?.length || 0} chars)`);
   } catch (e) {
     console.error('[FIRESTORE] ❌ Error guardando:', e.message);
   }
@@ -5198,6 +5212,12 @@ Nuevo resumen actualizado:`;
         ? { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile.name || MIIA_SALES_PROFILE.name || 'Mariano', shortName: userProfile.shortName || 'Mariano' }
         : userProfile;
 
+      // 🛡️ Anti-greeting: calcular si el owner interactuó recientemente
+      const lastSelfChatTs = lastInteractionTime[phone] || 0;
+      const msSinceLastInteraction = Date.now() - lastSelfChatTs;
+      const hoursInactive = msSinceLastInteraction / (1000 * 60 * 60);
+      const shouldGreet = hoursInactive >= 6; // Solo saludar si pasaron 6+ horas
+
       const result = assemblePrompt({
         chatType: 'selfchat',
         messageBody: userMessage,
@@ -5207,6 +5227,7 @@ Nuevo resumen actualizado:`;
           countryContext, // Dialecto del owner en self-chat
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,
+          antiGreeting: !shouldGreet, // true = NO saludar (interacción reciente)
         }
       });
       activeSystemPrompt = result.prompt;
@@ -5265,12 +5286,12 @@ NUNCA le hagas pitch de venta. NUNCA cuentes demos. Es TU cliente, no tu prospec
       };
 
       const result = assemblePrompt({
-        chatType: 'lead', // Usa el pipeline de lead pero con perfil de soporte
+        chatType: 'miia_client', // Tipo propio para soporte — NO 'lead'
         messageBody: userMessage,
         ownerProfile: supportProfile,
         context: {
           contactName: clientName,
-          trainingData: '',
+          trainingData: cerebroAbsoluto.getTrainingData() || '', // 🛡️ Inyectar conocimiento MIIA para soporte resolutivo
           countryContext,
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,
@@ -7428,6 +7449,7 @@ REGLAS:
     const emojiCtx = {
       ownerMood,
       trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
+      chatType: postChatType, // Para emojis diferenciados (👩‍🔧 soporte, 👩‍💻 ventas MIIA)
     };
 
     // ═══ TTS: Responder con audio SOLO cuando el owner manda audio ═══
@@ -7486,6 +7508,7 @@ REGLAS:
     // Si no se envió como audio, enviar como texto con emoji
     if (!sentAsAudio) {
       const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
+      const isMiiaSupportClient = conversationMetadata[phone]?.contactType === 'miia_client' || contactTypes[phone] === 'miia_client';
 
       // ═══ MIIA SALES: Enviar imagen/banner ilustrativo (30% de las probaditas) ═══
       if (isMiiaSalesLead && !isSelfChat) {
@@ -7508,7 +7531,7 @@ REGLAS:
         }
       }
 
-      await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx, isMiiaSalesLead });
+      await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx, isMiiaSalesLead: isMiiaSalesLead || isMiiaSupportClient });
     }
 
     io.emit('ai_response', {
@@ -15038,7 +15061,7 @@ server.listen(PORT, () => {
                 });
 
                 // Feature Announcer — anunciar novedades 60s después de conectar
-                featureAnnouncer.init(admin, { ttsEngine, safeSendMessage });
+                featureAnnouncer.init(admin, { ttsEngine, safeSendMessage, generateAI: generateAIContent });
                 setTimeout(async () => {
                   try {
                     const ownerSelf = `${connectedNumber}@s.whatsapp.net`;
@@ -15074,6 +15097,22 @@ server.listen(PORT, () => {
                     whatsapp_number: connectedNumber,
                     whatsapp_connected_at: new Date()
                   }).catch(() => {});
+
+                  // 📢 Feature Announcer para tenants — 60s post-conexión
+                  setTimeout(async () => {
+                    try {
+                      const tenantSelf = `${connectedNumber}@s.whatsapp.net`;
+                      const tenantSock = tenantManager.getTenantStatus(uid)?.sock;
+                      if (!tenantSock) return;
+                      await featureAnnouncer.checkAndAnnounce(uid, async (msg) => {
+                        try {
+                          await tenantSock.sendMessage(tenantSelf, { text: msg });
+                        } catch (e) { console.warn(`[FEATURE-ANNOUNCER:${uid}] ⚠️ Error enviando: ${e.message}`); }
+                      }, tenantSelf);
+                    } catch (e) {
+                      console.warn(`[FEATURE-ANNOUNCER:${uid}] ⚠️ Error: ${e.message}`);
+                    }
+                  }, 60000);
                 }
               }
             };
@@ -15247,6 +15286,39 @@ app.get('/api/email/imap-config', async (req, res) => {
     lastEmailCheck: userProfile.lastEmailCheck || null,
     configured: !!(userProfile.imapHost && userProfile.imapPass)
   });
+});
+
+// Test IMAP connection (sin guardar, solo probar)
+app.post('/api/email/test-imap', express.json(), async (req, res) => {
+  const { imapHost, imapUser, imapPass } = req.body || {};
+  if (!imapHost || !imapUser || !imapPass) {
+    return res.json({ ok: false, error: 'Faltan campos: host, usuario o contrasena' });
+  }
+  try {
+    const Imap = require('imap');
+    const imap = new Imap({ user: imapUser, password: imapPass, host: imapHost, port: 993, tls: true, tlsOptions: { rejectUnauthorized: false }, connTimeout: 10000, authTimeout: 8000 });
+    await new Promise((resolve, reject) => {
+      imap.once('ready', () => {
+        imap.openBox('INBOX', true, (err, box) => {
+          if (err) { imap.end(); reject(err); return; }
+          const count = box.messages?.total || 0;
+          imap.end();
+          resolve(count);
+        });
+      });
+      imap.once('error', reject);
+      imap.connect();
+    }).then(count => {
+      res.json({ ok: true, messageCount: count });
+    });
+  } catch (e) {
+    console.warn(`[IMAP-TEST] Error: ${e.message}`);
+    let userMsg = e.message;
+    if (e.message.includes('Invalid credentials')) userMsg = 'Credenciales invalidas. Si usas Gmail, necesitas una App Password.';
+    else if (e.message.includes('ENOTFOUND')) userMsg = 'Host no encontrado. Verifica que el host IMAP sea correcto.';
+    else if (e.message.includes('ETIMEDOUT')) userMsg = 'Timeout. El servidor no respondio a tiempo.';
+    res.json({ ok: false, error: userMsg });
+  }
 });
 
 // Endpoint manual para disparar una revisión de emails

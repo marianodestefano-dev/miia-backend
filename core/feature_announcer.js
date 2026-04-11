@@ -69,66 +69,50 @@ const CHANGELOG = [
  * Capabilities: TODAS las funciones de MIIA (para "qué podés hacer")
  */
 const CAPABILITIES = [
-  { category: '📅 Agenda', items: [
+  { category: '📅 Productividad', items: [
     'Agendar eventos: "agendá reunión mañana a las 3pm"',
     'Consultar agenda: "qué tengo hoy?"',
-    'Mover eventos: "mové la reunión al jueves"',
-    'Cancelar: "cancelá la reunión de mañana"',
-    'Recordatorio 10min antes automático',
+    'Mover/cancelar eventos desde el chat',
+    'Recordatorios automáticos 10min antes',
+    'Leer inbox: "mis correos" → ver, leer, eliminar, responder emails',
+    'Enviar email: "mandá correo a juan@mail.com con asunto X"',
+    'Morning Briefing: informe diario a las 8:30 AM',
+    'Nightly Brain: analizo tu día a las 23:00',
   ]},
-  { category: '💼 Negocios', items: [
+  { category: '💼 Ventas y Negocios', items: [
     'Responder leads automáticamente 24/7',
     'Aprender sobre tu negocio: productos, precios, servicios',
     'Generar cotizaciones PDF: "cotización para Juan, 3 licencias Pro"',
     'Seguimiento de leads: te aviso si no responden',
-  ]},
-  { category: '👗 Moda', items: [
-    'Guardar prendas: enviá foto + "guardar"',
-    'Sugerir outfits: "qué me pongo para una cita"',
-    'Opinar outfits: enviá foto + "qué tal"',
-    'Ver guardarropa: "mi guardarropa"',
-  ]},
-  { category: '🔍 Imágenes', items: [
-    'Analizar capturas: CRM, planillas, listas, chats',
+    'Analizar capturas de CRM, planillas y chats',
     'Contactar leads desde screenshots',
-    'Programar contacto para mañana',
   ]},
-  { category: '🗣️ Invocación', items: [
-    '"MIIA vení" en cualquier chat 1-a-1',
-    'Me presento y ayudo según el contexto',
-    '"Chau MIIA" para que me retire',
-  ]},
-  { category: '⚽ Deportes', items: [
-    '"Soy hincha de Boca" → te aviso cuando juegan',
-    'Seguimiento en vivo con mensajes emotivos',
-    '10 deportes: fútbol, F1, tenis, NBA, MLB, UFC, rugby, boxeo, golf, ciclismo',
-  ]},
-  { category: '👨‍👩‍👧‍👦 Familia y Amigos', items: [
+  { category: '👨‍👩‍👧‍👦 Familia y Contactos', items: [
     'Chatear con familia y amigos con tono personalizado',
     'Modo Niñera: detecta niños y adapta respuestas',
     'Gestión de contactos: familia, equipo, leads',
+    '"MIIA vení" en cualquier chat 1-a-1 / "Chau MIIA" para retirarme',
   ]},
-  { category: '🛡️ Seguridad', items: [
-    'Protección de contenido sensible en imágenes',
+  { category: '⚽ Entretenimiento', items: [
+    '"Soy hincha de Boca" → te aviso cuando juegan',
+    'Seguimiento en vivo con mensajes emotivos',
+    '10 deportes: fútbol, F1, tenis, NBA, MLB, UFC, rugby, boxeo, golf, ciclismo',
+    'Guardarropa: guardar prendas, sugerir outfits, opinar looks',
+  ]},
+  { category: '🛡️ Seguridad y Privacidad', items: [
     'Contactos de Seguridad: protector/protegido con 3 niveles',
     'Alertas SOS y caída → WhatsApp + email a protectores',
+    'Protección de contenido sensible en imágenes',
     'OTP para vincular contactos de seguridad',
     'Horario configurable de respuesta (default 7am-7pm)',
-    'Verificación de integridad cada 5 minutos',
+    'Verificación de integridad automática',
   ]},
-  { category: '📬 Email', items: [
-    'Leer inbox: "mis correos", "qué emails tengo"',
-    'Ver contenido: "leé el 2 y el 5"',
-    'Eliminar: "eliminá el 1, 3 y 4"',
-    'Eliminar excepto: "eliminá todos menos el 2 y 5"',
-    'Enviar email: "mandá un correo a juan@mail.com con asunto X"',
-  ]},
-  { category: '🧠 Aprendizaje', items: [
+  { category: '🧠 Inteligencia', items: [
     'Aprendo de cada conversación (con tu aprobación)',
     '"Olvidá: X" para borrar un aprendizaje',
     'Cerebro personalizado por negocio',
-    'Nightly Brain: analizo TODO el día a las 23:00',
-    'Morning Briefing: informe a las 8:30 AM (siempre)',
+    'Búsqueda en Google en tiempo real',
+    'Análisis de imágenes, audios y documentos',
   ]},
 ];
 
@@ -137,19 +121,21 @@ const CAPABILITIES = [
 // ═══════════════════════════════════════════════════════════════
 
 let _admin = null;
-let _announcementSent = false; // Solo anunciar una vez por deploy
+const _announcedUids = new Set(); // Track announcements per UID per deploy (no duplicados)
 let _ttsEngine = null;
 let _safeSendMessage = null;
+let _generateAI = null; // Función para generar texto con IA (inyectada desde server.js)
 
 // ═══════════════════════════════════════════════════════════════
 // FUNCIONES PRINCIPALES
 // ═══════════════════════════════════════════════════════════════
 
-function init(admin, { ttsEngine, safeSendMessage } = {}) {
+function init(admin, { ttsEngine, safeSendMessage, generateAI } = {}) {
   _admin = admin;
   _ttsEngine = ttsEngine || null;
   _safeSendMessage = safeSendMessage || null;
-  console.log(`[FEATURE-ANNOUNCER] ✅ Inicializado (v${CURRENT_VERSION}, ${CHANGELOG.length} features nuevas, TTS=${!!_ttsEngine})`);
+  _generateAI = generateAI || null;
+  console.log(`[FEATURE-ANNOUNCER] ✅ Inicializado (v${CURRENT_VERSION}, ${CHANGELOG.length} features nuevas, TTS=${!!_ttsEngine}, AI=${!!_generateAI})`);
 }
 
 /**
@@ -161,7 +147,7 @@ function init(admin, { ttsEngine, safeSendMessage } = {}) {
  * @param {string} sendTarget - JID del self-chat (para TTS audio)
  */
 async function checkAndAnnounce(uid, sendFn, sendTarget) {
-  if (_announcementSent || !uid || !_admin) return;
+  if (_announcedUids.has(uid) || !uid || !_admin) return;
 
   try {
     const metaRef = _admin.firestore().collection('users').doc(uid).collection('miia_meta').doc('feature_version');
@@ -175,17 +161,50 @@ async function checkAndAnnounce(uid, sendFn, sendTarget) {
 
     console.log(`[FEATURE-ANNOUNCER] 📢 Anunciando v${CURRENT_VERSION} (last_seen: ${lastSeenVersion || 'nunca'})`);
 
-    // Construir mensaje de novedades
-    let msg = `🆕 *¡Tengo novedades!*\n\n`;
-    for (const feature of CHANGELOG) {
-      msg += `${feature.title}\n`;
-      msg += `${feature.description}\n`;
-      if (feature.commands && feature.commands.length > 0) {
-        msg += `→ Comandos: ${feature.commands.join(' | ')}\n`;
+    // Construir mensaje de novedades — con IA si disponible, fallback a template
+    let msg = '';
+    if (_generateAI) {
+      try {
+        const featureList = CHANGELOG.map(f => `- ${f.title}: ${f.description}${f.commands ? ' (Comandos: ' + f.commands.join(', ') + ')' : ''}`).join('\n');
+        const aiPrompt = `Sos MIIA, asistente personal por WhatsApp. Acabás de recibir ${CHANGELOG.length} funciones nuevas y querés contárselo a tu owner (tu jefe, la persona a la que ayudás).
+
+FUNCIONES NUEVAS:
+${featureList}
+
+REGLAS:
+- Hablá en primera persona, informal, argentino ("podés", "tenés", "mandame")
+- Soná emocionada pero natural, como contándole a un amigo
+- NO uses formato de lista con bullets/viñetas
+- Usá *negritas* solo para lo más importante
+- Mencioná las funciones más útiles primero, integralas en párrafos fluidos
+- Cerrá invitando a preguntar "¿qué podés hacer?" para ver todo
+- Máximo 15 líneas, emojis moderados (2-4 total)
+- NUNCA digas "me agregaron" o "se implementó" — decí "ahora puedo", "aprendí a"
+- NO expongas mecánica interna (Firestore, APIs, backend)`;
+
+        const aiMsg = await _generateAI(aiPrompt);
+        if (aiMsg && aiMsg.trim().length > 30) {
+          msg = aiMsg.trim();
+          console.log(`[FEATURE-ANNOUNCER] 🤖 Anuncio generado por IA (${msg.length} chars)`);
+        }
+      } catch (aiErr) {
+        console.warn(`[FEATURE-ANNOUNCER] ⚠️ IA falló para anuncio, usando template: ${aiErr.message}`);
       }
-      msg += '\n';
     }
-    msg += `Preguntame *"¿qué podés hacer?"* cuando quieras ver todas mis funciones 😊`;
+
+    // Fallback: template hardcodeado si IA no disponible o falló
+    if (!msg) {
+      msg = `🆕 *¡Tengo novedades!*\n\n`;
+      for (const feature of CHANGELOG) {
+        msg += `${feature.title}\n`;
+        msg += `${feature.description}\n`;
+        if (feature.commands && feature.commands.length > 0) {
+          msg += `→ Comandos: ${feature.commands.join(' | ')}\n`;
+        }
+        msg += '\n';
+      }
+      msg += `Preguntame *"¿qué podés hacer?"* cuando quieras ver todas mis funciones 😊`;
+    }
 
     // ═══ TTS: Enviar primer anuncio como audio (nota de voz) ═══
     let sentAsAudio = false;
@@ -209,7 +228,7 @@ async function checkAndAnnounce(uid, sendFn, sendTarget) {
 
     // Siempre enviar el texto también (como respaldo o complemento del audio)
     await sendFn(msg);
-    _announcementSent = true;
+    _announcedUids.add(uid);
 
     // ═══ OPCIÓN C: También actualizar personal_brain con funciones nuevas ═══
     // Para que MIIA SEPA qué puede hacer (no solo lo anuncie y lo olvide)
