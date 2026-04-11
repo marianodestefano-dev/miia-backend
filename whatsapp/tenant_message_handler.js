@@ -662,6 +662,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
     let restoredContactTypes = {};
     let restoredLeadNames = {};
     let restoredMeta = {};
+    let restoredOwnerActiveChats = {};
     try {
       const persistRef = admin.firestore().collection('users').doc(ownerUid).collection('miia_persistent');
       const convoDoc = await persistRef.doc('tenant_conversations').get();
@@ -671,9 +672,17 @@ async function getOrCreateContext(uid, ownerUid, role) {
         restoredContactTypes = d.contactTypes || {};
         restoredLeadNames = d.leadNames || {};
         restoredMeta = d.conversationMetadata || {};
+        restoredOwnerActiveChats = d.ownerActiveChats || {};
+        // Limpiar ownerActiveChats vencidos (>90min) para no arrastrar basura
+        const COOLDOWN_MS = 90 * 60 * 1000;
+        const nowClean = Date.now();
+        for (const [ph, ts] of Object.entries(restoredOwnerActiveChats)) {
+          if (nowClean - ts > COOLDOWN_MS) delete restoredOwnerActiveChats[ph];
+        }
+        const activeCount = Object.keys(restoredOwnerActiveChats).length;
         const convCount = Object.keys(restoredConvos).length;
         if (convCount > 0) {
-          console.log(`[TMH:${uid}] 🔄 RESTORED: ${convCount} conversaciones, ${Object.keys(restoredLeadNames).length} leadNames desde Firestore`);
+          console.log(`[TMH:${uid}] 🔄 RESTORED: ${convCount} conversaciones, ${Object.keys(restoredLeadNames).length} leadNames, ${activeCount} ownerActiveChats desde Firestore`);
         }
       }
     } catch (e) {
@@ -695,6 +704,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
       conversationMetadata: restoredMeta,
       businessCerebro,
       personalBrain,
+      ownerActiveChats: restoredOwnerActiveChats,
       subscriptionState: {},
       miiaActive: {},  // phone → timestamp — "Hola MIIA" guarda Date.now(), "Chau MIIA" borra. Auto-expira 10min sin actividad.
       scheduleConfig,
@@ -2326,6 +2336,7 @@ async function persistTenantConversations() {
           contactTypes: ctx.contactTypes || {},
           leadNames: ctx.leadNames || {},
           conversationMetadata: ctx.conversationMetadata || {},
+          ownerActiveChats: ctx.ownerActiveChats || {},
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
     } catch (e) {
