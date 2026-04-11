@@ -111,6 +111,7 @@ const webScraper = require('./services/web_scraper');
 const estadisticas = require('./services/estadisticas');
 const mailService = require('./services/mail_service');
 const protectionManager = require('./services/protection_manager');
+const securityContacts = require('./services/security_contacts');
 const biweeklyReport = require('./services/biweekly_report');
 const priceTracker = require('./services/price_tracker');
 const travelTracker = require('./services/travel_tracker');
@@ -11414,6 +11415,73 @@ app.post('/api/tenant/:uid/contact-index/:phone', express.json(), async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Security Contacts — Contactos de Seguridad Bidireccionales ─────────────
+
+// GET /api/tenant/:uid/security-contacts — Listar contactos de seguridad
+app.get('/api/tenant/:uid/security-contacts', async (req, res) => {
+  try {
+    const contacts = await securityContacts.getSecurityContacts(req.params.uid);
+    res.json(contacts);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/tenant/:uid/security-contacts — Solicitar vinculación
+app.post('/api/tenant/:uid/security-contacts', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { protectedUid, level, protectorName, protectorPhone, protectedName, protectedPhone, protectedAge } = req.body;
+    if (!protectedUid) return res.status(400).json({ error: 'protectedUid es requerido' });
+    if (!level) return res.status(400).json({ error: 'level es requerido (emergencies_only|agenda_visible|full_supervision)' });
+
+    const result = await securityContacts.requestProtection(uid, protectedUid, level, {
+      protectorName, protectorPhone, protectedName, protectedPhone, protectedAge
+    });
+    res.json(result);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// PUT /api/tenant/:uid/security-contacts/:relationId/respond — Aceptar/rechazar
+app.put('/api/tenant/:uid/security-contacts/:relationId/respond', express.json(), async (req, res) => {
+  try {
+    const { uid, relationId } = req.params;
+    const { accept } = req.body;
+    if (accept === undefined) return res.status(400).json({ error: 'accept (true/false) es requerido' });
+    const result = await securityContacts.respondToRequest(uid, relationId, accept);
+    res.json(result);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// PUT /api/tenant/:uid/security-contacts/:relationId/level — Cambiar nivel
+app.put('/api/tenant/:uid/security-contacts/:relationId/level', express.json(), async (req, res) => {
+  try {
+    const { uid, relationId } = req.params;
+    const { level } = req.body;
+    if (!level) return res.status(400).json({ error: 'level es requerido' });
+    const result = await securityContacts.updateLevel(uid, relationId, level);
+    res.json(result);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// DELETE /api/tenant/:uid/security-contacts/:relationId — Desvincular
+app.delete('/api/tenant/:uid/security-contacts/:relationId', async (req, res) => {
+  try {
+    const { uid, relationId } = req.params;
+    const result = await securityContacts.unlinkSecurityContact(uid, relationId, 'manual');
+    res.json(result);
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// GET /api/tenant/:uid/security-contacts/:relationId/data — Consultar datos del protegido
+app.get('/api/tenant/:uid/security-contacts/:relationId/data', async (req, res) => {
+  try {
+    const { uid, relationId } = req.params;
+    const relation = await securityContacts.getSecurityContact(uid, relationId);
+    if (!relation) return res.status(404).json({ error: 'Relación no encontrada' });
+    const result = await securityContacts.getProtectedData(uid, relation.partnerUid, relationId);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Prompt Registry — Módulos versionados + checkpoints ─────────────────────
 
 const promptRegistry = require('./core/prompt_registry');
@@ -13373,6 +13441,13 @@ app.post('/api/miniapp/sos', verifyFirebaseToken, async (req, res) => {
       `Se activó el botón de emergencia desde la Mini App de MIIA.\n\n${latitude ? `📍 Ubicación: https://maps.google.com/?q=${latitude},${longitude}` : 'Sin ubicación disponible'}\n\nFecha: ${new Date().toLocaleString('es-ES')}\n\nEsto es una alerta urgente del sistema de protección de MIIA.`
     );
 
+    // Notificar contactos de seguridad por WhatsApp
+    const locLink = latitude ? `\n📍 https://maps.google.com/?q=${latitude},${longitude}` : '';
+    await securityContacts.notifyProtectors(uid, 'sos', {
+      message: `¡ALERTA SOS! Se activó el botón de emergencia.${locLink}`,
+      protectedName: uid
+    });
+
     console.log(`[MINIAPP] 🆘 SOS activado por ${uid}`);
     res.json({ success: true });
   } catch (e) {
@@ -13453,6 +13528,13 @@ app.post('/api/miniapp/fall-detected', verifyFirebaseToken, async (req, res) => 
       '🚨 MIIA — Posible caída detectada',
       `La Mini App de MIIA detectó una posible caída y el usuario no respondió a la verificación.\n\n${latitude ? `📍 Ubicación: https://maps.google.com/?q=${latitude},${longitude}` : 'Sin ubicación'}\n\nFecha: ${new Date().toLocaleString('es-ES')}\n\nPor favor, contacte al usuario de inmediato.\n\nMIIA — Protección Inteligente`
     );
+
+    // Notificar contactos de seguridad por WhatsApp
+    const fallLocLink = latitude ? `\n📍 https://maps.google.com/?q=${latitude},${longitude}` : '';
+    await securityContacts.notifyProtectors(uid, 'fall', {
+      message: `¡Posible caída detectada! El usuario no respondió a la verificación.${fallLocLink}\nPor favor, contactar de inmediato.`,
+      protectedName: uid
+    });
 
     console.log(`[MINIAPP] 🚨 Caída confirmada para ${uid}`);
     res.json({ success: true });
@@ -14399,6 +14481,12 @@ protectionManager.setProtectionDependencies({
   sendGenericEmail: mailService.sendGenericEmail,
   safeSendMessage,
   generateAIContent
+});
+
+// Inyectar dependencias en security_contacts
+securityContacts.setSecurityContactDependencies({
+  safeSendMessage,
+  sendGenericEmail: mailService.sendGenericEmail
 });
 
 // Inyectar dependencias en biweekly_report
