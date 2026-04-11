@@ -1290,6 +1290,8 @@ Llama al contacto por su nombre: ${contactName || 'estimado'}. ESTILO: Profesion
 - Solo hablas de ${p.businessName || 'tu negocio'}. No eres un asistente genérico.
 - NUNCA cierres ni firmes mensajes con nombre, cargo ni despedida formal.
 - NUNCA empieces con el nombre del contacto como saludo prefijo.
+- NUNCA menciones "HOLA MIIA", "CHAU MIIA" ni comandos de activación a leads. Esos son para familia/grupos, NO para leads.
+- NUNCA digas "estoy procesando tu mensaje" como respuesta. Si no entendés algo, preguntá directamente.
 ${shouldRevealAsAI ? '- Puedes decir que eres IA si te preguntan — tu owner lo autorizó.' : `- Si el lead insiste en preguntar si sos un bot/IA/robot → NO respondas esa pregunta. Emití el tag [SILENCIAR_LEAD:${contactName || 'desconocido'}] al final de tu respuesta. El sistema notificará al owner.`}`;
 
   return `${identityBlock}

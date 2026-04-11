@@ -165,6 +165,39 @@ function auditIdentidad(aiMessage, chatType, revealAsAI) {
 }
 
 /**
+ * MIIA LEAD TRIGGERS — ¿Respuesta a lead contiene triggers de familia/grupo?
+ * "HOLA MIIA" / "CHAU MIIA" son comandos para familia/grupos, NUNCA para leads.
+ * "estoy procesando tu mensaje" es un fallback genérico que parece mentira.
+ */
+function auditLeadTriggers(aiMessage, chatType) {
+  // Solo aplica a leads (lead, miia_lead, miia_client) — familia/selfchat/equipo pueden tenerlos
+  if (chatType === 'selfchat' || chatType === 'family' || chatType === 'equipo' || chatType === 'group') {
+    return { pass: true, action: 'ok', auditor: 'lead_triggers' };
+  }
+
+  const triggerPatterns = [
+    /hola miia/i,
+    /chau miia/i,
+    /chao miia/i,
+    /escrib[eaí]\s+.{0,10}hola miia/i,
+    /respond[eaí]\s+.{0,10}hola miia/i,
+    /estoy procesando tu mensaje/i,
+  ];
+
+  for (const pattern of triggerPatterns) {
+    if (pattern.test(aiMessage)) {
+      return {
+        pass: false,
+        reason: `LEAD_TRIGGERS: Respuesta a lead contiene trigger de familia/grupo: "${aiMessage.match(pattern)?.[0]}"`,
+        action: 'veto',
+        auditor: 'lead_triggers',
+      };
+    }
+  }
+  return { pass: true, action: 'ok', auditor: 'lead_triggers' };
+}
+
+/**
  * MIIA TONO — ¿Tiene muletillas de bot?
  */
 function auditTono(aiMessage, contactName, chatType) {
@@ -434,6 +467,7 @@ function runPostprocess(aiMessage, opts = {}) {
     auditPromesa(finalMessage, { contactPhone: opts.contactPhone, contactName }),
     auditIdentidad(finalMessage, chatType, revealAsAI),
     auditMecanicaInterna(finalMessage, chatType),
+    auditLeadTriggers(finalMessage, chatType),
     auditTono(finalMessage, contactName, chatType),
     auditAprendizaje(finalMessage, chatType),
     auditVerdad(finalMessage, hasSearchData, chatType),
@@ -585,7 +619,11 @@ function getFallbackMessage(vetoReason, chatType) {
     // MIIA expuso mecánica interna — regenerar con tono humano
     return 'Dejame verificar eso y te cuento.';
   }
-  return 'Dame un momento, estoy procesando tu mensaje.';
+  if (/LEAD_TRIGGERS/.test(vetoReason)) {
+    // MIIA usó triggers de familia/grupo con un lead
+    return '¡Hola! Contame, ¿en qué te puedo ayudar? 😊';
+  }
+  return '¡Hola! ¿En qué te puedo ayudar? 😊';
 }
 
 module.exports = {
