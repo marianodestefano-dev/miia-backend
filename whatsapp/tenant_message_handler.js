@@ -1557,7 +1557,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
   // ── PASO 10b: AUDITORÍA (Regex + IA Sonnet) ──
   // PASO 1: Regex rápida (6 auditors, ~0ms)
-  const postChatType = isSelfChat ? 'self' : contactType === 'lead' ? 'lead' : 'family';
+  const postChatType = isSelfChat ? 'selfchat' : contactType === 'lead' ? 'lead' : 'family';
   const postContactName = ctx.leadNames?.[phone] || basePhone;
   const regexAudit = runPostprocess(aiMessage, { chatType: postChatType, contactName: postContactName, revealAsAI: ctx.ownerProfile?.revealAsAI || false });
 

@@ -165,13 +165,21 @@ function auditIdentidad(aiMessage, chatType, revealAsAI) {
 }
 
 /**
- * MIIA LEAD TRIGGERS — ¿Respuesta a lead contiene triggers de familia/grupo?
- * "HOLA MIIA" / "CHAU MIIA" son comandos para familia/grupos, NUNCA para leads.
- * "estoy procesando tu mensaje" es un fallback genérico que parece mentira.
+ * MIIA TRIGGERS — ¿Respuesta contiene "HOLA MIIA"/"CHAU MIIA" donde no debería?
+ * POR DEFECTO: OFF para TODOS excepto self-chat.
+ * El owner puede configurar qué tipos de contacto SÍ los usan.
+ * Config en Firestore: users/{uid}/settings/miia_triggers → { allowedTypes: ['family','equipo','group'] }
+ * Si no hay config → solo self-chat los permite (default seguro).
  */
-function auditLeadTriggers(aiMessage, chatType) {
-  // Solo aplica a leads (lead, miia_lead, miia_client) — familia/selfchat/equipo pueden tenerlos
-  if (chatType === 'selfchat' || chatType === 'family' || chatType === 'equipo' || chatType === 'group') {
+function auditLeadTriggers(aiMessage, chatType, opts = {}) {
+  // Self-chat SIEMPRE puede tener triggers (el owner habla con su propia MIIA)
+  if (chatType === 'selfchat') {
+    return { pass: true, action: 'ok', auditor: 'lead_triggers' };
+  }
+
+  // Tipos permitidos por el owner (configurable). Default: ninguno.
+  const allowedTypes = opts.allowedTriggerTypes || [];
+  if (allowedTypes.includes(chatType)) {
     return { pass: true, action: 'ok', auditor: 'lead_triggers' };
   }
 
@@ -188,7 +196,7 @@ function auditLeadTriggers(aiMessage, chatType) {
     if (pattern.test(aiMessage)) {
       return {
         pass: false,
-        reason: `LEAD_TRIGGERS: Respuesta a lead contiene trigger de familia/grupo: "${aiMessage.match(pattern)?.[0]}"`,
+        reason: `LEAD_TRIGGERS: Respuesta a ${chatType} contiene trigger no permitido: "${aiMessage.match(pattern)?.[0]}"`,
         action: 'veto',
         auditor: 'lead_triggers',
       };
@@ -455,7 +463,7 @@ function parseAuditResponse(text) {
  * @returns {{ approved: boolean, finalMessage: string, audits: object[], action: string }}
  */
 function runPostprocess(aiMessage, opts = {}) {
-  const { chatType = 'selfchat', contactName = '', hasSearchData = false, revealAsAI = false } = opts;
+  const { chatType = 'selfchat', contactName = '', hasSearchData = false, revealAsAI = false, allowedTriggerTypes = [] } = opts;
   const audits = [];
   let finalMessage = aiMessage;
   let worstAction = 'ok'; // ok < strip < regenerate < veto
@@ -467,7 +475,7 @@ function runPostprocess(aiMessage, opts = {}) {
     auditPromesa(finalMessage, { contactPhone: opts.contactPhone, contactName }),
     auditIdentidad(finalMessage, chatType, revealAsAI),
     auditMecanicaInterna(finalMessage, chatType),
-    auditLeadTriggers(finalMessage, chatType),
+    auditLeadTriggers(finalMessage, chatType, { allowedTriggerTypes }),
     auditTono(finalMessage, contactName, chatType),
     auditAprendizaje(finalMessage, chatType),
     auditVerdad(finalMessage, hasSearchData, chatType),
