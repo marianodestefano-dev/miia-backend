@@ -1940,29 +1940,51 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       if (pendingDoc.exists) {
         const saved = pendingDoc.data()?.lids || {};
         let restored = 0;
+        let expired = 0;
         if (!tenant._pendingLids) tenant._pendingLids = {};
+        const MAX_PENDING_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 días máximo
         for (const [lidBase, data] of Object.entries(saved)) {
-          // Restaurar TODOS — persisten entre días hasta resolución o desvinculación
+          // Auto-limpiar pendientes viejos (>7 días) — evita spam infinito
+          const age = Date.now() - (data.startedAt || 0);
+          if (age > MAX_PENDING_AGE_MS) {
+            expired++;
+            console.log(`[TM:${uid}] 🧹 LID pendiente expirado (${Math.floor(age / (24*60*60*1000))}d): ${data.pushName || lidBase}`);
+            continue; // No restaurar
+          }
           tenant._pendingLids[lidBase] = data;
           restored++;
         }
-        if (restored > 0) console.log(`[TM:${uid}] 📇 LIDs pendientes restaurados: ${restored} (persisten hasta resolución)`);
+        if (restored > 0) console.log(`[TM:${uid}] 📇 LIDs pendientes restaurados: ${restored} (persisten hasta resolución, max 7d)`);
+        if (expired > 0) {
+          console.log(`[TM:${uid}] 🧹 ${expired} LIDs pendientes expirados (>7 días) — limpiados`);
+          _savePendingLids(uid, tenant); // Persistir la limpieza
+        }
       }
     } catch (e) {
       console.error(`[TM:${uid}] ⚠️ Error restaurando pending_lids:`, e.message);
     }
 
-    // Recordatorio de contactos pendientes: cada 60 min en horario laboral
+    // Recordatorio de contactos pendientes: cada 4 HORAS en horario laboral
     // Persiste ENTRE DÍAS hasta que el owner resuelva o se desvincule el teléfono
+    // ANTI-SPAM: máximo 1 recordatorio cada 4h + guard contra intervals duplicados
+    if (tenant._lidReminderInterval) {
+      clearInterval(tenant._lidReminderInterval); // Limpiar interval anterior si existe (reconexión)
+      tenant._lidReminderInterval = null;
+    }
+    if (!tenant._lastLidReminderSent) tenant._lastLidReminderSent = 0;
     tenant._lidReminderInterval = setInterval(() => {
       if (!tenant._pendingLids || !tenant.sock) return;
       const pendingEntries = Object.entries(tenant._pendingLids).filter(([, p]) => p.phase === 'waiting_owner');
       if (pendingEntries.length === 0) return;
 
-      // Solo en horario laboral (07:00-23:00)
+      // ANTI-SPAM: No enviar si ya se mandó en las últimas 4 horas
+      const hoursSinceLastReminder = (Date.now() - (tenant._lastLidReminderSent || 0)) / (60 * 60 * 1000);
+      if (hoursSinceLastReminder < 4) return;
+
+      // Solo en horario laboral (08:00-21:00) — rango más conservador
       const nowBogota = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
       const h = nowBogota.getHours();
-      if (h < 7 || h >= 23) return;
+      if (h < 8 || h >= 21) return;
 
       const selfJid = tenant.sock?.user?.id;
       if (!selfJid) return;
@@ -1972,18 +1994,19 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const name = p.pushName || 'alguien sin nombre';
         const preview = (p.firstMsg || '').substring(0, 50);
         const daysAgo = Math.floor((Date.now() - (p.startedAt || Date.now())) / (24 * 60 * 60 * 1000));
-        const timeHint = daysAgo > 0 ? ` (hace ${daysAgo} d\u00eda${daysAgo > 1 ? 's' : ''})` : '';
+        const timeHint = daysAgo > 0 ? ` (hace ${daysAgo} día${daysAgo > 1 ? 's' : ''})` : '';
         return `• *${name}*${timeHint}: _"${preview}${preview.length >= 50 ? '...' : ''}"_`;
       }).join('\n');
 
       const count = pendingEntries.length;
       const plural = count > 1;
       tenant.sock.sendMessage(selfJid, {
-        text: `Tengo ${count} contacto${plural ? 's' : ''} pendiente${plural ? 's' : ''} de identificar:\n\n${names}\n\n\u00bfLos conoc\u00e9s? Decime qui\u00e9n${plural ? 'es son' : ' es'} as\u00ed ${plural ? 'los' : 'lo'} atiendo bien 😊`
+        text: `Tengo ${count} contacto${plural ? 's' : ''} pendiente${plural ? 's' : ''} de identificar:\n\n${names}\n\n¿Los conocés? Decime quién${plural ? 'es son' : ' es'} así ${plural ? 'los' : 'lo'} atiendo bien 😊`
       }).catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando recordatorio:`, e.message));
 
-      console.log(`[TM:${uid}] 🔔 Reminder: ${count} pendientes recordados al owner (persisten entre d\u00edas)`);
-    }, 60 * 60 * 1000);
+      tenant._lastLidReminderSent = Date.now();
+      console.log(`[TM:${uid}] 🔔 Reminder: ${count} pendientes recordados al owner (próximo en 4h)`);
+    }, 60 * 60 * 1000); // Chequea cada 1h pero solo envía si pasaron 4h
 
     // Debounce para guardar _lidMap en Firestore (no en cada contacto, sino max 1 vez cada 60s)
     let _lidMapDirty = false;
