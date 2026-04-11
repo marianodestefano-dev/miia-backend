@@ -1595,7 +1595,7 @@ async function loadFromFirestore() {
       // MIIA CENTER (auto-venta) NO tiene familyContacts — es esperado, no es error
       const isMiiaCenter = OWNER_UID === 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
       if (isMiiaCenter) {
-        console.warn('[FIRESTORE] ℹ️ familyContacts vacío — MIIA CENTER (auto-venta) no tiene familia configurada. Esto es normal.');
+        // Silencio — MIIA CENTER no tiene familia, es esperado. No ensuciar logs.
       } else {
         console.error('[FIRESTORE] 🚨🚨🚨 familyContacts VACÍO después de cargar! Los familiares serán tratados como desconocidos. Verificar miia_persistent/contacts en Firestore.');
       }
