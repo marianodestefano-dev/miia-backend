@@ -40,11 +40,12 @@ const {
 const {
   buildOwnerSelfChatPrompt, buildOwnerFamilyPrompt,
   buildOwnerLeadPrompt, buildEquipoPrompt, buildGroupPrompt,
-  buildInvokedPrompt, buildOutreachLeadPrompt,
+  buildInvokedPrompt, buildOutreachLeadPrompt, buildAgentSelfChatPrompt,
   buildADN, buildVademecum, resolveProfile, DEFAULT_OWNER_PROFILE
 } = require('../core/prompt_builder');
 
 const miiaInvocation = require('../core/miia_invocation');
+const securityContacts = require('../services/security_contacts');
 const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
 const { applyMiiaEmoji } = require('../core/miia_emoji');
@@ -639,7 +640,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
   console.log(`[TMH:${uid}] 🔄 ${ctx ? 'Refrescando' : 'Inicializando'} contexto (role=${role}, ownerUid=${ownerUid})...`);
 
   // Cargar todo en paralelo para eficiencia
-  const [ownerProfile, businessCerebro, personalBrain, familyContacts, teamContacts, scheduleConfig, businesses, contactGroups] = await Promise.all([
+  const [ownerProfile, businessCerebro, personalBrain, familyContacts, teamContacts, scheduleConfig, businesses, contactGroups, agentProfile] = await Promise.all([
     loadOwnerProfile(ownerUid),
     loadBusinessCerebro(ownerUid),
     loadPersonalBrain(uid),
@@ -648,7 +649,9 @@ async function getOrCreateContext(uid, ownerUid, role) {
     role === 'owner' ? loadTeamContacts(ownerUid) : Promise.resolve({}),
     loadScheduleConfig(ownerUid),
     loadBusinesses(ownerUid),
-    role === 'owner' ? loadContactGroups(ownerUid) : Promise.resolve({})
+    role === 'owner' ? loadContactGroups(ownerUid) : Promise.resolve({}),
+    // Nombre del agente para self-chat (solo si es agente)
+    role === 'agent' ? loadOwnerProfile(uid) : Promise.resolve(null)
   ]);
 
   if (!ctx) {
@@ -683,6 +686,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
       ownerUid,
       role,
       ownerProfile,
+      agentProfile,  // null para owners, perfil del agente para agents
       conversations: restoredConvos,
       leadNames: restoredLeadNames,
       contactTypes: restoredContactTypes,
@@ -709,6 +713,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
     ctx.scheduleConfig = scheduleConfig;
     ctx.businesses = businesses;
     ctx.contactGroups = contactGroups;
+    ctx.agentProfile = agentProfile;
     ctx.lastProfileLoad = now;
   }
 
@@ -768,6 +773,149 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       // Si retornó false, el mensaje sigue al flujo normal (puede haber resuelto LID en background)
     } catch (e) {
       console.error(`${logPrefix} ⚠️ Error en checkOwnerLidResponse:`, e.message);
+    }
+  }
+
+  // ── PASO 1c: Comandos de Contacto de Seguridad en self-chat ──
+  if (isSelfChat && role === 'owner') {
+    const secCmd = securityContacts.detectSecurityCommand(messageBody);
+    if (secCmd) {
+      console.log(`${logPrefix} 🛡️ SECURITY-CMD: ${secCmd.command}`);
+      try {
+        let secResponse = '';
+        switch (secCmd.command) {
+          case 'request_protection': {
+            // "proteger a +54911..." — crear OTP para vincular
+            const ownerName = ctx.ownerProfile?.shortName || ctx.ownerProfile?.name || 'Owner';
+            const otp = await securityContacts.createSecurityOTP(uid, ownerName, secCmd.phone, 'emergencies_only');
+            secResponse = `🛡️ *Contacto de Seguridad*\n\nGeneré un código para vincular a ${secCmd.phone}:\n\n🔑 *${otp.otp}*\n\nEsa persona debe escribirme el código en su chat conmigo para aceptar.\nExpira en 24 horas.`;
+            break;
+          }
+          case 'accept_protection': {
+            // Buscar solicitud pendiente donde este usuario es protegido
+            const contacts = await securityContacts.getSecurityContacts(uid);
+            const pending = contacts.find(c => c.direction === 'protegido' && c.status === 'pending');
+            if (pending) {
+              await securityContacts.respondToRequest(uid, pending.id, true);
+              secResponse = `🛡️ ¡Aceptado! ${pending.partnerName || 'Tu protector'} ahora es tu contacto de seguridad (nivel: ${securityContacts.LEVEL_DESCRIPTIONS[pending.level]}).`;
+            } else {
+              secResponse = '🛡️ No tenés solicitudes de seguridad pendientes.';
+            }
+            break;
+          }
+          case 'reject_protection': {
+            const contacts = await securityContacts.getSecurityContacts(uid);
+            const pending = contacts.find(c => c.direction === 'protegido' && c.status === 'pending');
+            if (pending) {
+              await securityContacts.respondToRequest(uid, pending.id, false);
+              secResponse = `🛡️ Rechazada la solicitud de ${pending.partnerName || 'un usuario'}.`;
+            } else {
+              secResponse = '🛡️ No tenés solicitudes de seguridad pendientes.';
+            }
+            break;
+          }
+          case 'list_protected': {
+            const contacts = await securityContacts.getSecurityContacts(uid);
+            const protected_ = contacts.filter(c => c.direction === 'protector' && c.status === 'active');
+            if (protected_.length === 0) {
+              secResponse = '🛡️ No tenés protegidos activos.';
+            } else {
+              secResponse = '🛡️ *Tus protegidos:*\n' + protected_.map(c => `- ${c.partnerName || c.partnerPhone} (${c.level})`).join('\n');
+            }
+            break;
+          }
+          case 'list_protectors': {
+            const contacts = await securityContacts.getSecurityContacts(uid);
+            const protectors = contacts.filter(c => c.direction === 'protegido' && c.status === 'active');
+            if (protectors.length === 0) {
+              secResponse = '🛡️ No tenés protectores activos.';
+            } else {
+              secResponse = '🛡️ *Tus protectores:*\n' + protectors.map(c => `- ${c.partnerName || c.partnerPhone} (${c.level})`).join('\n');
+            }
+            break;
+          }
+          case 'change_level': {
+            const contacts = await securityContacts.getSecurityContacts(uid);
+            const active = contacts.find(c => c.direction === 'protegido' && c.status === 'active');
+            if (active) {
+              await securityContacts.updateLevel(uid, active.id, secCmd.level);
+              secResponse = `🛡️ Nivel cambiado a: *${securityContacts.LEVEL_DESCRIPTIONS[secCmd.level]}*`;
+            } else {
+              secResponse = '🛡️ No tenés relaciones de seguridad activas donde seas protegido.';
+            }
+            break;
+          }
+          case 'unlink': {
+            const contacts = await securityContacts.getSecurityContacts(uid);
+            const active = contacts.find(c => c.status === 'active');
+            if (active) {
+              await securityContacts.unlinkSecurityContact(uid, active.id, 'manual_selfchat');
+              secResponse = `🛡️ Desvinculado de ${active.partnerName || 'tu contacto de seguridad'}.`;
+            } else {
+              secResponse = '🛡️ No tenés contactos de seguridad activos.';
+            }
+            break;
+          }
+          case 'check_protected': {
+            // "cómo está mamá" — buscar protegido por nombre
+            const contacts = await securityContacts.getSecurityContacts(uid);
+            const match = contacts.find(c =>
+              c.direction === 'protector' && c.status === 'active' &&
+              (c.partnerName || '').toLowerCase().includes(secCmd.name.toLowerCase())
+            );
+            if (match) {
+              const data = await securityContacts.getProtectedData(uid, match.partnerUid, match.id);
+              if (data.authorized) {
+                secResponse = `🛡️ *Estado de ${match.partnerName}* (nivel: ${data.level})\n`;
+                if (data.data.alerts?.none) secResponse += '✅ Sin alertas activas\n';
+                if (data.data.reminders?.length > 0) {
+                  secResponse += `📅 ${data.data.reminders.length} recordatorios próximos\n`;
+                }
+                if (data.data.activitySummary) {
+                  const phones = Object.keys(data.data.activitySummary);
+                  secResponse += `💬 Actividad en ${phones.length} conversaciones`;
+                }
+              } else {
+                secResponse = `🛡️ No tenés acceso: ${data.reason}`;
+              }
+            } else {
+              // No es comando de seguridad, dejar pasar al flujo normal
+              secResponse = '';
+            }
+            break;
+          }
+        }
+
+        if (secResponse) {
+          const { safeSendMessage } = require('./tenant_manager');
+          await safeSendMessage(uid, phone, secResponse);
+          return;
+        }
+      } catch (e) {
+        console.error(`${logPrefix} ❌ Error en security command: ${e.message}`);
+      }
+    }
+
+    // OTP de seguridad: si el mensaje es un código de 6 caracteres, intentar validar
+    const otpMatch = messageBody.trim().match(/^[A-Z0-9]{6}$/);
+    if (otpMatch) {
+      try {
+        const otpResult = await securityContacts.validateSecurityOTP(uid, otpMatch[0]);
+        if (otpResult.valid) {
+          // Vincular automáticamente
+          await securityContacts.requestProtection(otpResult.protectorUid, uid, otpResult.level, {
+            protectorName: otpResult.protectorName,
+            protectedName: ctx.ownerProfile?.shortName || ctx.ownerProfile?.name || ''
+          });
+          const { safeSendMessage } = require('./tenant_manager');
+          await safeSendMessage(uid, phone, `🛡️ ¡Vinculación exitosa! ${otpResult.protectorName} ahora es tu contacto de seguridad.\nNivel: ${securityContacts.LEVEL_DESCRIPTIONS[otpResult.level]}`);
+          console.log(`${logPrefix} 🛡️ OTP validado — ${otpResult.protectorName} protege a ${uid}`);
+          return;
+        }
+        // Si no es OTP válido, dejar pasar al flujo normal (puede ser otro código)
+      } catch (e) {
+        console.error(`${logPrefix} ⚠️ Error validando OTP de seguridad: ${e.message}`);
+      }
     }
   }
 
@@ -1202,7 +1350,15 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // Dialecto se aplica a TODOS los perfiles (leads, familia, equipo, self-chat, grupos)
   const countryContext = getCountryContext(basePhone);
 
-  if (isSelfChat) {
+  if (isSelfChat && role === 'agent') {
+    // ── SELF-CHAT AGENTE: Solo negocio, NO personal ──
+    const agentName = ctx.agentProfile?.shortName || ctx.agentProfile?.name || 'Agente';
+    const businessName = ctx.ownerProfile?.businessName || (ctx.businesses?.[0]?.name) || 'el negocio';
+    activeSystemPrompt = buildAgentSelfChatPrompt(agentName, businessName, ctx.businessCerebro, ctx.ownerProfile);
+    if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
+    console.log(`[TMH:${uid}] 📋 AGENT SELF-CHAT: ${agentName} → prompt negocio-only (${businessName})`);
+  } else if (isSelfChat) {
+    // ── SELF-CHAT OWNER: Completo (personal + negocios + contactos) ──
     activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
     // Inyectar lista de negocios si tiene más de 1
     if (ctx.businesses && ctx.businesses.length > 1) {
