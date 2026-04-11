@@ -122,6 +122,7 @@ function isPotentialBot(text) {
  */
 function isWithinScheduleConfig(scheduleConfig) {
   if (!scheduleConfig) return true; // sin config → siempre activo
+  if (scheduleConfig.alwaysOn) return true; // 24/7 mode — MIIA CENTER y tenants que quieran responder siempre
   const tz = scheduleConfig.timezone || 'America/Bogota';
   const now = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
   const day = now.getDay();

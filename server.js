@@ -524,6 +524,7 @@ async function getScheduleConfig(uid) {
 
 function isWithinSchedule(scheduleConfig) {
   if (!scheduleConfig) return true; // sin config → siempre activo
+  if (scheduleConfig.alwaysOn) return true; // 24/7 mode — MIIA CENTER y tenants que quieran responder siempre
   // Timezone: usar config del owner, o auto-detectar por teléfono del owner, o fallback Bogotá
   let tz = scheduleConfig.timezone;
   if (!tz && OWNER_PHONE) {
@@ -567,12 +568,14 @@ async function runFollowupEngine() {
   if (!OWNER_UID) return;
   const scheduleConfig = await getScheduleConfig(OWNER_UID) || {};
 
-  // Ventana horaria segura: 10:00-22:00
+  // Ventana horaria configurable (default 9-21, owner puede cambiar desde Dashboard)
   const tz = scheduleConfig.timezone || 'America/Bogota';
   const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
   const h = localNow.getHours();
-  if (h < 10 || h >= 22) {
-    console.log(`[FOLLOWUP] ⏸️ Ventana nocturna (${h}h ${tz}). Sin seguimientos.`);
+  const followupStartHour = scheduleConfig.followupStartHour ?? 9;
+  const followupEndHour = scheduleConfig.followupEndHour ?? 21;
+  if (h < followupStartHour || h >= followupEndHour) {
+    console.log(`[FOLLOWUP] ⏸️ Fuera de ventana (${h}h, ventana ${followupStartHour}-${followupEndHour}h ${tz}). Sin seguimientos.`);
     return;
   }
 
@@ -662,12 +665,10 @@ async function runFollowupEngine() {
       sent++;
       console.log(`[FOLLOWUP] 📤 ${isLast ? '👋 DESPEDIDA' : `Seguimiento ${fData.count + 1}/${followupMax}`} → ${baseNum}`);
 
-      // Si es despedida, notificar al owner en self-chat
+      // Si es despedida, notificar al owner en self-chat (contextual, no hardcoded)
       if (isLast) {
-        safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-          `👋 *Lead cerrado*: ${firstName || baseNum}\nMIIA envió despedida después de ${followupMax} follow-ups sin respuesta.\nÚltimo msg del lead: "${lastUserMsg.substring(0, 60)}"`,
-          { isSelfChat: true }
-        ).catch(() => {});
+        const despedidaNotif = `👋 *${firstName || baseNum}* — cerré el seguimiento después de ${followupMax} intentos sin respuesta.\nÚltimo que dijo: "${lastUserMsg.substring(0, 60)}"\nSi querés que lo retome, avisame.`;
+        safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, despedidaNotif, { isSelfChat: true }).catch(() => {});
       }
     } catch (e) {
       console.error(`[FOLLOWUP] ❌ Error enviando a ${baseNum}:`, e.message);
@@ -685,16 +686,16 @@ async function runFollowupEngine() {
 setInterval(() => taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine), 3600000);
 setTimeout(() => taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine), 120000);
 
-// ═══ AGENDA INTELIGENTE (FAMILIA + OWNER) ═══
+// ═══ AGENDA INTELIGENTE (FAMILIA + OWNER + LEADS MIIA CENTER) ═══
 // Eventos proactivos: cumpleaños, recordatorios, retomar contacto, deportes (futuro)
-// REGLA: NUNCA entre 22:00 y 10:00. NUNCA a leads/clientes. SOLO familia+owner.
+// REGLA: Owner/familia → solo 10:00-22:00. Leads MIIA CENTER → 24/7 (son globales, distinto timezone).
 async function runAgendaEngine() {
   if (!OWNER_UID) return;
   const scheduleConfig = await getScheduleConfig(OWNER_UID);
   const tz = scheduleConfig?.timezone || 'America/Bogota';
   const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
   const h = localNow.getHours();
-  if (h < 10 || h >= 22) return;
+  const isOwnerSafeHours = h >= 10 && h < 22;
 
   try {
     const now = new Date();
@@ -704,6 +705,27 @@ async function runAgendaEngine() {
       .where('scheduledFor', '<=', now.toISOString())
       .limit(10)
       .get();
+
+    // ═══ RETRY: Reintentar recordatorios que fallaron (1 retry, máx 30 min después) ═══
+    try {
+      const retrySnap = await admin.firestore()
+        .collection('users').doc(OWNER_UID).collection('miia_agenda')
+        .where('status', '==', 'error')
+        .where('retryCount', '<', 1) // Solo 1 reintento
+        .limit(5)
+        .get();
+      for (const doc of retrySnap.docs) {
+        const evt = doc.data();
+        // Solo reintentar si el error fue reciente (< 30 min)
+        const errorAge = evt.errorAt ? (now - new Date(evt.errorAt)) : Infinity;
+        if (errorAge < 1800000) { // < 30 min
+          console.log(`[AGENDA:RETRY] 🔄 Reintentando recordatorio ${doc.id}: "${(evt.reason || '').substring(0, 40)}" (error: ${evt.error})`);
+          await doc.ref.update({ status: 'pending', retryCount: (evt.retryCount || 0) + 1 });
+        }
+      }
+    } catch (retryErr) {
+      // Silent — retry es best-effort
+    }
 
     // ═══ RECORDATORIO PREVIO: 10 min antes del evento → selfchat al owner ═══
     const REMINDER_MINUTES = 10;
@@ -721,6 +743,8 @@ async function runAgendaEngine() {
         const evt = doc.data();
         // Solo avisar si no se envió reminder previo aún
         if (evt.preReminderSent) continue;
+        // Pre-recordatorios solo en horario seguro del owner (no aplica a leads — ellos reciben el recordatorio directo)
+        if (!isOwnerSafeHours && evt.source !== 'miia_center_lead') continue;
 
         // Guard ESTRICTO: si el evento no tiene datos mínimos, NO enviar basura al owner
         const reason = evt.reason || evt.title || '';
@@ -770,6 +794,19 @@ async function runAgendaEngine() {
         ? `${OWNER_PHONE}@s.whatsapp.net`
         : (evt.contactPhone.includes('@') ? evt.contactPhone : `${evt.contactPhone}@s.whatsapp.net`);
 
+      // ═══ HORARIO: Si el CONTACTO pidió el recordatorio → hora EXACTA sin restricción ═══
+      // Solo los recordatorios auto-generados para el owner respetan horario seguro
+      const isMiiaCenterLeadEvt = evt.source === 'miia_center_lead';
+      const contactRequested = !isOwnerReminder && evt.remindContact;
+      if (!contactRequested && !isMiiaCenterLeadEvt && !isOwnerSafeHours) {
+        // Recordatorio para el owner, no pedido por contacto, fuera de horario → esperar
+        continue;
+      }
+      // Leads y contactos que pidieron recordatorio → se envía SIEMPRE a la hora exacta
+      if (contactRequested || isMiiaCenterLeadEvt) {
+        console.log(`[AGENDA] 🕐 Recordatorio a hora exacta para ${evt.contactName || evt.contactPhone} (pedido por contacto: ${!!contactRequested}, source: ${evt.source || 'default'})`);
+      }
+
       // ═══ SEGURIDAD: Si remindContact=false y NO es para el owner, NO enviar ═══
       if (!isOwnerReminder && !evt.remindContact) {
         console.log(`[AGENDA] ⏭️ Evento ${doc.id} no tiene permiso para contactar a ${evt.contactName}. Solo owner.`);
@@ -786,9 +823,18 @@ async function runAgendaEngine() {
       }
       const mentioned = evt.mentionedContact || '';
       const evtContact = evt.contactName || 'este contacto';
+      // ═══ DETECCIÓN DE RETRASO: si scheduledFor pasó hace >5 min → disculpa IA ═══
+      const scheduledTime = new Date(evt.scheduledFor);
+      const delayMs = now - scheduledTime;
+      const delayMinutes = Math.round(delayMs / 60000);
+      const isLate = delayMinutes > 5; // >5 min de retraso = server estuvo caído o ciclo perdido
+      const lateContext = isLate
+        ? ` IMPORTANTE: Este recordatorio debió enviarse hace ${delayMinutes} minutos pero hubo un problema técnico. Disculpate brevemente por el retraso de forma natural (ej: "Perdón por el retraso!") y luego dale el recordatorio.`
+        : '';
+
       const prompt = isOwnerReminder
-        ? `Sos MIIA. Recordale a tu owner (${evtContact}) este evento de su agenda: "${evtReason}"${mentioned ? ` (con ${mentioned})` : ''}. Mensaje breve en self-chat, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`
-        : `Sos MIIA. Tenés que recordarle a ${evtContact} sobre: "${evtReason}". Mensaje breve, natural, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`;
+        ? `Sos MIIA. Recordale a tu owner (${evtContact}) este evento de su agenda: "${evtReason}"${mentioned ? ` (con ${mentioned})` : ''}.${lateContext} Mensaje breve en self-chat, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`
+        : `Sos MIIA. Tenés que recordarle a ${evtContact} sobre: "${evtReason}".${lateContext} Mensaje breve, natural, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`;
 
       let enableSearch = evt.searchBefore || false;
 
@@ -811,12 +857,13 @@ async function runAgendaEngine() {
           // Enviar recordatorio al contacto destinatario
           // FIX: Si es recordatorio al owner, usar isSelfChat:true para que Baileys use sock.user.id
           await safeSendMessage(phone, response, { isSelfChat: isOwnerReminder, emojiCtx: { trigger: 'reminder' } });
-          console.log(`[AGENDA] 📤 Recordatorio enviado a ${evt.contactName}: "${response.substring(0, 60)}..."`);
+          console.log(`[AGENDA] 📤 Recordatorio enviado a ${evt.contactName}${isLate ? ` (CON DISCULPA — ${delayMinutes}min retraso)` : ''}: "${response.substring(0, 60)}..."`);
 
           // Si lo pidió alguien del círculo (no el owner en self-chat), informar al owner también
           if (evt.requestedBy && evt.requestedBy !== `${OWNER_PHONE}@s.whatsapp.net` && evt.source !== 'owner_selfchat') {
+            const lateNote = isLate ? ` (con ${delayMinutes}min de retraso por reinicio del servidor)` : '';
             safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-              `📅 MIIA acaba de recordarle a *${evt.contactName}*: "${evt.reason}"`,
+              `📅 Le recordé a *${evt.contactName}* sobre: "${(evt.reason || '').substring(0, 80)}"${lateNote}`,
               { isSelfChat: true, emojiCtx: { trigger: 'reminder' } }
             ).catch(() => {});
           }
@@ -825,7 +872,7 @@ async function runAgendaEngine() {
         }
       } catch (e) {
         console.error(`[AGENDA] ❌ Error procesando evento ${doc.id}:`, e.message);
-        await doc.ref.update({ status: 'error', error: e.message });
+        await doc.ref.update({ status: 'error', error: e.message, errorAt: new Date().toISOString() });
       }
 
       await new Promise(r => setTimeout(r, 2000));
@@ -2711,11 +2758,13 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
               const modeEmoji = appt.eventMode === 'virtual' ? '📹' : (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? '📞' : '📍';
               const meetInfo = meetLink ? `\n🔗 Link: ${meetLink}` : '';
               const locationInfo = appt.eventLocation ? ` en ${appt.eventLocation}` : '';
-              const confirmMsg = `✅ ¡Confirmado! Tu ${appt.reason} quedó agendado para el ${appt.scheduledForLocal.replace('T', ' a las ').substring(0, 16)}${locationInfo}. ${modeEmoji}${meetInfo}\nTe voy a recordar antes del evento. 😊`;
+              // Confirmación contextual al contacto (no hardcoded)
+              const fechaLegible = appt.scheduledForLocal ? appt.scheduledForLocal.replace('T', ' a las ').substring(0, 16) : 'fecha confirmada';
+              const confirmMsg = `✅ ¡Listo! Tu ${appt.reason} quedó para el ${fechaLegible}${locationInfo}. ${modeEmoji}${meetInfo}\nTe aviso antes del evento 😊`;
 
               await safeSendMessage(contactJid, confirmMsg);
               await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-                `✅ Turno aprobado y confirmado a *${contactName}*.${calendarOk ? ' 📅 En tu Calendar.' : ''}`,
+                `✅ Confirmé a *${contactName}* su ${appt.reason} — ${fechaLegible}${calendarOk ? ' 📅 Calendar ✅' : ' ⚠️ Calendar no conectado'}`,
                 { isSelfChat: true, skipEmoji: true });
 
               console.log(`[TURNO-APROBADO] ✅ ${contactName}: "${appt.reason}" aprobado por owner`);
@@ -2725,10 +2774,10 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
               // ═══ RECHAZAR: Notificar al contacto ═══
               await apptDoc.ref.update({ status: 'rejected', rejectedAt: new Date().toISOString() });
 
-              const rejectMsg = `Lo siento, no fue posible agendar tu ${appt.reason} para esa fecha. ¿Te gustaría proponer otro horario? 😊`;
+              const rejectMsg = `No pudimos agendar tu ${appt.reason} para esa fecha. ¿Querés proponer otro horario? 😊`;
               await safeSendMessage(contactJid, rejectMsg);
               await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-                `❌ Turno rechazado. Se avisó a *${contactName}*.`,
+                `❌ Rechacé el turno de *${contactName}* (${appt.reason}) y le ofrecí reprogramar.`,
                 { isSelfChat: true, skipEmoji: true });
 
               console.log(`[TURNO-RECHAZADO] ❌ ${contactName}: "${appt.reason}" rechazado por owner`);
@@ -4977,7 +5026,7 @@ Nuevo resumen actualizado:`;
         const contactName = leadNames[phone] || phone.split('@')[0];
         const alertType = isInsult ? '⚠️ INSULTO' : '🔔 QUEJA';
         safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-          `${alertType} recibido de *${contactName}* (+${phone.split('@')[0]})\n\n📩 "${effectiveMsg.substring(0, 300)}"\n\nMIIA respondió con empatía. Considera contactarlo manualmente.`,
+          `${alertType} de *${contactName}* (+${phone.split('@')[0]})\n📩 "${effectiveMsg.substring(0, 200)}"\nYa respondí con empatía. Quizás quieras escribirle vos también.`,
           { isSelfChat: true }
         ).catch(() => {});
 
@@ -5093,7 +5142,7 @@ NUNCA le hagas pitch de venta. NUNCA cuentes demos. Es TU cliente, no tu prospec
       console.log(`[MIIA-SALES] 🤖 ${basePhone} → Lead de MIIA (respuesta #${miiaResponseCount + 1})`);
 
       const result = assemblePrompt({
-        chatType: 'lead',
+        chatType: 'miia_lead', // MIIA CENTER: leads pueden pedir recordatorios directos con AGENDAR_EVENTO
         messageBody: userMessage,
         ownerProfile: leadOwnerProfile,
         context: {
@@ -5516,8 +5565,8 @@ REGLAS:
             if (jsonMatch) {
               const extracted = JSON.parse(jsonMatch[0]);
               if (extracted.fecha && !extracted.error) {
-                // Si es lead, usar SOLICITAR_TURNO (requiere aprobación del owner). Si no, AGENDAR_EVENTO.
-                const isLeadContext = postChatType === 'lead';
+                // Si es lead regular, usar SOLICITAR_TURNO (requiere aprobación). miia_lead y owner usan AGENDAR_EVENTO directo.
+                const isLeadContext = postChatType === 'lead'; // lead regular (NO miia_lead)
                 const tagName = isLeadContext ? 'SOLICITAR_TURNO' : 'AGENDAR_EVENTO';
                 const rescueTag = `[${tagName}:${extracted.contacto || 'self'}|${extracted.fecha}|${extracted.razon || 'Evento'}||presencial|]`;
                 console.log(`[AGENDA:RESCUE] ✅ Tag reconstruido con IA (${tagName}): ${rescueTag}`);
@@ -6187,6 +6236,11 @@ REGLAS:
           const eventMode = (modo || 'presencial').toLowerCase();
 
           // 1. Intentar crear evento en Google Calendar
+          // TODOS los recordatorios van a Calendar — MIIA CENTER usa su propio calendar (hola@miia-app.com)
+          const isMiiaCenterCalendar = postChatType === 'miia_lead';
+          if (isMiiaCenterCalendar) {
+            console.log(`[AGENDA:MIIA-CENTER] 📅 Recordatorio para lead ${basePhone} → Google Calendar + Firestore`);
+          }
           try {
             const parsedDate = new Date(fecha);
             const ownerCountry = getCountryFromPhone(OWNER_PHONE);
@@ -6250,20 +6304,28 @@ REGLAS:
             }
           }
 
+          // ═══ MIIA CENTER LEAD REMINDER: usar timezone del LEAD, no del owner ═══
+          const isMiiaCenterLeadReminder = postChatType === 'miia_lead';
+          const tzSourcePhone = isMiiaCenterLeadReminder ? basePhone : OWNER_PHONE;
+          const tzCountry = getCountryFromPhone(tzSourcePhone);
+          const effectiveTimezone = getTimezoneForCountry(tzCountry);
+          if (isMiiaCenterLeadReminder) {
+            console.log(`[AGENDA:MIIA-CENTER] 🌍 Lead ${basePhone} → país=${tzCountry}, timezone=${effectiveTimezone}`);
+          }
+
           // 2. Guardar en Firestore
           try {
-            const ownerCountryTz = getCountryFromPhone(OWNER_PHONE);
-            const ownerTimezoneTz = getTimezoneForCountry(ownerCountryTz);
+
             let scheduledForUTC = fecha;
             try {
               const parsedLocal = new Date(fecha);
               if (!isNaN(parsedLocal)) {
-                const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTimezoneTz });
+                const localStr = new Date().toLocaleString('en-US', { timeZone: effectiveTimezone });
                 const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
                 const offsetMs = new Date(localStr) - new Date(utcStr);
                 const utcDate = new Date(parsedLocal.getTime() - offsetMs);
                 scheduledForUTC = utcDate.toISOString();
-                console.log(`[AGENDA] 🕐 Fecha local: ${fecha} (${ownerTimezoneTz}) → UTC: ${scheduledForUTC}`);
+                console.log(`[AGENDA] 🕐 Fecha local: ${fecha} (${effectiveTimezone}) → UTC: ${scheduledForUTC}`);
               }
             } catch (tzErr) {
               console.warn(`[AGENDA] ⚠️ Error convirtiendo timezone, usando fecha original: ${tzErr.message}`);
@@ -6273,9 +6335,10 @@ REGLAS:
             // Esto permite que "recuérdale a +5491164431700 comprar medicación" FUNCIONE
             const isExternalContact = contacto && contacto !== 'self' && /^\d{8,15}$/.test(contacto.replace(/\D/g, ''));
             const isReminderForContact = /recor|avisa|escri|manda|notific|dile|decile|avisale|recordale|escribile/i.test(razon || '');
-            const shouldRemindContact = isExternalContact || (!isSelfChat && isReminderForContact);
+            // MIIA CENTER leads: SIEMPRE remindContact=true (el recordatorio es PARA el lead)
+            const shouldRemindContact = isMiiaCenterLeadReminder || isExternalContact || (!isSelfChat && isReminderForContact);
             if (shouldRemindContact) {
-              console.log(`[AGENDA] 📲 remindContact=true para ${contacto} — razón: "${(razon || '').substring(0, 50)}"`);
+              console.log(`[AGENDA] 📲 remindContact=true para ${contacto}${isMiiaCenterLeadReminder ? ' (MIIA CENTER lead)' : ''} — razón: "${(razon || '').substring(0, 50)}"`);
             }
 
             // FIX: Si contacto no es un teléfono válido (ej: "Mariano", "Cliente"), usar el phone real del chat
@@ -6290,7 +6353,9 @@ REGLAS:
               mentionedContact: contacto,
               scheduledFor: scheduledForUTC,
               scheduledForLocal: fecha,
-              ownerTimezone: ownerTimezoneTz,
+              ownerTimezone: effectiveTimezone,
+              leadTimezone: isMiiaCenterLeadReminder ? effectiveTimezone : undefined,
+              leadCountry: isMiiaCenterLeadReminder ? tzCountry : undefined,
               reason: razon,
               promptHint: hint || '',
               eventMode: eventMode,
@@ -6303,20 +6368,35 @@ REGLAS:
               requestedBy: phone,
               searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
               createdAt: new Date().toISOString(),
-              source: isSelfChat ? 'owner_selfchat' : 'contact_request'
+              source: isMiiaCenterLeadReminder ? 'miia_center_lead' : (isSelfChat ? 'owner_selfchat' : 'contact_request')
             });
           } catch (e) {
             console.error(`[AGENDA] ❌ Error guardando en Firestore:`, e.message);
             actionFeedback.recordActionResult(phone, 'agendar', false, `Error guardando "${razon}" en Firestore: ${e.message}`);
           }
 
-          // 3. Si Calendar no está conectado, avisar al owner
-          if (!calendarOk && !isSelfChat) {
-            const modeLabel = eventMode === 'virtual' ? '📹 Virtual' : eventMode === 'telefono' || eventMode === 'telefónico' ? '📞 Telefónico' : '📍 Presencial';
-            safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-              `📅 *Evento agendado internamente* (Calendar no conectado)\n${contactName} pidió: "${razon}" para el ${fecha}\nModo: ${modeLabel}${ubicacion ? ` — ${ubicacion}` : ''}\nMIIA lo recordará, pero no está en tu Google Calendar.\n\n💡 Conecta Calendar desde tu dashboard → Conexiones.`,
-              { isSelfChat: true }
-            ).catch(() => {});
+          // 3. Notificar al owner (generado por IA cuando sea posible, fallback contextual)
+          if (!isSelfChat) {
+            const leadNameNotif = leadNames[phone] || contactName || basePhone;
+            const calStatus = calendarOk ? '📅 Calendar ✅' : '⚠️ Calendar no conectado';
+            // Notificación contextual al owner — NO hardcodeada, construida con datos reales
+            const notifParts = [];
+            if (isMiiaCenterLeadReminder) {
+              notifParts.push(`📲 *${leadNameNotif}* pidió un recordatorio:`);
+              notifParts.push(`"${razon}"`);
+              notifParts.push(`📅 ${fecha} | 🌍 ${tzCountry} (${effectiveTimezone})`);
+              notifParts.push(calStatus);
+            } else {
+              notifParts.push(`📅 *${contactName}* pidió agendar:`);
+              notifParts.push(`"${razon}" — ${fecha}`);
+              const modeLabel = eventMode === 'virtual' ? '📹 Virtual' : (eventMode === 'telefono' || eventMode === 'telefónico') ? '📞 Telefónico' : '📍 Presencial';
+              notifParts.push(`Modo: ${modeLabel}${ubicacion ? ` — ${ubicacion}` : ''}`);
+              notifParts.push(calStatus);
+            }
+            if (!calendarOk) {
+              notifParts.push(`\n💡 Conectá tu Calendar desde Dashboard → Conexiones.`);
+            }
+            safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, notifParts.join('\n'), { isSelfChat: true }).catch(() => {});
           }
 
           // 4. Si es virtual y hay meetLink, informar al contacto
@@ -7579,10 +7659,7 @@ async function handleIncomingMessage(message) {
         await safeSendMessage(leadPhone, naturalMsg);
         // Alertar al owner en self-chat
         await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-          `⚠️ *MEDIA NO PROCESADA*\n` +
-          `Contacto: *${leadName}* (${leadPhone.split('@')[0]})\n` +
-          `Tipo: ${tipoLabel}\n` +
-          `Respondí: "${naturalMsg}"\nTomá el control si es urgente.`,
+          `⚠️ No pude procesar un ${tipoLabel} de *${leadName}* (${leadPhone.split('@')[0]})\nLe respondí: "${naturalMsg}"\nSi es importante, atendelo vos.`,
           { isSelfChat: true }
         );
         console.log(`[MEDIA] Fallback natural enviado a ${leadPhone}, alerta al owner`);
@@ -7874,7 +7951,7 @@ async function handleIncomingMessage(message) {
       console.log(`[MIIA] 🎉 CONVERSIÓN: ${clientName} ahora es cliente (${targetPhone})`);
       // Notificar a Mariano
       safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-        `🎉 *¡Nuevo cliente!* ${clientName} acaba de convertirse en cliente de ${userProfile?.businessName || 'la empresa'}.`,
+        `🎉 *${clientName}* pasó a ser cliente de ${userProfile?.businessName || 'tu negocio'}. ¡Uno más!`,
         { isSelfChat: true }
       ).catch(() => {});
     }
@@ -8485,10 +8562,10 @@ async function handleIncomingMessage(message) {
       estadisticas.registrarInteresado({ phone: effectiveTarget, nombre: leadName, respuesta: body });
       if (conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget].followUpState = 'converted';
       await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-        `🔔 *${leadName}* está listo para comprar.\n\nSus datos:\n${body}\n\nCreá el link de pago y enviáselo.`,
+        `🔔 *${leadName}* quiere comprar. Datos:\n${body.substring(0, 300)}\nCreale el link de pago cuando puedas.`,
         { isSelfChat: true });
       await safeSendMessage(effectiveTarget,
-        `¡Perfecto! Recibí todo. Voy a crear tu link de acceso y en cuanto esté listo te lo mando. ¡Gracias por confiar en ${userProfile?.businessName || 'nosotros'}! 🙌`);
+        `¡Listo! Recibí tus datos. Estoy preparando tu acceso y te lo mando apenas esté. ¡Gracias por elegirnos! 🙌`);
       console.log(`[COMPRA] Mariano notificado. Lead ${effectiveTarget} en espera de link.`);
       return;
     }
@@ -10037,7 +10114,7 @@ app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
       console.log(`[HELPCENTER] ✅ Aprendizaje completo: ${learned}/${articleUrls.length} artículos procesados.`);
       // Notify Mariano via WhatsApp
       const hcBiz3 = userProfile?.businessName || 'Centro de Ayuda';
-      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ *${hcBiz3} — Centro de Ayuda aprendido*\n${learned} artículos procesados y guardados en mi memoria.`, { isSelfChat: true }).catch(() => {});
+      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ *${hcBiz3}* — Aprendí ${learned} artículos del Centro de Ayuda. Ya puedo responder preguntas basándome en ellos.`, { isSelfChat: true }).catch(() => {});
     } catch (e) {
       console.error('[HELPCENTER] Error general:', e.message);
     }
@@ -14124,7 +14201,21 @@ server.listen(PORT, () => {
           }
         }
 
-        // 1.5. Cargar affinity desde Firestore (ANTES de conectar WhatsApp)
+        // 1.5. MIIA CENTER 24/7: asegurar que el admin (MIIA CENTER) tenga schedule alwaysOn
+        if (OWNER_UID) {
+          try {
+            const schedRef = admin.firestore().collection('users').doc(OWNER_UID).collection('settings').doc('schedule');
+            const schedDoc = await schedRef.get();
+            if (!schedDoc.exists || !schedDoc.data()?.alwaysOn) {
+              await schedRef.set({ alwaysOn: true }, { merge: true });
+              console.log(`[AUTO-INIT] ✅ MIIA CENTER schedule: alwaysOn=true (24/7 para leads)`);
+            }
+          } catch (e) {
+            console.warn(`[AUTO-INIT] ⚠️ Error seteando alwaysOn: ${e.message}`);
+          }
+        }
+
+        // 1.6. Cargar affinity desde Firestore (ANTES de conectar WhatsApp)
         await loadAffinityFromFirestore();
 
         // 2. Buscar usuarios que tengan whatsapp_number guardado (indica que conectaron antes)

@@ -413,6 +413,15 @@ function selectModules(chatType, intents) {
       modules.push('mod_affinity');
       break;
 
+    case 'miia_lead':
+      // MIIA CENTER leads: igual que lead PERO con mod_agenda para recordatorios directos
+      modules.push('mod_lead_sales');
+      modules.push('mod_cotizacion');
+      modules.push('mod_agenda'); // MIIA CENTER: leads pueden pedir recordatorios directos
+      if (intents.includes('QUEJA'))  modules.push('mod_queja');
+      modules.push('mod_affinity');
+      break;
+
     case 'family':
       modules.push('mod_family');
       if (intents.includes('AGENDA')) modules.push('mod_agenda');
@@ -508,7 +517,7 @@ function assemblePrompt(opts) {
     divergences.push('CRITICO: selfchat sin mod_selfchat cargado');
   }
   // Check: lead DEBE tener mod_lead_sales
-  if (chatType === 'lead' && !loaded.includes('mod_lead_sales')) {
+  if ((chatType === 'lead' || chatType === 'miia_lead') && !loaded.includes('mod_lead_sales')) {
     divergences.push('CRITICO: lead sin mod_lead_sales cargado');
   }
   // Check: core modules SIEMPRE presentes

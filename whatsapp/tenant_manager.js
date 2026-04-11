@@ -240,8 +240,12 @@ console.error = function(...args) {
       if (activeTenants.length === 1) {
         handleCryptoError(activeTenants[0][0], activeTenants[0][1], errorStr);
       } else if (activeTenants.length > 1) {
-        // Cannot determine which tenant — log but do NOT cascade to all
-        originalConsoleError.apply(console, [`[TM] ⚠️ Crypto error detected but cannot attribute to specific tenant (${activeTenants.length} active). Skipping recovery cascade.`]);
+        // No podemos determinar cuál tenant — intentar recovery en TODOS
+        // handleCryptoError usa per-contact purge (quirúrgico) así que es seguro
+        originalConsoleError.apply(console, [`[TM] 🔄 Crypto error con ${activeTenants.length} tenants activos — intentando recovery en TODOS (per-contact purge es seguro)`]);
+        for (const [tUid, tTenant] of activeTenants) {
+          handleCryptoError(tUid, tTenant, errorStr);
+        }
       }
     }
   }

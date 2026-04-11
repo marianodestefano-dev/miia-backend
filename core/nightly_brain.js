@@ -108,8 +108,52 @@ async function runNightlyAnalysis(date) {
 
   console.log(`[NIGHTLY-BRAIN] 📊 ${todaySessions.length} conversaciones del día encontradas`);
 
+  // 1.5. Recolectar recordatorios y tareas pendientes para mañana y próximos días
+  let pendingReminders = '';
+  try {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const in7days = new Date();
+    in7days.setDate(in7days.getDate() + 7);
+    const pendingSnap = await firestore.collection('users').doc(_ownerUid)
+      .collection('miia_agenda')
+      .where('status', '==', 'pending')
+      .where('scheduledFor', '>=', new Date().toISOString())
+      .where('scheduledFor', '<=', in7days.toISOString())
+      .orderBy('scheduledFor', 'asc')
+      .limit(20)
+      .get();
+    if (!pendingSnap.empty) {
+      const items = pendingSnap.docs.map(d => {
+        const e = d.data();
+        // Formato legible: extraer fecha y hora local
+        const rawDate = e.scheduledForLocal || e.scheduledFor || '';
+        let dateLabel = rawDate;
+        try {
+          const dt = new Date(rawDate);
+          const dayNames = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+          const day = dayNames[dt.getDay()];
+          const hora = dt.toTimeString().substring(0, 5);
+          const fecha = `${dt.getDate()}/${dt.getMonth() + 1}`;
+          dateLabel = `${day} ${fecha} a las ${hora}`;
+        } catch (_) {}
+        const contact = e.contactName || e.contactPhone || 'desconocido';
+        const isForContact = e.contactPhone && e.contactPhone !== 'self';
+        const source = e.source === 'miia_center_lead' ? ' (lead MIIA CENTER)' : '';
+        const action = isForContact
+          ? `Recordarle a ${contact}: "${e.reason}"${source}`
+          : `Recordatorio owner: "${e.reason}"`;
+        return `- ${dateLabel} → ${action}`;
+      });
+      pendingReminders = `\n\nRECORDATORIOS Y TAREAS PENDIENTES (próximos 7 días):\n${items.join('\n')}`;
+      console.log(`[NIGHTLY-BRAIN] 📅 ${items.length} recordatorios pendientes incluidos en análisis`);
+    }
+  } catch (e) {
+    console.warn(`[NIGHTLY-BRAIN] ⚠️ Error cargando recordatorios pendientes: ${e.message}`);
+  }
+
   // 2. Construir prompt para Opus
-  const prompt = buildNightlyPrompt(todaySessions, date);
+  const prompt = buildNightlyPrompt(todaySessions, date, pendingReminders);
 
   // 3. Generar análisis con Opus via ai_gateway (contexto NIGHTLY_BRAIN)
   try {
@@ -228,7 +272,7 @@ function summarizeMessages(messages, maxCount) {
 /**
  * Construye el prompt para el análisis nocturno.
  */
-function buildNightlyPrompt(sessions, date) {
+function buildNightlyPrompt(sessions, date, pendingReminders = '') {
   const sessionsSummary = sessions.map(s => {
     return `--- ${s.type.toUpperCase()}: ${s.contact} (${s.messageCount} msgs) ---\n${s.messages}`;
   }).join('\n\n');
@@ -237,6 +281,7 @@ function buildNightlyPrompt(sessions, date) {
 
 CONVERSACIONES DEL DÍA:
 ${sessionsSummary}
+${pendingReminders}
 
 GENERÁ UN INFORME con estas secciones (si aplican):
 
@@ -249,6 +294,11 @@ GENERÁ UN INFORME con estas secciones (si aplican):
 ⚠️ *OPORTUNIDADES PERDIDAS*
 - Leads que se enfriaron, conversaciones que no cerraron, seguimientos pendientes
 
+📅 *TAREAS Y RECORDATORIOS PENDIENTES*
+- Qué recordatorios hay para mañana y los próximos días (incluir leads de MIIA CENTER)
+- Qué seguimientos prometidos hay que cumplir
+- Si algún lead pidió algo que MIIA debe hacer → listarlo con fecha y hora
+
 💡 *SUGERENCIAS PARA MAÑANA*
 - Qué contactos seguir, qué mejorar, qué oportunidades aprovechar
 
@@ -256,11 +306,12 @@ GENERÁ UN INFORME con estas secciones (si aplican):
 - Resumen emocional del día (positivo, neutro, difícil)
 
 Reglas:
-- Máximo 25 líneas total
+- Máximo 30 líneas total
 - Sé directo y accionable (no poesía)
 - Si no hubo leads, enfocá en familia/self-chat insights
 - Lenguaje argentino informal
-- NO mencionar que sos IA`;
+- NO mencionar que sos IA
+- La sección de TAREAS Y RECORDATORIOS es CRÍTICA — si hay pendientes, SIEMPRE incluirla`;
 }
 
 /**
