@@ -382,6 +382,141 @@ async function markAsRead(uid, getOAuth2Client, messageIds) {
   }
 }
 
+/**
+ * Mover emails a trash por ID (genérico, no solo spam)
+ * @param {string} uid
+ * @param {Function} getOAuth2Client
+ * @param {string[]} messageIds - Gmail message IDs
+ * @returns {Promise<{success: boolean, deleted: number, error?: string}>}
+ */
+async function trashEmails(uid, getOAuth2Client, messageIds) {
+  if (!messageIds || messageIds.length === 0) return { success: true, deleted: 0 };
+
+  try {
+    const { gmail } = await getGmailClient(uid, getOAuth2Client);
+    let deleted = 0;
+
+    for (const msgId of messageIds) {
+      try {
+        await gmail.users.messages.trash({ userId: 'me', id: msgId });
+        deleted++;
+      } catch (delErr) {
+        console.warn(`[GMAIL:TRASH] ⚠️ Error eliminando ${msgId}: ${delErr.message}`);
+      }
+    }
+
+    console.log(`[GMAIL:TRASH] ✅ ${deleted}/${messageIds.length} emails movidos a papelera`);
+    return { success: true, deleted };
+  } catch (err) {
+    console.error(`[GMAIL:TRASH] ❌ Error general: ${err.message}`);
+    return { success: false, deleted: 0, error: err.message };
+  }
+}
+
+/**
+ * Obtener contenido completo de un email por ID
+ * @param {string} uid
+ * @param {Function} getOAuth2Client
+ * @param {string} messageId - Gmail message ID
+ * @returns {Promise<{success: boolean, body?: string, html?: string, error?: string}>}
+ */
+async function getFullEmail(uid, getOAuth2Client, messageId) {
+  try {
+    const { gmail } = await getGmailClient(uid, getOAuth2Client);
+
+    const msgRes = await gmail.users.messages.get({
+      userId: 'me',
+      id: messageId,
+      format: 'full',
+    });
+
+    const payload = msgRes.data.payload;
+    let textBody = '';
+    let htmlBody = '';
+
+    // Extraer cuerpo del email (puede estar nested en parts)
+    function extractBody(part) {
+      if (!part) return;
+      if (part.mimeType === 'text/plain' && part.body?.data) {
+        textBody += Buffer.from(part.body.data, 'base64url').toString('utf-8');
+      } else if (part.mimeType === 'text/html' && part.body?.data) {
+        htmlBody += Buffer.from(part.body.data, 'base64url').toString('utf-8');
+      }
+      if (part.parts) {
+        for (const subPart of part.parts) {
+          extractBody(subPart);
+        }
+      }
+    }
+
+    extractBody(payload);
+
+    // Si no hay text/plain, convertir HTML a texto plano básico
+    if (!textBody && htmlBody) {
+      textBody = htmlBody
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
+    console.log(`[GMAIL] 📖 Email ${messageId}: ${textBody.length} chars texto`);
+    return { success: true, body: textBody, html: htmlBody };
+  } catch (err) {
+    console.error(`[GMAIL] ❌ Error leyendo email completo ${messageId}: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Enviar email via Gmail API (reemplaza SMTP/Nodemailer)
+ * @param {string} uid
+ * @param {Function} getOAuth2Client
+ * @param {string} to - Email destinatario
+ * @param {string} subject
+ * @param {string} body - Texto plano
+ * @param {string} fromName - Nombre del remitente
+ * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
+ */
+async function sendGmailEmail(uid, getOAuth2Client, to, subject, body, fromName = '') {
+  try {
+    const { gmail, userEmail } = await getGmailClient(uid, getOAuth2Client);
+
+    const fromHeader = fromName ? `${fromName} <${userEmail}>` : userEmail;
+
+    // Construir mensaje RFC 2822
+    const messageParts = [
+      `From: ${fromHeader}`,
+      `To: ${to}`,
+      `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from(body).toString('base64'),
+    ];
+    const rawMessage = messageParts.join('\r\n');
+    const encodedMessage = Buffer.from(rawMessage).toString('base64url');
+
+    const sendRes = await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: encodedMessage },
+    });
+
+    console.log(`[GMAIL:SEND] ✅ Email enviado a ${to}: "${subject}" (id: ${sendRes.data.id})`);
+    return { success: true, messageId: sendRes.data.id };
+  } catch (err) {
+    console.error(`[GMAIL:SEND] ❌ Error enviando a ${to}: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // TRACKING DE RESPUESTAS ESPERADAS
 // ═══════════════════════════════════════════════════════════════
@@ -742,6 +877,9 @@ module.exports = {
 
   // Acciones
   handleSpamEmails,
+  trashEmails,
+  getFullEmail,
+  sendGmailEmail,
   markAsRead,
   trackAwaitingResponse,
   checkTrackedResponses,

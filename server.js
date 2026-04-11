@@ -6031,7 +6031,7 @@ REGLAS:
       return;
     }
 
-    // ── TAG [ENVIAR_CORREO:email|asunto|cuerpo] — MIIA envía email al lead via SMTP ──
+    // ── TAG [ENVIAR_CORREO:email|asunto|cuerpo] — MIIA envía email al lead via Gmail API / SMTP ──
     const enviarCorreoMatch = aiMessage.match(/\[ENVIAR_CORREO:([^|]+)\|([^|]+)\|([^\]]+)\]/);
     if (enviarCorreoMatch) {
       const emailTo = enviarCorreoMatch[1].trim();
@@ -6041,9 +6041,27 @@ REGLAS:
       console.log(`[EMAIL] 📧 Enviando correo a ${emailTo} — Asunto: "${emailSubject}" (solicitado por lead ${phone})`);
       try {
         const emailFromName = userProfile?.businessName ? `${userProfile.businessName} - MIIA` : 'MIIA';
-        const emailResult = await mailService.sendGenericEmail(emailTo, emailSubject, emailBody, { fromName: emailFromName });
+        let emailResult = { success: false, error: 'No configurado' };
+
+        // Intentar Gmail API primero (si el owner tiene Google conectado)
+        if (OWNER_UID) {
+          try {
+            const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+            if (ownerDoc.exists && ownerDoc.data()?.googleTokens) {
+              emailResult = await gmailIntegration.sendGmailEmail(OWNER_UID, getOAuth2Client, emailTo, emailSubject, emailBody, emailFromName);
+            }
+          } catch (gmailErr) {
+            console.warn(`[EMAIL] ⚠️ Gmail API send falló, intentando SMTP: ${gmailErr.message}`);
+          }
+        }
+
+        // Fallback: SMTP
+        if (!emailResult.success) {
+          emailResult = await mailService.sendGenericEmail(emailTo, emailSubject, emailBody, { fromName: emailFromName });
+        }
+
         if (emailResult.success) {
-          console.log(`[EMAIL] ✅ Correo enviado exitosamente a ${emailTo} (ID: ${emailResult.messageId})`);
+          console.log(`[EMAIL] ✅ Correo enviado exitosamente a ${emailTo}`);
           actionFeedback.recordActionResult(phone, 'email', true, `Email enviado a ${emailTo} — "${emailSubject}"`);
           const ownerJidEmail = getOwnerSock()?.user?.id;
           if (ownerJidEmail) {
@@ -6053,7 +6071,6 @@ REGLAS:
         } else {
           console.error(`[EMAIL] ❌ Error enviando correo a ${emailTo}: ${emailResult.error}`);
           actionFeedback.recordActionResult(phone, 'email', false, `Falló envío a ${emailTo}: ${emailResult.error}`);
-          // Fallback: notificar al owner para envío manual
           const ownerJidFail = getOwnerSock()?.user?.id;
           if (ownerJidFail) {
             const ownerSelfFail = ownerJidFail.includes(':') ? ownerJidFail.split(':')[0] + '@s.whatsapp.net' : ownerJidFail;
@@ -6066,6 +6083,7 @@ REGLAS:
     }
 
     // ── TAG [ENVIAR_EMAIL:to|subject|body] — Owner envía email desde self-chat ──
+    // PRIORIDAD: Gmail API (OAuth) > SMTP/emailManager
     const enviarEmailMatch = aiMessage.match(/\[ENVIAR_EMAIL:([^|]+)\|([^|]+)\|([^\]]+)\]/);
     if (enviarEmailMatch && isSelfChat) {
       const emailTo = enviarEmailMatch[1].trim();
@@ -6075,9 +6093,32 @@ REGLAS:
       console.log(`[EMAIL-MGR] 📧 Owner envía email a ${emailTo}: "${emailSubject}"`);
       try {
         const fromName = userProfile?.name || 'MIIA';
-        const emailResult = await emailManager.sendEmail(emailTo, emailSubject, emailBody, fromName);
+        let emailResult = { success: false, error: 'No configurado' };
+
+        // Intentar Gmail API primero
+        if (OWNER_UID) {
+          try {
+            const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+            if (ownerDoc.exists && ownerDoc.data()?.googleTokens) {
+              emailResult = await gmailIntegration.sendGmailEmail(OWNER_UID, getOAuth2Client, emailTo, emailSubject, emailBody, fromName);
+              if (emailResult.success) {
+                console.log(`[EMAIL-MGR] ✅ Gmail API: Email enviado a ${emailTo}`);
+              }
+            }
+          } catch (gmailSendErr) {
+            console.warn(`[EMAIL-MGR] ⚠️ Gmail API send falló, intentando SMTP: ${gmailSendErr.message}`);
+          }
+        }
+
+        // Fallback: SMTP via emailManager
+        if (!emailResult.success) {
+          emailResult = await emailManager.sendEmail(emailTo, emailSubject, emailBody, fromName);
+          if (emailResult.success) {
+            console.log(`[EMAIL-MGR] ✅ SMTP: Email enviado a ${emailTo}`);
+          }
+        }
+
         if (emailResult.success) {
-          console.log(`[EMAIL-MGR] ✅ Email enviado a ${emailTo}`);
           if (!aiMessage) aiMessage = `📧 Listo, le envié el correo a ${emailTo} — Asunto: "${emailSubject}"`;
         } else {
           console.error(`[EMAIL-MGR] ❌ Error: ${emailResult.error}`);
@@ -6093,20 +6134,54 @@ REGLAS:
     }
 
     // ── TAG [LEER_INBOX] — Owner lee su bandeja de entrada ──
+    // PRIORIDAD: Gmail API (OAuth automático) > IMAP (manual)
     if (aiMessage.includes('[LEER_INBOX]') && isSelfChat && OWNER_UID) {
       aiMessage = aiMessage.replace(/\[LEER_INBOX\]/g, '').trim();
       console.log(`[EMAIL-MGR] 📬 Owner solicita leer inbox`);
       try {
-        const imapConfig = await emailManager.getOwnerImapConfig(OWNER_UID);
-        if (!imapConfig) {
-          aiMessage = '📭 No tenés configurado tu email IMAP. Configuralo desde el dashboard en Conexiones → Email IMAP.';
-        } else {
-          const result = await emailManager.fetchUnreadEmails(imapConfig, 10);
-          if (result.success) {
-            emailManager.cacheEmails(OWNER_UID, result.emails, imapConfig);
-            aiMessage = emailManager.formatEmailList(result.emails, result.count || result.emails.length);
+        // 🔑 INTENTAR Gmail API primero (si el owner conectó Google Calendar, ya tiene OAuth)
+        let usedGmail = false;
+        try {
+          const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
+          if (ownerDoc.exists && ownerDoc.data()?.googleTokens) {
+            const gmailResult = await gmailIntegration.getUnreadEmails(OWNER_UID, getOAuth2Client, { maxResults: 10 });
+            if (!gmailResult.error && gmailResult.emails.length >= 0) {
+              // Convertir formato Gmail a formato emailManager para cache
+              const adaptedEmails = gmailResult.emails.map(e => ({
+                uid: e.id,
+                fromName: e.from.replace(/<[^>]+>/, '').trim() || e.from,
+                from: e.from,
+                subject: e.subject,
+                date: e.date,
+                snippet: e.snippet,
+                hasAttachments: false,
+                _gmailId: e.id,
+                _threadId: e.threadId,
+                _source: 'gmail_api',
+              }));
+              emailManager.cacheEmails(OWNER_UID, adaptedEmails, { _source: 'gmail_api' });
+              aiMessage = emailManager.formatEmailList(adaptedEmails, gmailResult.summary.total || adaptedEmails.length);
+              usedGmail = true;
+              console.log(`[EMAIL-MGR] ✅ Gmail API: ${adaptedEmails.length} emails via OAuth`);
+            }
+          }
+        } catch (gmailErr) {
+          console.warn(`[EMAIL-MGR] ⚠️ Gmail API falló, intentando IMAP: ${gmailErr.message}`);
+        }
+
+        // Fallback: IMAP manual (si no tiene Google conectado o Gmail API falló)
+        if (!usedGmail) {
+          const imapConfig = await emailManager.getOwnerImapConfig(OWNER_UID);
+          if (!imapConfig) {
+            aiMessage = '📭 Para gestionar tu correo, conectá Google Calendar desde el dashboard (Conexiones → Google). Es un solo click y MIIA accede a tu Gmail automáticamente.';
           } else {
-            aiMessage = `❌ Error leyendo tu inbox: ${result.error}`;
+            const result = await emailManager.fetchUnreadEmails(imapConfig, 10);
+            if (result.success) {
+              emailManager.cacheEmails(OWNER_UID, result.emails, imapConfig);
+              aiMessage = emailManager.formatEmailList(result.emails, result.count || result.emails.length);
+            } else {
+              aiMessage = `❌ Error leyendo tu inbox: ${result.error}`;
+            }
           }
         }
       } catch (inboxErr) {
@@ -6116,6 +6191,7 @@ REGLAS:
     }
 
     // ── TAG [EMAIL_LEER:2,5] — Owner lee contenido de emails específicos ──
+    // PRIORIDAD: Gmail API (OAuth) > IMAP cache
     const emailLeerMatch = aiMessage.match(/\[EMAIL_LEER:([^\]]+)\]/);
     if (emailLeerMatch && isSelfChat && OWNER_UID) {
       const indices = emailLeerMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
@@ -6124,12 +6200,38 @@ REGLAS:
       const cached = emailManager.getCachedEmails(OWNER_UID);
       if (!cached || !cached.emails.length) {
         aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox" o "qué correos tengo".';
+      } else if (cached.imapConfig?._source === 'gmail_api') {
+        // Gmail API: obtener contenido completo de cada email
+        const results = [];
+        for (const idx of indices) {
+          const email = cached.emails[idx - 1];
+          if (!email) {
+            results.push(`*${idx}.* ❌ No existe ese correo en la lista`);
+            continue;
+          }
+          try {
+            const fullEmail = await gmailIntegration.getFullEmail(OWNER_UID, getOAuth2Client, email._gmailId);
+            if (fullEmail.success && fullEmail.body) {
+              const body = fullEmail.body.substring(0, 800).replace(/\n{3,}/g, '\n\n');
+              results.push(`*${idx}. De: ${email.fromName}*\n📋 _${email.subject}_\n\n${body}`);
+            } else {
+              // Fallback: usar snippet del cache
+              results.push(`*${idx}. De: ${email.fromName}*\n📋 _${email.subject}_\n\n${email.snippet || '(Sin contenido)'}`);
+            }
+          } catch (gmailReadErr) {
+            console.warn(`[EMAIL-MGR] ⚠️ Gmail getFullEmail falló para ${email._gmailId}: ${gmailReadErr.message}`);
+            results.push(`*${idx}. De: ${email.fromName}*\n📋 _${email.subject}_\n\n${email.snippet || '(Sin contenido)'}`);
+          }
+        }
+        aiMessage = results.join('\n\n---\n\n');
       } else {
+        // IMAP cache: usar formatEmailContent existente
         aiMessage = emailManager.formatEmailContent(cached.emails, indices);
       }
     }
 
     // ── TAG [EMAIL_ELIMINAR:1,3,4] — Owner elimina emails ──
+    // PRIORIDAD: Gmail API (OAuth) > IMAP
     const emailEliminarMatch = aiMessage.match(/\[EMAIL_ELIMINAR:([^\]]+)\]/);
     if (emailEliminarMatch && isSelfChat && OWNER_UID) {
       const indices = emailEliminarMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
@@ -6139,30 +6241,56 @@ REGLAS:
       if (!cached || !cached.emails.length) {
         aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox" para ver tus correos.';
       } else {
-        const uidsToDelete = indices
-          .map(i => cached.emails[i - 1]?.uid)
-          .filter(uid => uid != null);
-        if (uidsToDelete.length === 0) {
-          aiMessage = '⚠️ Los números que indicaste no corresponden a emails de la lista.';
-        } else {
-          try {
-            const delResult = await emailManager.deleteEmails(cached.imapConfig, uidsToDelete);
-            if (delResult.success) {
-              console.log(`[EMAIL-MGR] ✅ ${delResult.deleted} emails eliminados`);
-              emailManager.clearCache(OWNER_UID);
-              aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Tu bandeja está más limpia ahora.`;
-            } else {
-              aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+        if (cached.imapConfig?._source === 'gmail_api') {
+          // Gmail API: usar trashEmails
+          const gmailIdsToDelete = indices
+            .map(i => cached.emails[i - 1]?._gmailId)
+            .filter(id => id != null);
+          if (gmailIdsToDelete.length === 0) {
+            aiMessage = '⚠️ Los números que indicaste no corresponden a emails de la lista.';
+          } else {
+            try {
+              const delResult = await gmailIntegration.trashEmails(OWNER_UID, getOAuth2Client, gmailIdsToDelete);
+              if (delResult.success) {
+                console.log(`[EMAIL-MGR] ✅ Gmail: ${delResult.deleted} emails eliminados`);
+                emailManager.clearCache(OWNER_UID);
+                aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Tu bandeja está más limpia ahora.`;
+              } else {
+                aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+              }
+            } catch (delErr) {
+              console.error(`[EMAIL-MGR] ❌ Gmail excepción eliminando: ${delErr.message}`);
+              aiMessage = `❌ Error: ${delErr.message}`;
             }
-          } catch (delErr) {
-            console.error(`[EMAIL-MGR] ❌ Excepción eliminando: ${delErr.message}`);
-            aiMessage = `❌ Error: ${delErr.message}`;
+          }
+        } else {
+          // IMAP fallback
+          const uidsToDelete = indices
+            .map(i => cached.emails[i - 1]?.uid)
+            .filter(uid => uid != null);
+          if (uidsToDelete.length === 0) {
+            aiMessage = '⚠️ Los números que indicaste no corresponden a emails de la lista.';
+          } else {
+            try {
+              const delResult = await emailManager.deleteEmails(cached.imapConfig, uidsToDelete);
+              if (delResult.success) {
+                console.log(`[EMAIL-MGR] ✅ IMAP: ${delResult.deleted} emails eliminados`);
+                emailManager.clearCache(OWNER_UID);
+                aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Tu bandeja está más limpia ahora.`;
+              } else {
+                aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+              }
+            } catch (delErr) {
+              console.error(`[EMAIL-MGR] ❌ IMAP excepción eliminando: ${delErr.message}`);
+              aiMessage = `❌ Error: ${delErr.message}`;
+            }
           }
         }
       }
     }
 
     // ── TAG [EMAIL_ELIMINAR_EXCEPTO:2,5] — Owner elimina todos MENOS los indicados ──
+    // PRIORIDAD: Gmail API (OAuth) > IMAP
     const emailExceptoMatch = aiMessage.match(/\[EMAIL_ELIMINAR_EXCEPTO:([^\]]+)\]/);
     if (emailExceptoMatch && isSelfChat && OWNER_UID) {
       const keepIndices = emailExceptoMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
@@ -6171,7 +6299,32 @@ REGLAS:
       const cached = emailManager.getCachedEmails(OWNER_UID);
       if (!cached || !cached.emails.length) {
         aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox".';
+      } else if (cached.imapConfig?._source === 'gmail_api') {
+        // Gmail API: usar trashEmails
+        const gmailIdsToDelete = cached.emails
+          .map((e, i) => ({ gmailId: e._gmailId, index: i + 1 }))
+          .filter(e => !keepIndices.includes(e.index))
+          .map(e => e.gmailId)
+          .filter(id => id != null);
+        if (gmailIdsToDelete.length === 0) {
+          aiMessage = '✅ No hay emails para eliminar — todos están en la lista de conservar.';
+        } else {
+          try {
+            const delResult = await gmailIntegration.trashEmails(OWNER_UID, getOAuth2Client, gmailIdsToDelete);
+            if (delResult.success) {
+              console.log(`[EMAIL-MGR] ✅ Gmail: ${delResult.deleted} emails eliminados (conservando ${keepIndices.join(', ')})`);
+              emailManager.clearCache(OWNER_UID);
+              aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Conservé los que pediste (${keepIndices.join(', ')}).`;
+            } else {
+              aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+            }
+          } catch (delErr) {
+            console.error(`[EMAIL-MGR] ❌ Gmail excepción eliminando: ${delErr.message}`);
+            aiMessage = `❌ Error: ${delErr.message}`;
+          }
+        }
       } else {
+        // IMAP fallback
         const uidsToDelete = cached.emails
           .map((e, i) => ({ uid: e.uid, index: i + 1 }))
           .filter(e => !keepIndices.includes(e.index))
@@ -6183,14 +6336,14 @@ REGLAS:
           try {
             const delResult = await emailManager.deleteEmails(cached.imapConfig, uidsToDelete);
             if (delResult.success) {
-              console.log(`[EMAIL-MGR] ✅ ${delResult.deleted} emails eliminados (conservando ${keepIndices.join(', ')})`);
+              console.log(`[EMAIL-MGR] ✅ IMAP: ${delResult.deleted} emails eliminados (conservando ${keepIndices.join(', ')})`);
               emailManager.clearCache(OWNER_UID);
               aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Conservé los que pediste (${keepIndices.join(', ')}).`;
             } else {
               aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
             }
           } catch (delErr) {
-            console.error(`[EMAIL-MGR] ❌ Excepción eliminando: ${delErr.message}`);
+            console.error(`[EMAIL-MGR] ❌ IMAP excepción eliminando: ${delErr.message}`);
             aiMessage = `❌ Error: ${delErr.message}`;
           }
         }
