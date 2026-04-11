@@ -27,7 +27,8 @@
 
 const admin = require('firebase-admin');
 const {
-  normalizeText, maybeAddTypo, isPotentialBot,
+  maybeAddTypo, isPotentialBot,
+  detectMiiaTrigger, detectChauMiiaTrigger,
   isWithinScheduleConfig, getCountryContext, getCountryFromPhone,
   detectNegativeSentiment, isOptOut,
   processLearningTags, processAgendaTag, processSubscriptionTag,
@@ -913,11 +914,22 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
 
   // ── PASO 7b: CONTACT GATE — Decisión centralizada: ¿MIIA responde o no? ──
-  const msgNorm = normalizeText(messageBody);
-  const isHolaMiia = msgNorm.includes('hola miia');
-  const isChauMiia = msgNorm.includes('chau miia');
+  const isTranscribedAudio = !!messageContext?.isTranscribedAudio;
+  const holaTrigger = detectMiiaTrigger(messageBody, isTranscribedAudio);
+  const chauTrigger = detectChauMiiaTrigger(messageBody);
+  const isHolaMiia = holaTrigger.trigger;
+  const isChauMiia = chauTrigger.trigger;
   const isGroup = phone.endsWith('@g.us');
   const businessKeywords = getOwnerBusinessKeywords(ctx);
+
+  if (holaTrigger.trigger) {
+    console.log(`${logPrefix} 🎯 TRIGGER-DETECT: ${holaTrigger.match} (confidence=${holaTrigger.confidence}, audio=${isTranscribedAudio})`);
+  } else if (holaTrigger.confidence !== 'none') {
+    console.log(`${logPrefix} 🎯 TRIGGER-REJECT: ${holaTrigger.match} (confidence=${holaTrigger.confidence}, audio=${isTranscribedAudio})`);
+  }
+  if (chauTrigger.trigger) {
+    console.log(`${logPrefix} 👋 CHAU-DETECT: ${chauTrigger.match}`);
+  }
 
   // Actualizar estado de activación ANTES del gate
   // Auto-timeout: MIIA se desactiva si pasaron 10 minutos sin mensajes del contacto
@@ -934,7 +946,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
   if (isHolaMiia) {
     ctx.miiaActive[phone] = Date.now();
-    console.log(`${logPrefix} 🟢 MIIA activada para ${basePhone} (trigger "Hola MIIA")`);
+    console.log(`${logPrefix} 🟢 MIIA activada para ${basePhone} (trigger "${holaTrigger.match}")`);
   }
 
   // Detección de invocación MIIA (3-way conversation)

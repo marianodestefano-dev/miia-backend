@@ -89,6 +89,98 @@ function normalizeText(text) {
 }
 
 /**
+ * Detecta si un mensaje contiene un trigger de activación de MIIA.
+ * Diseño exquisito: "miia" siempre activa, "mía/mia" por contexto, "ia" solo vocativo.
+ * Audio transcrito: más estricto (evita falsos de "esa cosa es mía").
+ *
+ * @param {string} messageBody - Mensaje original (sin normalizar)
+ * @param {boolean} isTranscribedAudio - true si viene de audio transcrito
+ * @returns {{ trigger: boolean, confidence: string, match: string }}
+ */
+function detectMiiaTrigger(messageBody, isTranscribedAudio = false) {
+  const norm = normalizeText(messageBody);
+  const words = norm.split(/\s+/).filter(w => w.length > 0);
+  const wordCount = words.length;
+
+  if (wordCount === 0) return { trigger: false, confidence: 'none', match: 'empty' };
+
+  // ═══ NIVEL 1: "miia" (dos ii) → SIEMPRE activa ═══
+  // "miia" no es una palabra del español. Si la escriben/dicen, es intencional.
+  if (words.some(w => w === 'miia')) {
+    return { trigger: true, confidence: 'high', match: 'miia_exact' };
+  }
+
+  // ═══ NIVEL 2: "mia" como palabra suelta → contexto necesario ═══
+  // "mia" puede ser nombre propio, "mía" (posesivo), o trigger de MIIA
+  const miaIndex = words.indexOf('mia');
+  if (miaIndex !== -1) {
+    // Vocativo: al inicio, o precedido de saludo/interjección
+    const VOCATIVOS = ['hola', 'ey', 'oye', 'che', 'hey', 'dale', 'oi', 'epa', 'oiga'];
+    const isVocative = miaIndex === 0 ||
+                       (miaIndex === 1 && VOCATIVOS.includes(words[0]));
+
+    if (!isTranscribedAudio) {
+      // TEXTO: "mia" al inicio/vocativo → activa
+      if (isVocative) return { trigger: true, confidence: 'high', match: 'mia_vocative_text' };
+      // TEXTO: frase corta con "mia" → probablemente la llama
+      if (wordCount <= 6) return { trigger: true, confidence: 'medium', match: 'mia_short_text' };
+      // TEXTO: frase larga con "mia" en medio → "esa bolsa es mía" → NO
+      return { trigger: false, confidence: 'low', match: 'mia_in_long_phrase' };
+    } else {
+      // AUDIO: más estricto. "mia" es super común en español hablado.
+      if (isVocative && wordCount <= 8) return { trigger: true, confidence: 'medium', match: 'audio_mia_vocative' };
+      // Audio: frase corta + intención (pregunta o imperativo)
+      const IMPERATIVOS = ['haceme', 'ayudame', 'decime', 'pasame', 'buscame', 'avisame',
+        'recordame', 'agendame', 'mandame', 'contame', 'dame', 'dime', 'hazme',
+        'ayuda', 'busca', 'agenda', 'manda', 'necesito', 'quiero', 'podes', 'puedes'];
+      const hasIntent = messageBody.includes('?') ||
+                        words.some(w => IMPERATIVOS.includes(w));
+      if (wordCount <= 8 && hasIntent) return { trigger: true, confidence: 'medium', match: 'audio_mia_intent' };
+      return { trigger: false, confidence: 'low', match: 'audio_mia_no_intent' };
+    }
+  }
+
+  // ═══ NIVEL 3: "ia" como palabra suelta → SOLO vocativo al inicio, frase corta ═══
+  const iaIndex = words.indexOf('ia');
+  if (iaIndex !== -1) {
+    if (iaIndex === 0 && wordCount >= 2 && wordCount <= 6) {
+      return { trigger: true, confidence: 'low', match: 'ia_vocative_short' };
+    }
+    return { trigger: false, confidence: 'none', match: 'ia_in_phrase' };
+  }
+
+  return { trigger: false, confidence: 'none', match: 'no_match' };
+}
+
+/**
+ * Detecta si un mensaje contiene un trigger de desactivación de MIIA.
+ * Más flexible que solo "chau miia" — acepta despedidas naturales + nombre.
+ *
+ * @param {string} messageBody
+ * @returns {{ trigger: boolean, match: string }}
+ */
+function detectChauMiiaTrigger(messageBody) {
+  const norm = normalizeText(messageBody);
+  const words = norm.split(/\s+/).filter(w => w.length > 0);
+
+  // Exactos
+  if (norm.includes('chau miia') || norm.includes('chao miia')) return { trigger: true, match: 'chau_miia' };
+  if (norm.includes('chau mia') || norm.includes('chao mia')) return { trigger: true, match: 'chau_mia' };
+  if (norm.includes('adios miia') || norm.includes('adios mia')) return { trigger: true, match: 'adios_miia' };
+  if (norm.includes('nos vemos miia') || norm.includes('nos vemos mia')) return { trigger: true, match: 'nos_vemos_miia' };
+
+  // Despedida + "miia" o "mia" en cualquier orden en frase corta
+  const DESPEDIDAS = ['chau', 'chao', 'adios', 'bye', 'listo', 'gracias', 'bueno'];
+  const hasMiia = words.some(w => w === 'miia' || w === 'mia');
+  const hasDespedida = words.some(w => DESPEDIDAS.includes(w));
+  if (hasMiia && hasDespedida && words.length <= 6) {
+    return { trigger: true, match: 'despedida_con_nombre' };
+  }
+
+  return { trigger: false, match: 'no_match' };
+}
+
+/**
  * Introduce un typo aleatorio (~2% probabilidad) para humanizar mensajes
  */
 function maybeAddTypo(text) {
@@ -656,6 +748,8 @@ module.exports = {
   normalizeText,
   maybeAddTypo,
   isPotentialBot,
+  detectMiiaTrigger,
+  detectChauMiiaTrigger,
 
   // Funciones puras — horarios y geografía
   isWithinScheduleConfig,

@@ -1662,6 +1662,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               const transcribed = await transcribeMediaForTenant(uid, msg, tenant);
               if (transcribed) {
                 effectiveBody = transcribed;
+                messageContext.isTranscribedAudio = true;
                 console.log(`[TM:${uid}] 🎤 Media transcribed: "${transcribed.substring(0, 60)}..."`);
               } else {
                 console.log(`[TM:${uid}] 🎤 Media could not be transcribed — skipping`);
