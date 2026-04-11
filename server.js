@@ -1462,6 +1462,34 @@ async function loadFromFirestore() {
       } catch (e) { console.warn('[FIRESTORE] No se pudo cargar nombre del owner:', e.message); }
     }
 
+    // ═══ UNIFICACIÓN: contact_groups/familia → familyContacts ═══
+    // familyContacts se carga de miia_persistent/contacts (legacy) Y contact_groups/familia (actual)
+    // Así contactos añadidos desde dashboard también se detectan en server.js
+    try {
+      const familiaGroupSnap = await admin.firestore().collection('users').doc(OWNER_UID)
+        .collection('contact_groups').doc('familia').collection('contacts').get();
+      let mergedFromGroups = 0;
+      familiaGroupSnap.forEach(doc => {
+        const basePhone = doc.id;
+        if (!familyContacts[basePhone]) {
+          const d = doc.data();
+          familyContacts[basePhone] = {
+            name: d.name || d.pushName || basePhone,
+            emoji: '💕',
+            presented: false,
+          };
+          // También registrar en contactTypes
+          contactTypes[`${basePhone}@s.whatsapp.net`] = 'familia';
+          mergedFromGroups++;
+        }
+      });
+      if (mergedFromGroups > 0) {
+        console.log(`[FIRESTORE] 🔗 Unificación: ${mergedFromGroups} contactos de contact_groups/familia → familyContacts`);
+      }
+    } catch (e) {
+      console.warn('[FIRESTORE] ⚠️ No se pudo cargar contact_groups/familia:', e.message);
+    }
+
     // ═══ ALERTA: familyContacts vacío post-load ═══
     // Desde sesión 34, familyContacts NO tiene defaults hardcodeados.
     // Si está vacío después de cargar = Firestore no tiene los datos = PROBLEMA.
@@ -1469,7 +1497,7 @@ async function loadFromFirestore() {
     if (fcCount === 0) {
       console.error('[FIRESTORE] 🚨🚨🚨 familyContacts VACÍO después de cargar! Los familiares serán tratados como desconocidos. Verificar miia_persistent/contacts en Firestore.');
     } else {
-      console.log(`[FIRESTORE] 👨‍👩‍👧‍👦 familyContacts cargados: ${fcCount} contactos`);
+      console.log(`[FIRESTORE] 👨‍👩‍👧‍👦 familyContacts cargados: ${fcCount} contactos (legacy + contact_groups)`);
     }
 
     console.log('[FIRESTORE] ✅ Datos cargados desde Firestore (sobrevivió deploy)');
@@ -2440,6 +2468,17 @@ function detectContactType(name, phone) {
         personality: 'Cariñosa y atenta',
         isHandshakeDone: false
       };
+      // 🔗 DUAL-WRITE: también guardar en contact_groups/familia + contact_index
+      if (OWNER_UID) {
+        admin.firestore().collection('users').doc(OWNER_UID)
+          .collection('contact_groups').doc('familia').collection('contacts').doc(basePhone)
+          .set({ name: value.name, relation: value.relation || '', addedAt: new Date().toISOString() }, { merge: true })
+          .catch(e => console.warn(`[DUAL-WRITE] ⚠️ Error guardando en contact_groups/familia: ${e.message}`));
+        admin.firestore().collection('users').doc(OWNER_UID)
+          .collection('contact_index').doc(basePhone)
+          .set({ type: 'familia', groupId: 'familia', name: value.name }, { merge: true })
+          .catch(e => console.warn(`[DUAL-WRITE] ⚠️ Error guardando en contact_index: ${e.message}`));
+      }
       return 'familia';
     }
   }
@@ -2893,6 +2932,15 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
               const groupName = relation || 'amigos';
               if (relation === 'familia') {
                 familyContacts[basePhoneClean] = { name: name || 'Contacto', emoji: '💕' };
+                // 🔗 DUAL-WRITE: contact_groups/familia + contact_index
+                if (OWNER_UID) {
+                  admin.firestore().collection('users').doc(OWNER_UID)
+                    .collection('contact_groups').doc('familia').collection('contacts').doc(basePhoneClean)
+                    .set({ name: name || 'Contacto', addedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+                  admin.firestore().collection('users').doc(OWNER_UID)
+                    .collection('contact_index').doc(basePhoneClean)
+                    .set({ type: 'familia', groupId: 'familia', name: name || 'Contacto' }, { merge: true }).catch(() => {});
+                }
               }
 
               console.log(`[INVOCATION] 📇 Contacto ${name || basePhoneClean} registrado como ${groupName}`);
@@ -6938,6 +6986,14 @@ REGLAS:
       // Delay largo (15-35s) — como un humano que se ofende/sorprende por la pregunta
       const botQuestionDelay = 15000 + Math.floor(Math.random() * 20000);
       console.log(`[ANTI-DETECT] 🕵️ Lead ${phone} preguntó si MIIA es IA/bot. Delay extra: ${Math.round(botQuestionDelay / 1000)}s`);
+
+      // 🚨 AVISAR AL OWNER INMEDIATAMENTE — el lead sospecha
+      const leadNameForAlert = leadNames[phone] || phone.split('@')[0];
+      const alertMsg = `🕵️ *ALERTA ANTI-DETECCIÓN*\n\n${leadNameForAlert} preguntó si sos IA/bot.\n\nMensaje: _"${(userMessage || '').substring(0, 100)}"_\n\nMIIA va a responder con delay largo (${Math.round(botQuestionDelay / 1000)}s) para parecer natural.`;
+      try {
+        if (OWNER_PHONE) safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, alertMsg, { isSelfChat: true });
+      } catch (_) {}
+
       try {
         if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('paused', phone); // "dejó de escribir" — como si estuviera pensando
         await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000)); // pausa de "lectura"
@@ -6948,20 +7004,28 @@ REGLAS:
 
     // 🛡️ HUMAN-DELAY: SOLO para leads/clientes — NUNCA en self-chat ni grupos
     // Sin esto, MIIA tarda 20-45s extra en responder al owner en self-chat.
+    // FIX: Familia/equipo NO reciben delay largo ni chance de "busy" 20-45s
+    const isFamilyOrEquipo = contactTypes[phone] === 'familia' || contactTypes[phone] === 'equipo';
     if (!isSelfChat) {
       // Simular typing y enviar
       try {
         if (getOwnerSock()) await getOwnerSock().sendPresenceUpdate('composing', phone);
-        const typingDuration = Math.min(Math.max(aiMessage.length * 65, 2500), 15000);
+        // Familia/equipo: typing más corto (1.5-3s). Leads: proporcional al largo
+        const typingDuration = isFamilyOrEquipo
+          ? Math.min(Math.max(aiMessage.length * 30, 1500), 4000)
+          : Math.min(Math.max(aiMessage.length * 65, 2500), 15000);
         await new Promise(r => setTimeout(r, typingDuration));
       } catch (e) { /* ignore typing errors */ }
 
-      // Micro-humanizer: typo 2% + delay variable (1 en 8 mensajes: 20-45s) — respeta preferencia del usuario
+      // Micro-humanizer: typo 2% + delay variable — respeta preferencia del usuario
+      // Familia/equipo: NUNCA reciben delay largo de 20-45s ("busy")
       const humanizerOn = await isHumanizerEnabled();
-      if (humanizerOn) aiMessage = maybeAddTypo(aiMessage);
-      const humanDelayMs = humanizerOn
-        ? (Math.random() < 0.125 ? (20000 + Math.random() * 25000) : (1500 + Math.random() * 1500))
-        : (800 + Math.random() * 400);
+      if (humanizerOn && !isFamilyOrEquipo) aiMessage = maybeAddTypo(aiMessage);
+      const humanDelayMs = isFamilyOrEquipo
+        ? (800 + Math.random() * 700) // Familia/equipo: 0.8-1.5s siempre
+        : humanizerOn
+          ? (Math.random() < 0.125 ? (20000 + Math.random() * 25000) : (1500 + Math.random() * 1500))
+          : (800 + Math.random() * 400);
       await new Promise(r => setTimeout(r, humanDelayMs));
     }
 
@@ -9777,8 +9841,49 @@ async function processMorningBriefing() {
       console.error('[BRIEFING] Error cargando aprobaciones:', e.message);
     }
 
-    // ── 4. Sin nada que informar ──
-    if (!scraperResults.length && !leadsSection && !approvalsSection) {
+    // ── 4. Contactos pendientes de identificar (persisten hasta resolución/desvinculación) ──
+    let pendingContactsSection = '';
+    try {
+      // Leer pendientes del owner principal
+      const pendingDoc = await admin.firestore().collection('users').doc(OWNER_UID)
+        .collection('miia_persistent').doc('pending_lids').get();
+      if (pendingDoc.exists) {
+        const pendingData = pendingDoc.data() || {};
+        const waitingOwner = Object.entries(pendingData)
+          .filter(([, p]) => p && p.phase === 'waiting_owner')
+          .slice(0, 10);
+        if (waitingOwner.length > 0) {
+          pendingContactsSection = `\n\n*📇 CONTACTOS PENDIENTES DE IDENTIFICAR (${waitingOwner.length}):*\n`;
+          for (const [, p] of waitingOwner) {
+            const name = p.pushName || 'Sin nombre';
+            const preview = (p.firstMsg || '').substring(0, 80);
+            const daysAgo = Math.floor((Date.now() - (p.startedAt || Date.now())) / (24 * 60 * 60 * 1000));
+            const timeHint = daysAgo > 0 ? ` (hace ${daysAgo} día${daysAgo > 1 ? 's' : ''})` : ' (hoy)';
+            pendingContactsSection += `▸ *${name}*${timeHint}: _"${preview}${preview.length >= 80 ? '...' : ''}"_\n`;
+          }
+          pendingContactsSection += `\nDecime quién es cada uno para clasificarlos. Persisten hasta que los clasifiques o desvinculen.`;
+        }
+      }
+      // También buscar en tenants conectados
+      const tmModule = require('./whatsapp/tenant_manager');
+      const allTenants = tmModule.getAllTenants();
+      for (const [tUid, tData] of allTenants) {
+        if (tUid === OWNER_UID) continue; // ya procesado arriba
+        if (!tData._pendingLids) continue;
+        const waiting = Object.entries(tData._pendingLids)
+          .filter(([, p]) => p && p.phase === 'waiting_owner');
+        if (waiting.length > 0 && !pendingContactsSection) {
+          pendingContactsSection = `\n\n*📇 CONTACTOS PENDIENTES DE IDENTIFICAR:*\n`;
+        }
+        // No duplicar si ya se agregó
+      }
+      console.log(`[BRIEFING] Contactos pendientes: ${pendingContactsSection ? 'SÍ' : 'ninguno'}`);
+    } catch (e) {
+      console.error('[BRIEFING] Error cargando contactos pendientes:', e.message);
+    }
+
+    // ── 5. Sin nada que informar ──
+    if (!scraperResults.length && !leadsSection && !approvalsSection && !pendingContactsSection) {
       console.log('[BRIEFING] Sin novedades hoy. No se envía mensaje.');
       return;
     }
@@ -9803,6 +9908,9 @@ async function processMorningBriefing() {
 
     // Sección aprobaciones pendientes
     if (approvalsSection) briefing += approvalsSection;
+
+    // Sección contactos pendientes de identificar
+    if (pendingContactsSection) briefing += pendingContactsSection;
 
     await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, briefing, { isSelfChat: true });
     console.log(`[BRIEFING] Briefing enviado a self-chat (${scraperResults.length} regulatorias, leads: ${!!pendingEntries}).`);

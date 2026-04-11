@@ -1839,6 +1839,9 @@ REGLAS:
     messageBody,
   });
 
+  // Guardar largo del mensaje entrante para human_delay contextual
+  if (ctx) ctx._lastIncomingLength = (messageBody || '').length;
+
   // MSG_SPLIT: dividir en 2 mensajes humanos
   const parts = splitMessage(aiMessage);
   if (parts && parts.length >= 2) {
@@ -1943,21 +1946,45 @@ async function sendTenantMessage(tenantState, phone, content) {
   const isGroupMsg = phone.endsWith('@g.us');
 
   if (!isSelfChatMsg && !isGroupMsg) {
+    // 🛡️ FIX: Usar contactType REAL del contacto, no hardcodeado 'lead'
+    // Sin esto, familia/equipo reciben delay de lead (2.5-15s + chance 20-45s busy)
+    const contactTypeForDelay = ctx?.contactTypes?.[phone] || ctx?.contactTypes?.[`${targetBasePhone}@s.whatsapp.net`] || 'lead';
+
+    // Verificar si el grupo del contacto tiene humanDelay desactivado
+    let groupHumanDelayOff = false;
+    if (ctx?.contactGroups) {
+      for (const [, group] of Object.entries(ctx.contactGroups)) {
+        if (group.contacts && group.contacts[targetBasePhone]) {
+          if (group.humanDelayEnabled === false) {
+            groupHumanDelayOff = true;
+            console.log(`[TMH:${tenantState.uid}] ⏱️ HUMAN-DELAY OFF por config de grupo "${group.name}"`);
+          }
+          break;
+        }
+      }
+    }
+    if (groupHumanDelayOff) {
+      // Skip delay — owner desactivó delay para este grupo
+    } else {
     const ownerHour = humanDelay.getOwnerHour(ctx?.ownerProfile?.timezone);
     const rlLevel = rateLimiter.getLevel(tenantState.uid);
     const delayMult = rlLevel.level.delayMultiplier || 1;
-    const contactTypeForDelay = 'lead';
+    const incomingMsgLen = ctx?._lastIncomingLength || content.length;
+
+    console.log(`[TMH:${tenantState.uid}] ⏱️ HUMAN-DELAY: tipo=${contactTypeForDelay}, msgLen=${incomingMsgLen}, hour=${ownerHour}`);
 
     // 1. Delay de "lectura" (antes de empezar a escribir)
     const readMs = humanDelay.calculateReadDelay({
       contactType: contactTypeForDelay,
-      messageLength: 50,
-      isFirstMessage: false,
+      messageLength: incomingMsgLen,
+      isFirstMessage: !ctx?.conversations?.[phone],
       hour: ownerHour,
       delayMultiplier: delayMult,
     });
-    // Posible delay extra de "ocupado" (1 de cada 8)
-    const busyMs = humanDelay.maybeBusyDelay(contactTypeForDelay);
+    // Posible delay extra de "ocupado" (1 de cada 8) — NUNCA para familia/equipo
+    const busyMs = (contactTypeForDelay === 'familia' || contactTypeForDelay === 'equipo')
+      ? 0
+      : humanDelay.maybeBusyDelay(contactTypeForDelay);
     await delay(readMs + busyMs);
 
     try { await tenantState.sock.sendPresenceUpdate('composing', phone); } catch (_) {}
@@ -1969,6 +1996,7 @@ async function sendTenantMessage(tenantState, phone, content) {
       delayMultiplier: delayMult,
     });
     await delay(typingMs);
+    } // end else (groupHumanDelayOff)
   }
 
   try {
