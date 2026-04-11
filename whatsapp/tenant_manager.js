@@ -1964,49 +1964,14 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       console.error(`[TM:${uid}] ⚠️ Error restaurando pending_lids:`, e.message);
     }
 
-    // Recordatorio de contactos pendientes: cada 4 HORAS en horario laboral
-    // Persiste ENTRE DÍAS hasta que el owner resuelva o se desvincule el teléfono
-    // ANTI-SPAM: máximo 1 recordatorio cada 4h + guard contra intervals duplicados
+    // CONTACTOS PENDIENTES: NO enviar recordatorios por self-chat (causa spam/caos)
+    // Los pendientes se reportan en el RESUMEN DIARIO del owner (ticket system)
+    // Limpiar interval anterior si existe de versión vieja
     if (tenant._lidReminderInterval) {
-      clearInterval(tenant._lidReminderInterval); // Limpiar interval anterior si existe (reconexión)
+      clearInterval(tenant._lidReminderInterval);
       tenant._lidReminderInterval = null;
+      console.log(`[TM:${uid}] 🧹 Limpiado interval de recordatorios pendientes (migrado a ticket system en resúmenes)`);
     }
-    if (!tenant._lastLidReminderSent) tenant._lastLidReminderSent = 0;
-    tenant._lidReminderInterval = setInterval(() => {
-      if (!tenant._pendingLids || !tenant.sock) return;
-      const pendingEntries = Object.entries(tenant._pendingLids).filter(([, p]) => p.phase === 'waiting_owner');
-      if (pendingEntries.length === 0) return;
-
-      // ANTI-SPAM: No enviar si ya se mandó en las últimas 4 horas
-      const hoursSinceLastReminder = (Date.now() - (tenant._lastLidReminderSent || 0)) / (60 * 60 * 1000);
-      if (hoursSinceLastReminder < 4) return;
-
-      // Solo en horario laboral (08:00-21:00) — rango más conservador
-      const nowBogota = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
-      const h = nowBogota.getHours();
-      if (h < 8 || h >= 21) return;
-
-      const selfJid = tenant.sock?.user?.id;
-      if (!selfJid) return;
-
-      // Mensaje NATURAL — sin LIDs, sin formularios
-      const names = pendingEntries.map(([, p]) => {
-        const name = p.pushName || 'alguien sin nombre';
-        const preview = (p.firstMsg || '').substring(0, 50);
-        const daysAgo = Math.floor((Date.now() - (p.startedAt || Date.now())) / (24 * 60 * 60 * 1000));
-        const timeHint = daysAgo > 0 ? ` (hace ${daysAgo} día${daysAgo > 1 ? 's' : ''})` : '';
-        return `• *${name}*${timeHint}: _"${preview}${preview.length >= 50 ? '...' : ''}"_`;
-      }).join('\n');
-
-      const count = pendingEntries.length;
-      const plural = count > 1;
-      tenant.sock.sendMessage(selfJid, {
-        text: `Tengo ${count} contacto${plural ? 's' : ''} pendiente${plural ? 's' : ''} de identificar:\n\n${names}\n\n¿Los conocés? Decime quién${plural ? 'es son' : ' es'} así ${plural ? 'los' : 'lo'} atiendo bien 😊`
-      }).catch(e => console.error(`[TM:${uid}] ⚠️ Error enviando recordatorio:`, e.message));
-
-      tenant._lastLidReminderSent = Date.now();
-      console.log(`[TM:${uid}] 🔔 Reminder: ${count} pendientes recordados al owner (próximo en 4h)`);
-    }, 60 * 60 * 1000); // Chequea cada 1h pero solo envía si pasaron 4h
 
     // Debounce para guardar _lidMap en Firestore (no en cada contacto, sino max 1 vez cada 60s)
     let _lidMapDirty = false;
