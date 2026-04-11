@@ -794,8 +794,10 @@ async function runAgendaEngine() {
         const evt = doc.data();
         // Solo avisar si no se envió reminder previo aún
         if (evt.preReminderSent) continue;
-        // Pre-recordatorios solo en horario seguro del owner (no aplica a leads — ellos reciben el recordatorio directo)
-        if (!isOwnerSafeHours && evt.source !== 'miia_center_lead') continue;
+        // Pre-recordatorios: SIEMPRE enviar si el owner lo creó (manual, selfchat, calendar sync)
+        // Solo bloquear por horario si es reminder auto-generado (followup, proactivo)
+        const isOwnerCreated = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_manual' || evt.contactPhone === 'self';
+        if (!isOwnerSafeHours && !isOwnerCreated && evt.source !== 'miia_center_lead') continue;
 
         // Guard ESTRICTO: si el evento no tiene datos mínimos, NO enviar basura al owner
         const reason = evt.reason || evt.title || '';
@@ -849,8 +851,10 @@ async function runAgendaEngine() {
       // Solo los recordatorios auto-generados para el owner respetan horario seguro
       const isMiiaCenterLeadEvt = evt.source === 'miia_center_lead';
       const contactRequested = !isOwnerReminder && evt.remindContact;
-      if (!contactRequested && !isMiiaCenterLeadEvt && !isOwnerSafeHours) {
-        // Recordatorio para el owner, no pedido por contacto, fuera de horario → esperar
+      // Eventos creados por el owner → SIEMPRE enviar, sin importar horario
+      const isOwnerCreatedEvt = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_manual' || (isOwnerReminder && evt.contactPhone === 'self');
+      if (!contactRequested && !isMiiaCenterLeadEvt && !isOwnerCreatedEvt && !isOwnerSafeHours) {
+        // Recordatorio auto-generado, fuera de horario → esperar
         continue;
       }
       // Leads y contactos que pidieron recordatorio → se envía SIEMPRE a la hora exacta
