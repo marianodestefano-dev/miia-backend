@@ -717,8 +717,23 @@ async function runFollowupEngine() {
 
 // Cada hora (3600000ms). Primera ejecución 2 min post-startup.
 // L3: Seguimiento de leads — medio, 1 verificación
-setInterval(() => taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine), 3600000);
-setTimeout(() => taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine), 120000);
+// Followup humanizado: intervalo aleatorio 63-97 min (no cada hora exacta = más humano)
+// Se auto-reprograma después de cada ejecución con un delay random
+function scheduleNextFollowup() {
+  const minMs = 63 * 60 * 1000; // 63 min
+  const maxMs = 97 * 60 * 1000; // 97 min
+  const randomDelay = minMs + Math.floor(Math.random() * (maxMs - minMs));
+  console.log(`[FOLLOWUP] ⏰ Próximo ciclo en ${Math.round(randomDelay / 60000)} min`);
+  setTimeout(async () => {
+    await taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine);
+    scheduleNextFollowup(); // Auto-reprogramar con nuevo delay random
+  }, randomDelay);
+}
+// Primera ejecución 2 min post-startup, luego ciclo aleatorio
+setTimeout(() => {
+  taskScheduler.executeWithConcentration(3, 'followup-engine', runFollowupEngine);
+  scheduleNextFollowup();
+}, 120000);
 
 // ═══ AGENDA INTELIGENTE (FAMILIA + OWNER + LEADS MIIA CENTER) ═══
 // Eventos proactivos: cumpleaños, recordatorios, retomar contacto, deportes (futuro)
