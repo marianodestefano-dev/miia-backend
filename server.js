@@ -115,6 +115,8 @@ const securityContacts = require('./services/security_contacts');
 const biweeklyReport = require('./services/biweekly_report');
 const priceTracker = require('./services/price_tracker');
 const travelTracker = require('./services/travel_tracker');
+const emailManager = require('./services/email_manager');
+const configValidator = require('./services/config_validator');
 
 // ═══ WHATSAPP — Baileys, tenants, mensajes ═══
 const tenantManager = require('./whatsapp/tenant_manager');
@@ -1727,6 +1729,32 @@ function addAffinityPoint(phone) {
   }
   // +1 normal → guardar debounced (cada 30s)
   scheduleAffinitySave();
+}
+
+/**
+ * Penalizar affinity por mentira/alucinación de MIIA.
+ * -10 puntos por cada mentira detectada (ej: "correo enviado" sin enviarlo).
+ * Floor: nunca baja del mínimo del highest stage alcanzado (no pierde stages permanentes).
+ * @param {string} phone - JID del contacto
+ * @param {number} points - Puntos a restar (positivo, se resta)
+ * @param {string} reason - Razón de la penalización
+ */
+function penalizeAffinity(phone, points = 10, reason = 'mentira') {
+  if (!conversationMetadata[phone]) conversationMetadata[phone] = {};
+  const meta = conversationMetadata[phone];
+  const before = meta.affinity || 0;
+  const floor = getAffinityFloor(phone);
+  meta.affinity = Math.max(floor, before - points);
+  const after = meta.affinity;
+  const stageBefore = getAffinityStage(phone);
+
+  // Log penalty
+  if (!meta.penalties) meta.penalties = [];
+  meta.penalties.push({ reason, points, before, after, at: new Date().toISOString() });
+  if (meta.penalties.length > 20) meta.penalties = meta.penalties.slice(-20);
+
+  console.log(`[AFFINITY] 🚨 PENALIZACIÓN: ${phone} -${points} pts por ${reason} (${before} → ${after}, stage ${stageBefore.stage}:${stageBefore.name}, floor=${floor})`);
+  saveAffinityToFirestore();
 }
 
 function getAffinityToneForPrompt(phone, ownerName, isLead = false) {
@@ -5644,6 +5672,13 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         console.error(`[POSTPROCESS:REGEX] 🚫 VETO directo: ${regexResult.vetoReason}`);
         healthMonitor.captureLog('error', `[VETO] ${phone} — ${regexResult.vetoReason}`);
 
+        // ═══ PENALIZACIÓN AFFINITY: MIIA mintió/alucinó → -10 puntos ═══
+        // PROMESA ROTA = confirmó acción sin ejecutarla. Eso es MENTIRA.
+        if (regexResult.vetoReason && /PROMESA ROTA/.test(regexResult.vetoReason)) {
+          penalizeAffinity(phone, 10, `PROMESA ROTA: ${regexResult.vetoReason.substring(0, 100)}`);
+          console.log(`[AFFINITY] 🚨 MIIA mintió a ${basePhone} — penalización -10 pts aplicada`);
+        }
+
         // ═══ FIX AGENDA: Si el veto es por AGENDAR_EVENTO o SOLICITAR_TURNO, extraer datos con IA y forzar el tag ═══
         const isAgendaVeto = regexResult.vetoReason && /AGENDAR_EVENTO|SOLICITAR_TURNO/.test(regexResult.vetoReason);
         if (isAgendaVeto) {
@@ -5995,6 +6030,138 @@ REGLAS:
         }
       } catch (emailErr) {
         console.error(`[EMAIL] ❌ Excepción enviando correo:`, emailErr.message);
+      }
+    }
+
+    // ── TAG [ENVIAR_EMAIL:to|subject|body] — Owner envía email desde self-chat ──
+    const enviarEmailMatch = aiMessage.match(/\[ENVIAR_EMAIL:([^|]+)\|([^|]+)\|([^\]]+)\]/);
+    if (enviarEmailMatch && isSelfChat) {
+      const emailTo = enviarEmailMatch[1].trim();
+      const emailSubject = enviarEmailMatch[2].trim();
+      const emailBody = enviarEmailMatch[3].trim();
+      aiMessage = aiMessage.replace(/\[ENVIAR_EMAIL:[^\]]+\]/g, '').trim();
+      console.log(`[EMAIL-MGR] 📧 Owner envía email a ${emailTo}: "${emailSubject}"`);
+      try {
+        const fromName = userProfile?.name || 'MIIA';
+        const emailResult = await emailManager.sendEmail(emailTo, emailSubject, emailBody, fromName);
+        if (emailResult.success) {
+          console.log(`[EMAIL-MGR] ✅ Email enviado a ${emailTo}`);
+          if (!aiMessage) aiMessage = `📧 Listo, le envié el correo a ${emailTo} — Asunto: "${emailSubject}"`;
+        } else {
+          console.error(`[EMAIL-MGR] ❌ Error: ${emailResult.error}`);
+          if (!aiMessage) aiMessage = `❌ No pude enviar el correo a ${emailTo}: ${emailResult.error}`;
+        }
+      } catch (emailErr) {
+        console.error(`[EMAIL-MGR] ❌ Excepción: ${emailErr.message}`);
+        if (!aiMessage) aiMessage = `❌ Error enviando correo: ${emailErr.message}`;
+      }
+    } else if (enviarEmailMatch) {
+      // Lead intentando enviar email — limpiar tag
+      aiMessage = aiMessage.replace(/\[ENVIAR_EMAIL:[^\]]+\]/g, '').trim();
+    }
+
+    // ── TAG [LEER_INBOX] — Owner lee su bandeja de entrada ──
+    if (aiMessage.includes('[LEER_INBOX]') && isSelfChat && OWNER_UID) {
+      aiMessage = aiMessage.replace(/\[LEER_INBOX\]/g, '').trim();
+      console.log(`[EMAIL-MGR] 📬 Owner solicita leer inbox`);
+      try {
+        const imapConfig = await emailManager.getOwnerImapConfig(OWNER_UID);
+        if (!imapConfig) {
+          aiMessage = '📭 No tenés configurado tu email IMAP. Configuralo desde el dashboard en Conexiones → Email IMAP.';
+        } else {
+          const result = await emailManager.fetchUnreadEmails(imapConfig, 10);
+          if (result.success) {
+            emailManager.cacheEmails(OWNER_UID, result.emails, imapConfig);
+            aiMessage = emailManager.formatEmailList(result.emails, result.count || result.emails.length);
+          } else {
+            aiMessage = `❌ Error leyendo tu inbox: ${result.error}`;
+          }
+        }
+      } catch (inboxErr) {
+        console.error(`[EMAIL-MGR] ❌ Excepción leyendo inbox: ${inboxErr.message}`);
+        aiMessage = `❌ Error accediendo a tu correo: ${inboxErr.message}`;
+      }
+    }
+
+    // ── TAG [EMAIL_LEER:2,5] — Owner lee contenido de emails específicos ──
+    const emailLeerMatch = aiMessage.match(/\[EMAIL_LEER:([^\]]+)\]/);
+    if (emailLeerMatch && isSelfChat && OWNER_UID) {
+      const indices = emailLeerMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+      aiMessage = aiMessage.replace(/\[EMAIL_LEER:[^\]]+\]/g, '').trim();
+      console.log(`[EMAIL-MGR] 📖 Owner quiere leer emails: ${indices.join(', ')}`);
+      const cached = emailManager.getCachedEmails(OWNER_UID);
+      if (!cached || !cached.emails.length) {
+        aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox" o "qué correos tengo".';
+      } else {
+        aiMessage = emailManager.formatEmailContent(cached.emails, indices);
+      }
+    }
+
+    // ── TAG [EMAIL_ELIMINAR:1,3,4] — Owner elimina emails ──
+    const emailEliminarMatch = aiMessage.match(/\[EMAIL_ELIMINAR:([^\]]+)\]/);
+    if (emailEliminarMatch && isSelfChat && OWNER_UID) {
+      const indices = emailEliminarMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+      aiMessage = aiMessage.replace(/\[EMAIL_ELIMINAR:[^\]]+\]/g, '').trim();
+      console.log(`[EMAIL-MGR] 🗑️ Owner quiere eliminar emails: ${indices.join(', ')}`);
+      const cached = emailManager.getCachedEmails(OWNER_UID);
+      if (!cached || !cached.emails.length) {
+        aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox" para ver tus correos.';
+      } else {
+        const uidsToDelete = indices
+          .map(i => cached.emails[i - 1]?.uid)
+          .filter(uid => uid != null);
+        if (uidsToDelete.length === 0) {
+          aiMessage = '⚠️ Los números que indicaste no corresponden a emails de la lista.';
+        } else {
+          try {
+            const delResult = await emailManager.deleteEmails(cached.imapConfig, uidsToDelete);
+            if (delResult.success) {
+              console.log(`[EMAIL-MGR] ✅ ${delResult.deleted} emails eliminados`);
+              emailManager.clearCache(OWNER_UID);
+              aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Tu bandeja está más limpia ahora.`;
+            } else {
+              aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+            }
+          } catch (delErr) {
+            console.error(`[EMAIL-MGR] ❌ Excepción eliminando: ${delErr.message}`);
+            aiMessage = `❌ Error: ${delErr.message}`;
+          }
+        }
+      }
+    }
+
+    // ── TAG [EMAIL_ELIMINAR_EXCEPTO:2,5] — Owner elimina todos MENOS los indicados ──
+    const emailExceptoMatch = aiMessage.match(/\[EMAIL_ELIMINAR_EXCEPTO:([^\]]+)\]/);
+    if (emailExceptoMatch && isSelfChat && OWNER_UID) {
+      const keepIndices = emailExceptoMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+      aiMessage = aiMessage.replace(/\[EMAIL_ELIMINAR_EXCEPTO:[^\]]+\]/g, '').trim();
+      console.log(`[EMAIL-MGR] 🗑️ Owner quiere eliminar todos EXCEPTO: ${keepIndices.join(', ')}`);
+      const cached = emailManager.getCachedEmails(OWNER_UID);
+      if (!cached || !cached.emails.length) {
+        aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox".';
+      } else {
+        const uidsToDelete = cached.emails
+          .map((e, i) => ({ uid: e.uid, index: i + 1 }))
+          .filter(e => !keepIndices.includes(e.index))
+          .map(e => e.uid)
+          .filter(uid => uid != null);
+        if (uidsToDelete.length === 0) {
+          aiMessage = '✅ No hay emails para eliminar — todos están en la lista de conservar.';
+        } else {
+          try {
+            const delResult = await emailManager.deleteEmails(cached.imapConfig, uidsToDelete);
+            if (delResult.success) {
+              console.log(`[EMAIL-MGR] ✅ ${delResult.deleted} emails eliminados (conservando ${keepIndices.join(', ')})`);
+              emailManager.clearCache(OWNER_UID);
+              aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Conservé los que pediste (${keepIndices.join(', ')}).`;
+            } else {
+              aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+            }
+          } catch (delErr) {
+            console.error(`[EMAIL-MGR] ❌ Excepción eliminando: ${delErr.message}`);
+            aiMessage = `❌ Error: ${delErr.message}`;
+          }
+        }
       }
     }
 
@@ -11745,6 +11912,18 @@ app.get('/api/tenant/:uid/learning-approvals', verifyTenantAuth, async (req, res
 });
 
 // GET /api/tenant/:uid/ai-config — Get all configured AI providers
+// ═══ CONFIG VALIDATOR — Endpoint para dashboard ═══
+app.get('/api/tenant/:uid/config-check', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const alerts = await configValidator.validateConfig(uid);
+    res.json({ success: true, alerts, count: alerts.length });
+  } catch (err) {
+    console.error(`[CONFIG-VALIDATOR] ❌ Endpoint error: ${err.message}`);
+    res.status(500).json({ error: 'Error validando configuración' });
+  }
+});
+
 app.get('/api/tenant/:uid/ai-config', async (req, res) => {
   try {
     const { uid } = req.params;
@@ -14534,6 +14713,17 @@ securityContacts.setSecurityContactDependencies({
   sendGenericEmail: mailService.sendGenericEmail
 });
 
+// Inyectar dependencias en email_manager
+emailManager.setEmailManagerDependencies({
+  sendGenericEmail: mailService.sendGenericEmail,
+});
+
+// Inyectar dependencias en config_validator
+configValidator.setConfigValidatorDependencies({
+  admin,
+  safeSendMessage,
+});
+
 // Inyectar dependencias en biweekly_report
 biweeklyReport.setReportDependencies({
   sendGenericEmail: mailService.sendGenericEmail,
@@ -14837,17 +15027,27 @@ server.listen(PORT, () => {
                 });
 
                 // Feature Announcer — anunciar novedades 60s después de conectar
-                featureAnnouncer.init(admin);
+                featureAnnouncer.init(admin, { ttsEngine, safeSendMessage });
                 setTimeout(async () => {
                   try {
                     const ownerSelf = `${connectedNumber}@s.whatsapp.net`;
                     await featureAnnouncer.checkAndAnnounce(OWNER_UID, async (msg) => {
                       await safeSendMessage(ownerSelf, msg, { isSelfChat: true, skipEmoji: true });
-                    });
+                    }, ownerSelf);
                   } catch (announceErr) {
                     console.error(`[FEATURE-ANNOUNCER] ❌ Error en anuncio post-conexión: ${announceErr.message}`);
                   }
                 }, 60000); // Esperar 60s para no spamear al conectar
+
+                // Config Validator — validar configuración 90s después de conectar
+                setTimeout(async () => {
+                  try {
+                    const ownerSelf = `${connectedNumber}@s.whatsapp.net`;
+                    await configValidator.validateAndNotify(OWNER_UID, ownerSelf);
+                  } catch (valErr) {
+                    console.error(`[CONFIG-VALIDATOR] ❌ Error en validación post-conexión: ${valErr.message}`);
+                  }
+                }, 90000); // 90s para no solaparse con el feature announcer
               }
             } : {
               // Non-admin tenant: owners necesitan isOwnerAccount para self-chat

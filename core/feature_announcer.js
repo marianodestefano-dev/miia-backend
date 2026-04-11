@@ -18,7 +18,7 @@
 // VERSIÓN ACTUAL Y CHANGELOG
 // ═══════════════════════════════════════════════════════════════
 
-const CURRENT_VERSION = '2.9.0';
+const CURRENT_VERSION = '2.10.0';
 const CURRENT_DATE = '2026-04-11';
 
 /**
@@ -51,6 +51,17 @@ const CHANGELOG = [
     id: 'security_alerts_email',
     title: '📧 Alertas de seguridad por email',
     description: 'Si alguien cambia la configuración de tu contacto de seguridad, te aviso por WhatsApp Y por email.',
+  },
+  {
+    id: 'email_management',
+    title: '📬 Gestión completa de email por WhatsApp',
+    description: 'Ahora puedo leer tu inbox, mostrarte los correos, abrir los que quieras, eliminar los que no sirvan y enviar emails nuevos — todo desde este chat.',
+    commands: ['mis correos', 'leé el 2 y el 5', 'eliminá todos menos el 3', 'mandá un correo a X'],
+  },
+  {
+    id: 'announcer_tts',
+    title: '🎤 Anuncios en audio',
+    description: 'Cuando tengo novedades importantes, te las cuento con una nota de voz además del texto.',
   },
 ];
 
@@ -105,6 +116,13 @@ const CAPABILITIES = [
     'Horario configurable de respuesta (default 7am-7pm)',
     'Verificación de integridad cada 5 minutos',
   ]},
+  { category: '📬 Email', items: [
+    'Leer inbox: "mis correos", "qué emails tengo"',
+    'Ver contenido: "leé el 2 y el 5"',
+    'Eliminar: "eliminá el 1, 3 y 4"',
+    'Eliminar excepto: "eliminá todos menos el 2 y 5"',
+    'Enviar email: "mandá un correo a juan@mail.com con asunto X"',
+  ]},
   { category: '🧠 Aprendizaje', items: [
     'Aprendo de cada conversación (con tu aprobación)',
     '"Olvidá: X" para borrar un aprendizaje',
@@ -120,14 +138,18 @@ const CAPABILITIES = [
 
 let _admin = null;
 let _announcementSent = false; // Solo anunciar una vez por deploy
+let _ttsEngine = null;
+let _safeSendMessage = null;
 
 // ═══════════════════════════════════════════════════════════════
 // FUNCIONES PRINCIPALES
 // ═══════════════════════════════════════════════════════════════
 
-function init(admin) {
+function init(admin, { ttsEngine, safeSendMessage } = {}) {
   _admin = admin;
-  console.log(`[FEATURE-ANNOUNCER] ✅ Inicializado (v${CURRENT_VERSION}, ${CHANGELOG.length} features nuevas)`);
+  _ttsEngine = ttsEngine || null;
+  _safeSendMessage = safeSendMessage || null;
+  console.log(`[FEATURE-ANNOUNCER] ✅ Inicializado (v${CURRENT_VERSION}, ${CHANGELOG.length} features nuevas, TTS=${!!_ttsEngine})`);
 }
 
 /**
@@ -136,8 +158,9 @@ function init(admin) {
  *
  * @param {string} uid - UID del owner
  * @param {function} sendFn - async (message) => void — enviar al self-chat
+ * @param {string} sendTarget - JID del self-chat (para TTS audio)
  */
-async function checkAndAnnounce(uid, sendFn) {
+async function checkAndAnnounce(uid, sendFn, sendTarget) {
   if (_announcementSent || !uid || !_admin) return;
 
   try {
@@ -164,6 +187,27 @@ async function checkAndAnnounce(uid, sendFn) {
     }
     msg += `Preguntame *"¿qué podés hacer?"* cuando quieras ver todas mis funciones 😊`;
 
+    // ═══ TTS: Enviar primer anuncio como audio (nota de voz) ═══
+    let sentAsAudio = false;
+    if (_ttsEngine && _safeSendMessage && sendTarget) {
+      try {
+        // Generar texto más corto y natural para TTS
+        const ttsText = _buildTTSSummary();
+        const ttsConfig = {
+          provider: 'google',
+          apiKey: process.env.GOOGLE_TTS_API_KEY,
+          mode: 'adult',
+        };
+        const ttsResult = await _ttsEngine.generateTTS(ttsText, ttsConfig);
+        await _ttsEngine.sendAudioMessage(_safeSendMessage, sendTarget, ttsResult.buffer, ttsResult.mimetype, { isSelfChat: true });
+        sentAsAudio = true;
+        console.log(`[FEATURE-ANNOUNCER] 🎤 Anuncio enviado como audio TTS`);
+      } catch (ttsErr) {
+        console.warn(`[FEATURE-ANNOUNCER] ⚠️ TTS falló, enviando como texto: ${ttsErr.message}`);
+      }
+    }
+
+    // Siempre enviar el texto también (como respaldo o complemento del audio)
     await sendFn(msg);
     _announcementSent = true;
 
@@ -223,6 +267,19 @@ function buildCapabilitiesMessage() {
 
   msg += `_v${CURRENT_VERSION} — ${CURRENT_DATE}_`;
   return msg;
+}
+
+/**
+ * Construir resumen de novedades para TTS (más corto y natural)
+ * @returns {string} Texto optimizado para audio
+ */
+function _buildTTSSummary() {
+  const count = CHANGELOG.length;
+  const highlights = CHANGELOG.slice(0, 3).map(f => {
+    // Limpiar emojis para TTS
+    return f.description.replace(/[\u{1F300}-\u{1FAFF}]/gu, '').trim();
+  });
+  return `¡Tengo ${count} novedades para vos! ${highlights.join('. ')}. Preguntame "¿qué podés hacer?" para ver todo lo nuevo.`;
 }
 
 /**

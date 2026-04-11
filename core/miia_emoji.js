@@ -229,6 +229,19 @@ function applyMiiaEmoji(message, ctx = {}) {
     message = message.substring(emojiPrefixMatch[0].length);
   }
 
+  // ═══ FIX: Quitar emojis oficiales de MIIA DENTRO del cuerpo del mensaje ═══
+  // La IA (Gemini/Claude) a veces pone 🤦‍♀️ o 🙍‍♀️ dentro del texto del mensaje.
+  // Los emojis de estado de MIIA son SOLO para el prefijo — NUNCA en el cuerpo.
+  // Solo limpiar PERSONA-emojis oficiales de MIIA, NO emojis temáticos comunes (❤️, 😊, etc.)
+  for (const officialEmoji of MIIA_OFFICIAL_EMOJIS) {
+    // Solo quitar persona-emojis (ZWJ sequences con ♀️), no emojis simples/temáticos
+    if (officialEmoji.includes('\u200D') || officialEmoji.includes('♀') || officialEmoji.includes('♂')) {
+      if (message.includes(officialEmoji)) {
+        message = message.split(officialEmoji).join('').replace(/\s{2,}/g, ' ').trim();
+      }
+    }
+  }
+
   const emoji = getMiiaEmoji(message, ctx);
   if (!emoji) return message; // Sleep mode: sin prefijo
   return `${emoji}: ${message}`;

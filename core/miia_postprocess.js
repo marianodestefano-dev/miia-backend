@@ -31,7 +31,7 @@ const ACTION_CONFIRMATIONS = [
   { phrases: [/ya (?:te |lo )?agend[eé]/i, /listo.{0,30}agend[eé]/i, /te.*agend[eé]/i, /queda.*agendad/i],
     requiredTag: /\[AGENDAR_EVENTO:|\[SOLICITAR_TURNO:/ },
   { phrases: [/ya (?:le |te )?(?:mandé|envié).*(?:mail|correo|email)/i, /listo.{0,30}(?:mail|correo|email)/i, /te.*(?:envié|mandé).*correo/i],
-    requiredTag: /\[ENVIAR_CORREO:/ },
+    requiredTag: /\[ENVIAR_CORREO:|\[ENVIAR_EMAIL:/ },
   { phrases: [/ya le avisé/i, /ya le dije/i, /listo.{0,30}le (?:avisé|dije)/i],
     requiredTag: /\[MENSAJE_PARA_OWNER:|DILE_A_/ },
   // NOTA: "anotado" y "recordar" son palabras muy comunes en conversación natural.
@@ -41,8 +41,15 @@ const ACTION_CONFIRMATIONS = [
     requiredTag: /\[RECORDAR_(?:CONTACTO|OWNER):|\[AGENDAR_EVENTO:/ },
   { phrases: [/ya.*te.*(?:mandé|envié).*cotizaci[oó]n/i, /listo.{0,30}cotizaci[oó]n/i],
     requiredTag: /\[GENERAR_COTIZACION_PDF:/ },
+  // EMAIL: "ya leí tu inbox / ya eliminé los correos" sin tag
+  { phrases: [/ya (?:le[ií]|revis[eé]).*(?:inbox|bandeja|correos?)/i, /listo.{0,30}(?:inbox|bandeja|correos?.*le[ií]d)/i],
+    requiredTag: /\[LEER_INBOX\]|\[EMAIL_LEER:/ },
+  { phrases: [/ya (?:lo |los |te )?(?:eliminé|borré).*(?:correos?|emails?|mails?)/i, /listo.{0,30}(?:eliminé|borré).*(?:correos?|emails?)/i],
+    requiredTag: /\[EMAIL_ELIMINAR:|\[EMAIL_ELIMINAR_EXCEPTO:/ },
+  { phrases: [/ya (?:te |le )?(?:envié|mandé).*(?:email|correo|mail)/i, /listo.{0,30}(?:envié|mandé).*(?:email|correo|mail)/i],
+    requiredTag: /\[ENVIAR_EMAIL:|\[ENVIAR_CORREO:/ },
   // CANCELAR_EVENTO: "ya eliminé/cancelé/borré" sin tag
-  { phrases: [/ya (?:lo |la |te )?(?:eliminé|cancelé|borré|quité)/i, /listo.{0,30}(?:eliminé|cancelé|borré)/i, /(?:cancelad[oa]|eliminad[oa]).*agenda/i],
+  { phrases: [/ya (?:lo |la |te )?(?:eliminé|cancelé|borré|quité).*(?:evento|cita|turno|agenda)/i, /listo.{0,30}(?:eliminé|cancelé|borré).*(?:evento|cita)/i, /(?:cancelad[oa]|eliminad[oa]).*agenda/i],
     requiredTag: /\[CANCELAR_EVENTO:/ },
   // MOVER_EVENTO: "ya lo moví/cambié de hora" sin tag
   { phrases: [/ya (?:lo |la |te )?(?:moví|cambié|pasé).*(?:hora|horario|fecha|día)/i, /listo.{0,30}(?:moví|cambié|pasé)/i],
