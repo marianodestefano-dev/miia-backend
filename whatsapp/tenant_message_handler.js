@@ -1244,7 +1244,17 @@ ${countryContext ? countryContext : ''}
         }
       } catch (_) {}
     }
-    activeSystemPrompt = buildOwnerLeadPrompt(ctx.leadNames[phone] || '', leadCerebro, countryContext, ctx.ownerProfile);
+    // Cargar perfil del contacto desde contact_index (History Mining)
+    let contactProfile = null;
+    try {
+      const cpDoc = await admin.firestore().collection('users').doc(ctx.ownerUid)
+        .collection('contact_index').doc(basePhone).get();
+      if (cpDoc.exists) {
+        contactProfile = cpDoc.data();
+        console.log(`[TMH:${ctx.ownerUid}] 📋 ContactProfile cargado para ${basePhone}: ${contactProfile.type}, ${contactProfile.messageCount || 0} msgs previos`);
+      }
+    } catch (_) {}
+    activeSystemPrompt = buildOwnerLeadPrompt(ctx.leadNames[phone] || '', leadCerebro, countryContext, ctx.ownerProfile, contactProfile);
   }
 
   // ═══ INYECTAR HORA REAL — Desde timezone del dashboard del owner (Firestore) ═══

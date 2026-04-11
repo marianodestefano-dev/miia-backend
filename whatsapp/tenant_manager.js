@@ -1812,8 +1812,17 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           if (contactMsgs.length > 3) summaryParts.push(contactMsgs[contactMsgs.length - 1]);
           const conversationSummary = summaryParts.join(' | ').substring(0, 300);
 
-          // Guardar en contact_index (async, no bloquea el loop)
+          // Guardar en contact_index con perfil enriquecido (async, no bloquea el loop)
           const ownerUid = tenant.ownerUid || uid;
+          const lastContactMsg = contactMsgs[contactMsgs.length - 1] || '';
+          const firstContactMsg = contactMsgs[0] || '';
+          const lastMsgDate = allMsgs[allMsgs.length - 1]?.messageTimestamp
+            ? new Date(allMsgs[allMsgs.length - 1].messageTimestamp * 1000).toISOString()
+            : '';
+          const firstMsgDate = allMsgs[0]?.messageTimestamp
+            ? new Date(allMsgs[0].messageTimestamp * 1000).toISOString()
+            : '';
+
           admin.firestore().collection('users').doc(ownerUid)
             .collection('contact_index').doc(phone)
             .set({
@@ -1822,6 +1831,12 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               source: 'history_mining',
               conversationSummary,
               messageCount: allMsgs.length,
+              contactMessageCount: contactMsgs.length,
+              ownerMessageCount: allMsgs.filter(m => m.key?.fromMe).length,
+              firstMessage: firstContactMsg.substring(0, 200),
+              lastMessage: lastContactMsg.substring(0, 200),
+              firstMessageDate: firstMsgDate,
+              lastMessageDate: lastMsgDate,
               minedAt: new Date().toISOString()
             }, { merge: true })
             .catch(e => console.error(`[TM:${uid}] ⚠️ Error indexando contacto ${phone}:`, e.message));

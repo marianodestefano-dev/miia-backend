@@ -158,6 +158,7 @@ const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
 const ownerMemory = require('./core/owner_memory');
 const nightlyBrain = require('./core/nightly_brain');
+const biologicalClock = require('./core/biological_clock');
 const patternEngine = require('./core/pattern_engine');
 const linkTracker = require('./core/link_tracker');
 const ttsEngine = require('./voice/tts_engine');
@@ -562,18 +563,34 @@ taskScheduler.initTaskScheduler({
 
 // ═══ MOTOR DE SEGUIMIENTO AUTOMÁTICO DE LEADS ═══
 // Corre cada hora. Revisa leads sin respuesta y envía followup contextual.
-// REGLA: NUNCA enviar entre 22:00 y 10:00 hora local del owner.
+// REGLA: Solo en horario de negocios (default 8-19, configurable por owner).
+// REGLA: NO domingos. NO festivos del país del owner.
 // REGLA: Respeta keywords cold, modo silencio, y max seguimientos.
 async function runFollowupEngine() {
   if (!OWNER_UID) return;
   const scheduleConfig = await getScheduleConfig(OWNER_UID) || {};
 
-  // Ventana horaria configurable (default 9-21, owner puede cambiar desde Dashboard)
+  // Ventana horaria configurable (default 8-19, horario de negocios real)
   const tz = scheduleConfig.timezone || 'America/Bogota';
   const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
   const h = localNow.getHours();
-  const followupStartHour = scheduleConfig.followupStartHour ?? 9;
-  const followupEndHour = scheduleConfig.followupEndHour ?? 21;
+  const dayOfWeek = localNow.getDay(); // 0=domingo
+  const followupStartHour = scheduleConfig.followupStartHour ?? 8;
+  const followupEndHour = scheduleConfig.followupEndHour ?? 19;
+
+  // NO domingos (respetuoso con días de descanso)
+  if (dayOfWeek === 0) {
+    console.log(`[FOLLOWUP] ⏸️ Domingo — sin seguimientos (respeto día de descanso).`);
+    return;
+  }
+
+  // NO festivos del país del owner
+  const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+  if (isHoliday(localNow, ownerCountry)) {
+    console.log(`[FOLLOWUP] ⏸️ Festivo en ${ownerCountry} — sin seguimientos.`);
+    return;
+  }
+
   if (h < followupStartHour || h >= followupEndHour) {
     console.log(`[FOLLOWUP] ⏸️ Fuera de ventana (${h}h, ventana ${followupStartHour}-${followupEndHour}h ${tz}). Sin seguimientos.`);
     return;
@@ -629,25 +646,40 @@ async function runFollowupEngine() {
       continue;
     }
 
-    // Construir mensaje contextual usando IA
-    const isLast = (fData.count + 1) >= followupMax;
+    // Biological Clock: clasificar estado del lead y generar followup contextual
     const leadName = leadNames[phone] || '';
     const firstName = leadName ? leadName.split(' ')[0] : '';
     const lastUserMsg = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
     const lastMiiaMsg = msgs.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
+    const leadState = biologicalClock.classifyLeadState(lastUserMsg, lastMiiaMsg, conversationMetadata[phone]);
+
+    // Si el lead está frío (dijo "no me interesa" etc) → no seguir
+    if (leadState.state === 'cold') {
+      console.log(`[FOLLOWUP] ❄️ Lead ${baseNum} está frío (señal: ${leadState.signal}). Archivando.`);
+      await followupRef.set({ ...fData, silenced: true, coldReason: leadState.signal, coldAt: new Date().toISOString() }, { merge: true });
+      continue;
+    }
+
+    // Verificar delay sugerido por el estado
+    const suggestedDelayMs = (leadState.suggestedDelayHours || 24) * 3600000;
+    const lastFollowupTime = fData.lastFollowup ? new Date(fData.lastFollowup).getTime() : 0;
+    if (lastFollowupTime && (Date.now() - lastFollowupTime) < suggestedDelayMs) {
+      continue; // Aún no pasó el tiempo sugerido desde el último followup
+    }
+
+    const isLast = (fData.count + 1) >= followupMax;
     let msg;
 
     try {
-      // Generar follow-up contextual con IA — breve, cálido, no robótico
-      const followupPrompt = isLast
-        ? `Sos MIIA, asistente IA por WhatsApp. Este es tu ÚLTIMO follow-up a un lead que no respondió. Despedite con gracia, sin resentimiento, dejando la puerta abierta. Nombre: ${firstName || 'sin nombre'}. Último mensaje del lead: "${lastUserMsg.substring(0, 100)}". Tu último mensaje: "${lastMiiaMsg.substring(0, 100)}". Máximo 3 líneas, 200 chars. Terminá con algo como "Si algún día me necesitás, acá estoy 💕" y el link www.miia-app.com. NO digas "seguimiento" ni "te escribo de nuevo". Sé natural.`
-        : `Sos MIIA, asistente IA por WhatsApp. Un lead te habló pero no respondió tu último mensaje. Retomá la conversación de forma natural, sin sonar a robot ni a "ventas". ${firstName ? `Se llama ${firstName}.` : ''} Último mensaje del lead: "${lastUserMsg.substring(0, 100)}". Tu último mensaje: "${lastMiiaMsg.substring(0, 100)}". Follow-up #${fData.count + 1}. Máximo 2 líneas, 150 chars. NO digas "seguimiento" ni "te escribo de nuevo". HACÉ algo útil: si hablaron de algo concreto, retomalo. Si no, ofrecé una demo nueva de lo que podés hacer.`;
+      const followupPrompt = biologicalClock.buildFollowupPrompt(
+        leadState.state, firstName, lastUserMsg, lastMiiaMsg, fData.count || 0, userProfile
+      );
+      console.log(`[FOLLOWUP] 🧠 BioClock: lead ${baseNum} estado=${leadState.state} señal=${leadState.signal} followup #${(fData.count || 0) + 1}`);
       const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, followupPrompt, {}, { enableSearch: false });
       msg = aiResult?.text?.trim();
       if (!msg || msg.length < 10) throw new Error('IA no generó follow-up válido');
       console.log(`[FOLLOWUP] 🤖 IA generó follow-up: "${msg.substring(0, 80)}..."`);
     } catch (aiErr) {
-      // Fallback a mensajes estáticos si IA falla
       console.warn(`[FOLLOWUP] ⚠️ IA falló, usando fallback: ${aiErr.message}`);
       msg = isLast ? followupMsgLast : followupMsg1;
       if (firstName) msg = `${firstName}, ${msg.charAt(0).toLowerCase()}${msg.slice(1)}`;
@@ -660,7 +692,9 @@ async function runFollowupEngine() {
         lastFollowup: new Date().toISOString(),
         lastFollowupMsg: msg.substring(0, 200),
         silenced: false,
-        isDespedida: isLast
+        isDespedida: isLast,
+        leadState: leadState.state,
+        leadSignal: leadState.signal
       }, { merge: true });
       sent++;
       console.log(`[FOLLOWUP] 📤 ${isLast ? '👋 DESPEDIDA' : `Seguimiento ${fData.count + 1}/${followupMax}`} → ${baseNum}`);
@@ -2655,15 +2689,17 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     // ═══ REGLA ARQUITECTÓNICA: Este servidor es el NÚMERO DE MIIA (ventas) ═══
     // familyContacts y equipoMedilink solo aplican en self-chat del owner.
     // Para TODOS los demás contactos → son leads de MIIA. Sin excepciones.
-    let isAdmin = ADMIN_PHONES.includes(basePhone);
-
-    // GARANTÍA CRÍTICA: Si es self-chat, SIEMPRE es admin
+    // Self-chat = SOLO si el teléfono coincide con el owner de ESTE tenant (no cualquier admin phone)
+    // FIX: ADMIN_PHONES incluía 573163937365 (personal de Mariano) que hacía que MIIA CENTER
+    // tratara mensajes de Mariano como self-chat en vez de lead
     const ownerSockPMR = getOwnerSock();
     const ownerPhonePMR = ownerSockPMR?.user?.id?.split('@')[0]?.split(':')[0] || ownerConnectedPhone || OWNER_PHONE;
-    const isSelfChat = basePhone === ownerPhonePMR || basePhone === OWNER_PHONE || basePhone === ownerConnectedPhone || ADMIN_PHONES.includes(basePhone);
-    if (isSelfChat && !isAdmin) {
-      isAdmin = true;
-      console.log(`[ADMIN-FIX] 🔧 Self-chat: isAdmin=true (${basePhone} = owner ${ownerPhonePMR})`);
+    const isSelfChat = basePhone === ownerPhonePMR || basePhone === OWNER_PHONE || basePhone === ownerConnectedPhone;
+    let isAdmin = isSelfChat || ADMIN_PHONES.includes(basePhone);
+    // Si es admin pero NO self-chat → es Mariano escribiendo desde otro número → tratar como LEAD, no como admin
+    if (isAdmin && !isSelfChat) {
+      console.log(`[ADMIN-LEAD] 📱 Admin ${basePhone} escribió pero NO es self-chat (owner: ${ownerPhonePMR}) → tratar como lead`);
+      isAdmin = false;
     }
 
     // familyContacts/equipoMedilink → DESACTIVADOS para contactos externos.
@@ -7472,7 +7508,7 @@ async function handleIncomingMessage(message) {
     const { emoji, targetMsgId } = message._reaction;
     const fromNum = message.from.split('@')[0].split(':')[0];
     const ownerNum = (getOwnerSock() && getOwnerSock().user) ? getOwnerSock().user.id.split('@')[0].split(':')[0] : ownerConnectedPhone || OWNER_PHONE;
-    const isSelfChat = message.fromMe || fromNum === ownerNum || ADMIN_PHONES.includes(fromNum);
+    const isSelfChat = message.fromMe || fromNum === ownerNum;
 
     // Reacción vacía = reacción removida → ignorar
     if (!emoji) return;
@@ -7616,7 +7652,7 @@ async function handleIncomingMessage(message) {
       const leadName = leadNames[leadPhone] || leadPhone.split('@')[0];
 
       const ownerNumMedia = (getOwnerSock() && getOwnerSock().user) ? getOwnerSock().user.id.split('@')[0].split(':')[0] : ownerConnectedPhone || OWNER_PHONE;
-      const isSelfChatMedia = message.fromMe && (leadPhone.includes(ownerNumMedia) || leadPhone.includes(OWNER_PHONE) || ADMIN_PHONES.some(p => leadPhone.includes(p)));
+      const isSelfChatMedia = message.fromMe && (leadPhone.includes(ownerNumMedia) || leadPhone.includes(OWNER_PHONE));
 
       if (isSelfChatMedia) {
         // Self-chat: avisar al owner de forma directa
@@ -7714,7 +7750,7 @@ async function handleIncomingMessage(message) {
   const myNumber = (getOwnerSock() && getOwnerSock().user)
     ? getOwnerSock().user.id : `${OWNER_PHONE}@s.whatsapp.net`;
   const targetPhoneBase = targetPhoneId.split('@')[0]?.split(':')[0];
-  const isSelfChat = targetPhoneId === myNumber || targetPhoneBase === myNumber.split('@')[0].split(':')[0] || ADMIN_PHONES.includes(targetPhoneBase);
+  const isSelfChat = targetPhoneId === myNumber || targetPhoneBase === myNumber.split('@')[0].split(':')[0];
   const now = Date.now();
 
   if (isSelfChat) {
@@ -9694,6 +9730,14 @@ function getTimezoneForCountry(country) {
     US: 'America/New_York', ES: 'Europe/Madrid'
   };
   return tzMap[country] || 'America/Bogota';
+}
+
+// Verificar si una fecha es festivo en un país
+function isHoliday(date, country) {
+  const mm = (date.getMonth() + 1).toString().padStart(2, '0');
+  const dd = date.getDate().toString().padStart(2, '0');
+  const holidays = HOLIDAYS_BY_COUNTRY[country] || [];
+  return holidays.includes(`${mm}-${dd}`);
 }
 
 // ═══ HELPER UNIFICADO: Obtener hora local del owner (evita duplicar lógica timezone) ═══
@@ -12224,6 +12268,101 @@ app.get('/api/admin/tenant-health/:uid', verifyAdminToken, async (req, res) => {
     if (!health) return res.status(404).json({ error: 'Tenant no encontrado o sin métricas' });
     const history = await tenantLogger.getTenantHistory(req.params.uid, parseInt(req.query.days) || 7);
     res.json({ current: health, history, timestamp: Date.now() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Railway Logs Proxy (admin only) ──────────────────────────────────────
+// Usa Railway GraphQL API para obtener logs de deploy/build/http sin exponer el token
+app.get('/api/admin/railway-logs', verifyAdminToken, async (req, res) => {
+  const railwayToken = process.env.RAILWAY_API_TOKEN;
+  if (!railwayToken) {
+    return res.status(503).json({ error: 'RAILWAY_API_TOKEN no configurado en variables de entorno' });
+  }
+
+  const { type = 'deploy', limit = 200, deploymentId } = req.query;
+
+  try {
+    // Si no se da deploymentId, obtener el último deployment activo
+    let targetDeploymentId = deploymentId;
+    if (!targetDeploymentId) {
+      const projectId = process.env.RAILWAY_PROJECT_ID || '9ee59327-edf5-4e33-b6ac-96670bc9a2fe';
+      const serviceId = process.env.RAILWAY_SERVICE_ID || '';
+      const environmentId = process.env.RAILWAY_ENVIRONMENT_ID || '';
+
+      const deploymentsQuery = {
+        query: `query { deployments(input: { projectId: "${projectId}"${serviceId ? `, serviceId: "${serviceId}"` : ''}${environmentId ? `, environmentId: "${environmentId}"` : ''} }, first: 1) { edges { node { id status createdAt } } } }`
+      };
+
+      const depResp = await fetch('https://backboard.railway.com/graphql/v2', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${railwayToken}` },
+        body: JSON.stringify(deploymentsQuery)
+      });
+      const depData = await depResp.json();
+      const edges = depData?.data?.deployments?.edges;
+      if (!edges || edges.length === 0) {
+        return res.json({ logs: [], message: 'No hay deployments activos' });
+      }
+      targetDeploymentId = edges[0].node.id;
+    }
+
+    // Query logs según tipo
+    const logLimit = Math.min(parseInt(limit) || 200, 2000);
+    let logsQuery;
+    if (type === 'build') {
+      logsQuery = { query: `query { buildLogs(deploymentId: "${targetDeploymentId}", limit: ${logLimit}) { timestamp message severity } }` };
+    } else if (type === 'http') {
+      logsQuery = { query: `query { httpLogs(deploymentId: "${targetDeploymentId}", limit: ${logLimit}) { timestamp requestId method path httpStatus totalDuration srcIp } }` };
+    } else {
+      logsQuery = { query: `query { deploymentLogs(deploymentId: "${targetDeploymentId}", limit: ${logLimit}) { timestamp message severity } }` };
+    }
+
+    const logsResp = await fetch('https://backboard.railway.com/graphql/v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${railwayToken}` },
+      body: JSON.stringify(logsQuery)
+    });
+    const logsData = await logsResp.json();
+
+    if (logsData.errors) {
+      console.error(`[RAILWAY-LOGS] GraphQL error:`, logsData.errors[0]?.message);
+      return res.status(400).json({ error: logsData.errors[0]?.message || 'Error de Railway GraphQL' });
+    }
+
+    const logs = logsData?.data?.buildLogs || logsData?.data?.deploymentLogs || logsData?.data?.httpLogs || [];
+    res.json({ logs, deploymentId: targetDeploymentId, type, count: logs.length });
+  } catch (e) {
+    console.error(`[RAILWAY-LOGS] Error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Listar deployments recientes (para selector en el dashboard)
+app.get('/api/admin/railway-deployments', verifyAdminToken, async (req, res) => {
+  const railwayToken = process.env.RAILWAY_API_TOKEN;
+  if (!railwayToken) {
+    return res.status(503).json({ error: 'RAILWAY_API_TOKEN no configurado' });
+  }
+  try {
+    const projectId = process.env.RAILWAY_PROJECT_ID || '9ee59327-edf5-4e33-b6ac-96670bc9a2fe';
+    const serviceId = process.env.RAILWAY_SERVICE_ID || '';
+    const environmentId = process.env.RAILWAY_ENVIRONMENT_ID || '';
+    const limit = Math.min(parseInt(req.query.limit) || 10, 25);
+
+    const query = {
+      query: `query { deployments(input: { projectId: "${projectId}"${serviceId ? `, serviceId: "${serviceId}"` : ''}${environmentId ? `, environmentId: "${environmentId}"` : ''} }, first: ${limit}) { edges { node { id status createdAt url staticUrl } } } }`
+    };
+
+    const resp = await fetch('https://backboard.railway.com/graphql/v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${railwayToken}` },
+      body: JSON.stringify(query)
+    });
+    const data = await resp.json();
+    const deployments = (data?.data?.deployments?.edges || []).map(e => e.node);
+    res.json({ deployments });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -14844,10 +14983,22 @@ app.get('/api/calendar/propose', requireRole('owner', 'agent'), async (req, res)
 
 app.get('/api/calendar/detect-system', requireRole('owner', 'admin'), async (req, res) => {
   try {
+    const calendarProvider = require('./core/calendar_provider');
     const userDoc = await admin.firestore().collection('users').doc(req.user.uid).get();
     const email = userDoc.data()?.email || req.user.email || '';
     const system = detectCalendarSystem(email);
-    res.json({ email, system, supported: system === 'google' });
+    const providerInfo = await calendarProvider.detectCalendarProvider(req.user.uid);
+    const supportedProviders = calendarProvider.getSupportedProviders();
+    res.json({
+      email,
+      system,
+      supported: system === 'google' || system === 'outlook',
+      currentProvider: providerInfo,
+      supportedProviders: Object.keys(supportedProviders).map(k => ({
+        id: k,
+        ...supportedProviders[k]
+      }))
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

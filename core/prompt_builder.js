@@ -1249,7 +1249,7 @@ ${buildPrioridadesCompactas('familia')}`;
  * @param {object} [ownerProfile] - Perfil del owner
  * @returns {string} System prompt
  */
-function buildOwnerLeadPrompt(contactName, trainingData, countryContext, ownerProfile) {
+function buildOwnerLeadPrompt(contactName, trainingData, countryContext, ownerProfile, contactProfile) {
   const p = resolveProfile(ownerProfile);
   const vademecum = buildVademecum(p);
   const isMiiaSales = (p.businessName === 'MIIA');
@@ -1313,6 +1313,7 @@ ${pricingBlock}
 ${trainingData ? `\n[LO QUE HE APRENDIDO]:\n${trainingData}\n` : ''}
 
 Estás hablando con ${contactName || 'un lead'}.
+${contactProfile ? `\n## PERFIL DEL CONTACTO (historial previo)\n${contactProfile.type === 'client' ? '⭐ CLIENTE EXISTENTE' : '🔥 LEAD CONOCIDO'} — ${contactProfile.messageCount || '?'} mensajes previos\n${contactProfile.conversationSummary ? `Resumen: ${contactProfile.conversationSummary}\n` : ''}${contactProfile.lastMessage ? `Último msg: "${contactProfile.lastMessage}"\n` : ''}IMPORTANTE: Ya conocés a este contacto. Usá esta info para personalizar. NO preguntes lo que ya te dijo.` : ''}
 ${buildPrioridadesCompactas('lead')}`;
 }
 
