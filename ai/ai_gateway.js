@@ -269,8 +269,36 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
 
   // forceProvider: override para regeneración (ej: forzar gemini con google_search)
   const forceProvider = opts.forceProvider;
-  // Si el owner tiene un proveedor específico configurado, respetar
-  const ownerProvider = forceProvider || ownerConfig?.aiProvider;
+
+  // ══════════════════════════════════════════════════════════════════
+  // 🛡️ INTEGRITY GUARD: GOOGLE SEARCH → GEMINI OBLIGATORIO
+  // ══════════════════════════════════════════════════════════════════
+  // google_search es una tool de Gemini. Claude y OpenAI la IGNORAN.
+  // Si enableSearch=true y el proveedor NO es Gemini → MIIA dice
+  // "no tengo los datos actualizados" porque literalmente no puede buscar.
+  //
+  // ⚠️ PROHIBIDO ELIMINAR ESTE BLOQUE — Sin esto, self-chat con search
+  // se enruta a Claude Opus que ignora enableSearch. MIIA parece pelotuda
+  // porque dice que no puede buscar cuando el owner le pregunta cosas
+  // en tiempo real (clima, deportes, noticias, etc.).
+  // Verificado en logs del 10-Abr-2026: Claude recibía search=true,
+  // lo ignoraba, y respondía "no tengo esa info".
+  // ══════════════════════════════════════════════════════════════════
+  const searchForceGemini = opts.enableSearch && !forceProvider && config.preferred !== 'gemini';
+  if (searchForceGemini) {
+    console.log(`[AI-GW] 🔍 SEARCH-GUARD: enableSearch=true + preferred=${config.preferred} → forzando Gemini (ÚNICO proveedor con google_search)`);
+  }
+  // Log de auditoría: si search está activo, SIEMPRE registrar qué proveedor se usa
+  if (opts.enableSearch) {
+    const finalSearchProvider = forceProvider || (searchForceGemini ? 'gemini' : config.preferred);
+    if (finalSearchProvider !== 'gemini') {
+      // ⚠️ ALERTA: Esto NO debería pasar. Si llega aquí, algo rompió el guard.
+      console.error(`[AI-GW] 🚨 SEARCH-INTEGRITY-VIOLATION: enableSearch=true pero proveedor=${finalSearchProvider} (NO es Gemini). Search será IGNORADO. forceProvider=${forceProvider}, preferred=${config.preferred}`);
+    }
+  }
+
+  // Si el owner tiene un proveedor específico configurado, respetar (excepto si search fuerza gemini)
+  const ownerProvider = forceProvider || (searchForceGemini ? 'gemini' : null) || ownerConfig?.aiProvider;
   const providers = ownerProvider
     ? [ownerProvider, ...config.fallbacks.filter(f => f !== ownerProvider)]
     : [config.preferred, ...config.fallbacks];
@@ -313,9 +341,9 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
       ...(claudeThinking > 0 && { thinking: config.thinking }),
       // Gemini: generationConfig params
       ...(provider === 'gemini' && {
-        topP: opts.topP ?? config.topP,
+        topP: opts.topP ?? config.topP ?? 0.9,
         topK: opts.topK ?? config.topK,
-        thinkingBudget: opts.thinkingBudget ?? config.thinkingBudget
+        thinkingBudget: opts.thinkingBudget ?? config.thinkingBudget ?? (searchForceGemini ? 2048 : undefined)
       })
     };
 

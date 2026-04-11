@@ -1340,6 +1340,73 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             const pushName = msg.pushName || '';
             const pending = tenant._pendingLids[lidBase];
 
+            // ══════════════════════════════════════════════════════════════════
+            // 🛡️ INTEGRITY GUARD: SINGLE-BUSINESS FAST-PATH
+            // ══════════════════════════════════════════════════════════════════
+            // Si el tenant tiene 0 o 1 negocio, NO necesita clasificación.
+            // TODO desconocido es lead de ese único negocio → procesar DIRECTO.
+            // Esto es CRÍTICO para MIIA CENTER (auto-venta) donde TODOS los
+            // desconocidos son leads potenciales. Sin este guard, el LID-ID
+            // intercepta y MATA el flujo de ventas.
+            //
+            // ⚠️ PROHIBIDO ELIMINAR ESTE BLOQUE — Si se remueve, MIIA CENTER
+            // deja de responder a leads. Verificado en logs del 10-Abr-2026:
+            // Lead 46510318301398 (Aleja) fue tragado por LID-ID sin respuesta.
+            // ══════════════════════════════════════════════════════════════════
+            if (!tenant._businesses) {
+              try {
+                const { loadBusinesses } = require('./tenant_message_handler');
+                tenant._businesses = await loadBusinesses(tenant.ownerUid || uid);
+              } catch (_) { tenant._businesses = []; }
+            }
+            const businessCount = (tenant._businesses || []).length;
+            if (businessCount <= 1) {
+              // FAST-PATH: Un solo negocio → todo desconocido es lead, procesar YA
+              const contactName = pushName || `Lead ${lidBase.substring(0, 6)}`;
+              console.log(`[TM:${uid}] 🚀 LID-FASTPATH: ${lidBase} (${contactName}) → lead directo (${businessCount} negocio${businessCount === 1 ? '' : 's'}). Sin clasificación.`);
+
+              // Registrar en contact_index como lead
+              const ownerUidFast = tenant.ownerUid || uid;
+              const bizId = tenant._businesses?.[0]?.id || null;
+              const bizName = tenant._businesses?.[0]?.name || null;
+              try {
+                await admin.firestore().collection('users').doc(ownerUidFast)
+                  .collection('contact_index').doc(lidBase)
+                  .set({
+                    name: contactName,
+                    type: 'lead',
+                    ...(bizId && { businessId: bizId }),
+                    ...(bizName && { businessName: bizName }),
+                    source: 'miia_fastpath',
+                    updatedAt: new Date().toISOString()
+                  }, { merge: true });
+              } catch (e) {
+                console.error(`[TM:${uid}] ⚠️ Error guardando lead fastpath:`, e.message);
+              }
+
+              // Setear tipo en TMH
+              try {
+                const { setContactType, setLeadName } = require('./tenant_message_handler');
+                if (setContactType) setContactType(uid, lidBase, 'lead');
+                if (setLeadName) setLeadName(uid, lidBase, contactName);
+              } catch (_) {}
+
+              // Mapear LID
+              if (!tenant._lidMap) tenant._lidMap = {};
+              tenant._lidMap[lidBase] = from;
+
+              // Procesar el mensaje INMEDIATAMENTE como lead
+              const { handleTenantMessage: handleMsgFast } = require('./tenant_message_handler');
+              try {
+                await handleMsgFast(uid, ownerUidFast, tenant.role || 'owner', from, body, false, false, tenant, messageContext || {});
+              } catch (e) {
+                console.error(`[TM:${uid}] ⚠️ Error procesando lead fastpath:`, e.message);
+              }
+
+              _addToDailySummary(uid, tenant, `Nuevo lead: *${contactName}* escribió: "${body.substring(0, 80)}${body.length > 80 ? '...' : ''}" — respondido automáticamente`);
+              continue; // Procesado — siguiente mensaje
+            }
+
             // ═══ PENDING_SILENT: Contacto ya en Pendientes — bufferear + re-intentar clasificación ═══
             if (pending && (pending.phase === 'pending_silent' || pending.phase === 'waiting_owner' || pending.phase === 'waiting_contact' || pending.phase === 'waiting_owner_confirm')) {
               if (!pending.bufferedMsgs) pending.bufferedMsgs = [];

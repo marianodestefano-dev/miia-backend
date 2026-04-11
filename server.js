@@ -124,6 +124,7 @@ const { runPreprocess } = require('./core/miia_preprocess');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_postprocess');
 const salesAssets = require('./core/sales_assets');
 const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
+const integrityGuards = require('./core/integrity_guards');
 const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert, classifyUnknownContact } = require('./core/contact_gate');
 const miiaInvocation = require('./core/miia_invocation');
@@ -5310,9 +5311,54 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
       }
     }
 
+    // ══════════════════════════════════════════════════════════════════
+    // 🛡️ INTEGRITY GUARD: LEADS SUMMARY EN SELF-CHAT
+    // ══════════════════════════════════════════════════════════════════
+    // Inyecta resumen de leads/contactos recientes para que MIIA pueda
+    // responder "¿quién escribió?", "¿cómo van los leads?", etc.
+    // Sin esto, MIIA dice "no tengo visibilidad de leads" en self-chat.
+    //
+    // ⚠️ PROHIBIDO ELIMINAR — Sin este bloque, el owner pregunta por
+    // sus leads y MIIA no sabe nada. Verificado 10-Abr-2026.
+    // ══════════════════════════════════════════════════════════════════
+    let leadsSummaryStr = '';
+    if (isSelfChat) {
+      try {
+        const leadEntries = Object.entries(conversations)
+          .filter(([ph]) => {
+            const ct = contactTypes[ph];
+            return ct === 'lead' || ct === 'miia_lead' || (!ct && ph !== phone);
+          })
+          .map(([ph, msgs]) => {
+            const lastMsg = msgs.filter(m => m.role === 'user').slice(-1)[0];
+            const lastMiia = msgs.filter(m => m.role === 'assistant').slice(-1)[0];
+            const name = leadNames[ph] || ph.replace(/@.*/, '');
+            const meta = conversationMetadata[ph] || {};
+            const stage = meta.affinityStage ?? meta.affinity ?? '?';
+            const ago = lastMsg?.timestamp ? Math.round((Date.now() - lastMsg.timestamp) / 60000) : null;
+            const agoStr = ago != null ? (ago < 60 ? `hace ${ago}min` : ago < 1440 ? `hace ${Math.round(ago/60)}h` : `hace ${Math.round(ago/1440)}d`) : '';
+            const preview = lastMsg?.content?.substring(0, 80) || '';
+            return { name, ph, agoStr, preview, stage, lastTs: lastMsg?.timestamp || 0, totalMsgs: msgs.length, lastMiia: lastMiia?.content?.substring(0, 60) || '' };
+          })
+          .filter(e => e.lastTs > 0)
+          .sort((a, b) => b.lastTs - a.lastTs)
+          .slice(0, 10);
+
+        if (leadEntries.length > 0) {
+          const lines = leadEntries.map(e =>
+            `- ${e.name} (${e.agoStr}, ${e.totalMsgs} msgs, stage ${e.stage}): "${e.preview}"`
+          );
+          leadsSummaryStr = `\n\n[ACTIVIDAD RECIENTE DE LEADS — ${leadEntries.length} contactos]:\n${lines.join('\n')}\nUsa esta info si te preguntan por leads, contactos, o quién escribió. NO la muestres si no la piden.`;
+          console.log(`[LEADS-SUMMARY] 📊 ${leadEntries.length} leads inyectados al self-chat prompt`);
+        }
+      } catch (lsErr) {
+        console.warn(`[LEADS-SUMMARY] ⚠️ Error (no bloquea): ${lsErr.message}`);
+      }
+    }
+
     const fullPrompt = `${activeSystemPrompt}
 
-${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${contactMemoryStr}${enrichedContext}${feedbackContext}
+${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${contactMemoryStr}${enrichedContext}${feedbackContext}${leadsSummaryStr}
 
 ${systemDateStr}
 
@@ -12695,6 +12741,12 @@ app.get('/api/health/task-scheduler', (req, res) => res.json({
   silentFailures: taskScheduler.getSilentFailures()
 }));
 
+// 🛡️ INTEGRITY GUARDS — Health endpoint
+app.get('/api/health/integrity-guards', (req, res) => {
+  const status = integrityGuards.getGuardStatus();
+  res.status(status.allPassed ? 200 : 500).json(status);
+});
+
 app.get('/api/health/rate-limiter', (req, res) => res.json({
   metrics: rateLimiter.getMetrics(),
   adminLevel: rateLimiter.getLevel('admin'),
@@ -13824,6 +13876,11 @@ biweeklyReport.setReportDependencies({
 });
 
 server.listen(PORT, () => {
+  // 🛡️ INTEGRITY GUARDS — Verificar que los fixes críticos siguen intactos
+  integrityGuards.runIntegrityChecks();
+  // Re-verificar cada 6 horas (protección contra hot-reloads parciales)
+  setInterval(() => integrityGuards.runIntegrityChecks(), 6 * 60 * 60 * 1000);
+
   privacyCounters.startAutoFlush();
   auditLogger.startAutoFlush();
   tenantLogger.startAutoFlush();

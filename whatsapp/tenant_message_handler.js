@@ -1301,10 +1301,52 @@ Respondé "sí" para guardar todos, "no" para descartar, o indicá cuáles sí/n
     return line;
   }).join('\n');
 
+  // ══════════════════════════════════════════════════════════════════
+  // 🛡️ INTEGRITY GUARD: LEADS SUMMARY EN SELF-CHAT
+  // ══════════════════════════════════════════════════════════════════
+  // Inyecta resumen de leads/contactos recientes para que MIIA pueda
+  // responder "¿quién escribió?", "¿cómo van los leads?", etc.
+  // Sin esto, MIIA dice "no tengo visibilidad de leads" en self-chat.
+  //
+  // ⚠️ PROHIBIDO ELIMINAR — Sin este bloque, el owner pregunta por
+  // sus leads y MIIA no sabe nada. Verificado 10-Abr-2026.
+  // ══════════════════════════════════════════════════════════════════
+  let leadsSummaryStr = '';
+  if (isSelfChat && ctx.conversations && ctx.contactTypes) {
+    try {
+      const leadEntries = Object.entries(ctx.conversations)
+        .filter(([ph]) => {
+          const ct = ctx.contactTypes[ph];
+          return ct === 'lead' || ct === 'client' || (!ct && ph !== phone && !ctx.familyContacts?.[ph.replace(/@.*/, '')]);
+        })
+        .map(([ph, msgs]) => {
+          const lastMsg = msgs.filter(m => m.role === 'user').slice(-1)[0];
+          const name = ctx.leadNames?.[ph] || ph.replace(/@.*/, '');
+          const ago = lastMsg?.timestamp ? Math.round((Date.now() - lastMsg.timestamp) / 60000) : null;
+          const agoStr = ago != null ? (ago < 60 ? `hace ${ago}min` : ago < 1440 ? `hace ${Math.round(ago/60)}h` : `hace ${Math.round(ago/1440)}d`) : '';
+          const preview = lastMsg?.content?.substring(0, 80) || '';
+          return { name, agoStr, preview, lastTs: lastMsg?.timestamp || 0, totalMsgs: msgs.length };
+        })
+        .filter(e => e.lastTs > 0)
+        .sort((a, b) => b.lastTs - a.lastTs)
+        .slice(0, 10);
+
+      if (leadEntries.length > 0) {
+        const lines = leadEntries.map(e =>
+          `- ${e.name} (${e.agoStr}, ${e.totalMsgs} msgs): "${e.preview}"`
+        );
+        leadsSummaryStr = `\n\n[ACTIVIDAD RECIENTE DE CONTACTOS — ${leadEntries.length}]:\n${lines.join('\n')}\nUsa esta info si te preguntan por leads, contactos, o quién escribió. NO la muestres si no la piden.`;
+        console.log(`${logPrefix} 📊 LEADS-SUMMARY: ${leadEntries.length} contactos inyectados al self-chat prompt`);
+      }
+    } catch (lsErr) {
+      console.warn(`${logPrefix} ⚠️ LEADS-SUMMARY error (no bloquea): ${lsErr.message}`);
+    }
+  }
+
   // Ensamblado final del prompt
   const fullPrompt = `${activeSystemPrompt}
 
-${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${personalStr}${cerebroStr ? '\n\n[ADN VENTAS — CONOCIMIENTO DE NEGOCIO]:\n' + cerebroStr : ''}${pendingStr}
+${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${personalStr}${cerebroStr ? '\n\n[ADN VENTAS — CONOCIMIENTO DE NEGOCIO]:\n' + cerebroStr : ''}${pendingStr}${leadsSummaryStr}
 
 ${systemDateStr}
 

@@ -14,9 +14,20 @@ function db() { if (!_db) _db = admin.firestore(); return _db; }
 // In-memory state por owner: { uid: { weekendOff: boolean, resumeAt: Date, askedAt: Date } }
 const weekendState = {};
 
+// ══════════════════════════════════════════════════════════════════
+// 🛡️ INTEGRITY GUARD: HORA FIJA 19:00 LOCAL DEL OWNER
+// ══════════════════════════════════════════════════════════════════
+// El mensaje de modo finde se envía a las 19:00 hora LOCAL del owner.
+// Cada país tiene su timezone → 19:00 en Argentina, 19:00 en Colombia,
+// 19:00 donde sea. NUNCA antes, NUNCA después.
+//
+// ⚠️ PROHIBIDO cambiar la hora sin aprobación de Mariano.
+// Bug original: ventana 17-19h causaba envío a las 5:03PM.
+// Mariano quiere 7PM (19:00) exacto. Fix del 11-Abr-2026.
+// ══════════════════════════════════════════════════════════════════
 /**
  * Verifica si es momento de preguntar al owner sobre el finde.
- * Lógica: viernes 17:00-19:00 o sábado 09:00-11:00 (timezone del owner).
+ * Lógica: viernes a las 19:00 hora LOCAL del owner (timezone).
  * Solo pregunta una vez por finde.
  */
 function shouldAskWeekendQuestion(ownerUid, timezone) {
@@ -25,8 +36,8 @@ function shouldAskWeekendQuestion(ownerUid, timezone) {
   const day = now.getDay(); // 0=dom, 5=vie, 6=sáb
   const hour = now.getHours();
 
-  // Solo preguntar viernes 17-19 o sábado 9-11
-  const isQuestionTime = (day === 5 && hour >= 17 && hour <= 19) || (day === 6 && hour >= 9 && hour <= 11);
+  // HORA FIJA: viernes a las 19:00 local (ventana 19:00-19:59 para que el setInterval de 30min lo atrape)
+  const isQuestionTime = (day === 5 && hour === 19);
   if (!isQuestionTime) return false;
 
   // ¿Ya preguntó este finde?
@@ -37,6 +48,7 @@ function shouldAskWeekendQuestion(ownerUid, timezone) {
     if (diffHours < 48) return false; // Ya preguntó hace menos de 48h
   }
 
+  console.log(`[WEEKEND] ⏰ Hora de preguntar modo finde a ${ownerUid} (${hour}:00 ${tz}, viernes)`);
   return true;
 }
 
