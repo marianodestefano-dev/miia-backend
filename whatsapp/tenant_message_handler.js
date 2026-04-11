@@ -691,7 +691,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
       businessCerebro,
       personalBrain,
       subscriptionState: {},
-      miiaActive: {},  // phone → boolean — "Hola MIIA" activa, "Chau MIIA" desactiva
+      miiaActive: {},  // phone → timestamp — "Hola MIIA" guarda Date.now(), "Chau MIIA" borra. Auto-expira 10min sin actividad.
       scheduleConfig,
       businesses,
       contactGroups,
@@ -920,8 +920,20 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   const businessKeywords = getOwnerBusinessKeywords(ctx);
 
   // Actualizar estado de activación ANTES del gate
+  // Auto-timeout: MIIA se desactiva si pasaron 10 minutos sin mensajes del contacto
+  const MIIA_ACTIVE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos
+  if (ctx.miiaActive[phone] && !isHolaMiia) {
+    const elapsed = Date.now() - ctx.miiaActive[phone];
+    if (elapsed > MIIA_ACTIVE_TIMEOUT_MS) {
+      delete ctx.miiaActive[phone];
+      console.log(`${logPrefix} ⏰ MIIA auto-desactivada para ${basePhone} (${Math.round(elapsed / 60000)}min sin actividad)`);
+    } else {
+      // Renovar timestamp en cada mensaje (la ventana de 10min se reinicia)
+      ctx.miiaActive[phone] = Date.now();
+    }
+  }
   if (isHolaMiia) {
-    ctx.miiaActive[phone] = true;
+    ctx.miiaActive[phone] = Date.now();
     console.log(`${logPrefix} 🟢 MIIA activada para ${basePhone} (trigger "Hola MIIA")`);
   }
 
@@ -996,7 +1008,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   // Acción: farewell (Chau MIIA)
   if (gateDecision.action === 'farewell') {
-    ctx.miiaActive[phone] = false;
+    delete ctx.miiaActive[phone];
     console.log(`${logPrefix} 🔴 MIIA desactivada para ${basePhone} (trigger "Chau MIIA")`);
     const farewell = `¡Fue un gusto charlar! Cuando quieras hablar de nuevo, escribime *Hola MIIA* 😊`;
     ctx.conversations[phone].push({ role: 'assistant', content: farewell, timestamp: Date.now() });
