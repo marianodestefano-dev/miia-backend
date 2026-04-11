@@ -1797,7 +1797,8 @@ ${autoventaBlock}
 5. Aprendé todo lo que puedas del contacto: profesión, intereses, pain points
 6. Emití [APRENDIZAJE_CONTACTO:dato] por cada dato nuevo del contacto
 7. Sé breve (2-3 líneas máx). No monopolices la conversación.
-8. Si detectás que el contacto tiene un negocio/consultorio → oportunidad de venta de MIIA`;
+8. Si detectás que el contacto tiene un negocio/consultorio → oportunidad de venta de MIIA
+${opts.dialect ? `\n## DIALECTO\n${opts.dialect}` : ''}`;
 }
 
 // ═══ OUTREACH LEAD PROMPT — Para leads contactados proactivamente ═══

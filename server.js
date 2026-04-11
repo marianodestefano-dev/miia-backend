@@ -126,6 +126,7 @@ const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_
 const salesAssets = require('./core/sales_assets');
 const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
 const integrityGuards = require('./core/integrity_guards');
+const healthMonitor = require('./core/health_monitor');
 const actionFeedback = require('./core/action_feedback');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert, classifyUnknownContact } = require('./core/contact_gate');
 const miiaInvocation = require('./core/miia_invocation');
@@ -1591,7 +1592,13 @@ async function loadFromFirestore() {
     // Si está vacío después de cargar = Firestore no tiene los datos = PROBLEMA.
     const fcCount = Object.keys(familyContacts).length;
     if (fcCount === 0) {
-      console.error('[FIRESTORE] 🚨🚨🚨 familyContacts VACÍO después de cargar! Los familiares serán tratados como desconocidos. Verificar miia_persistent/contacts en Firestore.');
+      // MIIA CENTER (auto-venta) NO tiene familyContacts — es esperado, no es error
+      const isMiiaCenter = OWNER_UID === 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
+      if (isMiiaCenter) {
+        console.warn('[FIRESTORE] ℹ️ familyContacts vacío — MIIA CENTER (auto-venta) no tiene familia configurada. Esto es normal.');
+      } else {
+        console.error('[FIRESTORE] 🚨🚨🚨 familyContacts VACÍO después de cargar! Los familiares serán tratados como desconocidos. Verificar miia_persistent/contacts en Firestore.');
+      }
     } else {
       console.log(`[FIRESTORE] 👨‍👩‍👧‍👦 familyContacts cargados: ${fcCount} contactos (legacy + contact_groups)`);
     }
@@ -2962,6 +2969,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
 
         // Generar respuesta de entrada
         const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
+        const _firstInvokeDialect = getDialectForPhone(phone);
         const invokedPrompt = buildInvokedPrompt({
           ownerName: userProfile.shortName || userProfile.name || 'el owner',
           contactName,
@@ -2972,6 +2980,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
           invokedBy: isFromMe ? 'owner' : 'contact',
           ownerProfile: userProfile,
           stageInfo,
+          dialect: _firstInvokeDialect,
         });
 
         try {
@@ -2995,11 +3004,12 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         const invState = miiaInvocation.getInvocationState(phone);
         const contactName = invState?.contactName || 'chicos';
         try {
-          const farewellPrompt = `Sos MIIA. Te despiden de una conversación de 3. Despedite brevemente de ambos (el owner y ${contactName}). Recordá que pueden invocarte con "MIIA ven". Máx 2 líneas, natural.`;
+          const _farewellDialect = getDialectForPhone(phone);
+          const farewellPrompt = `Sos MIIA. Te despiden de una conversación de 3. Despedite brevemente de ambos (el owner y ${contactName}). Recordá que pueden invocarte con "MIIA ven". Máx 2 líneas, natural. ${_farewellDialect}`;
           const farewell = await generateAIContent(farewellPrompt);
-          await safeSendMessage(phone, farewell?.trim() || `¡Fue un gusto! Si me necesitan: *MIIA ven* 😊👋`, { isFamily: true });
+          await safeSendMessage(phone, farewell?.trim() || buildContextualFallback('farewell_invocation', { contactName, contactPhone: phone }), { isFamily: true });
         } catch (e) {
-          await safeSendMessage(phone, `¡Chauu! Si me necesitan: *MIIA ven* 😊👋`, { isFamily: true });
+          await safeSendMessage(phone, buildContextualFallback('farewell_invocation', { contactName, contactPhone: phone }), { isFamily: true });
         }
         return;
       }
@@ -3008,7 +3018,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
       if (currentlyInvoked) {
         miiaInvocation.touchInteraction(phone, async (retirePhone) => {
           try {
-            await safeSendMessage(retirePhone, `Bueno, los dejo que sigan charlando 😊 Si me necesitan: *MIIA ven*! 👋`);
+            await safeSendMessage(retirePhone, buildContextualFallback('auto_retire', { contactPhone: retirePhone }));
           } catch (e) { console.error(`[INVOCATION] ❌ Auto-retiro error:`, e.message); }
         });
 
@@ -3065,6 +3075,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         // Generar respuesta con prompt de invocación
         const updatedState = miiaInvocation.getInvocationState(phone);
         const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
+        const _invokedDialect = getDialectForPhone(phone);
         const invokedPrompt = buildInvokedPrompt({
           ownerName: userProfile.shortName || userProfile.name || 'el owner',
           contactName: updatedState?.contactName || null,
@@ -3075,6 +3086,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
           invokedBy: isFromMe ? 'owner' : 'contact',
           ownerProfile: userProfile,
           stageInfo,
+          dialect: _invokedDialect,
         });
 
         // Incluir mensaje actual en el historial para contexto
@@ -3128,8 +3140,10 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
         const contactName = conversationMetadata[phone].dileAContact;
         const contactInfo = familyContacts[phone.split('@')[0]] || {};
         const stageInfo = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
+        const _holaMiiaDialect = getDialectForPhone(phone);
         const promptHolaMiia = `Sos MIIA. ${contactName} acaba de escribir "HOLA MIIA" para activar la conversación.
 ${stageInfo}
+${_holaMiiaDialect}
 Generá una respuesta breve (máx 2 renglones), cálida y natural. Emoji: ${contactInfo.emoji || '💕'}
 NO repitas "Hola" ni "estoy lista", sé natural.`;
 
@@ -3140,7 +3154,9 @@ NO repitas "Hola" ni "estoy lista", sé natural.`;
           }
         } catch (e) {
           console.error(`[DILE A] Error generando respuesta HOLA MIIA:`, e.message);
-          await safeSendMessage(phone, `¡Acá estoy! Listos para lo que necesites. 💕`, { isFamily: true });
+          const _holaContactName = conversationMetadata[phone]?.dileAContact || '';
+          const _holaContactInfo = familyContacts[phone.split('@')[0]] || {};
+          await safeSendMessage(phone, buildContextualFallback('hola_miia', { contactName: _holaContactName, contactPhone: phone, emoji: _holaContactInfo.emoji || '💕' }), { isFamily: true });
         }
         return;
       }
@@ -3155,8 +3171,10 @@ NO repitas "Hola" ni "estoy lista", sé natural.`;
         const contactName = conversationMetadata[phone].dileAContact;
         const contactInfo = familyContacts[phone.split('@')[0]] || {};
         const stageInfoChau = getAffinityToneForPrompt(phone, userProfile.name || 'el owner');
+        const _chauMiiaDialect = getDialectForPhone(phone);
         const promptChauMiia = `Sos MIIA. ${contactName} escribió "CHAU MIIA" para cerrar la conversación.
 ${stageInfoChau}
+${_chauMiiaDialect}
 Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: *HOLA MIIA*. Emoji: ${contactInfo.emoji || '💕'}`;
 
         try {
@@ -3166,7 +3184,8 @@ Generá una despedida breve (máx 2 renglones). Recordale que si quiere volver: 
           }
         } catch (e) {
           console.error(`[DILE A] Error generando despedida CHAU MIIA:`, e.message);
-          await safeSendMessage(phone, `¡Chaauuu! Si quieres volver a hablar, escribe HOLA MIIA en el chat. 💕`, { isFamily: true });
+          const _chauContactInfo = familyContacts[phone.split('@')[0]] || {};
+          await safeSendMessage(phone, buildContextualFallback('chau_miia', { contactName: conversationMetadata[phone]?.dileAContact || '', contactPhone: phone, emoji: _chauContactInfo.emoji || '💕' }), { isFamily: true });
         }
 
         // ═══ RESUMEN DE LO APRENDIDO → enviar al owner en self-chat ═══
@@ -3219,20 +3238,22 @@ Formato: bullet points. Sin saludos, directo al resumen.`;
           // NO decir "inteligencia artificial" — MIIA se presenta como asistente, con naturalidad
           const contactInfo = familyContacts[phone.split('@')[0]] || {};
           const stageNow = getAffinityStage(phone);
+          const _explainDialect = getDialectForPhone(phone);
           const promptExplain = `Sos MIIA. ${contactName} te respondió "${(effectiveMsg || '').substring(0, 60)}" pero NO escribió "HOLA MIIA" para activar la conversación.
 Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con vos tiene que escribir *HOLA MIIA*.
 - NO digas "inteligencia artificial". NO digas "soy una IA". Presentate como "MIIA, asistente de ${ownerName}".
 - Tono amigable, sin ser formal. Emoji: 1-2 max.
+- ${_explainDialect}
 - Decile que ${ownerName} le va a explicar mejor quién sos.`;
           try {
             const explainMsg = await generateAIContent(promptExplain);
             if (explainMsg) {
               await safeSendMessage(phone, explainMsg.trim(), { isFamily: true });
             } else {
-              await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`, { isFamily: true });
+              await safeSendMessage(phone, buildContextualFallback('handshake_explain', { contactName, ownerName, contactPhone: phone }), { isFamily: true });
             }
           } catch (e) {
-            await safeSendMessage(phone, `¡Hola! 😊 Soy MIIA, asistente de ${ownerName}. Para hablar conmigo, escribí *HOLA MIIA*. ¡Nos vemos! 🙌`, { isFamily: true });
+            await safeSendMessage(phone, buildContextualFallback('handshake_explain', { contactName, ownerName, contactPhone: phone }), { isFamily: true });
           }
           // Avisar al owner en self-chat
           const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
@@ -4166,7 +4187,9 @@ ${(() => { const lc = leadPhone.substring(0, 2); if (lc === '57') return '- DIAL
       console.log(`[EQUIPO:PRESENTACIÓN] 🎬 Mariano activó presentación de MIIA al equipo`);
       const phones = Object.keys(equipoMedilink);
       if (phones.length === 0) {
-        await safeSendMessage(phone, `No tengo miembros del equipo registrados. Primero agregá contactos al equipo.`, { isSelfChat: true, skipEmoji: true });
+        const _ownerCountryEQ = getCountryFromPhone(OWNER_PHONE || '57');
+        const _eqVerb = _ownerCountryEQ === 'AR' ? 'agregá' : 'agrega';
+        await safeSendMessage(phone, `No tengo miembros del equipo registrados. Primero ${_eqVerb} contactos al equipo desde el dashboard o decime sus números.`, { isSelfChat: true, skipEmoji: true });
         return;
       }
 
@@ -4189,7 +4212,7 @@ ${(() => { const lc = leadPhone.substring(0, 2); if (lc === '57') return '- DIAL
           console.error(`[EQUIPO:PRESENTACIÓN] ❌ Error enviando a ${num}:`, e.message);
         }
       }
-      await safeSendMessage(phone, `✅ Me presenté con ${enviados}/${phones.length} miembros del equipo. Les envié el video de la langosta 🦞`, { isSelfChat: true, skipEmoji: true });
+      await safeSendMessage(phone, `✅ Listo — me presenté con ${enviados} de ${phones.length} miembros del equipo. Cada uno recibió mi presentación con el video de la langosta 🦞`, { isSelfChat: true, skipEmoji: true });
       // Marcar que la presentación ya se hizo (para no recordar más)
       try {
         await db.collection('users').doc(OWNER_UID).collection('miia_flags').doc('team_presentation').set({ done: true, doneAt: new Date().toISOString(), sentTo: enviados });
@@ -4318,7 +4341,7 @@ ${(() => { const tc = target.phone.substring(0, 2); const tc3 = target.phone.sub
       saveDB();
       if (presentados > 0) {
         const nombresOk = targets.filter((_, i) => i < presentados).map(t => t.info.name).join(' y ');
-        await safeSendMessage(phone, `✅ Me presenté con ${nombresOk}. Cuando respondan con *HOLA MIIA* arrancamos a conversar. Les expliqué quién soy y que son parte del grupo gratis 💜`, { isSelfChat: true });
+        await safeSendMessage(phone, `✅ Listo — me presenté con ${nombresOk}. Cuando respondan con *HOLA MIIA* arrancamos a conversar 💜`, { isSelfChat: true });
       } else {
         await safeSendMessage(phone, `❌ No pude enviar ninguna presentación. Verificá que WhatsApp esté conectado.`, { isSelfChat: true });
       }
@@ -4354,7 +4377,8 @@ ${(() => { const tc = target.phone.substring(0, 2); const tc3 = target.phone.sub
       try {
         const presentDoc = await db.collection('users').doc(OWNER_UID).collection('miia_flags').doc('team_presentation').get();
         if (!presentDoc.exists || !presentDoc.data()?.done) {
-          await safeSendMessage(phone, `✅ Mensaje enviado a ${enviados} miembros del equipo.\n\n💡 ¿Ya me presentaste al equipo? Si querés que les mande mi presentación con el video motivacional de la langosta 🦞, decime "presentate al equipo".`, { isSelfChat: true, skipEmoji: true });
+          const _bcastVerb = getCountryFromPhone(OWNER_PHONE || '57') === 'AR' ? 'decime' : 'dime';
+          await safeSendMessage(phone, `✅ Mensaje enviado a ${enviados} miembros del equipo.\n\n💡 ¿Ya me presentaste al equipo? Si ${_bcastVerb === 'decime' ? 'querés' : 'quieres'} que les mande mi presentación con el video de la langosta 🦞, ${_bcastVerb} "presentate al equipo".`, { isSelfChat: true, skipEmoji: true });
         }
       } catch (_) {}
       return;
@@ -5585,6 +5609,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       // Si regex ya vetó → manejar según tipo de veto
       if (!regexResult.approved && regexResult.action === 'veto') {
         console.error(`[POSTPROCESS:REGEX] 🚫 VETO directo: ${regexResult.vetoReason}`);
+        healthMonitor.captureLog('error', `[VETO] ${phone} — ${regexResult.vetoReason}`);
 
         // ═══ FIX AGENDA: Si el veto es por AGENDAR_EVENTO o SOLICITAR_TURNO, extraer datos con IA y forzar el tag ═══
         const isAgendaVeto = regexResult.vetoReason && /AGENDAR_EVENTO|SOLICITAR_TURNO/.test(regexResult.vetoReason);
@@ -5664,6 +5689,7 @@ REGLAS:
       if (!aiAuditResult.approved) {
         if (aiAuditResult.action === 'veto') {
           console.error(`[POSTPROCESS:AI] 🚫 VETO por auditor IA: ${aiAuditResult.issues.join('; ')}`);
+          healthMonitor.captureLog('error', `[VETO] ${phone} — AI: ${aiAuditResult.issues.join('; ')}`);
           // Regenerar con hint del auditor IA
           try {
             const aiHint = `\n\n⚠️ CORRECCIÓN DEL AUDITOR DE CALIDAD: ${aiAuditResult.issues.join('. ')}. Corregí estos problemas en tu nueva respuesta.`;
@@ -7281,6 +7307,16 @@ REGLAS:
       timestamp: Date.now(),
       type: contactTypes[phone] || 'lead'
     });
+
+    // 📊 HISTORY MINING CAPA 3: Enriquecer contact_index con cada interacción
+    if (OWNER_UID && !isSelfChat) {
+      enrichContactIndex(OWNER_UID, phone, {
+        messageBody: userMessage,
+        contactType: contactTypes[phone] || 'lead',
+        contactName: leadNames[phone] || '',
+        isFromContact: true
+      });
+    }
 
     // Enviar preguntas de aprendizaje pendientes a Mariano
     if (isAdmin && conversationMetadata[phone]?.pendingLearningQuestions?.length > 0) {
@@ -9747,12 +9783,140 @@ function getTimezoneForCountry(country) {
   return tzMap[country] || 'America/Bogota';
 }
 
+// ═══ HELPER: Dialecto por país del contacto (para inyectar en prompts) ═��═
+// Si no se reconoce el país → español neutro. Formal pero con acento local.
+function getDialectForPhone(contactPhone) {
+  const country = getCountryFromPhone(contactPhone || '');
+  switch (country) {
+    case 'AR': return 'DIALECTO: Usá VOS (voseo rioplatense). "contame", "decime", "mirá", "fijate". Expresiones: "dale", "genial", "bárbaro".';
+    case 'CO': return 'DIALECTO: Usá TÚ (tuteo colombiano). "cuéntame", "dime", "mira". Expresiones: "listo", "dale", "claro que sí", "con mucho gusto".';
+    case 'MX': return 'DIALECTO: Usá TÚ (tuteo mexicano). "cuéntame", "platícame", "mira". Expresiones: "órale", "sale", "claro", "con gusto".';
+    case 'CL': return 'DIALECTO: Usá TÚ (tuteo chileno). "cuéntame", "dime". Expresiones: "dale", "ya", "perfecto".';
+    case 'PE': return 'DIALECTO: Usá TÚ (tuteo peruano). "cuéntame", "dime". Expresiones: "ya", "claro", "nomás".';
+    case 'EC': return 'DIALECTO: Usá TÚ (tuteo ecuatoriano). "cuéntame", "dime". Expresiones: "claro", "dale", "ya mismo".';
+    case 'ES': return 'DIALECTO: Usá TÚ (tuteo español). "cuéntame", "dime". NUNCA "vos". Expresiones: "vale", "genial", "estupendo".';
+    case 'US': return 'DIALECTO: Usá TÚ (español neutro formal). "cuéntame", "dime". Tono profesional, sin regionalismos.';
+    default:   return 'DIALECTO: Usá TÚ (español neutro). "cuéntame", "dime". NUNCA "contame" ni "decime" (argentino). Tono profesional neutro.';
+  }
+}
+
+// ═══ HELPER: Fallback contextual para contactos familia/equipo/grupos ═══
+// Genera textos fallback SIN IA, usando contexto del contacto y owner
+function buildContextualFallback(type, { contactName, ownerName, contactPhone, emoji } = {}) {
+  const country = getCountryFromPhone(contactPhone || OWNER_PHONE || '57');
+  const isVos = country === 'AR';
+  const name = contactName || '';
+  const ow = ownerName || userProfile?.name?.split(' ')[0] || '';
+  const em = emoji || '😊';
+
+  switch (type) {
+    case 'farewell_invocation':
+      return isVos
+        ? `¡Fue un gusto${name ? `, ${name}` : ''}! Si me necesitan: *MIIA ven* ${em}👋`
+        : `¡Fue un gusto${name ? `, ${name}` : ''}! Si me necesitan: *MIIA ven* ${em}👋`;
+    case 'auto_retire':
+      return isVos
+        ? `Los dejo que sigan charlando ${em} Si me necesitan: *MIIA ven*! 👋`
+        : `Los dejo para que sigan platicando ${em} Si me necesitan: *MIIA ven*! 👋`;
+    case 'hola_miia':
+      return isVos
+        ? `¡Hola${name ? ` ${name}` : ''}! Acá estoy, ${isVos ? 'contame' : 'cuéntame'} ${em}`
+        : `¡Hola${name ? ` ${name}` : ''}! Aquí estoy, cuéntame ${em}`;
+    case 'chau_miia':
+      return isVos
+        ? `¡Chau${name ? ` ${name}` : ''}! Cuando quieras volver a hablar: *HOLA MIIA* ${em}`
+        : `¡Chao${name ? ` ${name}` : ''}! Cuando quieras volver a hablar: *HOLA MIIA* ${em}`;
+    case 'handshake_explain':
+      return isVos
+        ? `¡Hola${name ? ` ${name}` : ''}! ${em} Soy MIIA${ow ? `, asistente de ${ow}` : ''}. Para charlar conmigo escribí *HOLA MIIA*. ¡Nos vemos! 🙌`
+        : `¡Hola${name ? ` ${name}` : ''}! ${em} Soy MIIA${ow ? `, asistente de ${ow}` : ''}. Para hablar conmigo escribe *HOLA MIIA*. ¡Nos vemos! 🙌`;
+    default:
+      return `${em}`;
+  }
+}
+
 // Verificar si una fecha es festivo en un país
 function isHoliday(date, country) {
   const mm = (date.getMonth() + 1).toString().padStart(2, '0');
   const dd = date.getDate().toString().padStart(2, '0');
   const holidays = HOLIDAYS_BY_COUNTRY[country] || [];
   return holidays.includes(`${mm}-${dd}`);
+}
+
+// ═══ HISTORY MINING CAPA 3: Enriquecimiento incremental del contact_index ═══
+// Cada mensaje procesado actualiza el perfil del contacto sin pedir historial a WhatsApp.
+// Async, non-blocking — no afecta latencia de respuesta.
+const _contactIndexUpdateQueue = new Map();
+let _contactIndexFlushTimer = null;
+
+function enrichContactIndex(uid, phone, { messageBody, contactType, contactName, isFromContact } = {}) {
+  if (!uid || !phone) return;
+  const basePhone = phone.split('@')[0].split(':')[0];
+  if (!basePhone || basePhone.length < 8) return;
+
+  const existing = _contactIndexUpdateQueue.get(basePhone) || {
+    uid,
+    lastMessageDate: new Date().toISOString(),
+    messageCount: 0,
+    ownerMessageCount: 0,
+  };
+
+  if (isFromContact) {
+    existing.messageCount = (existing.messageCount || 0) + 1;
+    existing.lastMessagePreview = (messageBody || '').substring(0, 100);
+  } else {
+    existing.ownerMessageCount = (existing.ownerMessageCount || 0) + 1;
+  }
+  if (contactType) existing.type = contactType;
+  if (contactName) existing.name = contactName;
+  existing.lastMessageDate = new Date().toISOString();
+  existing.updatedAt = new Date().toISOString();
+
+  _contactIndexUpdateQueue.set(basePhone, existing);
+
+  // Debounce flush: write to Firestore every 30s (batch)
+  if (!_contactIndexFlushTimer) {
+    _contactIndexFlushTimer = setTimeout(_flushContactIndex, 30000);
+  }
+}
+
+async function _flushContactIndex() {
+  _contactIndexFlushTimer = null;
+  if (_contactIndexUpdateQueue.size === 0) return;
+
+  const batch = admin.firestore().batch();
+  let count = 0;
+  for (const [basePhone, data] of _contactIndexUpdateQueue) {
+    const uid = data.uid;
+    delete data.uid; // No guardar uid dentro del doc
+    const ref = admin.firestore().collection('users').doc(uid)
+      .collection('contact_index').doc(basePhone);
+    batch.set(ref, {
+      ...data,
+      lastEnriched: new Date().toISOString()
+    }, { merge: true });
+    count++;
+    if (count >= 450) break; // Firestore batch limit ~500
+  }
+
+  try {
+    await batch.commit();
+    // Clear processed entries
+    let cleared = 0;
+    for (const [basePhone] of _contactIndexUpdateQueue) {
+      _contactIndexUpdateQueue.delete(basePhone);
+      cleared++;
+      if (cleared >= count) break;
+    }
+    console.log(`[CONTACT-INDEX] 📊 Enrichment flush: ${count} contactos actualizados`);
+  } catch (e) {
+    console.error(`[CONTACT-INDEX] ❌ Error flush: ${e.message}`);
+  }
+
+  // If there are more pending, schedule another flush
+  if (_contactIndexUpdateQueue.size > 0) {
+    _contactIndexFlushTimer = setTimeout(_flushContactIndex, 30000);
+  }
 }
 
 // ═══ HELPER UNIFICADO: Obtener hora local del owner (evita duplicar lógica timezone) ═══
@@ -13103,6 +13267,8 @@ app.get('/api/health/rate-limiter', (req, res) => res.json({
   adminLevel: rateLimiter.getLevel('admin'),
 }));
 
+app.get('/api/health/health-monitor', (req, res) => res.json(healthMonitor.getStats()));
+
 // ═══ P5 HEALTH ENDPOINTS ═══
 app.get('/api/health/key-pool', (req, res) => res.json(keyPool.getAllStats()));
 app.get('/api/health/wa-gateway', (req, res) => res.json(waGateway.healthCheck()));
@@ -14231,6 +14397,22 @@ server.listen(PORT, () => {
   integrityGuards.runIntegrityChecks();
   // Re-verificar cada 6 horas (protección contra hot-reloads parciales)
   setInterval(() => integrityGuards.runIntegrityChecks(), 6 * 60 * 60 * 1000);
+
+  // 🏥 HEALTH MONITOR — Análisis de patrones cada 15 min
+  setInterval(async () => {
+    try {
+      await healthMonitor.runAnalysis({
+        safeSendMessage,
+        ownerPhone: OWNER_PHONE,
+        ownerUid: OWNER_UID
+      });
+      // Auto-restart de módulos si están muertos
+      healthMonitor.attemptModuleRestart({ sportEngine });
+    } catch (e) {
+      console.error(`[HEALTH-MONITOR] ❌ Error en análisis: ${e.message}`);
+    }
+  }, 15 * 60 * 1000);
+  console.log('[HEALTH-MONITOR] 🏥 Iniciado — análisis cada 15 min');
 
   privacyCounters.startAutoFlush();
   auditLogger.startAutoFlush();

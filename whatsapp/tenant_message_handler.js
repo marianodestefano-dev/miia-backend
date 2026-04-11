@@ -84,6 +84,83 @@ function setApprovalFunctions({ validateLearningKey, createLearningApproval, mar
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 📊 HISTORY MINING CAPA 3 — Enriquecimiento incremental contact_index
+// Cada mensaje enriquece el perfil del contacto en Firestore.
+// Debounced: acumula en Map y flushea cada 30s en batch.
+// ═══════════════════════════════════════════════════════════════
+const _tmhContactIndexQueue = new Map();
+let _tmhContactIndexFlushTimer = null;
+
+/**
+ * Encolar enriquecimiento de contact_index para un contacto.
+ * NO escribe a Firestore inmediatamente — debounced 30s.
+ */
+function enrichContactIndex(ownerUid, phone, { messageBody, contactType, contactName, isFromContact } = {}) {
+  if (!ownerUid || !phone) return;
+  const basePhone = phone.split('@')[0].split(':')[0];
+  if (!basePhone || basePhone.length < 8) return;
+
+  const key = `${ownerUid}:${basePhone}`;
+  const existing = _tmhContactIndexQueue.get(key) || {
+    ownerUid,
+    basePhone,
+    lastMessageDate: new Date().toISOString(),
+    messageCount: 0,
+    ownerMessageCount: 0,
+  };
+
+  if (isFromContact) {
+    existing.messageCount = (existing.messageCount || 0) + 1;
+    existing.lastMessagePreview = (messageBody || '').substring(0, 100);
+  } else {
+    existing.ownerMessageCount = (existing.ownerMessageCount || 0) + 1;
+  }
+  if (contactType) existing.type = contactType;
+  if (contactName) existing.name = contactName;
+  existing.lastMessageDate = new Date().toISOString();
+  existing.updatedAt = new Date().toISOString();
+
+  _tmhContactIndexQueue.set(key, existing);
+
+  if (!_tmhContactIndexFlushTimer) {
+    _tmhContactIndexFlushTimer = setTimeout(_flushTmhContactIndex, 30000);
+  }
+}
+
+async function _flushTmhContactIndex() {
+  _tmhContactIndexFlushTimer = null;
+  if (_tmhContactIndexQueue.size === 0) return;
+
+  const batch = admin.firestore().batch();
+  let count = 0;
+  for (const [key, data] of _tmhContactIndexQueue) {
+    const { ownerUid, basePhone, ...docData } = data;
+    const ref = admin.firestore().collection('users').doc(ownerUid)
+      .collection('contact_index').doc(basePhone);
+    batch.set(ref, { ...docData, lastEnriched: new Date().toISOString() }, { merge: true });
+    count++;
+    if (count >= 450) break; // Firestore batch limit ~500
+  }
+
+  try {
+    await batch.commit();
+    let cleared = 0;
+    for (const [key] of _tmhContactIndexQueue) {
+      _tmhContactIndexQueue.delete(key);
+      cleared++;
+      if (cleared >= count) break;
+    }
+    console.log(`[TMH:CONTACT-INDEX] 📊 Enrichment flush: ${count} contactos actualizados`);
+  } catch (e) {
+    console.error(`[TMH:CONTACT-INDEX] ❌ Error flush: ${e.message}`);
+  }
+
+  if (_tmhContactIndexQueue.size > 0) {
+    _tmhContactIndexFlushTimer = setTimeout(_flushTmhContactIndex, 30000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // FIRESTORE HELPERS — Cada función loguea TODO (éxito y error)
 // ═══════════════════════════════════════════════════════════════
 
@@ -1895,6 +1972,16 @@ REGLAS:
   });
   if (ctx.conversations[phone].length > 40) {
     ctx.conversations[phone] = ctx.conversations[phone].slice(-40);
+  }
+
+  // ── PASO 13b: 📊 HISTORY MINING CAPA 3 — Enriquecer contact_index ──
+  if (ctx.ownerUid && !isSelfChat) {
+    enrichContactIndex(ctx.ownerUid, phone, {
+      messageBody,
+      contactType: contactType || 'lead',
+      contactName: ctx.leadNames[phone] || leadName || '',
+      isFromContact: true
+    });
   }
 
   // ── PASO 14: Emitir evento a frontend via Socket.IO ──
