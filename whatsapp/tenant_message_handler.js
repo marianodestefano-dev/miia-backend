@@ -1610,7 +1610,7 @@ Respondé "sí" para guardar todos, "no" para descartar, o indicá cuáles sí/n
       const leadEntries = Object.entries(ctx.conversations)
         .filter(([ph]) => {
           const ct = ctx.contactTypes[ph];
-          return ct === 'lead' || ct === 'client' || (!ct && ph !== phone && !ctx.familyContacts?.[ph.replace(/@.*/, '')]);
+          return ct === 'lead' || ct === 'client' || ct === 'miia_lead' || ct === 'miia_client' || (!ct && ph !== phone && !ctx.familyContacts?.[ph.replace(/@.*/, '')]);
         })
         .map(([ph, msgs]) => {
           const lastMsg = msgs.filter(m => m.role === 'user').slice(-1)[0];

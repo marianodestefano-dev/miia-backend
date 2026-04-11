@@ -287,6 +287,43 @@ async function updateLevel(uid, relationId, newLevel) {
   await batch.commit();
   console.log(`${LOG_PREFIX} 🔄 Nivel cambiado: ${relationId} → ${newLevel} (por ${uid})`);
 
+  // ═══ ALERTA AL PROTECTOR: nivel cambiado ═══
+  const levelDesc = LEVEL_DESCRIPTIONS[newLevel] || newLevel;
+  const protegidoName = data.partnerName || 'Tu protegido';
+
+  // 1. WhatsApp self-chat al protector
+  if (_safeSendMessage && data.partnerPhone) {
+    const alertMsg = `🛡️🔔 *Alerta de Seguridad*\n\n` +
+      `${protegidoName} cambió el nivel de acceso de tu protección.\n` +
+      `📊 Nuevo nivel: *${newLevel}*\n` +
+      `ℹ️ ${levelDesc}\n\n` +
+      `Si no reconocés este cambio, contactá a ${protegidoName} directamente.`;
+    try {
+      await _safeSendMessage(data.partnerPhone, alertMsg);
+      console.log(`${LOG_PREFIX} 📱 Alerta WhatsApp enviada al protector: ${data.partnerPhone}`);
+    } catch (e) {
+      console.error(`${LOG_PREFIX} ❌ Error enviando alerta WhatsApp al protector: ${e.message}`);
+    }
+  }
+
+  // 2. Email al protector
+  if (_sendGenericEmail) {
+    try {
+      const protectorDoc = await db().collection('users').doc(data.partnerUid).get();
+      const protectorEmail = protectorDoc.exists ? protectorDoc.data().email : null;
+      if (protectorEmail) {
+        await _sendGenericEmail(
+          protectorEmail,
+          `🛡️ Cambio en configuración de seguridad — ${protegidoName}`,
+          `Hola,\n\n${protegidoName} cambió el nivel de acceso de tu contacto de seguridad.\n\nNuevo nivel: ${newLevel}\n${levelDesc}\n\nSi no reconocés este cambio, contactá a ${protegidoName} directamente.\n\n— MIIA Seguridad`
+        );
+        console.log(`${LOG_PREFIX} 📧 Email de alerta enviado al protector: ${protectorEmail}`);
+      }
+    } catch (e) {
+      console.error(`${LOG_PREFIX} ❌ Error enviando email al protector: ${e.message}`);
+    }
+  }
+
   return { relationId, level: newLevel };
 }
 
@@ -312,13 +349,38 @@ async function unlinkSecurityContact(uid, relationId, reason = 'manual') {
 
   console.log(`${LOG_PREFIX} 🔓 Desvinculado: ${uid} ↔ ${data.partnerUid} (${relationId}). Razón: ${reason}`);
 
-  // Notificar al otro lado
+  // ═══ ALERTA AL OTRO LADO: desvinculación ═══
+  const partnerName = data.partnerName || 'un usuario';
+
+  // 1. WhatsApp al partner
   if (_safeSendMessage && data.partnerPhone) {
-    const msg = `🛡️ Tu contacto de seguridad con ${data.partnerName || 'un usuario'} ha sido desvinculado.`;
+    const alertMsg = `🛡️🔔 *Alerta de Seguridad*\n\n` +
+      `Tu contacto de seguridad con *${partnerName}* ha sido desvinculado.\n` +
+      `📋 Razón: ${reason}\n\n` +
+      `Si no fuiste vos quien lo hizo, contactá a ${partnerName} directamente.`;
     try {
-      await _safeSendMessage(data.partnerPhone, msg);
+      await _safeSendMessage(data.partnerPhone, alertMsg);
+      console.log(`${LOG_PREFIX} 📱 Alerta desvinculación enviada a: ${data.partnerPhone}`);
     } catch (e) {
-      console.error(`${LOG_PREFIX} ❌ Error notificando desvinculación: ${e.message}`);
+      console.error(`${LOG_PREFIX} ❌ Error notificando desvinculación por WhatsApp: ${e.message}`);
+    }
+  }
+
+  // 2. Email al partner
+  if (_sendGenericEmail) {
+    try {
+      const partnerDoc = await db().collection('users').doc(data.partnerUid).get();
+      const partnerEmail = partnerDoc.exists ? partnerDoc.data().email : null;
+      if (partnerEmail) {
+        await _sendGenericEmail(
+          partnerEmail,
+          `🛡️ Contacto de seguridad desvinculado — ${partnerName}`,
+          `Hola,\n\nTu contacto de seguridad con ${partnerName} ha sido desvinculado.\n\nRazón: ${reason}\n\nSi no reconocés esta acción, contactá a ${partnerName} directamente.\n\n— MIIA Seguridad`
+        );
+        console.log(`${LOG_PREFIX} 📧 Email de desvinculación enviado a: ${partnerEmail}`);
+      }
+    } catch (e) {
+      console.error(`${LOG_PREFIX} ❌ Error enviando email de desvinculación: ${e.message}`);
     }
   }
 

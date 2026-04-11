@@ -18,8 +18,8 @@
 // VERSIÓN ACTUAL Y CHANGELOG
 // ═══════════════════════════════════════════════════════════════
 
-const CURRENT_VERSION = '2.8.0';
-const CURRENT_DATE = '2026-04-07';
+const CURRENT_VERSION = '2.9.0';
+const CURRENT_DATE = '2026-04-11';
 
 /**
  * Changelog: features nuevas de esta versión
@@ -27,38 +27,30 @@ const CURRENT_DATE = '2026-04-07';
  */
 const CHANGELOG = [
   {
-    id: 'content_safety_shield',
-    title: '🛡️ Protección de contenido',
-    description: 'Ahora verifico todas las imágenes antes de procesarlas. Si detecto contenido sensible, lo bloqueo automáticamente para proteger tu privacidad.',
+    id: 'security_contacts',
+    title: '🛡️ Contactos de Seguridad',
+    description: 'Ahora podés designar protectores y protegidos con 3 niveles de acceso. Si te pasa algo (SOS, caída), aviso a tus protectores por WhatsApp y email.',
+    commands: ['proteger a +54911...', 'mis protectores', 'mis protegidos', 'cambiar nivel'],
   },
   {
-    id: 'outfit_mode',
-    title: '👗 Modo Outfit',
-    description: 'Enviame fotos de tu ropa y te armo combinaciones. Decime "qué me pongo para una cita" y te sugiero.',
-    commands: ['guardar (+ foto)', 'qué me pongo', 'mi guardarropa', 'qué tal (+ foto de outfit)'],
+    id: 'agent_selfchat',
+    title: '📋 Agentes: Self-chat de negocios',
+    description: 'Los agentes ahora tienen su propio chat conmigo, enfocado 100% en su negocio: agenda, tareas, citas, productos.',
   },
   {
-    id: 'image_analysis',
-    title: '🔍 Análisis de imágenes',
-    description: 'Enviame cualquier captura (CRM, planilla, lista de contactos) y te digo qué veo. Te pregunto antes de actuar.',
-    commands: ['hacete cargo (+ captura)', 'analizá esto (+ imagen)'],
+    id: 'calendar_safe_hours_fix',
+    title: '📅 Recordatorios siempre puntuales',
+    description: 'Los eventos que vos creás (Google Calendar, self-chat) ahora SIEMPRE te recuerdo, incluso antes de las 10am.',
   },
   {
-    id: 'invocation_3way',
-    title: '🗣️ Invocación en chats',
-    description: 'Decí "MIIA vení" en cualquier chat 1-a-1 y me sumo a la conversación para ayudarte.',
-    commands: ['MIIA vení', 'MIIA estás?', 'Chau MIIA'],
+    id: 'morning_briefing_always',
+    title: '🌅 Informe matutino garantizado',
+    description: 'Todos los días a las 8:30 AM te envío algo: si hay novedades te cuento, si no, te saludo y te deseo un buen día.',
   },
   {
-    id: 'outreach_schedule',
-    title: '📋 Contacto programado',
-    description: 'Cuando me enviás contactos, ahora podés decirme "mañana" y los guardo para el día siguiente.',
-    commands: ['contactalos', 'mañana', 'guardalos'],
-  },
-  {
-    id: 'respondele_improved',
-    title: '💬 "Respondele" mejorado',
-    description: 'Cuando alguien te escribe y te aviso, ahora entiendo todas las formas de pedirme que responda: "respondele", "contestale", "escribile", "dale responde".',
+    id: 'security_alerts_email',
+    title: '📧 Alertas de seguridad por email',
+    description: 'Si alguien cambia la configuración de tu contacto de seguridad, te aviso por WhatsApp Y por email.',
   },
 ];
 
@@ -107,7 +99,9 @@ const CAPABILITIES = [
   ]},
   { category: '🛡️ Seguridad', items: [
     'Protección de contenido sensible en imágenes',
-    'Nunca comparto tus fotos con terceros',
+    'Contactos de Seguridad: protector/protegido con 3 niveles',
+    'Alertas SOS y caída → WhatsApp + email a protectores',
+    'OTP para vincular contactos de seguridad',
     'Horario configurable de respuesta (default 7am-7pm)',
     'Verificación de integridad cada 5 minutos',
   ]},
@@ -115,6 +109,8 @@ const CAPABILITIES = [
     'Aprendo de cada conversación (con tu aprobación)',
     '"Olvidá: X" para borrar un aprendizaje',
     'Cerebro personalizado por negocio',
+    'Nightly Brain: analizo TODO el día a las 23:00',
+    'Morning Briefing: informe a las 8:30 AM (siempre)',
   ]},
 ];
 
@@ -170,6 +166,25 @@ async function checkAndAnnounce(uid, sendFn) {
 
     await sendFn(msg);
     _announcementSent = true;
+
+    // ═══ OPCIÓN C: También actualizar personal_brain con funciones nuevas ═══
+    // Para que MIIA SEPA qué puede hacer (no solo lo anuncie y lo olvide)
+    try {
+      const brainRef = _admin.firestore().collection('users').doc(uid).collection('personal').doc('personal_brain');
+      const brainDoc = await brainRef.get();
+      const currentBrain = brainDoc.exists ? (brainDoc.data().content || '') : '';
+
+      const featureBlock = `\n\n[FUNCIONES NUEVAS v${CURRENT_VERSION} — ${CURRENT_DATE}]\n` +
+        CHANGELOG.map(f => `- ${f.title}: ${f.description}`).join('\n') +
+        '\n[FIN FUNCIONES NUEVAS]';
+
+      // Limpiar bloques de versiones anteriores y agregar el nuevo
+      const cleanedBrain = currentBrain.replace(/\n\n\[FUNCIONES NUEVAS v[\s\S]*?\[FIN FUNCIONES NUEVAS\]/g, '');
+      await brainRef.set({ content: cleanedBrain + featureBlock, updatedAt: new Date().toISOString() }, { merge: true });
+      console.log(`[FEATURE-ANNOUNCER] 🧠 personal_brain actualizado con ${CHANGELOG.length} funciones nuevas`);
+    } catch (brainErr) {
+      console.error(`[FEATURE-ANNOUNCER] ⚠️ Error actualizando personal_brain (no bloquea): ${brainErr.message}`);
+    }
 
     // Actualizar versión vista
     await metaRef.set({ version: CURRENT_VERSION, seenAt: new Date().toISOString() });

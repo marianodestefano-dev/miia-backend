@@ -5151,12 +5151,20 @@ Nuevo resumen actualizado:`;
     // Clasificador detecta intención → ensamblador carga solo módulos relevantes
     let promptMeta = null;
     if (isAdmin) {
+      // ═══ FIX MIIA CENTER: El owner de MIIA CENTER es el OWNER SUPREMO ═══
+      // userProfile puede estar vacío/minimal → merge con MIIA_SALES_PROFILE
+      // para que el prompt tenga name, businessName, businessDescription, etc.
+      const isMiiaCenterSelf = OWNER_UID === 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
+      const effectiveProfile = isMiiaCenterSelf
+        ? { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile.name || MIIA_SALES_PROFILE.name || 'Mariano', shortName: userProfile.shortName || 'Mariano' }
+        : userProfile;
+
       const result = assemblePrompt({
         chatType: 'selfchat',
         messageBody: userMessage,
-        ownerProfile: userProfile, // Perfil DINÁMICO del owner desde Firestore
+        ownerProfile: effectiveProfile,
         context: {
-          contactName: userProfile.name || '',
+          contactName: effectiveProfile.name || '',
           countryContext, // Dialecto del owner en self-chat
           affinityStage: conversationMetadata[phone]?.affinityStage,
           affinityCount: conversationMetadata[phone]?.messageCount,
@@ -5164,6 +5172,26 @@ Nuevo resumen actualizado:`;
       });
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
+
+      // ═══ MIIA CENTER OWNER SUPREMO: Inyectar acceso total ═══
+      // El owner de MIIA CENTER debe tener visibilidad COMPLETA de leads, métricas, todo.
+      if (isMiiaCenterSelf) {
+        const totalLeads = Object.keys(contactTypes).filter(k => contactTypes[k] === 'lead' || contactTypes[k] === 'miia_lead').length;
+        const totalClients = Object.keys(contactTypes).filter(k => contactTypes[k] === 'miia_client').length;
+        const totalConvos = Object.keys(conversations).length;
+        activeSystemPrompt += `\n\n## ACCESO OWNER SUPREMO — MIIA CENTER
+Sos la MIIA principal — este es tu propio número de WhatsApp (+573054169969).
+El owner (Mariano) es tu CREADOR y tiene acceso TOTAL a todo:
+- ${totalLeads} leads activos, ${totalClients} clientes, ${totalConvos} conversaciones en memoria
+- Toda la actividad de contactos (quién escribió, cuándo, qué dijo)
+- Métricas de ventas, conversiones, respuestas
+- Configuración completa del sistema
+Cuando te pregunte por leads, contactos, métricas o actividad → RESPONDÉ CON DATOS CONCRETOS.
+NUNCA digas "no tengo esa info", "me lo tienen guardado", "no tengo visibilidad".
+Si no hay datos, decí "no hay leads registrados aún" o "ningún contacto escribió hoy".
+Mariano es el CEO — NADA se le oculta. CERO restricciones de información.`;
+        console.log(`[MIIA-CENTER] 🏛️ Self-chat OWNER SUPREMO: ${totalLeads} leads, ${totalClients} clients, ${totalConvos} convos inyectados`);
+      }
     } else if (contactTypes[phone] === 'miia_client') {
       // ═══ CLIENTE MIIA EXISTENTE → MODO SOPORTE ═══
       if (conversationMetadata[phone]) conversationMetadata[phone].contactType = 'miia_client';
@@ -10203,13 +10231,26 @@ async function processMorningBriefing() {
       console.error('[BRIEFING] Error cargando contactos pendientes:', e.message);
     }
 
-    // ── 5. Sin nada que informar ──
+    // ── 5. Siempre enviar algo — incluso si no hay novedades ──
+    const briefingName = userProfile?.shortName || userProfile?.name?.split(' ')[0] || '';
+
     if (!scraperResults.length && !leadsSection && !approvalsSection && !pendingContactsSection) {
-      console.log('[BRIEFING] Sin novedades hoy. No se envía mensaje.');
+      // Sin novedades: generar saludo natural con IA (no hardcodeado)
+      try {
+        const dayOfWeek = bogotaNow.toLocaleDateString('es-ES', { weekday: 'long' });
+        const noNewsPrompt = `Eres MIIA, asistente personal de ${briefingName || 'tu owner'}. Es ${dayOfWeek} por la mañana. No hay novedades, ni leads pendientes, ni recordatorios urgentes. Genera un saludo matutino breve y cálido (máximo 2 líneas) mencionando que no hay pendientes y deseándole buen día. Sé natural, no robótica. NO uses asteriscos ni formato Markdown.`;
+        const aiResponse = await aiGateway.generateContent(noNewsPrompt, null, { maxTokens: 100 });
+        const greeting = (aiResponse?.text || `Buenos días${briefingName ? `, ${briefingName}` : ''}. Todo tranquilo por acá, no hay pendientes. ¡Que tengas un excelente día!`).trim();
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `🌅 ${greeting}`, { isSelfChat: true });
+        console.log(`[BRIEFING] ✅ Saludo matutino sin novedades enviado`);
+      } catch (e) {
+        // Fallback simple si la IA falla
+        await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `🌅 Buenos días${briefingName ? `, ${briefingName}` : ''}. Todo tranquilo por acá, no hay pendientes ni novedades. ¡Que tengas un excelente día! 😊`, { isSelfChat: true });
+        console.log(`[BRIEFING] ✅ Saludo matutino fallback enviado (IA falló: ${e.message})`);
+      }
       return;
     }
 
-    const briefingName = userProfile?.shortName || userProfile?.name?.split(' ')[0] || '';
     let briefing = `🌅 *Buenos días${briefingName ? `, ${briefingName}` : ''}.* Aquí tu resumen matutino de MIIA:`;
 
     // Sección regulatoria — lista numerada, requiere aprobación
