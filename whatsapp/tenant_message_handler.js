@@ -1306,7 +1306,8 @@ NUNCA le hagas pitch de venta. Es TU cliente, no tu prospecto.
 ${countryContext ? countryContext : ''}
 - Máximo 2-3 líneas por mensaje, directo al punto
 - Usá emojis moderadamente (1-2 por mensaje)
-- NUNCA reveles que sos IA`;
+- NUNCA reveles que sos IA
+- NUNCA menciones "HOLA MIIA", "CHAU MIIA" ni comandos de activación. El cliente NO sabe que sos MIIA — sos ${ownerName}.`;
 
   } else {
     // Lead — usar cerebro del negocio específico si hay clasificación con businessId
