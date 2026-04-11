@@ -2182,10 +2182,28 @@ function getTenantClient(uid) {
  * Get conversations for a tenant.
  */
 async function getTenantConversations(uid) {
+  // PRIORIDAD 1: TMH context (tiene conversations restauradas de Firestore — sobrevive deploys)
+  try {
+    const tmh = require('./tenant_message_handler');
+    const ctx = tmh.tenantContexts.get(uid);
+    if (ctx && ctx.conversations && Object.keys(ctx.conversations).length > 0) {
+      return Object.entries(ctx.conversations).map(([phone, msgs]) => {
+        const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+        return {
+          phoneNumber: phone.split('@')[0],
+          name: (ctx.leadNames && ctx.leadNames[phone]) || phone.split('@')[0],
+          lastMessage: lastMsg?.content || '',
+          timestamp: lastMsg?.timestamp || null,
+          unreadCount: 0
+        };
+      });
+    }
+  } catch (_) { /* TMH no disponible — fallback a TM */ }
+
+  // PRIORIDAD 2: Tenant manager (conversations en memoria de Baileys)
   const t = tenants.get(uid);
   if (!t) return [];
 
-  // Return stored conversations (Baileys doesn't have getChats like whatsapp-web.js)
   return Object.entries(t.conversations).map(([phone, msgs]) => {
     const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
     return {

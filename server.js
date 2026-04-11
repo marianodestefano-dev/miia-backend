@@ -9154,8 +9154,24 @@ app.get('/api/status', (req, res) => {
 app.get('/api/conversations', async (req, res) => {
   const uid = req.query.uid;
 
-  // Multi-tenant: if uid provided, return that tenant's conversations
   if (uid) {
+    // Si es el owner principal, usar conversations globales (no del tenant)
+    // Las conversations del owner están en server.js global, no en tenant_manager
+    if (uid === OWNER_UID) {
+      const result = Object.entries(conversations).map(([phone, msgs]) => {
+        const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+        return {
+          phoneNumber: phone.split('@')[0],
+          name: leadNames[phone] || phone.split('@')[0],
+          lastMessage: lastMsg?.content || '',
+          timestamp: lastMsg?.timestamp || null,
+          unreadCount: 0
+        };
+      });
+      return res.json(result);
+    }
+
+    // Multi-tenant: buscar en tenant_manager
     try {
       const convs = await tenantManager.getTenantConversations(uid);
       return res.json(convs);
@@ -9164,7 +9180,7 @@ app.get('/api/conversations', async (req, res) => {
     }
   }
 
-  // Single-tenant fallback (original): format for contacts.html
+  // Single-tenant fallback (original): format for contacts.html (sin uid)
   const result = Object.entries(conversations).map(([phone, msgs]) => {
     const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
     return {

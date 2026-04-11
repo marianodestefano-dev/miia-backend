@@ -143,8 +143,11 @@ function getMiiaEmoji(message, ctx = {}) {
   // Sport → 🤵‍♀️ (MIIA relatora elegante)
   if (ctx.trigger === 'sport') return '🤵‍♀️';
 
-  // Work Office → 👩‍💻 (agenda, mail, recordatorios, tareas de oficina)
-  if (ctx.trigger === 'general_work' || ctx.topic === 'office') return '👩‍💻';
+  // Work Office → variación de emojis de trabajo (rotación para no repetir siempre el mismo)
+  if (ctx.trigger === 'general_work' || ctx.topic === 'office') {
+    const workEmojis = ['👩‍💻', '👩‍💼', '🙋‍♀️', '💁‍♀️'];
+    return workEmojis[Math.floor(Math.random() * workEmojis.length)];
+  }
 
   // Work Street → 👩‍💼 (price tracker, travel, noticias, clima, delivery, transporte)
   if (ctx.trigger === 'street' || ctx.topic === 'street') return '👩‍💼';
@@ -219,9 +222,10 @@ function applyMiiaEmoji(message, ctx = {}) {
   // REGLA ABSOLUTA: SIEMPRE quitar cualquier emoji al inicio que haya puesto la IA (Gemini/Claude)
   // y reemplazar con el emoji OFICIAL correcto según contexto.
   // La IA NO decide el emoji — el sistema lo decide.
-  const emojiPrefixMatch = message.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)\s*:?\s*/u);
+  // FIX: Capturar MÚLTIPLES emojis al inicio (ZWJ sequences rotos → 👩💻 en vez de 👩‍💻)
+  const emojiPrefixMatch = message.match(/^((?:[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*\s*)+):?\s*/u);
   if (emojiPrefixMatch) {
-    // SIEMPRE quitar el emoji que puso la IA — el sistema pone el correcto
+    // SIEMPRE quitar TODOS los emojis que puso la IA — el sistema pone el correcto
     message = message.substring(emojiPrefixMatch[0].length);
   }
 
