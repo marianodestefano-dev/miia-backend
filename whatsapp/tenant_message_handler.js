@@ -2863,6 +2863,154 @@ REGLAS:
         }
       }
 
+      // ── TAG [CANCELAR_EVENTO:razón|fecha_aprox|modo] / [ELIMINAR_EVENTO:...] — Eliminar evento ──
+      aiMessage = aiMessage.replace(/\[ELIMINAR_EVENTO:/g, '[CANCELAR_EVENTO:');
+      const cancelMatch = aiMessage.match(/\[CANCELAR_EVENTO:([^\]]+)\]/);
+      if (cancelMatch && isSelfChat) {
+        const cancelParts = cancelMatch[1].split('|').map(p => p.trim());
+        const [searchReason, searchDate, cancelMode] = cancelParts;
+        const mode = (cancelMode || 'silencioso').toLowerCase();
+        console.log(`${logPrefix} [CANCELAR-TMH] 🗑️ Buscando: "${searchReason}" cerca de ${searchDate || 'hoy'} modo=${mode}`);
+        try {
+          const searchDateObj = searchDate ? new Date(searchDate) : new Date();
+          const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
+          const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
+
+          const snap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
+            .where('status', '==', 'pending')
+            .where('scheduledFor', '>=', dayStart.toISOString())
+            .where('scheduledFor', '<=', dayEnd.toISOString())
+            .orderBy('scheduledFor', 'asc').limit(10).get();
+
+          let found = null;
+          const reasonLower = (searchReason || '').toLowerCase();
+          for (const doc of snap.docs) {
+            const evt = doc.data();
+            const evtReason = (evt.reason || '').toLowerCase();
+            const evtContact = (evt.contactName || '').toLowerCase();
+            if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
+                evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+              found = { doc, data: evt };
+              break;
+            }
+          }
+          if (!found && !snap.empty) found = { doc: snap.docs[0], data: snap.docs[0].data() };
+
+          if (found) {
+            await found.doc.ref.update({ status: 'cancelled', cancelledAt: new Date().toISOString(), cancelMode: mode });
+            console.log(`${logPrefix} [CANCELAR-TMH] ✅ Cancelado: "${found.data.reason}" del ${found.data.scheduledForLocal}`);
+
+            // Intentar eliminar de Google Calendar
+            if (found.data.calendarSynced && found.data.calendarEventId) {
+              try {
+                const { getOAuth2Client: getCalClient } = require('../core/google_calendar');
+                const gTokens = await db().collection('users').doc(ownerUid).get();
+                if (gTokens.exists && gTokens.data()?.googleTokens) {
+                  const oauth2 = getCalClient();
+                  oauth2.setCredentials(gTokens.data().googleTokens);
+                  const { google } = require('googleapis');
+                  const cal = google.calendar({ version: 'v3', auth: oauth2 });
+                  await cal.events.delete({ calendarId: 'primary', eventId: found.data.calendarEventId });
+                  console.log(`${logPrefix} [CANCELAR-TMH] 📅 Eliminado de Google Calendar`);
+                }
+              } catch (calErr) {
+                console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Calendar: ${calErr.message}`);
+              }
+            }
+
+            // Notificar al contacto si tiene contacto y modo no es silencioso
+            if (mode === 'avisar' && found.data.contactPhone && found.data.contactPhone !== 'self') {
+              const contactJid = found.data.contactPhone.includes('@') ? found.data.contactPhone : `${found.data.contactPhone}@s.whatsapp.net`;
+              const contactName = found.data.contactName || 'Contacto';
+              try {
+                await tenantState.sock.sendMessage(contactJid, {
+                  text: `📅 Hola ${contactName}, te aviso que ${found.data.reason || 'el evento'} programado para el ${found.data.scheduledForLocal || 'la fecha indicada'} fue cancelado. Disculpa las molestias. 🙏`
+                });
+              } catch (notifyErr) {
+                console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Error notificando: ${notifyErr.message}`);
+              }
+            }
+
+            if (!aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim()) {
+              aiMessage = `✅ Listo, eliminé "${found.data.reason}" del ${found.data.scheduledForLocal} de tu agenda.`;
+            }
+          } else {
+            console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ No se encontró evento para "${searchReason}"`);
+            if (!aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim()) {
+              aiMessage = `⚠️ No encontré un evento con "${searchReason}" para hoy. ¿Podés darme más detalles?`;
+            }
+          }
+        } catch (cancelErr) {
+          console.error(`${logPrefix} [CANCELAR-TMH] ❌ Error:`, cancelErr.message);
+        }
+        aiMessage = aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim();
+      }
+
+      // ── TAG [MOVER_EVENTO:razón|fecha_vieja|fecha_nueva] — Mover evento ──
+      const moverMatch = aiMessage.match(/\[MOVER_EVENTO:([^\]]+)\]/);
+      if (moverMatch && isSelfChat) {
+        const moverParts = moverMatch[1].split('|').map(p => p.trim());
+        const [mSearchReason, mOldDate, mNewDate] = moverParts;
+        console.log(`${logPrefix} [MOVER-TMH] 🔄 Buscando "${mSearchReason}" en ${mOldDate} → mover a ${mNewDate}`);
+        try {
+          const searchDateObj = mOldDate ? new Date(mOldDate) : new Date();
+          const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
+          const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
+
+          const snap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
+            .where('status', '==', 'pending')
+            .where('scheduledFor', '>=', dayStart.toISOString())
+            .where('scheduledFor', '<=', dayEnd.toISOString())
+            .orderBy('scheduledFor', 'asc').limit(10).get();
+
+          let found = null;
+          const reasonLower = (mSearchReason || '').toLowerCase();
+          for (const doc of snap.docs) {
+            const evt = doc.data();
+            const evtReason = (evt.reason || '').toLowerCase();
+            const evtContact = (evt.contactName || '').toLowerCase();
+            if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
+                evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+              found = { doc, data: evt };
+              break;
+            }
+          }
+          if (!found && !snap.empty) found = { doc: snap.docs[0], data: snap.docs[0].data() };
+
+          if (found && mNewDate) {
+            const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
+            const ownerCountry = getCountryFromPhone(ownerPhone);
+            const ownerTz = getTimezoneForCountry(ownerCountry);
+            let newScheduledUTC = mNewDate;
+            try {
+              const parsedLocal = new Date(mNewDate);
+              if (!isNaN(parsedLocal)) {
+                const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+                const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                const offsetMs = new Date(localStr) - new Date(utcStr);
+                newScheduledUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+              }
+            } catch (tzErr) { /* usar original */ }
+
+            await found.doc.ref.update({
+              scheduledFor: newScheduledUTC, scheduledForLocal: mNewDate,
+              movedFrom: found.data.scheduledForLocal, movedAt: new Date().toISOString(),
+              preReminderSent: false
+            });
+            console.log(`${logPrefix} [MOVER-TMH] ✅ Movido: "${found.data.reason}" de ${found.data.scheduledForLocal} → ${mNewDate}`);
+
+            if (!aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim()) {
+              aiMessage = `✅ Moví "${found.data.reason}" de ${found.data.scheduledForLocal} a ${mNewDate}.`;
+            }
+          } else if (!found) {
+            console.warn(`${logPrefix} [MOVER-TMH] ⚠️ No se encontró evento para "${mSearchReason}"`);
+          }
+        } catch (moverErr) {
+          console.error(`${logPrefix} [MOVER-TMH] ❌ Error:`, moverErr.message);
+        }
+        aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
+      }
+
       // ── TAG [RECORDAR_OWNER:fecha|mensaje] — Contacto dice "recuérdale al owner que..." ──
       const recordOwnerMatch = aiMessage.match(/\[RECORDAR_OWNER:([^|]+)\|([^\]]+)\]/);
       if (recordOwnerMatch) {
@@ -2985,7 +3133,9 @@ REGLAS:
         .replace(/\[CONSULTAR_AGENDA\]/g, '').replace(/\[RECORDAR_OWNER:[^\]]+\]/g, '')
         .replace(/\[RECORDAR_CONTACTO:[^\]]+\]/g, '').replace(/\[ALERTA_OWNER:[^\]]+\]/g, '')
         .replace(/\[MENSAJE_PARA_OWNER:[^\]]+\]/g, '').replace(/\[CREAR_TAREA:[^\]]+\]/g, '')
-        .replace(/\[LISTAR_TAREAS\]/g, '').replace(/\[COMPLETAR_TAREA:[^\]]+\]/g, '').trim();
+        .replace(/\[LISTAR_TAREAS\]/g, '').replace(/\[COMPLETAR_TAREA:[^\]]+\]/g, '')
+        .replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').replace(/\[ELIMINAR_EVENTO:[^\]]+\]/g, '')
+        .replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
     }
   }
 

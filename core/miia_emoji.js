@@ -144,6 +144,9 @@ function getMiiaEmoji(message, ctx = {}) {
 
   // ═══ PRIORIDAD 5: Trigger de contexto específico ═══
 
+  // Proactive / Background work → 🤹‍♀️ (MIIA haciendo malabares mientras owner descansa)
+  if (ctx.trigger === 'proactive' || ctx.trigger === 'background') return '🤹‍♀️';
+
   // Sport → 🤵‍♀️ (MIIA relatora elegante)
   if (ctx.trigger === 'sport') return '🤵‍♀️';
 
@@ -211,7 +214,7 @@ function getMiiaEmoji(message, ctx = {}) {
 // Emojis oficiales de MIIA — solo estos cuentan como "ya tiene prefix"
 const MIIA_OFFICIAL_EMOJIS = new Set([
   '🙍‍♀️', '🙎‍♀️', '👸', '🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️',
-  '🦸‍♀️', '👰‍♀️', '🤦‍♀️', '💆‍♀️', '🙇‍♀️',
+  '🦸‍♀️', '👰‍♀️', '🤦‍♀️', '💆‍♀️', '🙇‍♀️', '🤹‍♀️',
   '🧛‍♀️', '🎅', '🤱',
   '👩‍⚖️', '👩‍🔧', '🤷‍♀️', '💁‍♀️', '🙋‍♀️', '👩‍🎓', '👩‍🏫',
   '🤵‍♀️', '👩‍💻', '👩‍💼',
