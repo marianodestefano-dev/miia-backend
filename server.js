@@ -7639,8 +7639,9 @@ REGLAS:
               const [type, zone, date, time, partySize] = params;
               // Obtener ciudad/país del owner
               const ownerCountry = getCountryFromPhone(OWNER_PHONE);
-              const results = await reservationsIntegration.searchBusinesses(
-                { type, zone, date, time, partySize: parseInt(partySize) || 0, ownerCity: zone, ownerCountry },
+              // R2: Búsqueda combinada — primero red MIIA, luego Google
+              const results = await reservationsIntegration.searchBusinessesCombined(
+                { type, zone, date, time, partySize: parseInt(partySize) || 0, city: zone, ownerCity: zone, ownerCountry, country: ownerCountry },
                 aiGateway
               );
               const formatted = reservationsIntegration.formatSearchResults(results);
@@ -7648,7 +7649,7 @@ REGLAS:
               // Guardar resultados temporalmente para que el owner pueda elegir
               if (!global._lastReservationSearch) global._lastReservationSearch = {};
               global._lastReservationSearch[OWNER_PHONE] = { results, timestamp: Date.now() };
-              console.log(`[RESERVATIONS-TAG] ✅ BUSCAR_RESERVA: ${results.length} resultados`);
+              console.log(`[RESERVATIONS-TAG] ✅ BUSCAR_RESERVA: ${results.length} resultados (${results.filter(r => r.isMiia).length} MIIA)`);
               break;
             }
             case 'RESERVAR': {
@@ -7705,6 +7706,53 @@ REGLAS:
               console.log(`[RESERVATIONS-TAG] ✅ RATING: ${result.businessName} → ${rating}/5`);
               break;
             }
+            case 'RESERVAR_MIIA': {
+              // R2: Reserva inter-MIIA — enviar directo al WhatsApp del negocio MIIA
+              const [bizPhone, date, time, partySize, notes] = params;
+              const ownerName = OWNER_PHONE; // TODO: obtener nombre real del owner
+              const lastSearch = global._lastReservationSearch?.[OWNER_PHONE];
+              let businessName = bizPhone;
+              if (lastSearch && Date.now() - lastSearch.timestamp < 3600000) {
+                const match = lastSearch.results.find(b => b.phone === bizPhone || b.name?.toLowerCase().includes(bizPhone.toLowerCase()));
+                if (match) businessName = match.name;
+              }
+
+              const interResult = await reservationsIntegration.sendInterMiiaReservation({
+                fromOwnerName: ownerName,
+                bizPhone,
+                date,
+                time,
+                partySize: parseInt(partySize) || 1,
+                notes: notes || '',
+                fromPhone: OWNER_PHONE,
+              }, safeSendMessage);
+
+              if (interResult.sent) {
+                // También crear la reserva local
+                await reservationsIntegration.createReservation(OWNER_UID, {
+                  type: 'other',
+                  businessName: interResult.businessName || businessName,
+                  businessPhone: bizPhone,
+                  date,
+                  time,
+                  partySize: parseInt(partySize) || 1,
+                  notes: notes || '',
+                  source: 'miia_network',
+                  status: interResult.autoConfirm ? 'confirmed' : 'pending',
+                });
+                const confirmMsg = interResult.autoConfirm
+                  ? `✅ *Reserva MIIA confirmada automáticamente*\n\n📍 ${interResult.businessName}\n📅 ${date} a las ${time}\n👥 ${partySize || 1} persona(s)\n\n🤖 El negocio usa MIIA — tu reserva ya está registrada.`
+                  : `⏳ *Reserva MIIA enviada*\n\n📍 ${interResult.businessName}\n📅 ${date} a las ${time}\n👥 ${partySize || 1} persona(s)\n\n🤖 Solicitud enviada al negocio. Te aviso cuando confirmen.`;
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, confirmMsg, { isSelfChat: true, skipEmoji: true });
+              } else {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `❌ No pude enviar la reserva MIIA: ${interResult.error}. ¿Querés que intente por otro medio?`,
+                  { isSelfChat: true, skipEmoji: true }
+                );
+              }
+              console.log(`[RESERVATIONS-TAG] ${interResult.sent ? '✅' : '❌'} RESERVAR_MIIA: ${businessName} ${date} ${time}`);
+              break;
+            }
           }
         } catch (tagErr) {
           console.error(`[RESERVATIONS-TAG] ❌ ${tag}: ${tagErr.message}`);
@@ -7715,6 +7763,7 @@ REGLAS:
       aiMessage = aiMessage
         .replace(/\[BUSCAR_RESERVA:[^\]]+\]/g, '')
         .replace(/\[RESERVAR:[^\]]+\]/g, '')
+        .replace(/\[RESERVAR_MIIA:[^\]]+\]/g, '')
         .replace(/\[CANCELAR_RESERVA:[^\]]+\]/g, '')
         .replace(/\[RATING_RESERVA:[^\]]+\]/g, '')
         .trim();
@@ -16348,6 +16397,73 @@ app.post('/api/reservations/favorites', requireRole('owner', 'admin'), express.j
   } catch (e) {
     console.error('[RESERVATIONS-API] ❌ save favorite error:', e.message);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// R2: RED INTER-MIIA — Endpoints de red de negocios
+// ═══════════════════════════════════════════════════════════════
+
+// Registrar negocio en la red MIIA
+app.post('/api/miia-network/register', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const result = await reservationsIntegration.registerInMiiaNetwork(uid, req.body);
+    if (!result) return res.status(400).json({ success: false, error: 'Se requiere un teléfono' });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error(`[API] ❌ miia-network register:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Desregistrar negocio de la red MIIA
+app.post('/api/miia-network/unregister', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    await reservationsIntegration.unregisterFromMiiaNetwork(req.body.phone);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`[API] ❌ miia-network unregister:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Buscar negocios en la red MIIA
+app.get('/api/miia-network/search', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { type, city, country } = req.query;
+    const results = await reservationsIntegration.searchMiiaNetwork({ type, city, country });
+    res.json({ success: true, data: results });
+  } catch (err) {
+    console.error(`[API] ❌ miia-network search:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Ver solicitudes de reserva recibidas por mi negocio
+app.get('/api/miia-network/requests', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const phone = req.query.phone;
+    const status = req.query.status;
+    if (!phone) return res.status(400).json({ success: false, error: 'Se requiere phone' });
+    const requests = await reservationsIntegration.getReceivedReservations(phone, status);
+    res.json({ success: true, data: requests });
+  } catch (err) {
+    console.error(`[API] ❌ miia-network requests:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Confirmar/rechazar solicitud de reserva recibida
+app.put('/api/miia-network/requests/:requestId', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const { phone, status } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: 'Se requiere phone' });
+    await reservationsIntegration.updateReceivedReservation(phone, req.params.requestId, status);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`[API] ❌ miia-network request update:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -11,6 +11,12 @@
  *   - CRUD de reservas en Firestore
  *   - Tags: [BUSCAR_RESERVA:], [RESERVAR:], [CANCELAR_RESERVA:], [RATING_RESERVA:]
  *
+ * Fase R2 (Red inter-MIIA):
+ *   - Negocios que usan MIIA se registran en miia_network
+ *   - Al buscar, primero se consulta la red MIIA (prioridad sobre Google)
+ *   - Si el negocio destino está en MIIA → reserva automática vía WhatsApp
+ *   - Tag: [RESERVAR_MIIA:bizPhone|date|time|partySize|notes]
+ *
  * (c) 2024-2026 Mariano De Stefano. All rights reserved.
  */
 
@@ -24,7 +30,255 @@ const db = admin.firestore();
 const RESERVATION_TYPES = ['restaurant', 'doctor', 'salon', 'dentist', 'mechanic', 'hotel', 'spa', 'gym', 'other'];
 const RESERVATION_STATUS = ['searching', 'pending', 'confirmed', 'cancelled', 'completed'];
 
-// ═════════════════════════════════════════════════════���═════════
+// ═══════════════════════════════════════════════════════════════
+// R2: RED INTER-MIIA — Negocios que usan MIIA pueden reservar entre sí
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Registrar un negocio en la red MIIA (se llama cuando un owner activa reservas).
+ * Colección: miia_network/{bizPhone}
+ */
+async function registerInMiiaNetwork(uid, businessData) {
+  const phone = (businessData.phone || '').replace(/[^0-9]/g, '');
+  if (!phone) {
+    console.warn(`[MIIA-NETWORK] ⚠️ No se puede registrar sin teléfono`);
+    return null;
+  }
+
+  const networkDoc = {
+    ownerUid: uid,
+    name: businessData.name || '',
+    type: businessData.type || 'other',
+    address: businessData.address || '',
+    city: businessData.city || '',
+    country: businessData.country || '',
+    phone,
+    description: businessData.description || '',
+    acceptsReservations: businessData.acceptsReservations !== false,
+    autoConfirm: businessData.autoConfirm || false,
+    maxPartySize: businessData.maxPartySize || 20,
+    hours: businessData.hours || '',
+    tags: businessData.tags || [],
+    rating: businessData.rating || 0,
+    ratingCount: businessData.ratingCount || 0,
+    active: true,
+    registeredAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await db.collection('miia_network').doc(phone).set(networkDoc, { merge: true });
+  console.log(`[MIIA-NETWORK] ✅ Negocio registrado en red MIIA: ${networkDoc.name} (${phone})`);
+  return { networkId: phone, ...networkDoc };
+}
+
+/**
+ * Eliminar un negocio de la red MIIA.
+ */
+async function unregisterFromMiiaNetwork(phone) {
+  const cleanPhone = (phone || '').replace(/[^0-9]/g, '');
+  if (!cleanPhone) return;
+
+  await db.collection('miia_network').doc(cleanPhone).update({
+    active: false,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  console.log(`[MIIA-NETWORK] 🔴 Negocio desregistrado: ${cleanPhone}`);
+}
+
+/**
+ * Buscar negocios dentro de la red MIIA primero (prioridad sobre Google).
+ * @param {object} params - { type, zone, city, country }
+ * @returns {Array<{name, address, phone, rating, type, isMiia: true}>}
+ */
+async function searchMiiaNetwork(params) {
+  const { type, city, country } = params;
+
+  let query = db.collection('miia_network')
+    .where('active', '==', true)
+    .where('acceptsReservations', '==', true);
+
+  if (type && type !== 'other') {
+    query = query.where('type', '==', type);
+  }
+
+  // Firestore no soporta OR queries complejas, así que filtramos ciudad/país en memoria
+  const snap = await query.limit(50).get();
+  let results = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+  // Filtrar por ciudad/país si están disponibles
+  if (city) {
+    const cityLower = city.toLowerCase();
+    const cityResults = results.filter(r =>
+      (r.city || '').toLowerCase().includes(cityLower) ||
+      (r.address || '').toLowerCase().includes(cityLower)
+    );
+    // Si hay resultados en la ciudad, priorizar esos
+    if (cityResults.length > 0) results = cityResults;
+  }
+  if (country) {
+    const countryLower = country.toLowerCase();
+    results = results.filter(r =>
+      !r.country || r.country.toLowerCase().includes(countryLower)
+    );
+  }
+
+  // Marcar como negocios MIIA y formatear
+  const formatted = results.slice(0, 5).map(r => ({
+    name: r.name,
+    address: r.address,
+    phone: r.phone,
+    rating: r.rating || 0,
+    hours: r.hours,
+    type: r.type,
+    description: r.description,
+    isMiia: true, // ← Flag clave para el tag interceptor
+    autoConfirm: r.autoConfirm || false,
+    ownerUid: r.ownerUid,
+  }));
+
+  console.log(`[MIIA-NETWORK] 🔍 Búsqueda en red: ${type || 'all'} en ${city || 'anywhere'} → ${formatted.length} resultados MIIA`);
+  return formatted;
+}
+
+/**
+ * Enviar solicitud de reserva inter-MIIA al negocio destino.
+ * El negocio destino la recibe como mensaje de WhatsApp en su self-chat.
+ * @param {object} params - { fromOwnerName, bizPhone, date, time, partySize, notes, fromPhone }
+ * @param {function} sendMessageFn - función para enviar mensaje WhatsApp (ej: safeSendMessage)
+ * @returns {object} { sent, reservationRequest }
+ */
+async function sendInterMiiaReservation(params, sendMessageFn) {
+  const { fromOwnerName, bizPhone, date, time, partySize, notes, fromPhone } = params;
+
+  if (!bizPhone || !sendMessageFn) {
+    console.error(`[MIIA-NETWORK] ❌ sendInterMiiaReservation: falta bizPhone o sendMessageFn`);
+    return { sent: false, error: 'Parámetros incompletos' };
+  }
+
+  // Verificar que el negocio está en la red MIIA
+  const cleanPhone = bizPhone.replace(/[^0-9]/g, '');
+  const networkDoc = await db.collection('miia_network').doc(cleanPhone).get();
+
+  if (!networkDoc.exists || !networkDoc.data().active) {
+    console.warn(`[MIIA-NETWORK] ⚠️ Negocio ${cleanPhone} no está activo en red MIIA`);
+    return { sent: false, error: 'Negocio no disponible en red MIIA' };
+  }
+
+  const bizData = networkDoc.data();
+  const jid = `${cleanPhone}@s.whatsapp.net`;
+
+  // Mensaje que el negocio destino recibe (su MIIA lo procesará como lead)
+  const reservationMessage = `Hola! Quiero hacer una reserva:\n` +
+    `📅 Fecha: ${date}\n` +
+    `🕐 Hora: ${time}\n` +
+    `👥 Personas: ${partySize || 1}\n` +
+    `${notes ? `📝 Nota: ${notes}\n` : ''}` +
+    `Mi nombre: ${fromOwnerName || 'Cliente MIIA'}\n` +
+    `📱 Mi número: ${fromPhone || 'No disponible'}`;
+
+  try {
+    await sendMessageFn(jid, reservationMessage, { skipDelay: true });
+    console.log(`[MIIA-NETWORK] ✅ Reserva inter-MIIA enviada a ${bizData.name} (${cleanPhone})`);
+
+    // Guardar solicitud en la red
+    await db.collection('miia_network').doc(cleanPhone)
+      .collection('reservation_requests').add({
+        fromPhone: fromPhone || '',
+        fromName: fromOwnerName || '',
+        date,
+        time,
+        partySize: parseInt(partySize) || 1,
+        notes: notes || '',
+        status: bizData.autoConfirm ? 'confirmed' : 'pending',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    return {
+      sent: true,
+      autoConfirm: bizData.autoConfirm,
+      businessName: bizData.name,
+    };
+  } catch (err) {
+    console.error(`[MIIA-NETWORK] ❌ Error enviando reserva inter-MIIA a ${cleanPhone}:`, err.message);
+    return { sent: false, error: err.message };
+  }
+}
+
+/**
+ * Obtener solicitudes de reserva recibidas por un negocio.
+ */
+async function getReceivedReservations(bizPhone, status) {
+  const cleanPhone = (bizPhone || '').replace(/[^0-9]/g, '');
+  if (!cleanPhone) return [];
+
+  let query = db.collection('miia_network').doc(cleanPhone)
+    .collection('reservation_requests');
+
+  if (status) {
+    query = query.where('status', '==', status);
+  }
+
+  query = query.orderBy('createdAt', 'desc').limit(20);
+  const snap = await query.get();
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+/**
+ * Actualizar estado de una solicitud de reserva recibida.
+ */
+async function updateReceivedReservation(bizPhone, requestId, status) {
+  const cleanPhone = (bizPhone || '').replace(/[^0-9]/g, '');
+  await db.collection('miia_network').doc(cleanPhone)
+    .collection('reservation_requests').doc(requestId).update({
+      status,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  console.log(`[MIIA-NETWORK] 📝 Solicitud ${requestId} → ${status}`);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BÚSQUEDA COMBINADA — Red MIIA primero, luego Google
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Busca negocios: primero en red MIIA, luego complementa con Google.
+ * Los resultados MIIA aparecen primero con badge "🤖 MIIA".
+ */
+async function searchBusinessesCombined(params, aiGateway) {
+  const results = [];
+
+  // 1. Buscar en red MIIA primero
+  try {
+    const miiaResults = await searchMiiaNetwork(params);
+    if (miiaResults.length > 0) {
+      results.push(...miiaResults);
+      console.log(`[RESERVATIONS] 🤖 ${miiaResults.length} negocios MIIA encontrados`);
+    }
+  } catch (err) {
+    console.warn(`[RESERVATIONS] ⚠️ Error buscando en red MIIA:`, err.message);
+  }
+
+  // 2. Si no hay suficientes resultados MIIA, complementar con Google
+  if (results.length < 3) {
+    try {
+      const googleResults = await searchBusinesses(params, aiGateway);
+      // No duplicar (filtrar por phone)
+      const existingPhones = new Set(results.map(r => (r.phone || '').replace(/[^0-9]/g, '')));
+      for (const gr of googleResults) {
+        const grPhone = (gr.phone || '').replace(/[^0-9]/g, '');
+        if (!existingPhones.has(grPhone)) {
+          results.push({ ...gr, isMiia: false });
+        }
+      }
+    } catch (err) {
+      console.warn(`[RESERVATIONS] ⚠️ Error buscando en Google:`, err.message);
+    }
+  }
+
+  return results.slice(0, 5);
+}
+
+// ═══════════════════════════════════════════════════════════════
 // BUSCAR NEGOCIOS — Via Gemini google_search (gratis)
 // ═══════════════════════════════════════════════════════════════
 
@@ -271,13 +525,15 @@ function formatSearchResults(businesses) {
   }
 
   const lines = businesses.map((b, i) => {
+    const miiaBadge = b.isMiia ? ' 🤖 *MIIA*' : '';
+    const miiaNote = b.isMiia ? '\n   ✨ Reserva automática disponible' : '';
     const stars = b.rating ? '⭐'.repeat(Math.min(Math.round(b.rating), 5)) : '';
     const price = b.priceLevel ? ` (${b.priceLevel})` : '';
     const phone = b.phone ? `📞 ${b.phone}` : '';
-    return `*${i + 1}. ${b.name}*${price}\n   ${stars} ${b.rating || '?'}/5\n   📍 ${b.address || 'Sin dirección'}\n   ${phone}${b.hours ? `\n   🕐 ${b.hours}` : ''}`;
+    return `*${i + 1}. ${b.name}*${miiaBadge}${price}\n   ${stars} ${b.rating || '?'}/5\n   📍 ${b.address || 'Sin dirección'}\n   ${phone}${b.hours ? `\n   🕐 ${b.hours}` : ''}${miiaNote}`;
   });
 
-  return `🔍 *Opciones encontradas:*\n\n${lines.join('\n\n')}\n\n¿Cuál te gusta? Decime el número y gestiono la reserva.`;
+  return `🔍 *Opciones encontradas:*\n\n${lines.join('\n\n')}\n\n¿Cuál te gusta? Decime el número y gestiono la reserva.${businesses.some(b => b.isMiia) ? '\n\n🤖 Los marcados con MIIA aceptan reservas automáticas.' : ''}`;
 }
 
 /**
@@ -298,6 +554,7 @@ function formatReservation(res) {
 const RESERVATION_TAG_PATTERNS = {
   BUSCAR_RESERVA: /\[BUSCAR_RESERVA:([^\]]+)\]/,
   RESERVAR: /\[RESERVAR:([^\]]+)\]/,
+  RESERVAR_MIIA: /\[RESERVAR_MIIA:([^\]]+)\]/,
   CANCELAR_RESERVA: /\[CANCELAR_RESERVA:([^\]]+)\]/,
   RATING_RESERVA: /\[RATING_RESERVA:([^\]]+)\]/,
 };
@@ -324,6 +581,7 @@ function detectReservationTags(message) {
 module.exports = {
   // Search
   searchBusinesses,
+  searchBusinessesCombined,
   formatSearchResults,
 
   // CRUD
@@ -345,6 +603,14 @@ module.exports = {
   // Tags
   detectReservationTags,
   RESERVATION_TAG_PATTERNS,
+
+  // R2: Red inter-MIIA
+  registerInMiiaNetwork,
+  unregisterFromMiiaNetwork,
+  searchMiiaNetwork,
+  sendInterMiiaReservation,
+  getReceivedReservations,
+  updateReceivedReservation,
 
   // Constants
   RESERVATION_TYPES,

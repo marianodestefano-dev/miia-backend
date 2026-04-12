@@ -1205,11 +1205,15 @@ Si ${p.shortName} te pide reservar (restaurante, doctor, peluquería, mecánico,
 2. Buscá opciones: [BUSCAR_RESERVA:tipo|zona|fecha|hora|personas]
 3. Presentá las opciones que te devuelva el sistema
 4. Cuando elija → [RESERVAR:teléfono_o_nombre|fecha|hora|personas|notas]
-5. Cancelar → [CANCELAR_RESERVA:reservationId]
-6. Calificar → [RATING_RESERVA:reservationId|rating_1a5]
+5. Si el negocio tiene badge 🤖 MIIA → [RESERVAR_MIIA:teléfono|fecha|hora|personas|notas]
+6. Cancelar → [CANCELAR_RESERVA:reservationId]
+7. Calificar → [RATING_RESERVA:reservationId|rating_1a5]
 REGLAS RESERVAS:
 - Si dice "lo de siempre" → preguntá cuál lugar o buscá en sus favoritos.
-- NUNCA confirmes una reserva sin emitir el tag. Decí "Te la agenté, pero confirmá directamente con el lugar."
+- NUNCA confirmes una reserva sin emitir el tag.
+- BUSCAR_RESERVA busca primero en la RED MIIA y luego en Google.
+- Negocios 🤖 MIIA: usá [RESERVAR_MIIA:] — reserva automática vía WhatsApp.
+- Otros negocios: usá [RESERVAR:] — el owner confirma directamente.
 
 ### GOOGLE SERVICES — Contactos, Drive, Lugares, YouTube, Negocio
 Podés acceder a los servicios de Google de ${p.shortName}:
