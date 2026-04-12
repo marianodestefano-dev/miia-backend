@@ -17,6 +17,8 @@
  */
 
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
 // ═══════════════════════════════════════════════════════════════
 // TENOR API CONFIG
@@ -315,7 +317,116 @@ async function sendGif(sock, jid, buffer, caption = '') {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// INIT — Verificar API key disponible
+// SHOWCASE MP4s — Videos generados desde los 25 HTMLs animados del brand MIIA
+// ═══════════════════════════════════════════════════════════════
+
+const SHOWCASE_DIR = path.join(__dirname, '..', 'media', 'showcase');
+
+/**
+ * Mapeo de keywords a showcase MP4.
+ * Cuando MIIA habla de un feature, puede enviar el video demo correspondiente.
+ */
+const SHOWCASE_CATALOG = {
+  ventas:           { file: '01_ventas.mp4',              caption: '💼 Así manejo tus ventas' },
+  briefing:         { file: '02_briefing_matutino.mp4',   caption: '☀️ Tu briefing cada mañana' },
+  deportes:         { file: '03_deportes.mp4',            caption: '⚽ Seguimiento deportivo en vivo' },
+  familia:          { file: '04_familia.mp4',             caption: '👨‍👩‍👧 Cuidando a tu familia' },
+  finanzas:         { file: '05_finanzas.mp4',            caption: '📈 Tus finanzas al día' },
+  audios:           { file: '06_audios.mp4',              caption: '🎙️ Audio inteligente' },
+  emails:           { file: '07_emails.mp4',              caption: '📧 Gestión de emails' },
+  aprendizaje:      { file: '08_aprendizaje.mp4',         caption: '🧠 Aprendo de tu negocio' },
+  agenda:           { file: '09_agenda.mp4',              caption: '📅 Tu agenda organizada' },
+  imagenes:         { file: '10_imagenes.mp4',            caption: '🖼️ Imágenes inteligentes' },
+  follow_up:        { file: '11_follow_up.mp4',           caption: '🔄 Seguimiento automático' },
+  grupos:           { file: '12_grupos.mp4',              caption: '👥 Gestión de grupos' },
+  pdfs:             { file: '13_pdfs.mp4',                caption: '📄 Documentos y PDFs' },
+  modo_espera:      { file: '14_modo_espera_90min.mp4',   caption: '⏸️ Modo espera inteligente' },
+  coaching:         { file: '15_coaching_nocturno.mp4',   caption: '🌙 Coaching nocturno' },
+  mama:             { file: '16_mama_activa_miia.mp4',    caption: '👩 Mamá siempre conectada' },
+  ninos:            { file: '17_ninos.mp4',               caption: '👶 Protección para niños' },
+  abuelos:          { file: '18_abuelos.mp4',             caption: '👴 Cuidado de abuelos' },
+  uber:             { file: '19_uber.mp4',                caption: '🚗 Transporte al instante' },
+  rappi:            { file: '20_rappi.mp4',               caption: '🛵 Delivery inteligente' },
+  spotify:          { file: '21_spotify_musica.mp4',      caption: '🎵 Tu música favorita' },
+  vuelos:           { file: '22_vuelos.mp4',              caption: '✈️ Tracking de vuelos' },
+  precios:          { file: '23_productos_tracking_precio.mp4', caption: '🏷️ Tracking de precios' },
+  restaurantes:     { file: '24_restaurantes.mp4',        caption: '🍽️ Restaurantes cerca tuyo' },
+  pwa:              { file: '25_pwa_voice.mp4',           caption: '📱 App de voz MIIA' },
+};
+
+// Keywords que mapean a cada showcase
+const SHOWCASE_KEYWORDS = {
+  ventas:      ['ventas', 'vender', 'cotización', 'cotizar', 'lead', 'cliente', 'negocio'],
+  briefing:    ['briefing', 'resumen matutino', 'buenos días', 'resumen del día'],
+  deportes:    ['deporte', 'fútbol', 'f1', 'partido', 'gol', 'carrera'],
+  familia:     ['familia', 'familiar', 'papá', 'mamá', 'hijo', 'hija'],
+  finanzas:    ['finanza', 'bolsa', 'crypto', 'bitcoin', 'acción', 'inversión'],
+  audios:      ['audio', 'voz', 'transcrib', 'escuchar'],
+  emails:      ['email', 'correo', 'gmail', 'mail'],
+  aprendizaje: ['aprend', 'cerebro', 'entrenar', 'enseñar', 'inteligencia'],
+  agenda:      ['agenda', 'cita', 'turno', 'agendar', 'recordatorio', 'calendario'],
+  follow_up:   ['seguimiento', 'follow', 'recordar', 'pendiente'],
+  grupos:      ['grupo', 'equipo', 'team'],
+  pdfs:        ['pdf', 'documento', 'archivo', 'adjunto'],
+  coaching:    ['coaching', 'consejo', 'motivación', 'nocturno'],
+  uber:        ['uber', 'didi', 'taxi', 'transporte', 'viaje'],
+  rappi:       ['rappi', 'pedidosya', 'delivery', 'domicilio', 'comida'],
+  spotify:     ['spotify', 'música', 'canción', 'playlist'],
+  vuelos:      ['vuelo', 'avión', 'aeropuerto', 'pasaje'],
+  precios:     ['precio', 'tracking', 'oferta', 'descuento', 'amazon'],
+  restaurantes:['restaurante', 'comer', 'reserva', 'menú'],
+};
+
+// Cooldown para showcase: "phone:feature" → timestamp
+const showcaseCooldowns = {};
+const SHOWCASE_COOLDOWN_MS = 7200000; // 2h entre el mismo showcase al mismo lead
+
+/**
+ * Detectar si el mensaje de MIIA merece un showcase MP4 local.
+ * @param {string} aiMessage - Respuesta de MIIA
+ * @param {string} phone - Destinatario
+ * @returns {{feature: string, caption: string, buffer: Buffer}|null}
+ */
+function detectShowcaseVideo(aiMessage, phone) {
+  if (!aiMessage) return null;
+
+  const msgLower = aiMessage.toLowerCase();
+
+  for (const [feature, keywords] of Object.entries(SHOWCASE_KEYWORDS)) {
+    const matches = keywords.some(kw => msgLower.includes(kw));
+    if (!matches) continue;
+
+    // Cooldown check
+    const cooldownKey = `${phone}:showcase_${feature}`;
+    const lastSent = showcaseCooldowns[cooldownKey] || 0;
+    if (Date.now() - lastSent < SHOWCASE_COOLDOWN_MS) continue;
+
+    // Check file exists
+    const entry = SHOWCASE_CATALOG[feature];
+    if (!entry) continue;
+
+    const filePath = path.join(SHOWCASE_DIR, entry.file);
+    if (!fs.existsSync(filePath)) {
+      console.warn(`[MIIA-GIFS] ⚠️ Showcase MP4 no encontrado: ${entry.file}`);
+      continue;
+    }
+
+    try {
+      const buffer = fs.readFileSync(filePath);
+      showcaseCooldowns[cooldownKey] = Date.now();
+      console.log(`[MIIA-GIFS] 🎬 Showcase MP4: ${feature} → ${entry.file} (${Math.round(buffer.length/1024)}KB)`);
+      return { feature, caption: entry.caption, buffer };
+    } catch (e) {
+      console.error(`[MIIA-GIFS] ❌ Error leyendo showcase ${entry.file}:`, e.message);
+      continue;
+    }
+  }
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INIT — Verificar API key disponible + showcase directory
 // ═══════════════════════════════════════════════════════════════
 
 function initGifDirectory() {
@@ -323,6 +434,14 @@ function initGifDirectory() {
     console.log(`[MIIA-GIFS] ✅ Tenor API configurada — GIFs reales habilitados (${Object.keys(GIF_CATALOG).length} features)`);
   } else {
     console.warn(`[MIIA-GIFS] ⚠️ Sin TENOR_API_KEY ni GOOGLE_API_KEY — GIFs deshabilitados. Para activar: configurar variable de entorno TENOR_API_KEY o GOOGLE_API_KEY`);
+  }
+
+  // Check showcase directory
+  if (fs.existsSync(SHOWCASE_DIR)) {
+    const mp4Files = fs.readdirSync(SHOWCASE_DIR).filter(f => f.endsWith('.mp4'));
+    console.log(`[MIIA-GIFS] 🎬 Showcase: ${mp4Files.length} MP4s locales disponibles en ${SHOWCASE_DIR}`);
+  } else {
+    console.log(`[MIIA-GIFS] ℹ️ Showcase dir no existe aún: ${SHOWCASE_DIR}`);
   }
 }
 
@@ -332,7 +451,9 @@ function initGifDirectory() {
 
 module.exports = {
   GIF_CATALOG,
+  SHOWCASE_CATALOG,
   detectAndPrepareGifs,
+  detectShowcaseVideo,
   sendGif,
   searchTenorGif,
   downloadBuffer,

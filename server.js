@@ -8104,13 +8104,21 @@ REGLAS:
 
       await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx, isMiiaSalesLead: isMiiaSalesLead || isMiiaSupportClient });
 
-      // 🎬 P-GIFS: Enviar GIF demostrativo si MIIA está presentando un feature al lead
+      // 🎬 P-GIFS: Enviar GIF/Showcase si MIIA está presentando un feature al lead
       if (isMiiaSalesLead && !isSelfChat && getOwnerSock()) {
         try {
-          const gifs = await miiaGifs.detectAndPrepareGifs(aiMessage, phone);
-          for (const gif of gifs) {
-            await new Promise(r => setTimeout(r, 1200)); // Pausa natural antes del GIF
-            await miiaGifs.sendGif(getOwnerSock(), phone, gif.buffer, gif.caption);
+          // 1. Showcase MP4 local (prioridad — son demos del brand MIIA)
+          const showcase = miiaGifs.detectShowcaseVideo(aiMessage, phone);
+          if (showcase) {
+            await new Promise(r => setTimeout(r, 1200));
+            await miiaGifs.sendGif(getOwnerSock(), phone, showcase.buffer, showcase.caption);
+          } else {
+            // 2. Fallback: Tenor GIF (si no hay showcase relevante)
+            const gifs = await miiaGifs.detectAndPrepareGifs(aiMessage, phone);
+            for (const gif of gifs) {
+              await new Promise(r => setTimeout(r, 1200));
+              await miiaGifs.sendGif(getOwnerSock(), phone, gif.buffer, gif.caption);
+            }
           }
         } catch (gifErr) {
           console.warn(`[MIIA-GIFS] ⚠️ Error en pipeline GIF:`, gifErr.message);
