@@ -1464,14 +1464,14 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
 
     // ═══ "QUÉ PODÉS HACER" — Listar capacidades directamente (sin IA) ═══
-    if (effectiveMsg && featureAnnouncer.isCapabilitiesQuery(effectiveMsg)) {
+    if (messageBody && featureAnnouncer.isCapabilitiesQuery(messageBody)) {
       const capMsg = featureAnnouncer.buildCapabilitiesSummary();
       await safeSendMessage(phone, capMsg, { isSelfChat: true, skipEmoji: true });
       console.log(`${logPrefix} 📋 CAPABILITIES: Categorías listadas para tenant owner`);
       return;
     }
-    if (effectiveMsg && featureAnnouncer.isCategoryDetailQuery(effectiveMsg)) {
-      const detail = featureAnnouncer.buildCategoryDetail(effectiveMsg);
+    if (messageBody && featureAnnouncer.isCategoryDetailQuery(messageBody)) {
+      const detail = featureAnnouncer.buildCategoryDetail(messageBody);
       if (detail) {
         await safeSendMessage(phone, detail, { isSelfChat: true, skipEmoji: true });
         console.log(`${logPrefix} 📋 CAPABILITIES: Detalle de categoría para tenant owner`);
