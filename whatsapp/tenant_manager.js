@@ -701,6 +701,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       getIdentityHash, getCredsVersion
     };
 
+    // BUG2-FIX: Exponer saveCreds para SIGTERM handler
+    tenant._saveCreds = saveCreds;
+
     const { version } = await fetchLatestBaileysVersion();
 
     console.log(`[TM:${uid}] 📡 Connecting with Baileys v${version.join('.')} (session v${getCredsVersion()}, identity=${getIdentityHash()})...`);
@@ -1165,6 +1168,15 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         // Agents NO procesan fromMe — solo mensajes entrantes de terceros.
         const isOwner = !!tenant.onMessage || tenant.isOwnerAccount;
         if (!isOwner && isFromMe) continue;
+
+        // ═══ BUG3b-FIX: Prevenir auto-respuesta — ignorar mensajes que MIIA envió ═══
+        // Cuando MIIA envía al self-chat (briefing, recordatorio, etc.), Baileys lo ve
+        // como fromMe=true y lo re-procesa → MIIA se responde a sí misma.
+        // _sentMsgIds se puebla en sendTenantMessage() del TMH.
+        if (isFromMe && msg.key.id && tenant._sentMsgIds?.has(msg.key.id)) {
+          console.log(`[TM:${uid}] 🔄 BUCLE PREVENIDO: msg ${msg.key.id.substring(0, 12)}... es propio (enviado por MIIA) — ignorado`);
+          continue;
+        }
 
         // ═══ REACCIONES: detectar y pasar al handler ═══
         const reactionMsg = msg.message?.reactionMessage;
@@ -3270,6 +3282,41 @@ async function recoverUnrespondedMessages(uid, tenant) {
   }
 }
 
+/**
+ * BUG2-FIX: Guardar creds de TODOS los tenants activos (llamado desde SIGTERM handler).
+ * Asegura que después de un redeploy, AUTO-INIT encuentre creds en Firestore.
+ */
+async function saveAllTenantCreds() {
+  let saved = 0;
+  for (const [uid, tenant] of tenants) {
+    if (tenant._saveCreds && tenant.isReady) {
+      try {
+        await tenant._saveCreds();
+        saved++;
+        console.log(`[TM:${uid}] ✅ Creds guardadas en shutdown`);
+      } catch (e) {
+        console.error(`[TM:${uid}] ❌ Error guardando creds en shutdown:`, e.message);
+      }
+    }
+  }
+  return saved;
+}
+
+/**
+ * BUG3b-FIX: Registrar un msgId como enviado por MIIA para prevenir auto-respuesta.
+ * Llamado desde server.js safeSendMessage cuando envía via ownerSock directamente.
+ */
+function registerSentMsgId(uid, msgId) {
+  const t = tenants.get(uid);
+  if (!t || !msgId) return;
+  if (!t._sentMsgIds) t._sentMsgIds = new Set();
+  t._sentMsgIds.add(msgId);
+  if (t._sentMsgIds.size > 200) {
+    const arr = [...t._sentMsgIds];
+    t._sentMsgIds = new Set(arr.slice(-100));
+  }
+}
+
 module.exports = {
   initTenant,
   destroyTenant,
@@ -3289,5 +3336,7 @@ module.exports = {
   forceReconnect,
   forceReconnectByUid,
   flushUnrespondedMessages,
-  recoverUnrespondedMessages
+  recoverUnrespondedMessages,
+  registerSentMsgId,
+  saveAllTenantCreds
 };

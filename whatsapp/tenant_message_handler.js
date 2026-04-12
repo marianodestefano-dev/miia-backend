@@ -397,6 +397,56 @@ async function saveContactIndex(ownerUid, phone, data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// FUZZY PHONE LOOKUP — BUG1-FIX
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Busca un teléfono en un objeto de contactos con matching fuzzy.
+ * Resuelve el problema de formatos inconsistentes (LID→phone, con/sin prefijo país).
+ *
+ * Intento 1: match exacto contacts[basePhone]
+ * Intento 2: suffix match — últimos 10 dígitos (cubre variantes de código país)
+ * Intento 3: Argentina celular — normalizar 549XX → 54XX y viceversa
+ *
+ * @param {Object} contacts - { phone: data }
+ * @param {string} basePhone - Teléfono a buscar (ya sin @s.whatsapp.net)
+ * @returns {{ key: string, data: Object } | null}
+ */
+function fuzzyPhoneLookup(contacts, basePhone) {
+  if (!contacts || !basePhone) return null;
+
+  // Intento 1: exacto
+  if (contacts[basePhone]) {
+    return { key: basePhone, data: contacts[basePhone] };
+  }
+
+  const digits = basePhone.replace(/[^0-9]/g, '');
+  if (digits.length < 8) return null;
+
+  // Intento 2: suffix match — últimos 10 dígitos
+  const suffix = digits.slice(-10);
+  for (const [key, data] of Object.entries(contacts)) {
+    const keyDigits = key.replace(/[^0-9]/g, '');
+    if (keyDigits.length >= 10 && keyDigits.slice(-10) === suffix) {
+      return { key, data };
+    }
+  }
+
+  // Intento 3: Argentina celular — 549XXXXXXXXXX ↔ 54XXXXXXXXXXX
+  // Formato con 9 (celular): 5491164431700 → sin 9: 541164431700
+  // Y viceversa
+  if (digits.startsWith('549') && digits.length >= 12) {
+    const without9 = '54' + digits.substring(3);
+    if (contacts[without9]) return { key: without9, data: contacts[without9] };
+  } else if (digits.startsWith('54') && !digits.startsWith('549') && digits.length >= 11) {
+    const with9 = '549' + digits.substring(2);
+    if (contacts[with9]) return { key: with9, data: contacts[with9] };
+  }
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // CASCADA DE CLASIFICACIÓN DE CONTACTOS
 // ═══════════════════════════════════════════════════════════════
 
@@ -434,23 +484,31 @@ async function classifyContact(ctx, basePhone, messageBody, tenantState) {
   }
 
   // PASO 1: Buscar en contact_groups (también legacy familyContacts/teamContacts)
+  // BUG1-FIX: Usar fuzzyPhoneLookup para resolver formatos inconsistentes (LID→phone, 549XX vs 54XX)
   for (const [gid, group] of Object.entries(ctx.contactGroups || {})) {
-    if (group.contacts && group.contacts[basePhone]) {
-      const contactData = group.contacts[basePhone];
-      console.log(`${logPrefix} 📇 PASO 1: Encontrado en grupo "${group.name}" (${gid})`);
-      await saveContactIndex(ownerUid, basePhone, { type: 'group', groupId: gid, groupName: group.name, name: contactData.name });
-      return { type: 'group', groupId: gid, groupData: group, name: contactData.name };
+    if (group.contacts) {
+      const exactMatch = group.contacts[basePhone];
+      const fuzzyMatch = !exactMatch ? fuzzyPhoneLookup(group.contacts, basePhone) : null;
+      const contactData = exactMatch || fuzzyMatch?.data;
+      if (contactData) {
+        const matchKey = exactMatch ? basePhone : fuzzyMatch.key;
+        console.log(`${logPrefix} 📇 PASO 1: Encontrado en grupo "${group.name}" (${gid})${fuzzyMatch ? ` [FUZZY: ${basePhone}→${matchKey}]` : ''}`);
+        await saveContactIndex(ownerUid, basePhone, { type: 'group', groupId: gid, groupName: group.name, name: contactData.name });
+        return { type: 'group', groupId: gid, groupData: group, name: contactData.name };
+      }
     }
   }
 
-  // Legacy: familia/equipo hardcodeados
-  if (ctx.familyContacts[basePhone]) {
-    console.log(`${logPrefix} 📇 PASO 1 (legacy): familia → ${ctx.familyContacts[basePhone].name}`);
-    return { type: 'familia', name: ctx.familyContacts[basePhone].name };
+  // Legacy: familia/equipo hardcodeados — con fuzzy matching
+  const familyMatch = fuzzyPhoneLookup(ctx.familyContacts, basePhone);
+  if (familyMatch) {
+    console.log(`${logPrefix} 📇 PASO 1 (legacy): familia → ${familyMatch.data.name}${familyMatch.key !== basePhone ? ` [FUZZY: ${basePhone}→${familyMatch.key}]` : ''}`);
+    return { type: 'familia', name: familyMatch.data.name };
   }
-  if (ctx.teamContacts[basePhone]) {
-    console.log(`${logPrefix} 📇 PASO 1 (legacy): equipo → ${ctx.teamContacts[basePhone].name}`);
-    return { type: 'equipo', name: ctx.teamContacts[basePhone].name };
+  const teamMatch = fuzzyPhoneLookup(ctx.teamContacts, basePhone);
+  if (teamMatch) {
+    console.log(`${logPrefix} 📇 PASO 1 (legacy): equipo → ${teamMatch.data.name}${teamMatch.key !== basePhone ? ` [FUZZY: ${basePhone}→${teamMatch.key}]` : ''}`);
+    return { type: 'equipo', name: teamMatch.data.name };
   }
 
   const businesses = ctx.businesses || [];
@@ -939,13 +997,14 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // Excluidos del check: self-chat, familia, equipo, fromMe (mensajes del propio owner)
   if (!isSelfChat && !isFromMe && !isWithinScheduleConfig(ctx.scheduleConfig)) {
     // Check rápido: ¿es familia, equipo o contacto de grupo personal? → nunca bloquear por horario
-    const isFamilyLegacy = ctx.familyContacts && ctx.familyContacts[basePhone];
-    const isTeamLegacy = ctx.teamContacts && ctx.teamContacts[basePhone];
+    // BUG1-FIX: Usar fuzzyPhoneLookup para que LIDs resueltos y variantes de formato matcheen
+    const isFamilyLegacy = ctx.familyContacts && !!fuzzyPhoneLookup(ctx.familyContacts, basePhone);
+    const isTeamLegacy = ctx.teamContacts && !!fuzzyPhoneLookup(ctx.teamContacts, basePhone);
     // También buscar en contact_groups (familia, equipo, amigos, etc.)
     let isInContactGroup = false;
     if (ctx.contactGroups) {
       for (const gid of Object.keys(ctx.contactGroups)) {
-        if (ctx.contactGroups[gid].contacts && ctx.contactGroups[gid].contacts[basePhone]) {
+        if (ctx.contactGroups[gid].contacts && (ctx.contactGroups[gid].contacts[basePhone] || fuzzyPhoneLookup(ctx.contactGroups[gid].contacts, basePhone))) {
           isInContactGroup = true;
           break;
         }
@@ -1050,8 +1109,11 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // ── PASO 7: Clasificar contacto (cascada multi-negocio) ──
   let contactType = ctx.contactTypes[phone];
   let classification = null;
-  let isFamilyContact = ctx.familyContacts[basePhone] || false;
-  let isTeamMember = ctx.teamContacts[basePhone] || false;
+  // BUG1-FIX: Usar fuzzyPhoneLookup para detectar familia/equipo con formatos inconsistentes
+  const familyLookup = fuzzyPhoneLookup(ctx.familyContacts, basePhone);
+  const teamLookup = fuzzyPhoneLookup(ctx.teamContacts, basePhone);
+  let isFamilyContact = familyLookup?.data || false;
+  let isTeamMember = teamLookup?.data || false;
 
   if (!contactType) {
     if (isSelfChat) {
@@ -1063,9 +1125,9 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
       // Map group/legacy types
       if (contactType === 'familia') {
-        isFamilyContact = ctx.familyContacts[basePhone] || { name: classification.name };
+        isFamilyContact = familyLookup?.data || { name: classification.name };
       } else if (contactType === 'equipo') {
-        isTeamMember = ctx.teamContacts[basePhone] || { name: classification.name };
+        isTeamMember = teamLookup?.data || { name: classification.name };
       } else if (contactType === 'group') {
         // Grupo dinámico — se maneja en PASO 9
       }
@@ -3829,10 +3891,25 @@ async function sendTenantMessage(tenantState, phone, content) {
   try {
 
     // Enviar
-    await tenantState.sock.sendMessage(phone, { text: content });
+    const sentMsg = await tenantState.sock.sendMessage(phone, { text: content });
     rateLimiter.recordOutgoing(tenantState.uid);
     try { require('../core/privacy_counters').recordOutgoing(tenantState.uid); } catch (_) {}
-    console.log(`[TMH:${tenantState.uid}] 📤 Mensaje enviado a ${phone} (${content.length} chars)`);
+
+    // ═══ BUG3b-FIX: Registrar msgId enviado para prevenir auto-respuesta ═══
+    // Si MIIA envía al self-chat, Baileys lo ve como fromMe=true y puede re-procesarlo.
+    // Guardamos el msgId para ignorarlo en messages.upsert.
+    const sentMsgId = sentMsg?.key?.id;
+    if (sentMsgId) {
+      if (!tenantState._sentMsgIds) tenantState._sentMsgIds = new Set();
+      tenantState._sentMsgIds.add(sentMsgId);
+      // Cleanup: mantener máx 200 entries
+      if (tenantState._sentMsgIds.size > 200) {
+        const arr = [...tenantState._sentMsgIds];
+        tenantState._sentMsgIds = new Set(arr.slice(-100));
+      }
+    }
+
+    console.log(`[TMH:${tenantState.uid}] 📤 Mensaje enviado a ${phone} (${content.length} chars)${sentMsgId ? ` msgId=${sentMsgId.substring(0, 12)}...` : ''}`);
     return true;
   } catch (e) {
     console.error(`[TMH:${tenantState.uid}] ❌ Error enviando mensaje a ${phone}:`, e.message);

@@ -338,7 +338,17 @@ const PRIORIDADES_COMPACTAS = buildPrioridadesCompactas('familia');
 /**
  * VADEMECUM RULES — Reglas de comportamiento en runtime (parametrizadas)
  */
-function buildVademecum(p) {
+function buildVademecum(p, chatType) {
+  // I-20 (trigger commands) se OMITE completamente para leads/clients/miia_leads
+  // porque la IA a veces lo incluye en la respuesta aunque diga "PROHIBIDO"
+  const isLeadContext = chatType === 'lead' || chatType === 'miia_lead' || chatType === 'client';
+  const triggerBlock = isLeadContext ? '' : `
+- **TRIGGER OBLIGATORIO (I-20) — SOLO FAMILIA/EQUIPO/GRUPOS y SELF-CHAT:**
+  * "Hola MIIA" (con dos ii) → ACTIVA la conversación (SOLO en chats de familia, equipo, grupos)
+  * "Chau MIIA" (con dos ii) → CIERRA la conversación con despedida cálida usando tu propio ADN (SOLO en chats de familia, equipo, grupos)
+  * En self-chat del owner: también aplica este trigger.
+  * ⛔ **PROHIBIDO CON LEADS Y CLIENTES**: NUNCA menciones "HOLA MIIA", "CHAU MIIA" ni ningún comando de activación a leads ni clientes. Ellos NO saben que existes como MIIA. Eres el owner del negocio.`;
+
   return `## 💊 VADEMÉCUM (Sistema Inmune MIIA)
 - **IDENTIDAD (I-15):** ${p.businessName === 'MIIA' ? `Eres MIIA y te vendés a vos misma. SÍ podés decir que sos IA — es tu producto. Hablá con orgullo de lo que hacés.` : p.revealAsAI ? `Eres MIIA, asistente IA de ${p.businessName || 'este negocio'}. Podés decir que sos IA — el owner lo autorizó.` : `NUNCA hables en tercera persona ni te identifiques como IA. Especialmente con LEADS — eres ${p.name}, punto.`}
 - **ANTI-RÁFAGA (I-16):** Bloqueo ante >3 mensajes/5 segundos. Anti-metralleta: >5 mensajes → pausa de seguridad 30 segundos.
@@ -347,12 +357,7 @@ function buildVademecum(p) {
   * Lead escribe poco y tarda mucho (lead con poco tiempo) → Sé CONCISA, directa, sin redundancia.
   * Lead escribe mucho y responde rápido → Sé ÁGIL, asertiva, curiosa en conocer su negocio. No redundante.
   * NUNCA seas redundante ni repetitiva en NINGÚN caso. Si ya dijiste algo, no lo repitas, a menos que el contacto lo pregunte.
-- **ANTI N-RESPUESTA (I-19):** Mutex anti doble, triple, cuádruple y quíntuple respuesta. UN mensaje tuyo por cada mensaje del contacto. Punto.
-- **TRIGGER OBLIGATORIO (I-20) — SOLO FAMILIA/EQUIPO/GRUPOS y SELF-CHAT:**
-  * "Hola MIIA" (con dos ii) → ACTIVA la conversación (SOLO en chats de familia, equipo, grupos)
-  * "Chau MIIA" (con dos ii) → CIERRA la conversación con despedida cálida usando tu propio ADN (SOLO en chats de familia, equipo, grupos)
-  * En self-chat del owner: también aplica este trigger.
-  * ⛔ **PROHIBIDO CON LEADS Y CLIENTES**: NUNCA menciones "HOLA MIIA", "CHAU MIIA" ni ningún comando de activación a leads ni clientes. Ellos NO saben que existes como MIIA. Eres el owner del negocio.
+- **ANTI N-RESPUESTA (I-19):** Mutex anti doble, triple, cuádruple y quíntuple respuesta. UN mensaje tuyo por cada mensaje del contacto. Punto.${triggerBlock}
 - **ANTI-BOT:** NUNCA empieces mensajes con "Entendido", "Perfecto", "Claro", "Por supuesto", "¡Genial!", "Excelente", "Con gusto". NUNCA termines con "¿Hay algo más?", "No dudes en escribirme", "Quedo a tu disposición". Variá estructura.
 - **MEDICAMENTO REUNIÓN:** NUNCA ofrezcas agendar reuniones ni proponer fechas a leads.${p.demoLink ? ` Si un LEAD pide demo o reunión: ${p.demoLink}` : ''}
 - **AGENDA DEL OWNER:** Si el owner te pide "mi agenda", "qué tengo agendado", "mis próximos eventos" → consultá la sección [TU AGENDA] inyectada en el contexto. NUNCA respondas con el demoLink — eso es para leads.
@@ -389,7 +394,7 @@ function buildVademecum(p) {
 }
 
 // Backward compatible
-const VADEMECUM_RULES = buildVademecum(DEFAULT_OWNER_PROFILE);
+const VADEMECUM_RULES = buildVademecum(DEFAULT_OWNER_PROFILE, 'owner');
 
 /**
  * PROTOCOLO DE COTIZACIÓN — Reglas + precios + país mapping
@@ -695,7 +700,7 @@ Mencioná la promo vigente: "Hay una promoción activa con descuento. ¿Querés 
 function buildOwnerSelfChatPrompt(ownerProfile, messageBody) {
   const p = resolveProfile(ownerProfile);
   const adn = buildADN(p);
-  const vademecum = buildVademecum(p);
+  const vademecum = buildVademecum(p, 'owner');
   const nicknames = p.nicknames?.length ? ` Le dice ${p.nicknames.map(n => `"${n}"`).join(', ')}.` : '';
 
   // COTIZACION_PROTOCOL CONDICIONAL: solo cargar tabla completa (~2100 tokens) si el mensaje
@@ -1341,8 +1346,9 @@ ${buildPrioridadesCompactas('familia')}`;
  */
 function buildOwnerLeadPrompt(contactName, trainingData, countryContext, ownerProfile, contactProfile) {
   const p = resolveProfile(ownerProfile);
-  const vademecum = buildVademecum(p);
   const isMiiaSales = (p.businessName === 'MIIA');
+  // Leads y miia_leads NO reciben I-20 (trigger commands) — previene leak de "Hola MIIA"/"Chau MIIA"
+  const vademecum = buildVademecum(p, isMiiaSales ? 'miia_lead' : 'lead');
   // revealAsAI: el owner puede configurar si MIIA se presenta como IA a leads
   // MIIA CENTER siempre revela (es su producto). Otros owners eligen.
   const shouldRevealAsAI = isMiiaSales || p.revealAsAI === true;

@@ -80,6 +80,18 @@ process.on('SIGTERM', async () => {
   try { const { persistTenantConversations } = require('./whatsapp/tenant_message_handler'); await persistTenantConversations(); console.log('[SHUTDOWN] ✅ TMH conversations guardadas'); } catch (e) { console.error('[SHUTDOWN] ❌ Error TMH convos:', e.message); }
   // Flush mensajes no-respondidos para recovery post-reconnect
   try { const { flushUnrespondedMessages } = require('./whatsapp/tenant_manager'); const flushed = await flushUnrespondedMessages(); console.log(`[SHUTDOWN] ✅ ${flushed} unresponded message(s) flushed`); } catch (e) { console.error('[SHUTDOWN] ❌ Error flushing unresponded:', e.message); }
+  // BUG2-FIX: Guardar creds de TODOS los tenants para que AUTO-INIT los encuentre
+  try {
+    const { saveAllTenantCreds } = require('./whatsapp/tenant_manager');
+    const credsPromise = saveAllTenantCreds();
+    const timeoutPromise = new Promise(r => setTimeout(() => r(-1), 5000));
+    const credsSaved = await Promise.race([credsPromise, timeoutPromise]);
+    if (credsSaved === -1) {
+      console.warn('[SHUTDOWN] ⚠️ saveAllTenantCreds timeout (5s) — algunas creds pueden no haberse guardado');
+    } else {
+      console.log(`[SHUTDOWN] ✅ ${credsSaved} tenant creds guardadas`);
+    }
+  } catch (e) { console.error('[SHUTDOWN] ❌ Error saving tenant creds:', e.message); }
   // Guardar timestamp de shutdown para que AUTO-INIT sepa cuánto estuvo offline
   try {
     await admin.firestore().collection('system').doc('shutdown_state').set({
@@ -959,6 +971,31 @@ async function runAgendaEngine() {
         console.log(`[AGENDA] 🕐 Recordatorio a hora exacta para ${evt.contactName || evt.contactPhone} (pedido por contacto: ${!!contactRequested}, source: ${evt.source || 'default'})`);
       }
 
+      // ═══ BUG4-FIX: Eventos creados desde self-chat son recordatorios PARA EL OWNER ═══
+      // El owner dice "recordame el cumple de Rafael" → contactPhone puede ser el de Rafael,
+      // pero el intent es recordar AL OWNER, no contactar a Rafael directamente.
+      // Si source es 'selfchat' o 'owner_manual' y no tiene remindContact=true,
+      // redirigir al owner en vez de saltar.
+      const isOwnerCreatedReminder = evt.source === 'selfchat' || evt.source === 'owner_manual' || evt.source === 'google_calendar_sync';
+      if (!isOwnerReminder && !evt.remindContact && isOwnerCreatedReminder) {
+        console.log(`[AGENDA] 🔄 BUG4-FIX: Evento ${doc.id} de source="${evt.source}" sin remindContact → redirigiendo al owner (intent: recordatorio personal)`);
+        // Redirigir: enviar al owner en vez de al contacto
+        const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
+        const evtReasonRedirect = evt.reason || evt.title || '';
+        if (evtReasonRedirect) {
+          const contactName = evt.contactName || evt.contactPhone || '';
+          const hora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : '';
+          const redirectMsg = `⏰ *Recordatorio:*\n${evtReasonRedirect}${contactName ? ` — ${contactName}` : ''}${hora ? `\n🕐 ${hora}` : ''}`;
+          try {
+            await safeSendMessage(ownerJid, redirectMsg, { isSelfChat: true });
+            await doc.ref.update({ status: 'completed', completedAt: new Date().toISOString(), redirectedToOwner: true });
+            console.log(`[AGENDA] ✅ Recordatorio personal enviado al owner: "${evtReasonRedirect}"`);
+          } catch (redirectErr) {
+            console.error(`[AGENDA] ❌ Error enviando recordatorio redirigido: ${redirectErr.message}`);
+          }
+        }
+        continue;
+      }
       // ═══ SEGURIDAD: Si remindContact=false y NO es para el owner, NO enviar ═══
       if (!isOwnerReminder && !evt.remindContact) {
         console.log(`[AGENDA] ⏭️ Evento ${doc.id} no tiene permiso para contactar a ${evt.contactName}. Solo owner.`);
@@ -2492,10 +2529,12 @@ async function safeSendMessage(target, content, options = {}) {
               }
               partText = applyMiiaEmoji(partText, { ...partEmojiCtx });
             }
-            await getOwnerSock().sendMessage(sendJid, { text: partText });
+            const splitResult = await getOwnerSock().sendMessage(sendJid, { text: partText });
             rateLimiter.recordOutgoing('admin');
             privacyCounters.recordOutgoing('admin');
             hourlySendLog.count++;
+            // BUG3b-FIX: registrar msgId de cada parte
+            if (splitResult?.key?.id && OWNER_UID) tenantManager.registerSentMsgId(OWNER_UID, splitResult.key.id);
             // ═══ ANTI-LOOP: Registrar cada parte en lastSentByBot para que el eco no se procese ═══
             const splitSentBody = splitParts[i].trim();
             if (splitSentBody) {
@@ -2557,8 +2596,10 @@ async function safeSendMessage(target, content, options = {}) {
             console.warn(`[MULTI-MSG] ⚠️ Chunk ${i + 1} vacío — saltando`);
             continue;
           }
-          await getOwnerSock().sendMessage(sendJid, { text: chunkContent });
+          const chunkResult = await getOwnerSock().sendMessage(sendJid, { text: chunkContent });
           hourlySendLog.count++;
+          // BUG3b-FIX: registrar msgId de cada chunk
+          if (chunkResult?.key?.id && OWNER_UID) tenantManager.registerSentMsgId(OWNER_UID, chunkResult.key.id);
           // ═══ ANTI-LOOP: Registrar cada chunk en lastSentByBot para que el eco no se procese ═══
           const chunkSentBody = chunkContent.trim();
           if (chunkSentBody) {
@@ -2663,6 +2704,14 @@ async function safeSendMessage(target, content, options = {}) {
     // Registrar mapeo LID↔Phone si el resultado tiene un remoteJid @lid
     if (result?.key?.remoteJid?.includes('@lid') && target.includes('@s.whatsapp.net')) {
       registerLidMapping(result.key.remoteJid, target);
+    }
+
+    // ═══ BUG3b-FIX: Registrar msgId para prevenir auto-respuesta en tenant_manager ═══
+    // safeSendMessage envía directo via ownerSock, pero tenant_manager re-procesa fromMe.
+    // Guardamos el msgId en el tenant para que messages.upsert lo ignore.
+    const sentMsgId = result?.key?.id;
+    if (sentMsgId && OWNER_UID) {
+      tenantManager.registerSentMsgId(OWNER_UID, sentMsgId);
     }
 
     console.log(`[SEND-DEBUG] Resultado de sendMessage:`, result);
@@ -15820,8 +15869,29 @@ server.listen(PORT, () => {
             // Verificar que tiene creds guardados en la subcollección
             const cDoc = await admin.firestore().collection('baileys_sessions').doc(sessionId).collection('data').doc('creds').get();
             if (!cDoc.exists) {
-              console.log(`[AUTO-INIT] ⏭️ ${uid.substring(0, 12)}... sin creds en Firestore, saltando.`);
-              continue;
+              // BUG2-FIX: Alerta crítica para owners conocidos
+              const CRITICAL_UIDS = ['bq2BbtCVF8cZo30tum584zrGATJ3', 'A5pMESWlfmPWCoCPRbwy85EzUzy2'];
+              if (CRITICAL_UIDS.includes(uid)) {
+                console.error(`[AUTO-INIT] ⚠️⚠️⚠️ CRITICAL: Owner ${uid.substring(0, 12)}... SIN CREDS en Firestore — requiere re-scan QR o las creds no se guardaron en el último SIGTERM`);
+                // Intentar buscar en doc raíz (path legacy)
+                try {
+                  const legacyDoc = await admin.firestore().collection('baileys_sessions').doc(sessionId).get();
+                  if (legacyDoc.exists && legacyDoc.data()?.creds) {
+                    console.log(`[AUTO-INIT] 🔄 RECOVERY: Creds encontradas en doc raíz legacy para ${uid.substring(0, 12)}... — migrando a subcollección`);
+                    await admin.firestore().collection('baileys_sessions').doc(sessionId).collection('data').doc('creds').set(legacyDoc.data().creds);
+                    // NO saltar — continuar con la reconexión
+                  } else {
+                    console.error(`[AUTO-INIT] ❌ Sin creds en NINGÚN path para owner crítico ${uid.substring(0, 12)}... — OFFLINE hasta re-scan QR`);
+                    continue;
+                  }
+                } catch (legacyErr) {
+                  console.error(`[AUTO-INIT] ❌ Error buscando creds legacy:`, legacyErr.message);
+                  continue;
+                }
+              } else {
+                console.log(`[AUTO-INIT] ⏭️ ${uid.substring(0, 12)}... sin creds en Firestore, saltando.`);
+                continue;
+              }
             }
 
             // Obtener datos del usuario
