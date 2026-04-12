@@ -16401,6 +16401,39 @@ app.post('/api/reservations/favorites', requireRole('owner', 'admin'), express.j
 });
 
 // ═══════════════════════════════════════════════════════════════
+// VOICE COMMAND — Procesar comando de voz desde el dashboard
+// ═══════════════════════════════════════════════════════════════
+
+app.post('/api/voice-command', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { text, source } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ success: false, error: 'Texto vacío' });
+
+    console.log(`[VOICE-CMD] 🎙️ Comando de voz (${source || 'unknown'}): "${text.substring(0, 100)}..." — uid: ${uid}`);
+
+    // Verificar que el usuario tiene WhatsApp conectado
+    if (!sock || !OWNER_PHONE) {
+      return res.json({ success: true, response: 'Comando recibido, pero WhatsApp no está conectado. Conectá WhatsApp primero para que MIIA pueda ejecutar acciones.' });
+    }
+
+    // Enviar como self-chat message (MIIA lo procesará como comando del owner)
+    const selfJid = `${OWNER_PHONE}@s.whatsapp.net`;
+
+    // Simular que el owner envió este mensaje en self-chat
+    // Esto dispara todo el pipeline de procesamiento (tags, integraciones, etc.)
+    const voicePrefix = source === 'voice_dashboard' ? '🎙️ ' : '';
+    await safeSendMessage(selfJid, `${voicePrefix}${text}`, { isSelfChat: true, skipEmoji: true });
+
+    console.log(`[VOICE-CMD] ✅ Comando enviado como self-chat: "${text.substring(0, 60)}..."`);
+    res.json({ success: true, response: `Comando enviado a MIIA: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"` });
+  } catch (err) {
+    console.error(`[VOICE-CMD] ❌ Error:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // R3: FAVORITOS INTELIGENTES + RATING
 // ═══════════════════════════════════════════════════════════════
 
