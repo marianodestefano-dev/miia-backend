@@ -905,7 +905,7 @@ async function runAgendaEngine() {
         if (evt.preReminderSent) continue;
         // Pre-recordatorios: SIEMPRE enviar si el owner lo creó (manual, selfchat, calendar sync)
         // Solo bloquear por horario si es reminder auto-generado (followup, proactivo)
-        const isOwnerCreated = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_manual' || evt.contactPhone === 'self';
+        const isOwnerCreated = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_selfchat' || evt.source === 'owner_manual' || evt.contactPhone === 'self';
         if (!isOwnerSafeHours && !isOwnerCreated && evt.source !== 'miia_center_lead') continue;
 
         // Guard ESTRICTO: si el evento no tiene datos mínimos, NO enviar basura al owner
@@ -961,7 +961,7 @@ async function runAgendaEngine() {
       const isMiiaCenterLeadEvt = evt.source === 'miia_center_lead';
       const contactRequested = !isOwnerReminder && evt.remindContact;
       // Eventos creados por el owner → SIEMPRE enviar, sin importar horario
-      const isOwnerCreatedEvt = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_manual' || (isOwnerReminder && evt.contactPhone === 'self');
+      const isOwnerCreatedEvt = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_selfchat' || evt.source === 'owner_manual' || (isOwnerReminder && evt.contactPhone === 'self');
       if (!contactRequested && !isMiiaCenterLeadEvt && !isOwnerCreatedEvt && !isOwnerSafeHours) {
         // Recordatorio auto-generado, fuera de horario → esperar
         continue;
@@ -976,7 +976,7 @@ async function runAgendaEngine() {
       // pero el intent es recordar AL OWNER, no contactar a Rafael directamente.
       // Si source es 'selfchat' o 'owner_manual' y no tiene remindContact=true,
       // redirigir al owner en vez de saltar.
-      const isOwnerCreatedReminder = evt.source === 'selfchat' || evt.source === 'owner_manual' || evt.source === 'google_calendar_sync';
+      const isOwnerCreatedReminder = evt.source === 'selfchat' || evt.source === 'owner_selfchat' || evt.source === 'owner_manual' || evt.source === 'google_calendar_sync';
       if (!isOwnerReminder && !evt.remindContact && isOwnerCreatedReminder) {
         console.log(`[AGENDA] 🔄 BUG4-FIX: Evento ${doc.id} de source="${evt.source}" sin remindContact → redirigiendo al owner (intent: recordatorio personal)`);
         // Redirigir: enviar al owner en vez de al contacto
