@@ -5781,11 +5781,13 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
 
     // ═══ INTENSAMENTE v2.0: POST-PROCESO — Regex + IA Audit (100% coverage) ═══
+    // Definir fuera del try para que esté disponible más adelante (emojiCtx, TTS, etc.)
+    const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
+    const isMiiaClientPost = conversationMetadata[phone]?.contactType === 'miia_client' || contactTypes[phone] === 'miia_client';
+    const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaClientPost ? 'miia_client' : (isMiiaSalesLead ? 'miia_lead' : 'lead')));
+    const postContactName = leadNames[phone] || familyContacts[basePhone]?.name || '';
+
     try {
-      const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
-      const isMiiaClientPost = conversationMetadata[phone]?.contactType === 'miia_client' || contactTypes[phone] === 'miia_client';
-      const postChatType = isSelfChat ? 'selfchat' : isFamilyContact ? 'family' : (contactTypes[phone] === 'equipo' ? 'equipo' : (isMiiaClientPost ? 'miia_client' : (isMiiaSalesLead ? 'miia_lead' : 'lead')));
-      const postContactName = leadNames[phone] || familyContacts[basePhone]?.name || '';
 
       // PASO 1: Auditoría REGEX (instantánea, 2ms)
       const regexResult = runPostprocess(aiMessage, {
