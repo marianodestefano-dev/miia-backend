@@ -1384,10 +1384,16 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
 
   // ── PASO 7e: Night mode — MIIA "duerme" automáticamente ──
-  const nightCheck = humanDelay.nightModeGate(ctx.ownerUid, contactType, ctx.ownerProfile?.timezone);
-  if (!nightCheck.allowed) {
-    console.log(`${logPrefix} 🌙 NIGHT MODE: ${contactType} ${basePhone} bloqueado (${nightCheck.reason}). Lead responde mañana.`);
-    return;
+  // 🔒 MIIA CENTER (A5pMESWlfmPWCoCPRbwy85EzUzy2) es 24/7 — NUNCA night mode
+  const isMiiaCenterTenant = ctx.ownerUid === 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
+  if (isMiiaCenterTenant) {
+    console.log(`${logPrefix} 🌐 MIIA CENTER 24/7: night mode bypassed para ${contactType} ${basePhone}`);
+  } else {
+    const nightCheck = humanDelay.nightModeGate(ctx.ownerUid, contactType, ctx.ownerProfile?.timezone);
+    if (!nightCheck.allowed) {
+      console.log(`${logPrefix} 🌙 NIGHT MODE: ${contactType} ${basePhone} bloqueado (${nightCheck.reason}). Lead responde mañana.`);
+      return;
+    }
   }
 
   // ── PASO 8: Detectar negatividad (solo leads, no familia/equipo/self-chat) ──
@@ -1853,10 +1859,16 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
   // PASO 2: Auditoría IA con Sonnet (100% mensajes)
   try {
+    // Pasar historial reciente al auditor para que no vete contexto legítimo
+    const recentHistory = (ctx.conversations[phone] || []).slice(-6).map(m =>
+      `${m.role === 'user' ? 'Usuario' : 'MIIA'}: ${(m.content || '').substring(0, 150)}`
+    ).join('\n');
+
     const aiAuditResult = await runAIAudit(aiMessage, {
       chatType: postChatType,
       contactName: postContactName,
       userMessage: messageBody,
+      conversationHistory: recentHistory,
       generateAI: (prompt) => aiGateway.smartCall(aiGateway.CONTEXTS.AUDITOR, prompt, { aiProvider, aiApiKey }).then(r => r.text),
     });
 

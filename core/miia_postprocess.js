@@ -407,7 +407,11 @@ function auditVerdad(aiMessage, hasSearchData, chatType) {
  * Prompt para el auditor IA — Gemini Flash verifica la respuesta
  * Diseñado para ser ultra-conciso (~300 tokens input) y rápido (~200ms)
  */
-function buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSearchData) {
+function buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSearchData, conversationHistory) {
+  const historyBlock = conversationHistory
+    ? `\nHISTORIAL RECIENTE DE LA CONVERSACIÓN (los últimos mensajes entre usuario y MIIA):\n${conversationHistory}\n\nIMPORTANTE: Si la respuesta de MIIA hace referencia a temas que aparecen en el historial, ESO NO ES INVENCIÓN — es contexto legítimo de la conversación.\n`
+    : '';
+
   return `Sos un auditor de calidad. Analizá esta respuesta de una IA que se hace pasar por humana en WhatsApp.
 
 CONTEXTO:
@@ -415,6 +419,7 @@ CONTEXTO:
 - Contacto: ${contactName || 'desconocido'}
 - Tiene datos de búsqueda real: ${hasSearchData ? 'SÍ' : 'NO'}
 - Mensaje del usuario: "${(userMessage || '').substring(0, 200)}"
+${historyBlock}
 
 RESPUESTA A AUDITAR:
 "${aiMessage.substring(0, 1500)}"
@@ -569,7 +574,7 @@ function runPostprocess(aiMessage, opts = {}) {
  * @returns {Promise<{approved: boolean, issues: string[], severity: string, action: string}>}
  */
 async function runAIAudit(aiMessage, opts = {}) {
-  const { chatType, contactName, hasSearchData, userMessage, generateAI } = opts;
+  const { chatType, contactName, hasSearchData, userMessage, conversationHistory, generateAI } = opts;
 
   if (!generateAI) {
     console.warn('[POSTPROCESS:AI] ⚠️ generateAI no inyectado — saltando auditoría IA');
@@ -577,7 +582,7 @@ async function runAIAudit(aiMessage, opts = {}) {
   }
 
   try {
-    const prompt = buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSearchData);
+    const prompt = buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSearchData, conversationHistory);
     const response = await generateAI(prompt);
     const result = parseAuditResponse(response);
 
