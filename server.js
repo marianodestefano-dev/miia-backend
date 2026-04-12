@@ -12442,7 +12442,7 @@ app.put('/api/tenant/:uid/contact-groups/:groupId', express.json(), async (req, 
     }
     updates.updatedAt = new Date().toISOString();
 
-    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).update(updates);
+    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).set(updates, { merge: true });
     console.log(`[GROUPS] ✏️ Grupo ${groupId} actualizado: ${Object.keys(updates).join(', ')}`);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -12544,11 +12544,7 @@ app.put('/api/tenant/:uid/contact-groups/:groupId/contacts/:phone', express.json
     updates.updatedAt = new Date().toISOString();
 
     const docRef = db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').doc(phone);
-    const doc = await docRef.get();
-    if (!doc.exists) {
-      return res.status(404).json({ error: `Contacto ${phone} no encontrado en grupo ${groupId}` });
-    }
-    await docRef.update(updates);
+    await docRef.set(updates, { merge: true });
 
     // Sincronizar contact_index si cambió nombre/relación
     if (updates.name || updates.nickname || updates.relation) {
