@@ -409,7 +409,7 @@ function auditVerdad(aiMessage, hasSearchData, chatType) {
  */
 function buildAuditPrompt(aiMessage, userMessage, chatType, contactName, hasSearchData, conversationHistory) {
   const historyBlock = conversationHistory
-    ? `\nHISTORIAL RECIENTE DE LA CONVERSACIÓN (los últimos mensajes entre usuario y MIIA):\n${conversationHistory}\n\nIMPORTANTE: Si la respuesta de MIIA hace referencia a temas que aparecen en el historial, ESO NO ES INVENCIÓN — es contexto legítimo de la conversación.\n`
+    ? `\nMENSAJES PREVIOS DEL USUARIO (solo lo que dijo el humano, NO respuestas de MIIA):\n${conversationHistory}\n\nIMPORTANTE: Si la respuesta de MIIA hace referencia a temas que el USUARIO mencionó en mensajes previos, ESO NO ES INVENCIÓN — es contexto legítimo. Pero si MIIA agrega detalles que el usuario NUNCA dijo, eso SÍ es invención.\n`
     : '';
 
   return `Sos un auditor de calidad. Analizá esta respuesta de una IA que se hace pasar por humana en WhatsApp.

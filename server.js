@@ -5880,10 +5880,13 @@ REGLAS:
 
       // PASO 2: Auditoría IA con Gemini Flash (100% de los mensajes, ~1-2s)
       // Se ejecuta SIEMPRE, incluso si regex aprobó — atrapa lo que regex no puede
-      // Pasar historial reciente al auditor para no vetar contexto legítimo
-      const recentHistoryForAudit = (conversations[phone] || []).slice(-6).map(m =>
-        `${m.role === 'user' ? 'Usuario' : 'MIIA'}: ${(m.content || '').substring(0, 150)}`
-      ).join('\n');
+      // Pasar SOLO mensajes del USUARIO (no de MIIA) al auditor
+      // Anti bola de nieve: si MIIA alucinó antes, no validar esa alucinación como contexto
+      const recentHistoryForAudit = (conversations[phone] || [])
+        .filter(m => m.role === 'user')
+        .slice(-4)
+        .map(m => `Usuario: ${(m.content || '').substring(0, 200)}`)
+        .join('\n');
 
       const aiAuditResult = await runAIAudit(aiMessage, {
         chatType: postChatType,
