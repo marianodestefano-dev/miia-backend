@@ -1471,6 +1471,29 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     if (knownPeople.length > 0) {
       activeSystemPrompt += `\n\n## CONTACTOS CONOCIDOS DE ${ctx.ownerProfile?.shortName || 'OWNER'}\n${knownPeople.join('\n')}\nSi te preguntan "¿quién es X?", buscá en esta lista. Si no está, decí que no lo conocés y preguntá si querés que lo registres.`;
     }
+    // Inyectar eventos pendientes del día con sus IDs internos (para CANCELAR/MOVER preciso)
+    try {
+      const now = new Date();
+      const dayEnd = new Date(now); dayEnd.setHours(23, 59, 59, 999);
+      const twoDaysOut = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+      const evtSnap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
+        .where('status', '==', 'pending')
+        .where('scheduledFor', '>=', now.toISOString())
+        .where('scheduledFor', '<=', twoDaysOut.toISOString())
+        .orderBy('scheduledFor', 'asc').limit(15).get();
+      if (!evtSnap.empty) {
+        const evtList = evtSnap.docs.map(d => {
+          const e = d.data();
+          const dateLocal = e.scheduledForLocal || e.scheduledFor || '';
+          const contact = e.contactName || e.contactPhone || '';
+          return `  - [ID:${d.id}] ${dateLocal} | ${e.reason || '(sin título)'}${contact && contact !== 'self' ? ` | con ${contact}` : ''}`;
+        }).join('\n');
+        activeSystemPrompt += `\n\n## EVENTOS PENDIENTES (próximas 48h)\n${evtList}\n\nCuando te pidan CANCELAR o MOVER un evento, usá el ID interno así:\n[CANCELAR_EVENTO:ID:docId|fecha|modo] o [MOVER_EVENTO:ID:docId|fecha_vieja|fecha_nueva]\nEsto evita confusiones entre eventos similares.`;
+      }
+    } catch (evtErr) {
+      console.warn(`${logPrefix} ⚠️ Error inyectando eventos en prompt: ${evtErr.message}`);
+    }
+
     // Dialecto del owner para self-chat
     if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
 
@@ -2782,11 +2805,14 @@ REGLAS:
               if (!isNaN(parsedDate)) {
                 const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
                 const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+                const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
                 const calResult = await createCalendarEvent({
                   summary: razon || 'Evento MIIA',
                   dateStr: fecha.split('T')[0],
                   startHour: startH,
+                  startMinute: startMin,
                   endHour: startH + 1,
+                  endMinute: startMin,
                   description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
                   uid: ownerUid,
                   timezone: ownerTz,
@@ -2797,7 +2823,8 @@ REGLAS:
                 });
                 calendarOk = true;
                 meetLink = calResult.meetLink || null;
-                console.log(`${logPrefix} [AGENDA-TMH] 📅 Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode}`);
+                var calendarEventId = calResult.eventId || null;
+                console.log(`${logPrefix} [AGENDA-TMH] 📅 Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} calEventId=${calendarEventId}`);
               }
             } catch (calErr) {
               console.warn(`${logPrefix} [AGENDA-TMH] ⚠️ Calendar no disponible: ${calErr.message}. Guardando solo en Firestore.`);
@@ -2848,6 +2875,7 @@ REGLAS:
                 meetLink: meetLink || '',
                 status: 'pending',
                 calendarSynced: calendarOk,
+                calendarEventId: calendarEventId || null,
                 remindContact: !isSelfChat || isExternalContact,
                 reminderMinutes: 10,
                 requestedBy: phone,
@@ -2966,12 +2994,12 @@ REGLAS:
               const dateLocal = e.scheduledForLocal || e.scheduledFor || '';
               const modeEmoji = e.eventMode === 'virtual' ? '📹' : e.eventMode === 'telefono' ? '📞' : '📍';
               const contact = e.contactName || e.contactPhone || '';
-              return `  ${modeEmoji} ${dateLocal} | ${e.reason || '(sin título)'} | ${contact && contact !== 'self' ? `con ${contact}` : ''}`;
+              return `  ${modeEmoji} [ID:${d.id}] ${dateLocal} | ${e.reason || '(sin título)'} | ${contact && contact !== 'self' ? `con ${contact}` : ''}`;
             });
           }
 
           if (agendaItems.length > 0) {
-            aiMessage = `📅 *Tu agenda (próximos 7 días):*\n\n${agendaItems.join('\n')}`;
+            aiMessage = `📅 *Tu agenda (próximos 7 días):*\n\n${agendaItems.join('\n')}\n\n_(Usá el ID interno para cancelar o mover eventos)_`;
           } else {
             aiMessage = '📅 No tenés eventos agendados en los próximos 7 días.';
           }
@@ -2990,59 +3018,73 @@ REGLAS:
         const mode = (cancelMode || 'silencioso').toLowerCase();
         console.log(`${logPrefix} [CANCELAR-TMH] 🗑️ Buscando: "${searchReason}" cerca de ${searchDate || 'hoy'} modo=${mode}`);
         try {
-          const searchDateObj = searchDate ? new Date(searchDate) : new Date();
-          const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
-          const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
-
-          const snap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
-            .where('status', '==', 'pending')
-            .where('scheduledFor', '>=', dayStart.toISOString())
-            .where('scheduledFor', '<=', dayEnd.toISOString())
-            .orderBy('scheduledFor', 'asc').limit(10).get();
-
           let found = null;
-          const reasonLower = (searchReason || '').toLowerCase();
-          const reasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2); // Palabras significativas (>2 chars)
 
-          // Scoring: buscar el evento con MEJOR match, no el primero que "incluye"
-          let bestScore = 0;
-          for (const doc of snap.docs) {
-            const evt = doc.data();
-            const evtReason = (evt.reason || '').toLowerCase();
-            const evtContact = (evt.contactName || '').toLowerCase();
-            let score = 0;
-
-            // Match exacto de razón = score máximo
-            if (evtReason === reasonLower) {
-              score = 100;
+          // ═══ FAST-PATH: Si viene con ID: → buscar directamente por docId ═══
+          const docIdMatch = (searchReason || '').match(/^ID:(\S+)/i);
+          if (docIdMatch) {
+            const docId = docIdMatch[1];
+            console.log(`${logPrefix} [CANCELAR-TMH] 🎯 Búsqueda por docId: ${docId}`);
+            const docRef = db().collection('users').doc(ownerUid).collection('miia_agenda').doc(docId);
+            const docSnap = await docRef.get();
+            if (docSnap.exists && docSnap.data().status === 'pending') {
+              found = { doc: docSnap, data: docSnap.data() };
+              console.log(`${logPrefix} [CANCELAR-TMH] ✅ Encontrado por docId: "${found.data.reason}"`);
             } else {
-              // Contar palabras significativas que matchean
-              const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
-              let matchedWords = 0;
-              for (const word of reasonWords) {
-                if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
-              }
-              // Score basado en % de palabras que matchean (ambas direcciones)
-              const forwardMatch = reasonWords.length > 0 ? matchedWords / reasonWords.length : 0;
-              let reverseMatched = 0;
-              for (const word of evtWords) {
-                if (reasonLower.includes(word)) reverseMatched++;
-              }
-              const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
-              score = Math.round((forwardMatch * 60 + reverseMatch * 40)); // Forward pesa más
-            }
-
-            console.log(`${logPrefix} [CANCELAR-TMH] 📊 Score "${evt.reason}" = ${score}`);
-            if (score > bestScore) {
-              bestScore = score;
-              found = { doc, data: evt };
+              console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ DocId ${docId} no existe o no está pending`);
             }
           }
 
-          // REQUIERE score mínimo de 45 para evitar borrar evento equivocado
-          if (found && bestScore < 45) {
-            console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Mejor match "${found.data.reason}" score=${bestScore} < 45 — RECHAZADO para evitar borrar evento equivocado`);
-            found = null;
+          // ═══ SCORING FALLBACK: Si no vino con ID: o no se encontró ═══
+          if (!found) {
+            const searchDateObj = searchDate ? new Date(searchDate) : new Date();
+            const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
+            const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
+
+            const snap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
+              .where('status', '==', 'pending')
+              .where('scheduledFor', '>=', dayStart.toISOString())
+              .where('scheduledFor', '<=', dayEnd.toISOString())
+              .orderBy('scheduledFor', 'asc').limit(10).get();
+
+            const reasonLower = (searchReason || '').toLowerCase();
+            const reasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2);
+
+            let bestScore = 0;
+            for (const doc of snap.docs) {
+              const evt = doc.data();
+              const evtReason = (evt.reason || '').toLowerCase();
+              const evtContact = (evt.contactName || '').toLowerCase();
+              let score = 0;
+
+              if (evtReason === reasonLower) {
+                score = 100;
+              } else {
+                const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
+                let matchedWords = 0;
+                for (const word of reasonWords) {
+                  if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
+                }
+                const forwardMatch = reasonWords.length > 0 ? matchedWords / reasonWords.length : 0;
+                let reverseMatched = 0;
+                for (const word of evtWords) {
+                  if (reasonLower.includes(word)) reverseMatched++;
+                }
+                const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
+                score = Math.round((forwardMatch * 60 + reverseMatch * 40));
+              }
+
+              console.log(`${logPrefix} [CANCELAR-TMH] 📊 Score "${evt.reason}" (docId:${doc.id}) = ${score}`);
+              if (score > bestScore) {
+                bestScore = score;
+                found = { doc, data: evt };
+              }
+            }
+
+            if (found && bestScore < 45) {
+              console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Mejor match "${found.data.reason}" score=${bestScore} < 45 — RECHAZADO`);
+              found = null;
+            }
           }
 
           // ═══ PASO A: Intentar eliminar de Google Calendar DIRECTAMENTE ═══
@@ -3158,50 +3200,69 @@ REGLAS:
         const [mSearchReason, mOldDate, mNewDate] = moverParts;
         console.log(`${logPrefix} [MOVER-TMH] 🔄 Buscando "${mSearchReason}" en ${mOldDate} → mover a ${mNewDate}`);
         try {
-          const searchDateObj = mOldDate ? new Date(mOldDate) : new Date();
-          const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
-          const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
-
-          const snap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
-            .where('status', '==', 'pending')
-            .where('scheduledFor', '>=', dayStart.toISOString())
-            .where('scheduledFor', '<=', dayEnd.toISOString())
-            .orderBy('scheduledFor', 'asc').limit(10).get();
-
           let found = null;
-          const reasonLower = (mSearchReason || '').toLowerCase();
-          const mReasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2);
-          let mBestScore = 0;
-          for (const doc of snap.docs) {
-            const evt = doc.data();
-            const evtReason = (evt.reason || '').toLowerCase();
-            const evtContact = (evt.contactName || '').toLowerCase();
-            let score = 0;
-            if (evtReason === reasonLower) {
-              score = 100;
+
+          // ═══ FAST-PATH: Si viene con ID: → buscar directamente por docId ═══
+          const mDocIdMatch = (mSearchReason || '').match(/^ID:(\S+)/i);
+          if (mDocIdMatch) {
+            const docId = mDocIdMatch[1];
+            console.log(`${logPrefix} [MOVER-TMH] 🎯 Búsqueda por docId: ${docId}`);
+            const docRef = db().collection('users').doc(ownerUid).collection('miia_agenda').doc(docId);
+            const docSnap = await docRef.get();
+            if (docSnap.exists && docSnap.data().status === 'pending') {
+              found = { doc: docSnap, data: docSnap.data() };
+              console.log(`${logPrefix} [MOVER-TMH] ✅ Encontrado por docId: "${found.data.reason}"`);
             } else {
-              const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
-              let matchedWords = 0;
-              for (const word of mReasonWords) {
-                if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
-              }
-              const forwardMatch = mReasonWords.length > 0 ? matchedWords / mReasonWords.length : 0;
-              let reverseMatched = 0;
-              for (const word of evtWords) {
-                if (reasonLower.includes(word)) reverseMatched++;
-              }
-              const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
-              score = Math.round((forwardMatch * 60 + reverseMatch * 40));
-            }
-            console.log(`${logPrefix} [MOVER-TMH] 📊 Score "${evt.reason}" = ${score}`);
-            if (score > mBestScore) {
-              mBestScore = score;
-              found = { doc, data: evt };
+              console.warn(`${logPrefix} [MOVER-TMH] ⚠️ DocId ${docId} no existe o no está pending`);
             }
           }
-          if (found && mBestScore < 40) {
-            console.warn(`${logPrefix} [MOVER-TMH] ⚠️ Mejor match "${found.data.reason}" score=${mBestScore} < 40 — RECHAZADO`);
-            found = null;
+
+          // ═══ SCORING FALLBACK: Si no vino con ID: o no se encontró ═══
+          if (!found) {
+            const searchDateObj = mOldDate ? new Date(mOldDate) : new Date();
+            const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
+            const dayEnd = new Date(searchDateObj); dayEnd.setHours(23, 59, 59, 999);
+
+            const snap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
+              .where('status', '==', 'pending')
+              .where('scheduledFor', '>=', dayStart.toISOString())
+              .where('scheduledFor', '<=', dayEnd.toISOString())
+              .orderBy('scheduledFor', 'asc').limit(10).get();
+
+            const reasonLower = (mSearchReason || '').toLowerCase();
+            const mReasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2);
+            let mBestScore = 0;
+            for (const doc of snap.docs) {
+              const evt = doc.data();
+              const evtReason = (evt.reason || '').toLowerCase();
+              const evtContact = (evt.contactName || '').toLowerCase();
+              let score = 0;
+              if (evtReason === reasonLower) {
+                score = 100;
+              } else {
+                const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
+                let matchedWords = 0;
+                for (const word of mReasonWords) {
+                  if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
+                }
+                const forwardMatch = mReasonWords.length > 0 ? matchedWords / mReasonWords.length : 0;
+                let reverseMatched = 0;
+                for (const word of evtWords) {
+                  if (reasonLower.includes(word)) reverseMatched++;
+                }
+                const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
+                score = Math.round((forwardMatch * 60 + reverseMatch * 40));
+              }
+              console.log(`${logPrefix} [MOVER-TMH] 📊 Score "${evt.reason}" (docId:${doc.id}) = ${score}`);
+              if (score > mBestScore) {
+                mBestScore = score;
+                found = { doc, data: evt };
+              }
+            }
+            if (found && mBestScore < 45) {
+              console.warn(`${logPrefix} [MOVER-TMH] ⚠️ Mejor match "${found.data.reason}" score=${mBestScore} < 45 — RECHAZADO`);
+              found = null;
+            }
           }
 
           if (found && mNewDate) {
@@ -3219,15 +3280,86 @@ REGLAS:
               }
             } catch (tzErr) { /* usar original */ }
 
+            // FIX Sesión 42M-F: movedFrom puede ser undefined si el evento no tiene scheduledForLocal
+            const previousTime = found.data.scheduledForLocal || found.data.scheduledFor || mOldDate || 'desconocido';
+
             await found.doc.ref.update({
               scheduledFor: newScheduledUTC, scheduledForLocal: mNewDate,
-              movedFrom: found.data.scheduledForLocal, movedAt: new Date().toISOString(),
+              movedFrom: previousTime, movedAt: new Date().toISOString(),
               preReminderSent: false
             });
-            console.log(`${logPrefix} [MOVER-TMH] ✅ Movido: "${found.data.reason}" de ${found.data.scheduledForLocal} → ${mNewDate}`);
+            console.log(`${logPrefix} [MOVER-TMH] ✅ Movido en Firestore: "${found.data.reason}" de ${previousTime} → ${mNewDate}`);
+
+            // MOVER también en Google Calendar
+            let calendarMoved = false;
+            try {
+              const { getCalendarClient } = require('../core/google_calendar');
+              const { cal, calId } = await getCalendarClient(ownerUid);
+
+              // Parsear nueva hora
+              const newHourMatch = mNewDate.match(/(\d{1,2}):(\d{2})/);
+              const newH = newHourMatch ? parseInt(newHourMatch[1]) : 10;
+              const newMin = newHourMatch ? parseInt(newHourMatch[2]) : 0;
+              const newDateStr = mNewDate.split('T')[0];
+              const newStartDT = `${newDateStr}T${String(newH).padStart(2,'0')}:${String(newMin).padStart(2,'0')}:00`;
+              const newEndDT = `${newDateStr}T${String(newH + 1).padStart(2,'0')}:${String(newMin).padStart(2,'0')}:00`;
+
+              // FAST-PATH: Si tenemos calendarEventId, mover directo por ID
+              if (found.data.calendarEventId) {
+                try {
+                  await cal.events.patch({
+                    calendarId: calId, eventId: found.data.calendarEventId,
+                    resource: {
+                      start: { dateTime: newStartDT, timeZone: ownerTz },
+                      end: { dateTime: newEndDT, timeZone: ownerTz }
+                    }
+                  });
+                  calendarMoved = true;
+                  console.log(`${logPrefix} [MOVER-TMH] ✅ Movido en Calendar por calendarEventId → ${newStartDT}`);
+                } catch (patchErr) {
+                  console.warn(`${logPrefix} [MOVER-TMH] ⚠️ Patch por calendarEventId falló: ${patchErr.message}`);
+                }
+              }
+
+              // FALLBACK: Buscar en Calendar por texto + rango del día viejo
+              if (!calendarMoved) {
+                const searchDateObj = mOldDate ? new Date(mOldDate) : new Date();
+                const calDayStart = new Date(searchDateObj); calDayStart.setHours(0, 0, 0, 0);
+                const calDayEnd = new Date(searchDateObj); calDayEnd.setHours(23, 59, 59, 999);
+                const searchText = (found.data.reason || mSearchReason).replace(/[🎉🎂📍🎈]/g, '').trim().substring(0, 50);
+
+                const calEvents = await cal.events.list({
+                  calendarId: calId, timeMin: calDayStart.toISOString(), timeMax: calDayEnd.toISOString(),
+                  singleEvents: true, q: searchText
+                });
+                const calItems = (calEvents.data?.items || []).filter(e => e.status !== 'cancelled');
+                if (calItems.length > 0) {
+                  const calEvt = calItems[0];
+                  await cal.events.patch({
+                    calendarId: calId, eventId: calEvt.id,
+                    resource: {
+                      start: { dateTime: newStartDT, timeZone: ownerTz },
+                      end: { dateTime: newEndDT, timeZone: ownerTz }
+                    }
+                  });
+                  calendarMoved = true;
+                  console.log(`${logPrefix} [MOVER-TMH] ✅ Movido en Calendar por text search: "${calEvt.summary}" → ${newStartDT}`);
+                } else {
+                  console.warn(`${logPrefix} [MOVER-TMH] ⚠️ No encontré evento en Google Calendar para mover: "${searchText}"`);
+                }
+              }
+            } catch (calMoveErr) {
+              console.warn(`${logPrefix} [MOVER-TMH] ⚠️ Error moviendo en Calendar: ${calMoveErr.message}`);
+            }
+
+            _agendaTagProcessed = true;
 
             if (!aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim()) {
-              aiMessage = `✅ Moví "${found.data.reason}" de ${found.data.scheduledForLocal} a ${mNewDate}.`;
+              if (calendarMoved) {
+                aiMessage = `✅ Moví "${found.data.reason}" de ${previousTime} a ${mNewDate} (agenda y Google Calendar actualizados).`;
+              } else {
+                aiMessage = `✅ Moví "${found.data.reason}" de ${previousTime} a ${mNewDate} en mi agenda, pero no pude actualizarlo en Google Calendar.`;
+              }
             }
           } else if (!found) {
             console.warn(`${logPrefix} [MOVER-TMH] ⚠️ No se encontró evento para "${mSearchReason}"`);

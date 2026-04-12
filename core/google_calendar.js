@@ -82,7 +82,9 @@ async function getScheduleConfig(uid) {
  * @param {string} opts.summary - Título del evento
  * @param {string} opts.dateStr - Fecha 'YYYY-MM-DD' o 'YYYY-MM-DDTHH:mm'
  * @param {number} opts.startHour - Hora inicio (0-23)
+ * @param {number} opts.startMinute - Minuto inicio (0-59, default: 0)
  * @param {number} opts.endHour - Hora fin (0-23)
+ * @param {number} opts.endMinute - Minuto fin (0-59, default: 0)
  * @param {string} opts.attendeeEmail - Email del invitado (opcional)
  * @param {string} opts.description - Descripción del evento
  * @param {string} opts.uid - UID del owner en Firestore
@@ -92,7 +94,7 @@ async function getScheduleConfig(uid) {
  * @param {string} opts.phoneNumber - Número de teléfono para modo telefónico (opcional)
  * @param {number} opts.reminderMinutes - Minutos antes para recordatorio (default: 10)
  */
-async function createCalendarEvent({ summary, dateStr, startHour, endHour, attendeeEmail, description, uid, timezone, eventMode, location, phoneNumber, reminderMinutes }) {
+async function createCalendarEvent({ summary, dateStr, startHour, endHour, startMinute, endMinute, attendeeEmail, description, uid, timezone, eventMode, location, phoneNumber, reminderMinutes }) {
   const { cal, calId } = await getCalendarClient(uid);
 
   // Determinar timezone: parámetro explícito > scheduleConfig del user > default Bogotá
@@ -114,7 +116,9 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
   const month = String((isValidDate ? targetDate.getUTCMonth() : now.getMonth()) + 1).padStart(2, '0');
   const day = String(isValidDate ? targetDate.getUTCDate() : now.getDate()).padStart(2, '0');
   const sH = String(startHour || 10).padStart(2, '0');
+  const sM = String(startMinute || 0).padStart(2, '0');
   const eH = String(endHour || (startHour || 10) + 1).padStart(2, '0');
+  const eM = String(endMinute || 0).padStart(2, '0');
   if (!isValidDate) {
     console.warn(`[GCAL] ⚠️ dateStr inválido: "${dateStr}" — usando fecha actual ${year}-${month}-${day}`);
   }
@@ -155,8 +159,8 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
   const event = {
     summary: summary || 'Reunión con MIIA',
     description: eventDescription,
-    start: { dateTime: `${year}-${month}-${day}T${sH}:00:00`, timeZone: tz },
-    end: { dateTime: `${year}-${month}-${day}T${eH}:00:00`, timeZone: tz },
+    start: { dateTime: `${year}-${month}-${day}T${sH}:${sM}:00`, timeZone: tz },
+    end: { dateTime: `${year}-${month}-${day}T${eH}:${eM}:00`, timeZone: tz },
     attendees: attendeeEmail ? [{ email: attendeeEmail }] : [],
     reminders: {
       useDefault: false,
@@ -176,7 +180,7 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, atten
 
   const meetLink = response.data?.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri || null;
 
-  console.log(`[GCAL] ✅ Evento creado: "${summary}" el ${dateStr} ${sH}:00 (${tz}) modo=${mode} reminder=${reminder}min uid=${uid}${meetLink ? ` meet=${meetLink}` : ''}`);
+  console.log(`[GCAL] ✅ Evento creado: "${summary}" el ${dateStr} ${sH}:${sM} (${tz}) modo=${mode} reminder=${reminder}min uid=${uid}${meetLink ? ` meet=${meetLink}` : ''}`);
   return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink, meetLink, mode };
 }
 

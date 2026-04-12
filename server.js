@@ -2931,6 +2931,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
               const ownerTz = getTimezoneForCountry(ownerCountry);
               const hourMatch = appt.scheduledForLocal.match(/(\d{1,2}):(\d{2})/);
               const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+              const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
 
               let calendarOk = false;
               let meetLink = null;
@@ -2939,7 +2940,9 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
                   summary: appt.reason || 'Evento MIIA',
                   dateStr: appt.scheduledForLocal.split('T')[0],
                   startHour: startH,
+                  startMinute: startMin,
                   endHour: startH + 1,
+                  endMinute: startMin,
                   description: `Agendado por MIIA para ${contactName}. ${appt.hint || ''}`.trim(),
                   uid: OWNER_UID,
                   timezone: ownerTz,
@@ -2950,6 +2953,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
                 });
                 calendarOk = true;
                 meetLink = calResult.meetLink || null;
+                var srvCalEventId = calResult.eventId || null;
               } catch (calErr) {
                 console.warn(`[TURNO-APROBADO] ⚠️ Calendar: ${calErr.message}`);
               }
@@ -2967,6 +2971,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
                 meetLink: meetLink || '',
                 status: 'pending',
                 calendarSynced: calendarOk,
+                calendarEventId: srvCalEventId || null,
                 reminderMinutes: 10,
                 requestedBy: contactJid,
                 createdAt: new Date().toISOString(),
@@ -6829,11 +6834,14 @@ REGLAS:
             if (!isNaN(parsedDate)) {
               const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
               const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+              const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
               const calResult = await createCalendarEvent({
                 summary: razon || 'Evento MIIA',
                 dateStr: fecha.split('T')[0],
                 startHour: startH,
+                startMinute: startMin,
                 endHour: startH + 1,
+                endMinute: startMin,
                 description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
                 uid: OWNER_UID,
                 timezone: ownerTz,
@@ -6844,7 +6852,8 @@ REGLAS:
               });
               calendarOk = true;
               meetLink = calResult.meetLink || null;
-              console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode}${meetLink ? ` meet=${meetLink}` : ''}`);
+              var srvCalEventId2 = calResult.eventId || null;
+              console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} calEventId=${srvCalEventId2}${meetLink ? ` meet=${meetLink}` : ''}`);
               actionFeedback.recordActionResult(phone, 'agendar', true, `"${razon}" agendado el ${fecha} para ${contactName} — Calendar OK`);
 
               // CAPA 4: Verificar asíncronamente que el evento realmente existe en Calendar
@@ -6944,6 +6953,7 @@ REGLAS:
               meetLink: meetLink || '',
               status: 'pending',
               calendarSynced: calendarOk,
+              calendarEventId: srvCalEventId2 || null,
               remindContact: shouldRemindContact,
               reminderMinutes: 10,
               requestedBy: phone,
@@ -7456,27 +7466,32 @@ REGLAS:
             }
           } catch (tzErr) { /* usar original */ }
 
+          // FIX Sesión 42M-F: movedFrom puede ser undefined si el evento no tiene scheduledForLocal
+          const previousTimeSrv = found.data.scheduledForLocal || found.data.scheduledFor || oldDate || 'desconocido';
           await found.doc.ref.update({
             scheduledFor: newScheduledUTC,
             scheduledForLocal: newDate,
-            movedFrom: found.data.scheduledForLocal,
+            movedFrom: previousTimeSrv,
             movedAt: new Date().toISOString(),
             preReminderSent: false // Reset reminder para nueva hora
           });
-          console.log(`[MOVER_EVENTO] ✅ Evento movido: "${found.data.reason}" de ${found.data.scheduledForLocal} → ${newDate}`);
-          actionFeedback.recordActionResult(phone, 'mover', true, `"${found.data.reason}" movido de ${found.data.scheduledForLocal} a ${newDate}`);
+          console.log(`[MOVER_EVENTO] ✅ Evento movido: "${found.data.reason}" de ${previousTimeSrv} → ${newDate}`);
+          actionFeedback.recordActionResult(phone, 'mover', true, `"${found.data.reason}" movido de ${previousTimeSrv} a ${newDate}`);
 
           // Actualizar Google Calendar si está sincronizado
           if (found.data.calendarSynced) {
             try {
               const hourMatch = newDate.match(/(\d{1,2}):(\d{2})/);
               const newHour = hourMatch ? parseInt(hourMatch[1]) : 10;
+              const newMin = hourMatch ? parseInt(hourMatch[2]) : 0;
               const dateOnly = newDate.split('T')[0];
               const calResult = await createCalendarEvent({
                 summary: found.data.reason || 'Evento MIIA',
                 dateStr: dateOnly,
                 startHour: newHour,
+                startMinute: newMin,
                 endHour: newHour + 1,
+                endMinute: newMin,
                 description: `Movido por MIIA. Antes: ${found.data.scheduledForLocal}`,
                 uid: OWNER_UID,
                 timezone: ownerTzME,
