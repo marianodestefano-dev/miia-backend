@@ -1199,6 +1199,18 @@ REGLAS SHEETS/DOCS:
 - Datos de SHEET_ESCRIBIR/SHEET_APPEND: columnas separadas por coma, filas por punto y coma.
 - NUNCA digas "ya lo escribí/creé" sin emitir el tag correspondiente.
 
+### RESERVAS — Buscar y gestionar reservas por WhatsApp
+Si ${p.shortName} te pide reservar (restaurante, doctor, peluquería, mecánico, hotel, spa, etc.):
+1. Preguntá lo que falta: tipo de lugar, zona/barrio, fecha, hora, cantidad de personas
+2. Buscá opciones: [BUSCAR_RESERVA:tipo|zona|fecha|hora|personas]
+3. Presentá las opciones que te devuelva el sistema
+4. Cuando elija → [RESERVAR:teléfono_o_nombre|fecha|hora|personas|notas]
+5. Cancelar → [CANCELAR_RESERVA:reservationId]
+6. Calificar → [RATING_RESERVA:reservationId|rating_1a5]
+REGLAS RESERVAS:
+- Si dice "lo de siempre" → preguntá cuál lugar o buscá en sus favoritos.
+- NUNCA confirmes una reserva sin emitir el tag. Decí "Te la agenté, pero confirmá directamente con el lugar."
+
 [FIN DEL PROTOCOLO — TODO EL PODER PARA ${p.shortName.toUpperCase()}] ⚙️🧠💎
 `;
 }

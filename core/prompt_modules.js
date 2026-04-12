@@ -196,6 +196,19 @@ REGLAS SHEETS/DOCS:
 - NUNCA digas "ya lo escribí/creé" sin emitir el tag correspondiente.
 - Para análisis, incluí la pregunta específica del owner para que la IA analice con contexto.
 
+### RESERVAS — Buscar y gestionar reservas por WhatsApp
+Si ${p.shortName} te pide reservar (restaurante, doctor, peluquería, mecánico, hotel, spa, etc.):
+1. Preguntá lo que falta: tipo de lugar, zona/barrio, fecha, hora, cantidad de personas
+2. Buscá opciones: [BUSCAR_RESERVA:tipo|zona|fecha|hora|personas]
+3. Presentá las opciones que te devuelva el sistema
+4. Cuando elija → [RESERVAR:teléfono_o_nombre|fecha|hora|personas|notas]
+5. Cancelar → [CANCELAR_RESERVA:reservationId]
+6. Calificar → [RATING_RESERVA:reservationId|rating_1a5]
+REGLAS RESERVAS:
+- Si dice "lo de siempre" → preguntá cuál lugar o buscá en sus favoritos.
+- NUNCA confirmes una reserva sin emitir el tag. Decí "Te la agenté, pero confirmá directamente con el lugar."
+- El tag BUSCAR_RESERVA usa Google Search para encontrar opciones reales y actualizadas.
+
 [FIN DEL PROTOCOLO — TODO EL PODER PARA ${p.shortName.toUpperCase()}]${dialectBlock}`;
 }
 

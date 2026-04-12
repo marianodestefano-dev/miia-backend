@@ -2243,6 +2243,66 @@ REGLAS:
     }
   }
 
+  // 11d-RESERVATIONS. Tags [BUSCAR_RESERVA] / [RESERVAR] / [CANCELAR_RESERVA] / [RATING_RESERVA] (solo self-chat)
+  if (isSelfChat && ownerUid) {
+    try {
+      const reservationsIntegration = require('../integrations/reservations_integration');
+      const reservationTags = reservationsIntegration.detectReservationTags(aiMessage);
+      if (reservationTags.length > 0) {
+        console.log(`${logPrefix} [RESERVATIONS-TAG] 🍽️ ${reservationTags.length} tag(s): ${reservationTags.map(t => t.tag).join(', ')}`);
+        const selfJid = tenantState.sock?.user?.id;
+        const sendResult = async (msg) => {
+          if (tenantState.sock && selfJid) {
+            try { await tenantState.sock.sendMessage(selfJid, { text: msg }); } catch (e) { console.error(`${logPrefix} [RESERVATIONS-TAG] ❌ Send:`, e.message); }
+          }
+        };
+        for (const { tag, params } of reservationTags) {
+          try {
+            switch (tag) {
+              case 'BUSCAR_RESERVA': {
+                const [type, zone, date, time, partySize] = params;
+                const results = await reservationsIntegration.searchBusinesses(
+                  { type, zone, date, time, partySize: parseInt(partySize) || 0, ownerCity: zone, ownerCountry: '' },
+                  aiGateway
+                );
+                await sendResult(reservationsIntegration.formatSearchResults(results));
+                break;
+              }
+              case 'RESERVAR': {
+                const [businessPhone, date, time, partySize, notes] = params;
+                const reservation = await reservationsIntegration.createReservation(ownerUid, {
+                  businessName: businessPhone, businessPhone, date, time,
+                  partySize: parseInt(partySize) || 1, notes: notes || '', source: 'manual'
+                });
+                await sendResult(`✅ *Reserva creada*\n📍 ${reservation.businessName}\n📅 ${date} a las ${time}\n👥 ${partySize || 1} persona(s)`);
+                break;
+              }
+              case 'CANCELAR_RESERVA': {
+                await reservationsIntegration.cancelReservation(ownerUid, params[0]);
+                await sendResult(`✅ Reserva cancelada`);
+                break;
+              }
+              case 'RATING_RESERVA': {
+                const result = await reservationsIntegration.rateReservation(ownerUid, params[0], parseInt(params[1]));
+                await sendResult(`⭐ *${result.businessName}* calificado con ${params[1]}/5`);
+                break;
+              }
+            }
+          } catch (tagErr) {
+            console.error(`${logPrefix} [RESERVATIONS-TAG] ❌ ${tag}: ${tagErr.message}`);
+            await sendResult(`❌ Error: ${tagErr.message}`).catch(() => {});
+          }
+        }
+        aiMessage = aiMessage
+          .replace(/\[BUSCAR_RESERVA:[^\]]+\]/g, '').replace(/\[RESERVAR:[^\]]+\]/g, '')
+          .replace(/\[CANCELAR_RESERVA:[^\]]+\]/g, '').replace(/\[RATING_RESERVA:[^\]]+\]/g, '')
+          .trim();
+      }
+    } catch (resErr) {
+      console.error(`${logPrefix} [RESERVATIONS-TAG] ❌ Module error:`, resErr.message);
+    }
+  }
+
   // 11d. Limpiar tags residuales (correo maestro, cotización sin procesar, etc.)
   aiMessage = cleanResidualTags(aiMessage);
 

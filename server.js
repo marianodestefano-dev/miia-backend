@@ -141,6 +141,7 @@ const tenantLogger = require('./core/tenant_logger');
 const gmailIntegration = require('./integrations/gmail_integration');
 const googleTasks = require('./integrations/google_tasks_integration');
 const sheetsIntegration = require('./integrations/google_sheets_integration');
+const reservationsIntegration = require('./integrations/reservations_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -7622,6 +7623,98 @@ REGLAS:
         .replace(/\[DOC_CREAR:[^\]]+\]/g, '')
         .replace(/\[DOC_LEER:[^\]]+\]/g, '')
         .replace(/\[DOC_APPEND:[^\]]+\]/g, '')
+        .trim();
+    }
+
+    // ═══ TAGS [BUSCAR_RESERVA] / [RESERVAR] / [CANCELAR_RESERVA] / [RATING_RESERVA] ═══
+    const reservationTags = reservationsIntegration.detectReservationTags(aiMessage);
+    if (reservationTags.length > 0 && isSelfChat && OWNER_UID) {
+      console.log(`[RESERVATIONS-TAG] 🍽️ ${reservationTags.length} tag(s): ${reservationTags.map(t => t.tag).join(', ')}`);
+      for (const { tag, params } of reservationTags) {
+        try {
+          switch (tag) {
+            case 'BUSCAR_RESERVA': {
+              const [type, zone, date, time, partySize] = params;
+              // Obtener ciudad/país del owner
+              const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+              const results = await reservationsIntegration.searchBusinesses(
+                { type, zone, date, time, partySize: parseInt(partySize) || 0, ownerCity: zone, ownerCountry },
+                aiGateway
+              );
+              const formatted = reservationsIntegration.formatSearchResults(results);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, formatted, { isSelfChat: true, skipEmoji: true });
+              // Guardar resultados temporalmente para que el owner pueda elegir
+              if (!global._lastReservationSearch) global._lastReservationSearch = {};
+              global._lastReservationSearch[OWNER_PHONE] = { results, timestamp: Date.now() };
+              console.log(`[RESERVATIONS-TAG] ✅ BUSCAR_RESERVA: ${results.length} resultados`);
+              break;
+            }
+            case 'RESERVAR': {
+              const [businessPhone, date, time, partySize, notes] = params;
+              // Buscar nombre del negocio en resultados previos o usar businessPhone
+              let businessName = businessPhone;
+              let businessAddress = '';
+              const lastSearch = global._lastReservationSearch?.[OWNER_PHONE];
+              if (lastSearch && Date.now() - lastSearch.timestamp < 3600000) {
+                const match = lastSearch.results.find(b => b.phone === businessPhone || b.name?.toLowerCase().includes(businessPhone.toLowerCase()));
+                if (match) {
+                  businessName = match.name;
+                  businessAddress = match.address || '';
+                }
+              }
+              const reservation = await reservationsIntegration.createReservation(OWNER_UID, {
+                type: 'other',
+                businessName,
+                businessPhone,
+                businessAddress,
+                date,
+                time,
+                partySize: parseInt(partySize) || 1,
+                notes: notes || '',
+                source: 'manual',
+              });
+              // Guardar como favorito
+              if (businessPhone) {
+                await reservationsIntegration.saveFavorite(OWNER_UID, businessPhone, {
+                  name: businessName, address: businessAddress, type: 'other'
+                }).catch(e => console.warn(`[RESERVATIONS-TAG] ⚠️ Error guardando favorito:`, e.message));
+              }
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                `✅ *Reserva creada*\n\n📍 ${businessName}\n📅 ${date} a las ${time}\n👥 ${partySize || 1} persona(s)${notes ? `\n📝 ${notes}` : ''}\n\n⚠️ Recordá confirmar directamente con el negocio.`,
+                { isSelfChat: true, skipEmoji: true }
+              );
+              console.log(`[RESERVATIONS-TAG] ✅ RESERVAR: ${businessName} ${date} ${time}`);
+              break;
+            }
+            case 'CANCELAR_RESERVA': {
+              const [reservationId] = params;
+              await reservationsIntegration.cancelReservation(OWNER_UID, reservationId);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ Reserva cancelada`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[RESERVATIONS-TAG] ✅ CANCELAR_RESERVA: ${reservationId}`);
+              break;
+            }
+            case 'RATING_RESERVA': {
+              const [reservationId, rating] = params;
+              const result = await reservationsIntegration.rateReservation(OWNER_UID, reservationId, parseInt(rating));
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                `⭐ *${result.businessName}* calificado con ${rating}/5. ¡Anotado!`,
+                { isSelfChat: true, skipEmoji: true }
+              );
+              console.log(`[RESERVATIONS-TAG] ✅ RATING: ${result.businessName} → ${rating}/5`);
+              break;
+            }
+          }
+        } catch (tagErr) {
+          console.error(`[RESERVATIONS-TAG] ❌ ${tag}: ${tagErr.message}`);
+          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `❌ Error con reserva: ${tagErr.message}`, { isSelfChat: true, skipEmoji: true }).catch(() => {});
+        }
+      }
+      // Strip reservation tags
+      aiMessage = aiMessage
+        .replace(/\[BUSCAR_RESERVA:[^\]]+\]/g, '')
+        .replace(/\[RESERVAR:[^\]]+\]/g, '')
+        .replace(/\[CANCELAR_RESERVA:[^\]]+\]/g, '')
+        .replace(/\[RATING_RESERVA:[^\]]+\]/g, '')
         .trim();
     }
 
@@ -15937,6 +16030,118 @@ app.post('/api/docs/:documentId/append', requireRole('owner', 'admin'), express.
     res.json({ ok: true });
   } catch (e) {
     console.error('[DOCS-API] ❌ append error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// RESERVATIONS API ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
+
+// Buscar negocios (via Gemini google_search)
+app.post('/api/reservations/search', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const { type, zone, date, time, partySize } = req.body;
+    if (!type) return res.status(400).json({ error: 'type requerido' });
+    const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+    const results = await reservationsIntegration.searchBusinesses(
+      { type, zone, date, time, partySize, ownerCity: zone, ownerCountry },
+      aiGateway
+    );
+    res.json({ ok: true, results });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ search error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Crear reserva
+app.post('/api/reservations', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const reservation = await reservationsIntegration.createReservation(uid, req.body);
+    res.json({ ok: true, reservation });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ create error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Listar reservas
+app.get('/api/reservations', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { status, type, limit } = req.query;
+    const reservations = await reservationsIntegration.getReservations(uid, {
+      status, type, limit: parseInt(limit) || 20
+    });
+    res.json({ ok: true, reservations });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ list error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Actualizar reserva
+app.put('/api/reservations/:id', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const result = await reservationsIntegration.updateReservation(uid, req.params.id, req.body);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ update error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cancelar reserva
+app.delete('/api/reservations/:id', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    await reservationsIntegration.cancelReservation(uid, req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ cancel error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Calificar reserva
+app.post('/api/reservations/:id/rate', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { rating } = req.body;
+    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ error: 'rating 1-5 requerido' });
+    const result = await reservationsIntegration.rateReservation(uid, req.params.id, rating);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ rate error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Listar favoritos
+app.get('/api/reservations/favorites', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const favorites = await reservationsIntegration.getFavorites(uid, req.query.type);
+    res.json({ ok: true, favorites });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ favorites error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Guardar favorito
+app.post('/api/reservations/favorites', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { businessPhone, ...data } = req.body;
+    if (!businessPhone) return res.status(400).json({ error: 'businessPhone requerido' });
+    const result = await reservationsIntegration.saveFavorite(uid, businessPhone, data);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[RESERVATIONS-API] ❌ save favorite error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
