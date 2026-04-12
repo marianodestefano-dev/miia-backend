@@ -1550,7 +1550,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
           const contact = e.contactName || e.contactPhone || '';
           return `  - [ID:${d.id}] ${dateLocal} | ${e.reason || '(sin título)'}${contact && contact !== 'self' ? ` | con ${contact}` : ''}`;
         }).join('\n');
-        activeSystemPrompt += `\n\n## EVENTOS PENDIENTES (próximas 48h)\n${evtList}\n\nCuando te pidan CANCELAR o MOVER un evento, usá el ID interno así:\n[CANCELAR_EVENTO:ID:docId|fecha|modo] o [MOVER_EVENTO:ID:docId|fecha_vieja|fecha_nueva]\nEsto evita confusiones entre eventos similares.`;
+        activeSystemPrompt += `\n\n## EVENTOS PENDIENTES (próximas 48h)\n${evtList}\n\nCuando te pidan CANCELAR o MOVER un evento, usá el ID interno así:\n[CANCELAR_EVENTO:ID:docId|fecha|modo] o [MOVER_EVENTO:ID:docId|fecha_vieja|fecha_nueva|duración_minutos]\nEl 4to campo (duración_minutos) es OBLIGATORIO. Si el owner dice la duración, usala. Si no la dice, mantené la duración original (o 60 por defecto).\nEsto evita confusiones entre eventos similares.`;
       }
     } catch (evtErr) {
       console.warn(`${logPrefix} ⚠️ Error inyectando eventos en prompt: ${evtErr.message}`);
@@ -3255,12 +3255,13 @@ REGLAS:
         aiMessage = aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim();
       }
 
-      // ── TAG [MOVER_EVENTO:razón|fecha_vieja|fecha_nueva] — Mover evento ──
+      // ── TAG [MOVER_EVENTO:razón|fecha_vieja|fecha_nueva|duración_minutos] — Mover evento ──
       const moverMatch = aiMessage.match(/\[MOVER_EVENTO:([^\]]+)\]/);
       if (moverMatch && isSelfChat) {
         const moverParts = moverMatch[1].split('|').map(p => p.trim());
-        const [mSearchReason, mOldDate, mNewDate] = moverParts;
-        console.log(`${logPrefix} [MOVER-TMH] 🔄 Buscando "${mSearchReason}" en ${mOldDate} → mover a ${mNewDate}`);
+        const [mSearchReason, mOldDate, mNewDate, mDurationStr] = moverParts;
+        const mDurationFromTag = parseInt(mDurationStr) || 0; // 0 = usar duración original del evento
+        console.log(`${logPrefix} [MOVER-TMH] 🔄 Buscando "${mSearchReason}" en ${mOldDate} → mover a ${mNewDate} (duración: ${mDurationFromTag || 'original'}min)`);
         try {
           let found = null;
 
@@ -3345,8 +3346,11 @@ REGLAS:
             // FIX Sesión 42M-F: movedFrom puede ser undefined si el evento no tiene scheduledForLocal
             const previousTime = found.data.scheduledForLocal || found.data.scheduledFor || mOldDate || 'desconocido';
 
+            // Calcular duración final: prioridad tag > original del evento > default 60
+            const mFinalDuration = mDurationFromTag || found.data.durationMinutes || 60;
             await found.doc.ref.update({
               scheduledFor: newScheduledUTC, scheduledForLocal: mNewDate,
+              durationMinutes: mFinalDuration,
               movedFrom: previousTime, movedAt: new Date().toISOString(),
               preReminderSent: false
             });
@@ -3364,7 +3368,12 @@ REGLAS:
               const newMin = newHourMatch ? parseInt(newHourMatch[2]) : 0;
               const newDateStr = mNewDate.split('T')[0];
               const newStartDT = `${newDateStr}T${String(newH).padStart(2,'0')}:${String(newMin).padStart(2,'0')}:00`;
-              const newEndDT = `${newDateStr}T${String(newH + 1).padStart(2,'0')}:${String(newMin).padStart(2,'0')}:00`;
+              // Calcular hora fin con duración real
+              const mEndTotal = newH * 60 + newMin + mFinalDuration;
+              const mEndH = Math.floor(mEndTotal / 60);
+              const mEndM = mEndTotal % 60;
+              const newEndDT = `${newDateStr}T${String(mEndH).padStart(2,'0')}:${String(mEndM).padStart(2,'0')}:00`;
+              console.log(`${logPrefix} [MOVER-TMH] 📅 Calendar: ${newH}:${String(newMin).padStart(2,'0')} → ${mEndH}:${String(mEndM).padStart(2,'0')} (${mFinalDuration}min)`);
 
               // FAST-PATH: Si tenemos calendarEventId, mover directo por ID
               if (found.data.calendarEventId) {
