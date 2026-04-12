@@ -2310,6 +2310,14 @@ REGLAS:
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // 11d-FLAGS: Tracking de acciones ejecutadas (para PROMESA ROTA detector)
+  // Estas flags se setean en true cuando un tag se procesa exitosamente
+  // ═══════════════════════════════════════════════════════════════
+  let _emailTagProcessed = false;
+  let _agendaTagProcessed = false;
+  let _tareaTagProcessed = false;
+
+  // ═══════════════════════════════════════════════════════════════
   // 11d-EMAIL. Tags [ENVIAR_EMAIL:], [ENVIAR_CORREO:], [LEER_INBOX], [EMAIL_LEER:], [EMAIL_ELIMINAR:], [EMAIL_ELIMINAR_EXCEPTO:]
   // Migrado desde server.js para que TODOS los tenants puedan enviar/leer emails
   // ═══════════════════════════════════════════════════════════════
@@ -2357,6 +2365,7 @@ REGLAS:
           }
 
           if (emailResult.success) {
+            _emailTagProcessed = true;
             console.log(`${logPrefix} [EMAIL-TMH] ✅ Correo enviado exitosamente a ${emailTo}`);
             await sendToOwnerSelfChat(`📧 Email enviado a *${emailTo}* — Asunto: "${emailSubject}" (lead ${basePhone})`);
           } else {
@@ -2400,6 +2409,7 @@ REGLAS:
           }
 
           if (emailResult.success) {
+            _emailTagProcessed = true;
             if (!aiMessage) aiMessage = `📧 Listo, le envié el correo a ${emailTo} — Asunto: "${emailSubject}"`;
           } else {
             console.error(`${logPrefix} [EMAIL-TMH] ❌ Error: ${emailResult.error}`);
@@ -2726,6 +2736,7 @@ REGLAS:
                 createdAt: new Date().toISOString(),
                 source: isSelfChat ? 'owner_selfchat' : 'contact_request'
               });
+              _agendaTagProcessed = true;
               console.log(`${logPrefix} [AGENDA-TMH] ✅ Evento guardado en Firestore`);
             } catch (e) {
               console.error(`${logPrefix} [AGENDA-TMH] ❌ Error guardando en Firestore:`, e.message);
@@ -2794,6 +2805,7 @@ REGLAS:
                 createdAt: new Date().toISOString()
               });
               appointmentId = docRef.id;
+              _agendaTagProcessed = true;
               console.log(`${logPrefix} [SOLICITAR_TURNO-TMH] 📋 Solicitud ${appointmentId} creada`);
             } catch (e) {
               console.error(`${logPrefix} [SOLICITAR_TURNO-TMH] ❌ Error guardando solicitud:`, e.message);
@@ -2933,6 +2945,7 @@ REGLAS:
             await googleTasks.createTask(ownerUid, getOAuth2Client, admin, {
               title: taskTag.title, dueDate: taskTag.dueDate, notes: taskTag.notes || 'Creada por MIIA'
             });
+            _tareaTagProcessed = true;
             console.log(`${logPrefix} [TASKS-TMH] ✅ Tarea creada`);
           } catch (e) {
             console.error(`${logPrefix} [TASKS-TMH] ❌ Error creando tarea:`, e.message);
@@ -2996,25 +3009,24 @@ REGLAS:
     // Detectar si MIIA confirma la acción
     const confirmaEjecucion = /\b(ya\s*(lo\s*)?(mand[eé]|envi[eé]|agend[eé]|cre[eé]|hice|est[aá]\s*(saliendo|listo|enviado|agendado))|listo.*✅|en\s*camino|correo.*saliendo|ya\s*qued[oó]|ya.*agendad[oa])\b/i.test(msgLower);
 
-    // Detectar si realmente se procesó un tag (las variables de estado se setean en los bloques 11d-*)
-    // Si no hay evidencia de tag procesado en los logs previos, es mentira
-    const tieneTagEmail = /\[ENVIAR_CORREO:[^\]]+\]|\[ENVIAR_EMAIL:[^\]]+\]/i.test(aiMessage);
-    const tieneTagAgenda = /\[AGENDAR_EVENTO:[^\]]+\]|\[SOLICITAR_TURNO:[^\]]+\]/i.test(aiMessage);
-    const tieneTagTarea = /\[CREAR_TAREA:[^\]]+\]/i.test(aiMessage);
+    // Verificar si la acción fue REALMENTE ejecutada por los bloques 11d-*
+    // Usamos las flags _emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed
+    // que se setean en true SOLO cuando el tag se procesó Y la acción tuvo éxito
+    // NOTA: NO buscar tags en aiMessage porque ya fueron strippeados por los bloques de arriba
 
-    if (pidioEmail && confirmaEjecucion && !tieneTagEmail) {
+    if (pidioEmail && confirmaEjecucion && !_emailTagProcessed) {
       console.error(`${logPrefix} 🚨 [PROMESA-ROTA] MIIA dice que envió email pero NO emitió [ENVIAR_CORREO:] — CORRIGIENDO`);
       aiMessage = aiMessage.replace(/ya\s*(lo\s*)?(mand[eé]|envi[eé]).*?(✅|📧|correo|email)[^.!]*[.!]?/gi, '').trim();
       aiMessage += '\n\n⚠️ Necesito que me confirmes los datos para poder enviar el correo correctamente. ¿A qué email lo mando, con qué asunto y qué quieres que diga?';
     }
 
-    if (pidioAgendar && confirmaEjecucion && !tieneTagAgenda) {
+    if (pidioAgendar && confirmaEjecucion && !_agendaTagProcessed) {
       console.error(`${logPrefix} 🚨 [PROMESA-ROTA] MIIA dice que agendó pero NO emitió [AGENDAR_EVENTO:] — CORRIGIENDO`);
       aiMessage = aiMessage.replace(/ya\s*(lo\s*)?(agend[eé]|cre[eé]).*?(✅|📅|agendad[oa]|memoria)[^.!]*[.!]?/gi, '').trim();
       aiMessage += '\n\n⚠️ Para agendarlo de verdad en tu calendario, necesito confirmar: ¿la fecha y hora exactas?';
     }
 
-    if (pidioTarea && confirmaEjecucion && !tieneTagTarea) {
+    if (pidioTarea && confirmaEjecucion && !_tareaTagProcessed) {
       console.error(`${logPrefix} 🚨 [PROMESA-ROTA] MIIA dice que creó tarea pero NO emitió [CREAR_TAREA:] — CORRIGIENDO`);
     }
   }
