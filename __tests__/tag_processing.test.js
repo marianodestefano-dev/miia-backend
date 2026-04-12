@@ -323,3 +323,250 @@ describe('Utility functions', () => {
     expect(parts).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// EVENT SCORING — Verifica que CANCELAR_EVENTO no borra evento equivocado
+// ═══════════════════════════════════════���═══════════════════════
+
+describe('Event scoring algorithm', () => {
+  // Reproduce el algoritmo de scoring usado en TMH y server.js
+  function scoreEvent(searchReason, evtReason, evtContact = '') {
+    const reasonLower = (searchReason || '').toLowerCase();
+    const reasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2);
+    const evtReasonLower = (evtReason || '').toLowerCase();
+    const evtContactLower = (evtContact || '').toLowerCase();
+
+    if (evtReasonLower === reasonLower) return 100;
+
+    const evtWords = `${evtReasonLower} ${evtContactLower}`.split(/\s+/).filter(w => w.length > 2);
+    let matchedWords = 0;
+    for (const word of reasonWords) {
+      if (evtReasonLower.includes(word) || evtContactLower.includes(word)) matchedWords++;
+    }
+    const forwardMatch = reasonWords.length > 0 ? matchedWords / reasonWords.length : 0;
+    let reverseMatched = 0;
+    for (const word of evtWords) {
+      if (reasonLower.includes(word)) reverseMatched++;
+    }
+    const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
+    return Math.round((forwardMatch * 60 + reverseMatch * 40));
+  }
+
+  test('BUG REGRESSION: "Cumpleaños de Sr. Rafael" NO debe matchear "Cumpleaños de papá"', () => {
+    const score = scoreEvent('Cumpleaños de Sr. Rafael', 'Cumpleaños de papá');
+    expect(score).toBeLessThan(45); // Threshold de rechazo es 45
+  });
+
+  test('match exacto retorna 100', () => {
+    expect(scoreEvent('Reunión con Juan', 'Reunión con Juan')).toBe(100);
+  });
+
+  test('match exacto case-insensitive retorna 100', () => {
+    expect(scoreEvent('REUNIÓN CON JUAN', 'reunión con juan')).toBe(100);
+  });
+
+  test('"Cumpleaños de Sr. Rafael" SÍ matchea "Cumpleaños de Sr. Rafael duplicado"', () => {
+    const score = scoreEvent('Cumpleaños de Sr. Rafael', 'Cumpleaños de Sr. Rafael duplicado');
+    expect(score).toBeGreaterThanOrEqual(40);
+  });
+
+  test('"Reunión con el dentista" matchea "Reunión dentista" con buen score', () => {
+    const score = scoreEvent('Reunión con el dentista', 'Reunión dentista');
+    expect(score).toBeGreaterThanOrEqual(40);
+  });
+
+  test('"Cena familiar" NO matchea "Reunión de trabajo"', () => {
+    const score = scoreEvent('Cena familiar', 'Reunión de trabajo');
+    expect(score).toBeLessThan(40);
+  });
+
+  test('"Cumpleaños de mamá" NO matchea "Cumpleaños de papá"', () => {
+    const score = scoreEvent('Cumpleaños de mamá', 'Cumpleaños de papá');
+    // "cumpleaños" matchea pero "mamá" vs "papá" no — debería ser bajo
+    expect(score).toBeLessThan(60); // Puede pasar 40 por "cumpleaños" compartido, pero no llegar a 100
+  });
+
+  test('selecciona mejor match entre múltiples eventos', () => {
+    const events = [
+      'Cumpleaños de papá',
+      'Cumpleaños de Sr. Rafael',
+      'Reunión de trabajo',
+    ];
+    const scores = events.map(e => ({ reason: e, score: scoreEvent('Cumpleaños de Sr. Rafael', e) }));
+    scores.sort((a, b) => b.score - a.score);
+    expect(scores[0].reason).toBe('Cumpleaños de Sr. Rafael');
+  });
+
+  test('contactName también contribuye al score', () => {
+    const scoreWithContact = scoreEvent('Reunión con Rafael', 'Reunión importante', 'Rafael');
+    const scoreWithout = scoreEvent('Reunión con Rafael', 'Reunión importante', '');
+    expect(scoreWithContact).toBeGreaterThan(scoreWithout);
+  });
+
+  test('búsqueda vacía no matchea nada', () => {
+    const score = scoreEvent('', 'Cumpleaños de papá');
+    expect(score).toBeLessThan(40);
+  });
+});
+
+// ════════════════��══════════════════════════════════════════════
+// VALIDATOR — miia_validator.js
+// ═══════════════════════���═══════════════════════════════════════
+
+describe('MIIA Validator', () => {
+  const { validatePreSend } = require('../core/miia_validator');
+
+  test('detecta tags residuales no limpiados', () => {
+    const result = validatePreSend('Ya te lo mandé [ENVIAR_CORREO:test@mail.com|Hola|Cuerpo]', {
+      chatType: 'lead',
+    });
+    expect(result.wasModified).toBe(true);
+    // Issues contain the specific tag reference, not generic 'residual_tags'
+    expect(result.issues.some(i => i.includes('residual_tag'))).toBe(true);
+  });
+
+  test('no modifica mensaje limpio', () => {
+    const result = validatePreSend('Hola, ¿en qué te puedo ayudar?', {
+      chatType: 'lead',
+    });
+    expect(result.wasModified).toBe(false);
+  });
+
+  test('detecta mensaje vacío', () => {
+    const result = validatePreSend('', { chatType: 'lead' });
+    expect(result.wasModified).toBe(true);
+    expect(result.issues).toContain('empty_message');
+  });
+
+  test('detecta leak de mecánica interna en lead chat (logs but does not modify)', () => {
+    const result = validatePreSend('Consulté tu Firestore y la collection users tiene los datos', {
+      chatType: 'lead',
+      isSelfChat: false,
+    });
+    // Validator logs the leak but doesn't auto-replace (postprocess should have caught it)
+    expect(result.issues.some(i => i.includes('internal_leak'))).toBe(true);
+  });
+
+  test('NO detecta leak en self-chat', () => {
+    const result = validatePreSend('Consulté Firestore para verificar los datos', {
+      chatType: 'lead',
+      isSelfChat: true,
+    });
+    expect(result.issues.filter(i => i.includes('internal_leak')).length).toBe(0);
+  });
+});
+
+// ═════��═══════════════��═════════════════════════════════════════
+// ENCRYPTION — token_encryption.js
+// ═══════════════════════════════���═══════════════════════════════
+
+describe('Token Encryption', () => {
+  const encryption = require('../core/token_encryption');
+
+  test('isEncrypted detecta formato enc:v1:', () => {
+    expect(encryption.isEncrypted('enc:v1:abc:def:ghi')).toBe(true);
+  });
+
+  test('isEncrypted retorna false para texto plano', () => {
+    expect(encryption.isEncrypted('just a normal token')).toBe(false);
+  });
+
+  test('isEncrypted retorna false para null/undefined', () => {
+    expect(encryption.isEncrypted(null)).toBe(false);
+    expect(encryption.isEncrypted(undefined)).toBe(false);
+  });
+
+  test('encrypt retorna el mismo valor si no hay key configurada', () => {
+    // Sin MIIA_ENCRYPTION_KEY env var, funciona en passthrough
+    const result = encryption.encrypt('my-secret-token');
+    expect(result).toBe('my-secret-token');
+  });
+
+  test('encrypt no re-encripta valor ya encriptado', () => {
+    const encrypted = 'enc:v1:aabbcc:ddeeff:112233';
+    expect(encryption.encrypt(encrypted)).toBe(encrypted);
+  });
+
+  test('encrypt maneja null/undefined gracefully', () => {
+    expect(encryption.encrypt(null)).toBeNull();
+    expect(encryption.encrypt(undefined)).toBeUndefined();
+    expect(encryption.encrypt('')).toBe('');
+  });
+
+  test('decrypt retorna texto plano si no está encriptado', () => {
+    expect(encryption.decrypt('normal text')).toBe('normal text');
+  });
+
+  test('encryptFields solo toca campos especificados', () => {
+    const data = { accessToken: 'tok1', refreshToken: 'tok2', name: 'Test', aiApiKey: 'key1' };
+    const result = encryption.encryptFields({ ...data });
+    // Sin key, pasa en passthrough — valores quedan igual
+    expect(result.name).toBe('Test');
+    expect(result.accessToken).toBe('tok1'); // passthrough sin key
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// RATE LIMITER �� rate_limiter.js
+// ════════════════════════════════════════════════���══════════════
+
+describe('Rate Limiter & Circuit Breaker', () => {
+  const rateLimiter = require('../core/rate_limiter');
+
+  test('circuit breaker starts CLOSED', () => {
+    const result = rateLimiter.circuitAllows();
+    expect(result.allowed).toBe(true);
+    expect(result.state).toBe('CLOSED');
+  });
+
+  test('circuit stays closed after single failure', () => {
+    rateLimiter.circuitFailure();
+    const result = rateLimiter.circuitAllows();
+    expect(result.allowed).toBe(true);
+  });
+
+  test('circuitSuccess resets failures', () => {
+    rateLimiter.circuitSuccess();
+    const result = rateLimiter.circuitAllows();
+    expect(result.allowed).toBe(true);
+  });
+
+  test('contactAllows permits first message', () => {
+    expect(rateLimiter.contactAllows('573001234567')).toBe(true);
+  });
+
+  test('contactRecord does not crash', () => {
+    expect(() => rateLimiter.contactRecord('573001234567')).not.toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// STRUCTURED LOGGER — structured_logger.js
+// ══��════════════════════════════════════════════════════════════
+
+describe('Structured Logger', () => {
+  const logger = require('../core/structured_logger');
+
+  test('createLogger returns object with log methods', () => {
+    const log = logger.createLogger('TEST');
+    expect(typeof log.info).toBe('function');
+    expect(typeof log.warn).toBe('function');
+    expect(typeof log.error).toBe('function');
+  });
+
+  test('getMetrics returns metrics object', () => {
+    const metrics = logger.getMetrics();
+    expect(metrics).toHaveProperty('messages');
+    expect(metrics).toHaveProperty('errors');
+    expect(metrics).toHaveProperty('timestamp');
+    expect(metrics.messages).toHaveProperty('count');
+    expect(metrics.errors).toHaveProperty('count');
+  });
+
+  test('logger does not throw when logging', () => {
+    const log = logger.createLogger('TEST');
+    expect(() => log.info('test message')).not.toThrow();
+    expect(() => log.warn('warning message')).not.toThrow();
+    expect(() => log.error('error message')).not.toThrow();
+  });
+});

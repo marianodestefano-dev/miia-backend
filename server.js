@@ -7252,24 +7252,101 @@ REGLAS:
 
         let found = null;
         const reasonLower = (searchReason || '').toLowerCase();
+        const reasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2);
+
+        // Scoring: buscar el evento con MEJOR match, no el primero que "incluye"
+        let bestScore = 0;
         for (const doc of snap.docs) {
           const evt = doc.data();
           const evtReason = (evt.reason || '').toLowerCase();
           const evtContact = (evt.contactName || '').toLowerCase();
-          if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
-              evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+          let score = 0;
+
+          if (evtReason === reasonLower) {
+            score = 100;
+          } else {
+            const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
+            let matchedWords = 0;
+            for (const word of reasonWords) {
+              if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
+            }
+            const forwardMatch = reasonWords.length > 0 ? matchedWords / reasonWords.length : 0;
+            let reverseMatched = 0;
+            for (const word of evtWords) {
+              if (reasonLower.includes(word)) reverseMatched++;
+            }
+            const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
+            score = Math.round((forwardMatch * 60 + reverseMatch * 40));
+          }
+
+          console.log(`[CANCELAR_EVENTO] 📊 Score "${evt.reason}" = ${score}`);
+          if (score > bestScore) {
+            bestScore = score;
             found = { doc, data: evt };
-            break;
           }
         }
-        if (!found && !snap.empty) {
-          found = { doc: snap.docs[0], data: snap.docs[0].data() };
+
+        // REQUIERE score mínimo de 40
+        if (found && bestScore < 45) {
+          console.warn(`[CANCELAR_EVENTO] ⚠️ Mejor match "${found.data.reason}" score=${bestScore} < 45 — RECHAZADO`);
+          found = null;
         }
 
+        // ═══ PASO A: Eliminar de Google Calendar DIRECTAMENTE ═══
+        // El owner ve el Calendar — si no borramos de ahí, MIIA MIENTE
+        let calendarDeleted = false;
+        try {
+          const { cal, calId } = await getCalendarClient(OWNER_UID);
+          if (cal) {
+            // Si tenemos calendarEventId directo
+            if (found && found.data.calendarEventId) {
+              try {
+                await cal.events.delete({ calendarId: calId, eventId: found.data.calendarEventId });
+                calendarDeleted = true;
+                console.log(`[CANCELAR_EVENTO] 📅 Eliminado de Calendar por eventId`);
+              } catch (delErr) {
+                console.warn(`[CANCELAR_EVENTO] ⚠️ Delete por eventId falló: ${delErr.message}`);
+              }
+            }
+            // Si NO se borró por ID, buscar en Calendar por texto + fecha
+            if (!calendarDeleted) {
+              const calSearchDate = searchDate ? new Date(searchDate) : new Date();
+              const timeMin = new Date(calSearchDate); timeMin.setHours(0, 0, 0, 0);
+              const timeMax = new Date(calSearchDate); timeMax.setHours(23, 59, 59, 999);
+              try {
+                const calEvents = await cal.events.list({
+                  calendarId: calId,
+                  timeMin: timeMin.toISOString(),
+                  timeMax: timeMax.toISOString(),
+                  singleEvents: true,
+                  q: searchReason.replace(/[🎉🎂📍]/g, '').trim().substring(0, 50),
+                });
+                const items = calEvents.data.items || [];
+                console.log(`[CANCELAR_EVENTO] 📅 Búsqueda Calendar: ${items.length} eventos para "${searchReason}"`);
+                if (items.length > 1) {
+                  const toDelete = items[items.length - 1];
+                  await cal.events.delete({ calendarId: calId, eventId: toDelete.id });
+                  calendarDeleted = true;
+                  console.log(`[CANCELAR_EVENTO] 📅 Duplicado eliminado: "${toDelete.summary}" (id: ${toDelete.id})`);
+                } else if (items.length === 1) {
+                  await cal.events.delete({ calendarId: calId, eventId: items[0].id });
+                  calendarDeleted = true;
+                  console.log(`[CANCELAR_EVENTO] 📅 Evento eliminado: "${items[0].summary}" (id: ${items[0].id})`);
+                }
+              } catch (searchErr) {
+                console.warn(`[CANCELAR_EVENTO] ⚠️ Búsqueda Calendar falló: ${searchErr.message}`);
+              }
+            }
+          }
+        } catch (calModErr) {
+          console.error(`[CANCELAR_EVENTO] ❌ Error Calendar: ${calModErr.message}`);
+        }
+
+        // ═══ PASO B: Actualizar Firestore ═══
         if (found) {
           await found.doc.ref.update({ status: 'cancelled', cancelledAt: new Date().toISOString(), cancelMode: mode });
-          console.log(`[CANCELAR_EVENTO] ✅ Cancelado: "${found.data.reason}" del ${found.data.scheduledForLocal} modo=${mode}`);
-          actionFeedback.recordActionResult(phone, 'cancelar', true, `"${found.data.reason}" del ${found.data.scheduledForLocal} cancelado (modo=${mode})`);
+          console.log(`[CANCELAR_EVENTO] ✅ Firestore: "${found.data.reason}" marcado cancelled`);
+          actionFeedback.recordActionResult(phone, 'cancelar', calendarDeleted, `"${found.data.reason}" cancelado (calendar=${calendarDeleted}, modo=${mode})`);
 
           // Notificar al contacto según modo
           if (found.data.contactPhone && found.data.contactPhone !== 'self') {
@@ -7279,43 +7356,27 @@ REGLAS:
             const evtDate = found.data.scheduledForLocal || 'la fecha indicada';
 
             if (mode === 'avisar') {
-              // Modo AVISAR: notificar cancelación simple
               safeSendMessage(contactJid,
-                `📅 Hola ${contactName}, te aviso que ${evtDesc} programado para el ${evtDate} fue cancelado. Disculpa las molestias. 🙏`,
-                {}
+                `📅 Hola ${contactName}, te aviso que ${evtDesc} programado para el ${evtDate} fue cancelado. Disculpa las molestias. 🙏`, {}
               ).catch(e => console.error(`[CANCELAR_EVENTO] ❌ Error notificando:`, e.message));
-              console.log(`[CANCELAR_EVENTO] 📤 Notificación de cancelación enviada a ${contactName}`);
-
             } else if (mode === 'reagendar') {
-              // Modo REAGENDAR: cancelar + ofrecer reagendar
               safeSendMessage(contactJid,
-                `📅 Hola ${contactName}, lamentablemente ${evtDesc} del ${evtDate} tuvo que ser cancelado.\n\n` +
-                `Pero no te preocupes, ¿te gustaría agendar otro horario? Decime qué día y hora te viene bien y lo coordinamos. 😊`,
-                {}
-              ).catch(e => console.error(`[CANCELAR_EVENTO] ❌ Error ofreciendo reagendar:`, e.message));
-              console.log(`[CANCELAR_EVENTO] 📤 Oferta de reagendamiento enviada a ${contactName}`);
-
-            } else if (mode === 'silencioso') {
-              // Modo SILENCIOSO: no notificar
-              console.log(`[CANCELAR_EVENTO] 🔇 Cancelación silenciosa — contacto ${contactName} NO notificado`);
+                `📅 Hola ${contactName}, lamentablemente ${evtDesc} del ${evtDate} tuvo que ser cancelado.\n\nPero no te preocupes, ¿te gustaría agendar otro horario? Decime qué día y hora te viene bien. 😊`, {}
+              ).catch(e => console.error(`[CANCELAR_EVENTO] ❌ Error reagendando:`, e.message));
+            } else {
+              console.log(`[CANCELAR_EVENTO] 🔇 Cancelación silenciosa — contacto NO notificado`);
             }
           }
+        }
 
-          // Intentar eliminar de Google Calendar
-          if (found.data.calendarSynced) {
-            try {
-              const { cal, calId } = await getCalendarClient(OWNER_UID);
-              if (cal && found.data.calendarEventId) {
-                await cal.events.delete({ calendarId: calId, eventId: found.data.calendarEventId });
-                console.log(`[CANCELAR_EVENTO] 📅 Eliminado de Google Calendar`);
-              }
-            } catch (calErr) {
-              console.warn(`[CANCELAR_EVENTO] ⚠️ Calendar: ${calErr.message}`);
-            }
-          }
+        // ═══ PASO C: Mensaje HONESTO al owner ═══
+        if (calendarDeleted) {
+          // OK: se borró de Calendar (lo que el owner ve)
+        } else if (found) {
+          console.warn(`[CANCELAR_EVENTO] ⚠️ Solo Firestore, Calendar NO borrado`);
         } else {
-          console.warn(`[CANCELAR_EVENTO] ⚠️ No se encontró evento para "${searchReason}" el ${searchDate}`);
-          actionFeedback.recordActionResult(phone, 'cancelar', false, `No se encontró evento "${searchReason}" para cancelar`);
+          console.warn(`[CANCELAR_EVENTO] ⚠️ No se encontró evento "${searchReason}" en ${searchDate}`);
+          actionFeedback.recordActionResult(phone, 'cancelar', false, `No se encontró "${searchReason}"`);
         }
       } catch (e) {
         console.error(`[CANCELAR_EVENTO] ❌ Error:`, e.message);
@@ -7346,18 +7407,38 @@ REGLAS:
 
         let found = null;
         const reasonLower = (searchReason || '').toLowerCase();
+        const mReasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2);
+        let mBestScore = 0;
         for (const doc of snap.docs) {
           const evt = doc.data();
           const evtReason = (evt.reason || '').toLowerCase();
           const evtContact = (evt.contactName || '').toLowerCase();
-          if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
-              evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+          let score = 0;
+          if (evtReason === reasonLower) {
+            score = 100;
+          } else {
+            const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
+            let matchedWords = 0;
+            for (const word of mReasonWords) {
+              if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
+            }
+            const forwardMatch = mReasonWords.length > 0 ? matchedWords / mReasonWords.length : 0;
+            let reverseMatched = 0;
+            for (const word of evtWords) {
+              if (reasonLower.includes(word)) reverseMatched++;
+            }
+            const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
+            score = Math.round((forwardMatch * 60 + reverseMatch * 40));
+          }
+          console.log(`[MOVER_EVENTO] 📊 Score "${evt.reason}" = ${score}`);
+          if (score > mBestScore) {
+            mBestScore = score;
             found = { doc, data: evt };
-            break;
           }
         }
-        if (!found && !snap.empty) {
-          found = { doc: snap.docs[0], data: snap.docs[0].data() };
+        if (found && mBestScore < 45) {
+          console.warn(`[MOVER_EVENTO] ⚠️ Mejor match "${found.data.reason}" score=${mBestScore} < 45 — RECHAZADO`);
+          found = null;
         }
 
         if (found && newDate) {
@@ -15512,6 +15593,35 @@ biweeklyReport.setReportDependencies({
   generateAIContent,
   getProtectionAlerts: protectionManager.getProtectionAlertsForReport
 });
+
+// ═══ ROUTES MODULARES — /api/health y futuras rutas ═══
+try {
+  const mountRoutes = require('./routes');
+  mountRoutes(app, { requireRole });
+} catch (routeErr) {
+  console.error(`[ROUTES] ❌ Error montando rutas modulares: ${routeErr.message}`);
+}
+
+// ═══ HEALTH CHECK + AUTO-RECOVERY — Monitoreo cada 60s ═══
+try {
+  const healthCheck = require('./core/health_check');
+  healthCheck.startHealthChecks({
+    getTenants: () => {
+      const connected = tenantManager.getConnectedTenants();
+      const tenantsMap = {};
+      for (const t of connected) {
+        tenantsMap[t.uid] = { sock: t.sock, isReady: true };
+      }
+      return tenantsMap;
+    },
+    reconnectBaileys: (uid) => tenantManager.forceReconnectByUid(uid, 'health_check_recovery'),
+    notifyOwner: async (uid, message) => {
+      try { await safeSendMessage(uid + '@s.whatsapp.net', message, {}); } catch (_) {}
+    },
+  });
+} catch (healthErr) {
+  console.error(`[HEALTH] ❌ Error iniciando health checks: ${healthErr.message}`);
+}
 
 server.listen(PORT, () => {
   // 🎬 MIIA GIFS — Inicializar directorio de GIFs

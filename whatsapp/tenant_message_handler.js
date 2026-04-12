@@ -769,6 +769,10 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     return;
   }
 
+  // ═══ TRY/CATCH GLOBAL — Protección contra crash silencioso ═══
+  // Sin esto, un error no capturado en cualquier tag handler = MIIA se calla y el owner no sabe por qué
+  try {
+
   const basePhone = getBasePhone(phone);
 
   // ── PASO 1b: @LID — Verificar si el owner responde a una consulta de identificación ──
@@ -2998,60 +3002,147 @@ REGLAS:
 
           let found = null;
           const reasonLower = (searchReason || '').toLowerCase();
+          const reasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2); // Palabras significativas (>2 chars)
+
+          // Scoring: buscar el evento con MEJOR match, no el primero que "incluye"
+          let bestScore = 0;
           for (const doc of snap.docs) {
             const evt = doc.data();
             const evtReason = (evt.reason || '').toLowerCase();
             const evtContact = (evt.contactName || '').toLowerCase();
-            if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
-                evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+            let score = 0;
+
+            // Match exacto de razón = score máximo
+            if (evtReason === reasonLower) {
+              score = 100;
+            } else {
+              // Contar palabras significativas que matchean
+              const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
+              let matchedWords = 0;
+              for (const word of reasonWords) {
+                if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
+              }
+              // Score basado en % de palabras que matchean (ambas direcciones)
+              const forwardMatch = reasonWords.length > 0 ? matchedWords / reasonWords.length : 0;
+              let reverseMatched = 0;
+              for (const word of evtWords) {
+                if (reasonLower.includes(word)) reverseMatched++;
+              }
+              const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
+              score = Math.round((forwardMatch * 60 + reverseMatch * 40)); // Forward pesa más
+            }
+
+            console.log(`${logPrefix} [CANCELAR-TMH] 📊 Score "${evt.reason}" = ${score}`);
+            if (score > bestScore) {
+              bestScore = score;
               found = { doc, data: evt };
-              break;
             }
           }
-          if (!found && !snap.empty) found = { doc: snap.docs[0], data: snap.docs[0].data() };
 
+          // REQUIERE score mínimo de 45 para evitar borrar evento equivocado
+          if (found && bestScore < 45) {
+            console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Mejor match "${found.data.reason}" score=${bestScore} < 45 — RECHAZADO para evitar borrar evento equivocado`);
+            found = null;
+          }
+
+          // ═══ PASO A: Intentar eliminar de Google Calendar DIRECTAMENTE ═══
+          // Esto es lo que el owner realmente ve. Si no borramos de Calendar, MIIA MIENTE.
+          let calendarDeleted = false;
+          try {
+            const { getOAuth2Client: getCalClient } = require('../core/google_calendar');
+            const gTokens = await db().collection('users').doc(ownerUid).get();
+            if (gTokens.exists && gTokens.data()?.googleTokens) {
+              const oauth2 = getCalClient();
+              oauth2.setCredentials(gTokens.data().googleTokens);
+              const { google } = require('googleapis');
+              const cal = google.calendar({ version: 'v3', auth: oauth2 });
+
+              // Si tenemos calendarEventId directo, borrar por ID
+              if (found && found.data.calendarEventId) {
+                try {
+                  await cal.events.delete({ calendarId: 'primary', eventId: found.data.calendarEventId });
+                  calendarDeleted = true;
+                  console.log(`${logPrefix} [CANCELAR-TMH] 📅 Eliminado de Google Calendar por eventId`);
+                } catch (delErr) {
+                  console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Delete por eventId falló: ${delErr.message}`);
+                }
+              }
+
+              // Si NO se borró por ID, buscar en Google Calendar por texto + fecha
+              if (!calendarDeleted) {
+                const calSearchDate = searchDate ? new Date(searchDate) : new Date();
+                const timeMin = new Date(calSearchDate); timeMin.setHours(0, 0, 0, 0);
+                const timeMax = new Date(calSearchDate); timeMax.setHours(23, 59, 59, 999);
+                try {
+                  const calEvents = await cal.events.list({
+                    calendarId: 'primary',
+                    timeMin: timeMin.toISOString(),
+                    timeMax: timeMax.toISOString(),
+                    singleEvents: true,
+                    q: searchReason.replace(/[🎉🎂📍]/g, '').trim().substring(0, 50), // limpiar emojis para búsqueda
+                  });
+                  const items = calEvents.data.items || [];
+                  console.log(`${logPrefix} [CANCELAR-TMH] 📅 Búsqueda Calendar: ${items.length} eventos encontrados para "${searchReason}"`);
+
+                  // Si hay duplicados (>1 match), borrar solo UNO (el último = el duplicado)
+                  if (items.length > 1) {
+                    const toDelete = items[items.length - 1]; // último = probable duplicado
+                    await cal.events.delete({ calendarId: 'primary', eventId: toDelete.id });
+                    calendarDeleted = true;
+                    console.log(`${logPrefix} [CANCELAR-TMH] 📅 Duplicado eliminado de Calendar: "${toDelete.summary}" (id: ${toDelete.id})`);
+                  } else if (items.length === 1) {
+                    await cal.events.delete({ calendarId: 'primary', eventId: items[0].id });
+                    calendarDeleted = true;
+                    console.log(`${logPrefix} [CANCELAR-TMH] 📅 Evento eliminado de Calendar: "${items[0].summary}" (id: ${items[0].id})`);
+                  } else {
+                    console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ No se encontró en Google Calendar`);
+                  }
+                } catch (searchErr) {
+                  console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Búsqueda Calendar falló: ${searchErr.message}`);
+                }
+              }
+            } else {
+              console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Sin googleTokens — no se puede borrar de Calendar`);
+            }
+          } catch (calModErr) {
+            console.error(`${logPrefix} [CANCELAR-TMH] ❌ Error módulo Calendar: ${calModErr.message}`);
+          }
+
+          // ═══ PASO B: Actualizar Firestore (si encontró match) ═══
           if (found) {
             await found.doc.ref.update({ status: 'cancelled', cancelledAt: new Date().toISOString(), cancelMode: mode });
-            console.log(`${logPrefix} [CANCELAR-TMH] ✅ Cancelado: "${found.data.reason}" del ${found.data.scheduledForLocal}`);
+            console.log(`${logPrefix} [CANCELAR-TMH] ✅ Firestore: "${found.data.reason}" marcado cancelled`);
+          }
 
-            // Intentar eliminar de Google Calendar
-            if (found.data.calendarSynced && found.data.calendarEventId) {
-              try {
-                const { getOAuth2Client: getCalClient } = require('../core/google_calendar');
-                const gTokens = await db().collection('users').doc(ownerUid).get();
-                if (gTokens.exists && gTokens.data()?.googleTokens) {
-                  const oauth2 = getCalClient();
-                  oauth2.setCredentials(gTokens.data().googleTokens);
-                  const { google } = require('googleapis');
-                  const cal = google.calendar({ version: 'v3', auth: oauth2 });
-                  await cal.events.delete({ calendarId: 'primary', eventId: found.data.calendarEventId });
-                  console.log(`${logPrefix} [CANCELAR-TMH] 📅 Eliminado de Google Calendar`);
-                }
-              } catch (calErr) {
-                console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Calendar: ${calErr.message}`);
-              }
-            }
-
-            // Notificar al contacto si tiene contacto y modo no es silencioso
-            if (mode === 'avisar' && found.data.contactPhone && found.data.contactPhone !== 'self') {
+          // ═══ PASO C: Mensaje al owner — HONESTO sobre lo que pasó ═══
+          if (calendarDeleted) {
+            console.log(`${logPrefix} [CANCELAR-TMH] ✅ COMPLETO: Evento eliminado de Calendar + Firestore`);
+            // Notificar al contacto si modo=avisar
+            if (mode === 'avisar' && found?.data?.contactPhone && found.data.contactPhone !== 'self') {
               const contactJid = found.data.contactPhone.includes('@') ? found.data.contactPhone : `${found.data.contactPhone}@s.whatsapp.net`;
               const contactName = found.data.contactName || 'Contacto';
               try {
                 await tenantState.sock.sendMessage(contactJid, {
-                  text: `📅 Hola ${contactName}, te aviso que ${found.data.reason || 'el evento'} programado para el ${found.data.scheduledForLocal || 'la fecha indicada'} fue cancelado. Disculpa las molestias. 🙏`
+                  text: `📅 Hola ${contactName}, te aviso que ${found?.data?.reason || 'el evento'} programado para el ${found?.data?.scheduledForLocal || 'la fecha indicada'} fue cancelado. Disculpa las molestias. 🙏`
                 });
               } catch (notifyErr) {
                 console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Error notificando: ${notifyErr.message}`);
               }
             }
-
             if (!aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim()) {
-              aiMessage = `✅ Listo, eliminé "${found.data.reason}" del ${found.data.scheduledForLocal} de tu agenda.`;
+              aiMessage = `✅ Listo, eliminé el evento de tu calendario.`;
             }
-          } else {
-            console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ No se encontró evento para "${searchReason}"`);
+          } else if (found) {
+            // Firestore actualizado pero Calendar NO — ser HONESTO
+            console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ Solo Firestore actualizado, Calendar NO borrado`);
             if (!aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim()) {
-              aiMessage = `⚠️ No encontré un evento con "${searchReason}" para hoy. ¿Podés darme más detalles?`;
+              aiMessage = `⚠️ Marqué "${found.data.reason}" como cancelado en mi agenda, pero no pude eliminarlo de Google Calendar. Puede que tengas que borrarlo manualmente desde el calendario.`;
+            }
+          } else if (!calendarDeleted) {
+            // Ni Firestore ni Calendar — NADA se borró
+            console.warn(`${logPrefix} [CANCELAR-TMH] ⚠️ No se encontró evento para "${searchReason}" ni en Firestore ni en Calendar`);
+            if (!aiMessage.replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').trim()) {
+              aiMessage = `⚠️ No encontré un evento con "${searchReason}" para eliminar. ¿Podés darme más detalles?`;
             }
           }
         } catch (cancelErr) {
@@ -3079,17 +3170,39 @@ REGLAS:
 
           let found = null;
           const reasonLower = (mSearchReason || '').toLowerCase();
+          const mReasonWords = reasonLower.split(/\s+/).filter(w => w.length > 2);
+          let mBestScore = 0;
           for (const doc of snap.docs) {
             const evt = doc.data();
             const evtReason = (evt.reason || '').toLowerCase();
             const evtContact = (evt.contactName || '').toLowerCase();
-            if (evtReason.includes(reasonLower) || reasonLower.includes(evtReason) ||
-                evtContact.includes(reasonLower) || reasonLower.includes(evtContact)) {
+            let score = 0;
+            if (evtReason === reasonLower) {
+              score = 100;
+            } else {
+              const evtWords = `${evtReason} ${evtContact}`.split(/\s+/).filter(w => w.length > 2);
+              let matchedWords = 0;
+              for (const word of mReasonWords) {
+                if (evtReason.includes(word) || evtContact.includes(word)) matchedWords++;
+              }
+              const forwardMatch = mReasonWords.length > 0 ? matchedWords / mReasonWords.length : 0;
+              let reverseMatched = 0;
+              for (const word of evtWords) {
+                if (reasonLower.includes(word)) reverseMatched++;
+              }
+              const reverseMatch = evtWords.length > 0 ? reverseMatched / evtWords.length : 0;
+              score = Math.round((forwardMatch * 60 + reverseMatch * 40));
+            }
+            console.log(`${logPrefix} [MOVER-TMH] 📊 Score "${evt.reason}" = ${score}`);
+            if (score > mBestScore) {
+              mBestScore = score;
               found = { doc, data: evt };
-              break;
             }
           }
-          if (!found && !snap.empty) found = { doc: snap.docs[0], data: snap.docs[0].data() };
+          if (found && mBestScore < 40) {
+            console.warn(`${logPrefix} [MOVER-TMH] ⚠️ Mejor match "${found.data.reason}" score=${mBestScore} < 40 — RECHAZADO`);
+            found = null;
+          }
 
           if (found && mNewDate) {
             const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
@@ -3463,6 +3576,23 @@ REGLAS:
   }
 
   console.log(`${logPrefix} ✅ Respuesta enviada a ${basePhone} (${contactType}, ${aiMessage.length} chars)`);
+
+  } catch (fatalErr) {
+    // ═══ CATCH GLOBAL — MIIA NUNCA se queda callada ═══
+    console.error(`${logPrefix} 🔥 ERROR FATAL en handleTenantMessage para ${phone}: ${fatalErr.message}`);
+    console.error(`${logPrefix} 🔥 Stack: ${fatalErr.stack}`);
+    // Intentar enviar mensaje de error al usuario para que sepa que pasó algo
+    try {
+      if (tenantState?.sock && tenantState.isReady) {
+        const errorMsg = isSelfChat
+          ? `⚠️ Tuve un error interno procesando tu mensaje. Por favor intentá de nuevo. (Error: ${fatalErr.message?.substring(0, 100)})`
+          : '⚠️ Disculpa, tuve un problema técnico. ¿Podrías repetir tu mensaje?';
+        await tenantState.sock.sendMessage(phone, { text: errorMsg });
+      }
+    } catch (sendErr) {
+      console.error(`${logPrefix} 🔥 No pude ni enviar error al usuario: ${sendErr.message}`);
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
