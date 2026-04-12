@@ -52,7 +52,7 @@ async function runIntegrationEngine() {
     const safeStart = scheduleConfig?.integrationSafeStart ?? 8;
     const safeEnd = scheduleConfig?.integrationSafeEnd ?? 22;
     if (h < safeStart || h >= safeEnd) return;
-  } catch { return; }
+  } catch (safeErr) { console.warn(`[INTEGRATIONS] ⚠️ Error verificando safe hours: ${safeErr.message}`); return; }
 
   // Rate limit horario
   const currentHour = new Date().getHours();

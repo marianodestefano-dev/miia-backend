@@ -32,7 +32,11 @@ class GmailIntegration extends BaseIntegration {
         body: `client_id=${clientId}&client_secret=${clientSecret}&refresh_token=${prefs.refreshToken}&grant_type=refresh_token`
       });
 
-      if (!resp.ok) return null;
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => '');
+        console.warn(`[GMAIL] ⚠️ Token refresh falló: ${resp.status} ${resp.statusText} — ${errBody.substring(0, 200)}`);
+        return null;
+      }
       const data = await resp.json();
 
       const newPrefs = {
@@ -114,7 +118,7 @@ class GmailIntegration extends BaseIntegration {
           const fromName = from.split('<')[0].trim() || from;
 
           emailSummaries.push(`• *${fromName}*: ${subject}`);
-        } catch { /* skip */ }
+        } catch (emailErr) { console.warn(`[GMAIL] ⚠️ Error parseando email: ${emailErr.message}`); }
       }
 
       this._lastDigestDate = todayStr;

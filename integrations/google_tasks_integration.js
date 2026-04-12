@@ -123,16 +123,38 @@ async function completeTask(uid, getOAuth2Client, admin, { taskId, titleMatch })
   let targetId = taskId;
   let targetTitle = '';
 
-  // Si no hay ID, buscar por título parcial
+  // Si no hay ID, buscar por título con scoring (NO includes suelto — puede completar tarea equivocada)
   if (!targetId && titleMatch) {
     const all = await listTasks(uid, getOAuth2Client, admin, { maxResults: 50 });
-    const match = all.find(t => t.title.toLowerCase().includes(titleMatch.toLowerCase()));
-    if (!match) {
-      console.warn(`[TASKS] ⚠️ No se encontró tarea con título "${titleMatch}"`);
+    const searchLower = titleMatch.toLowerCase();
+    const searchWords = searchLower.split(/\s+/).filter(w => w.length > 2);
+    let bestScore = 0;
+    let bestMatch = null;
+    for (const t of all) {
+      const titleLower = (t.title || '').toLowerCase();
+      let score = 0;
+      if (titleLower === searchLower) {
+        score = 100;
+      } else {
+        const titleWords = titleLower.split(/\s+/).filter(w => w.length > 2);
+        let fwd = 0;
+        for (const w of searchWords) { if (titleLower.includes(w)) fwd++; }
+        let rev = 0;
+        for (const w of titleWords) { if (searchLower.includes(w)) rev++; }
+        const fwdPct = searchWords.length > 0 ? fwd / searchWords.length : 0;
+        const revPct = titleWords.length > 0 ? rev / titleWords.length : 0;
+        score = Math.round(fwdPct * 60 + revPct * 40);
+      }
+      console.log(`[TASKS] 📊 Score "${t.title}" = ${score}`);
+      if (score > bestScore) { bestScore = score; bestMatch = t; }
+    }
+    if (!bestMatch || bestScore < 45) {
+      console.warn(`[TASKS] ⚠️ No se encontró tarea con título "${titleMatch}" (mejor score=${bestScore} < 45)`);
       return null;
     }
-    targetId = match.id;
-    targetTitle = match.title;
+    targetId = bestMatch.id;
+    targetTitle = bestMatch.title;
+    console.log(`[TASKS] 🎯 Match: "${targetTitle}" (score=${bestScore})`);
   }
 
   if (!targetId) {
@@ -165,10 +187,34 @@ async function deleteTask(uid, getOAuth2Client, admin, { taskId, titleMatch }) {
 
   if (!targetId && titleMatch) {
     const all = await listTasks(uid, getOAuth2Client, admin, { maxResults: 50, showCompleted: true });
-    const match = all.find(t => t.title.toLowerCase().includes(titleMatch.toLowerCase()));
-    if (!match) return null;
-    targetId = match.id;
-    targetTitle = match.title;
+    const searchLower = titleMatch.toLowerCase();
+    const searchWords = searchLower.split(/\s+/).filter(w => w.length > 2);
+    let bestScore = 0;
+    let bestMatch = null;
+    for (const t of all) {
+      const titleLower = (t.title || '').toLowerCase();
+      let score = 0;
+      if (titleLower === searchLower) {
+        score = 100;
+      } else {
+        const titleWords = titleLower.split(/\s+/).filter(w => w.length > 2);
+        let fwd = 0;
+        for (const w of searchWords) { if (titleLower.includes(w)) fwd++; }
+        let rev = 0;
+        for (const w of titleWords) { if (searchLower.includes(w)) rev++; }
+        const fwdPct = searchWords.length > 0 ? fwd / searchWords.length : 0;
+        const revPct = titleWords.length > 0 ? rev / titleWords.length : 0;
+        score = Math.round(fwdPct * 60 + revPct * 40);
+      }
+      if (score > bestScore) { bestScore = score; bestMatch = t; }
+    }
+    if (!bestMatch || bestScore < 45) {
+      console.warn(`[TASKS] ⚠️ No se encontró tarea para eliminar: "${titleMatch}" (mejor score=${bestScore} < 45)`);
+      return null;
+    }
+    targetId = bestMatch.id;
+    targetTitle = bestMatch.title;
+    console.log(`[TASKS] 🎯 Match para eliminar: "${targetTitle}" (score=${bestScore})`);
   }
 
   if (!targetId) return null;

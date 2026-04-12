@@ -612,11 +612,14 @@ async function processAgendaTag(aiMessage, ctx, saveEvent, leadNames, calendarOp
               const ownerTz = calendarOpts.getTimezone ? await calendarOpts.getTimezone(targetUid) : 'America/Bogota';
               const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
               const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+              const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
               const calResult = await calendarOpts.createCalendarEvent({
                 summary: razon || 'Evento MIIA',
                 dateStr: fecha.split('T')[0],
                 startHour: startH,
+                startMinute: startMin,
                 endHour: startH + 1,
+                endMinute: startMin,
                 description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
                 uid: targetUid,
                 timezone: ownerTz,
@@ -627,7 +630,8 @@ async function processAgendaTag(aiMessage, ctx, saveEvent, leadNames, calendarOp
               });
               calendarOk = true;
               meetLink = calResult.meetLink || null;
-              console.log(`[AGENDA] 📅 Google Calendar OK para uid=${targetUid}: "${razon}" el ${fecha} modo=${eventMode}${meetLink ? ` meet=${meetLink}` : ''}`);
+              var mlCalEventId = calResult.eventId || null;
+              console.log(`[AGENDA] 📅 Google Calendar OK para uid=${targetUid}: "${razon}" el ${fecha} modo=${eventMode} calEventId=${mlCalEventId}${meetLink ? ` meet=${meetLink}` : ''}`);
             }
           } catch (calErr) {
             console.warn(`[AGENDA] ⚠️ Google Calendar no disponible para uid=${targetUid}: ${calErr.message}. Solo Firestore.`);
@@ -644,6 +648,7 @@ async function processAgendaTag(aiMessage, ctx, saveEvent, leadNames, calendarOp
           eventMode,
           meetLink,
           calendarSynced: calendarOk,
+          calendarEventId: mlCalEventId || null,
           status: 'pending',
           searchBefore: (razon || '').toLowerCase().includes('deporte') || (razon || '').toLowerCase().includes('partido'),
           createdAt: new Date().toISOString(),
