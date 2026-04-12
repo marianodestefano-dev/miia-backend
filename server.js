@@ -12578,6 +12578,42 @@ app.delete('/api/tenant/:uid/contact-groups/:groupId/contacts/:phone', async (re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /api/tenant/:uid/contact-groups/move-contact — Mover contacto entre grupos
+app.post('/api/tenant/:uid/contact-groups/move-contact', express.json(), async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { phone, fromGroupId, toGroupId } = req.body;
+    if (!phone || !fromGroupId || !toGroupId) return res.status(400).json({ error: 'phone, fromGroupId y toGroupId son requeridos' });
+    if (fromGroupId === toGroupId) return res.status(400).json({ error: 'El grupo origen y destino son iguales' });
+
+    const fromRef = db.collection('users').doc(uid).collection('contact_groups').doc(fromGroupId).collection('contacts').doc(phone);
+    const fromDoc = await fromRef.get();
+    if (!fromDoc.exists) return res.status(404).json({ error: `Contacto ${phone} no encontrado en grupo ${fromGroupId}` });
+
+    const contactData = fromDoc.data();
+    contactData.movedAt = new Date().toISOString();
+    contactData.movedFrom = fromGroupId;
+
+    // Copiar al nuevo grupo y borrar del anterior
+    await db.collection('users').doc(uid).collection('contact_groups').doc(toGroupId).collection('contacts').doc(phone).set(contactData, { merge: true });
+    await fromRef.delete();
+
+    // Actualizar contact_index
+    await db.collection('users').doc(uid).collection('contact_index').doc(phone).set({
+      type: 'group',
+      groupId: toGroupId,
+      name: contactData.name || '',
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+
+    console.log(`[GROUPS] 🔀 Contacto ${phone} movido de ${fromGroupId} → ${toGroupId}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[GROUPS] ❌ Error moviendo contacto:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONTACT INDEX — Clasificación rápida de contactos
 // ═══════════════════════════════════════════════════════════════════════════════
