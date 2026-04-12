@@ -1859,20 +1859,10 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
   // PASO 2: Auditoría IA con Sonnet (100% mensajes)
   try {
-    // Pasar SOLO mensajes del USUARIO (no de MIIA) al auditor
-    // Razón: si MIIA alucinó antes, no queremos que el auditor valide la alucinación como contexto legítimo
-    // Solo necesitamos que el auditor sepa QUÉ DIJO EL HUMANO para no vetar contexto real
-    const recentHistory = (ctx.conversations[phone] || [])
-      .filter(m => m.role === 'user')
-      .slice(-4)
-      .map(m => `Usuario: ${(m.content || '').substring(0, 200)}`)
-      .join('\n');
-
     const aiAuditResult = await runAIAudit(aiMessage, {
       chatType: postChatType,
       contactName: postContactName,
       userMessage: messageBody,
-      conversationHistory: recentHistory,
       generateAI: (prompt) => aiGateway.smartCall(aiGateway.CONTEXTS.AUDITOR, prompt, { aiProvider, aiApiKey }).then(r => r.text),
     });
 
