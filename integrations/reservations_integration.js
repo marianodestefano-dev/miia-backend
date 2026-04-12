@@ -21,7 +21,10 @@
  */
 
 const admin = require('firebase-admin');
-const db = admin.firestore();
+// LAZY INIT: NO llamar admin.firestore() al cargar el módulo —
+// Firebase aún no está inicializado. Se resuelve en primera llamada.
+let _db = null;
+function db() { if (!_db) _db = admin.firestore(); return _db; }
 
 // ═══════════════════════════════════════════════════════════════
 // CONSTANTES
@@ -66,7 +69,7 @@ async function registerInMiiaNetwork(uid, businessData) {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  await db.collection('miia_network').doc(phone).set(networkDoc, { merge: true });
+  await db().collection('miia_network').doc(phone).set(networkDoc, { merge: true });
   console.log(`[MIIA-NETWORK] ✅ Negocio registrado en red MIIA: ${networkDoc.name} (${phone})`);
   return { networkId: phone, ...networkDoc };
 }
@@ -78,7 +81,7 @@ async function unregisterFromMiiaNetwork(phone) {
   const cleanPhone = (phone || '').replace(/[^0-9]/g, '');
   if (!cleanPhone) return;
 
-  await db.collection('miia_network').doc(cleanPhone).update({
+  await db().collection('miia_network').doc(cleanPhone).update({
     active: false,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
@@ -93,7 +96,7 @@ async function unregisterFromMiiaNetwork(phone) {
 async function searchMiiaNetwork(params) {
   const { type, city, country } = params;
 
-  let query = db.collection('miia_network')
+  let query = db().collection('miia_network')
     .where('active', '==', true)
     .where('acceptsReservations', '==', true);
 
@@ -157,7 +160,7 @@ async function sendInterMiiaReservation(params, sendMessageFn) {
 
   // Verificar que el negocio está en la red MIIA
   const cleanPhone = bizPhone.replace(/[^0-9]/g, '');
-  const networkDoc = await db.collection('miia_network').doc(cleanPhone).get();
+  const networkDoc = await db().collection('miia_network').doc(cleanPhone).get();
 
   if (!networkDoc.exists || !networkDoc.data().active) {
     console.warn(`[MIIA-NETWORK] ⚠️ Negocio ${cleanPhone} no está activo en red MIIA`);
@@ -181,7 +184,7 @@ async function sendInterMiiaReservation(params, sendMessageFn) {
     console.log(`[MIIA-NETWORK] ✅ Reserva inter-MIIA enviada a ${bizData.name} (${cleanPhone})`);
 
     // Guardar solicitud en la red
-    await db.collection('miia_network').doc(cleanPhone)
+    await db().collection('miia_network').doc(cleanPhone)
       .collection('reservation_requests').add({
         fromPhone: fromPhone || '',
         fromName: fromOwnerName || '',
@@ -211,7 +214,7 @@ async function getReceivedReservations(bizPhone, status) {
   const cleanPhone = (bizPhone || '').replace(/[^0-9]/g, '');
   if (!cleanPhone) return [];
 
-  let query = db.collection('miia_network').doc(cleanPhone)
+  let query = db().collection('miia_network').doc(cleanPhone)
     .collection('reservation_requests');
 
   if (status) {
@@ -228,7 +231,7 @@ async function getReceivedReservations(bizPhone, status) {
  */
 async function updateReceivedReservation(bizPhone, requestId, status) {
   const cleanPhone = (bizPhone || '').replace(/[^0-9]/g, '');
-  await db.collection('miia_network').doc(cleanPhone)
+  await db().collection('miia_network').doc(cleanPhone)
     .collection('reservation_requests').doc(requestId).update({
       status,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -371,7 +374,7 @@ async function createReservation(uid, data) {
     agendaEventId: data.agendaEventId || null,
   };
 
-  const ref = await db.collection('users').doc(uid)
+  const ref = await db().collection('users').doc(uid)
     .collection('miia_reservations').add(reservation);
 
   console.log(`[RESERVATIONS] ✅ Reserva creada: ${ref.id} — ${reservation.businessName} ${reservation.date} ${reservation.time}`);
@@ -382,7 +385,7 @@ async function createReservation(uid, data) {
  * Obtener reservas del owner (con filtros opcionales).
  */
 async function getReservations(uid, filters = {}) {
-  let query = db.collection('users').doc(uid).collection('miia_reservations');
+  let query = db().collection('users').doc(uid).collection('miia_reservations');
 
   if (filters.status) {
     query = query.where('status', '==', filters.status);
@@ -403,7 +406,7 @@ async function getReservations(uid, filters = {}) {
  * Actualizar estado de una reserva.
  */
 async function updateReservation(uid, reservationId, updates) {
-  const ref = db.collection('users').doc(uid)
+  const ref = db().collection('users').doc(uid)
     .collection('miia_reservations').doc(reservationId);
 
   const doc = await ref.get();
@@ -449,7 +452,7 @@ async function saveFavorite(uid, businessPhone, data) {
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  await db.collection('users').doc(uid)
+  await db().collection('users').doc(uid)
     .collection('miia_favorites').doc(docId).set(favorite, { merge: true });
 
   console.log(`[RESERVATIONS] ⭐ Favorito guardado: ${data.name} (${docId})`);
@@ -460,7 +463,7 @@ async function saveFavorite(uid, businessPhone, data) {
  * Obtener favoritos del owner.
  */
 async function getFavorites(uid, type) {
-  let query = db.collection('users').doc(uid).collection('miia_favorites');
+  let query = db().collection('users').doc(uid).collection('miia_favorites');
   if (type) {
     query = query.where('type', '==', type);
   }
@@ -479,7 +482,7 @@ async function rateReservation(uid, reservationId, rating) {
   if (rating < 1 || rating > 5) throw new Error('Rating debe ser 1-5');
 
   // Actualizar la reserva
-  const resRef = db.collection('users').doc(uid)
+  const resRef = db().collection('users').doc(uid)
     .collection('miia_reservations').doc(reservationId);
   const resDoc = await resRef.get();
 
@@ -495,7 +498,7 @@ async function rateReservation(uid, reservationId, rating) {
   // Actualizar favorito con el rating
   if (resData.businessPhone) {
     const favDocId = resData.businessPhone.replace(/[^0-9]/g, '');
-    await db.collection('users').doc(uid)
+    await db().collection('users').doc(uid)
       .collection('miia_favorites').doc(favDocId).set({
         name: resData.businessName,
         type: resData.type,
@@ -565,7 +568,7 @@ async function smartFavoriteLookup(uid, hint, type) {
  * @returns {Array} Reservas que necesitan rating
  */
 async function getReservationsPendingRating(uid) {
-  const snap = await db.collection('users').doc(uid)
+  const snap = await db().collection('users').doc(uid)
     .collection('miia_reservations')
     .where('status', '==', 'confirmed')
     .orderBy('date', 'asc')
@@ -598,7 +601,7 @@ async function getVisitHistory(uid, businessPhone) {
   const cleanPhone = (businessPhone || '').replace(/[^0-9]/g, '');
   if (!cleanPhone) return [];
 
-  const snap = await db.collection('users').doc(uid)
+  const snap = await db().collection('users').doc(uid)
     .collection('miia_reservations')
     .where('businessPhone', '==', cleanPhone)
     .orderBy('createdAt', 'desc')
