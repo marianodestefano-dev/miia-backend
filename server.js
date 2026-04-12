@@ -15637,7 +15637,11 @@ app.get('/api/auth/google', (req, res) => {
       'https://www.googleapis.com/auth/calendar.readonly',
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/tasks',
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/documents',
+      'https://www.googleapis.com/auth/drive.file',
     ],
     state: uid  // pasamos uid para recuperarlo en el callback
   });
@@ -15703,6 +15707,147 @@ app.post('/api/calendar/disconnect', requireRole('owner', 'agent'), async (req, 
     }, { merge: true });
     res.json({ ok: true });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GOOGLE SHEETS + DOCS API ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
+
+const sheetsIntegration = require('./integrations/google_sheets_integration');
+
+// Listar spreadsheets del owner
+app.get('/api/sheets/list', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const files = await sheetsIntegration.listSpreadsheets(uid, parseInt(req.query.limit) || 10);
+    res.json({ ok: true, spreadsheets: files });
+  } catch (e) {
+    console.error('[SHEETS-API] ❌ list error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Leer datos de un spreadsheet
+app.get('/api/sheets/:spreadsheetId/read', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { spreadsheetId } = req.params;
+    const range = req.query.range || 'Sheet1';
+    const data = await sheetsIntegration.readSheet(uid, spreadsheetId, range);
+    res.json({ ok: true, ...data });
+  } catch (e) {
+    console.error('[SHEETS-API] ❌ read error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Info de un spreadsheet (hojas, tamaño)
+app.get('/api/sheets/:spreadsheetId/info', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const info = await sheetsIntegration.getSpreadsheetInfo(uid, req.params.spreadsheetId);
+    res.json({ ok: true, ...info });
+  } catch (e) {
+    console.error('[SHEETS-API] ❌ info error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Escribir datos en un spreadsheet
+app.post('/api/sheets/:spreadsheetId/write', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { range, values } = req.body;
+    if (!range || !values) return res.status(400).json({ error: 'range y values requeridos' });
+    const result = await sheetsIntegration.writeSheet(uid, req.params.spreadsheetId, range, values);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[SHEETS-API] ❌ write error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Append filas a un spreadsheet
+app.post('/api/sheets/:spreadsheetId/append', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { range, values } = req.body;
+    if (!values) return res.status(400).json({ error: 'values requerido' });
+    const result = await sheetsIntegration.appendSheet(uid, req.params.spreadsheetId, range || 'Sheet1!A:Z', values);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[SHEETS-API] ❌ append error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Crear nuevo spreadsheet
+app.post('/api/sheets/create', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { title, sheetNames } = req.body;
+    if (!title) return res.status(400).json({ error: 'title requerido' });
+    const result = await sheetsIntegration.createSpreadsheet(uid, title, sheetNames);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[SHEETS-API] ❌ create error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Analizar datos con IA
+app.post('/api/sheets/:spreadsheetId/analyze', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const range = req.body.range || 'Sheet1';
+    const question = req.body.question || '';
+    const data = await sheetsIntegration.readSheet(uid, req.params.spreadsheetId, range);
+    const analysis = await sheetsIntegration.analyzeSheetData(data.values, question, aiGateway);
+    res.json({ ok: true, analysis, totalRows: data.totalRows });
+  } catch (e) {
+    console.error('[SHEETS-API] ❌ analyze error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Docs: crear
+app.post('/api/docs/create', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { title, content } = req.body;
+    if (!title) return res.status(400).json({ error: 'title requerido' });
+    const result = await sheetsIntegration.createDocument(uid, title, content || '');
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[DOCS-API] ❌ create error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Docs: leer
+app.get('/api/docs/:documentId/read', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const data = await sheetsIntegration.readDocument(uid, req.params.documentId);
+    res.json({ ok: true, ...data });
+  } catch (e) {
+    console.error('[DOCS-API] ❌ read error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Docs: append
+app.post('/api/docs/:documentId/append', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'text requerido' });
+    await sheetsIntegration.appendDocument(uid, req.params.documentId, text);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[DOCS-API] ❌ append error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
