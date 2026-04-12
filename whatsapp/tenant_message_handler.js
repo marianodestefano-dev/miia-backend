@@ -2155,6 +2155,94 @@ REGLAS:
     aiMessage = aiMessage.replace(/\[RESPONDELE:[^\]]+\]/g, '').trim();
   }
 
+  // 11d-SHEETS. Tags [SHEET_*] / [DOC_*] — Google Sheets & Docs desde WhatsApp (solo self-chat)
+  if (isSelfChat && ownerUid) {
+    try {
+      const sheetsIntegration = require('../integrations/google_sheets_integration');
+      const sheetDocTags = sheetsIntegration.detectSheetTags(aiMessage);
+      if (sheetDocTags.length > 0) {
+        console.log(`${logPrefix} [SHEETS-TAG] 📊 ${sheetDocTags.length} tag(s): ${sheetDocTags.map(t => t.tag).join(', ')}`);
+        const selfJid = tenantState.sock?.user?.id;
+        const sendResult = async (msg) => {
+          if (tenantState.sock && selfJid) {
+            try { await tenantState.sock.sendMessage(selfJid, { text: msg }); } catch (e) { console.error(`${logPrefix} [SHEETS-TAG] ❌ Send error:`, e.message); }
+          }
+        };
+        for (const { tag, params } of sheetDocTags) {
+          try {
+            switch (tag) {
+              case 'SHEET_LEER': {
+                const [spreadsheetId, range] = params;
+                const data = await sheetsIntegration.readSheet(ownerUid, spreadsheetId, range || 'Sheet1');
+                const preview = (data.values || []).slice(0, 15).map(r => r.join(' | ')).join('\n');
+                await sendResult(`📊 *Datos* (${data.totalRows || 0} filas):\n\n${preview}${(data.totalRows || 0) > 15 ? `\n\n... y ${data.totalRows - 15} más` : ''}`);
+                break;
+              }
+              case 'SHEET_ESCRIBIR': {
+                const [spreadsheetId, range, rawData] = params;
+                const rows = rawData.split(';').map(r => r.split(',').map(c => c.trim()));
+                await sheetsIntegration.writeSheet(ownerUid, spreadsheetId, range, rows);
+                await sendResult(`✅ Datos escritos en la hoja (rango: ${range})`);
+                break;
+              }
+              case 'SHEET_APPEND': {
+                const [spreadsheetId, range, rawData] = params;
+                const rows = rawData.split(';').map(r => r.split(',').map(c => c.trim()));
+                const result = await sheetsIntegration.appendSheet(ownerUid, spreadsheetId, range, rows);
+                await sendResult(`✅ ${result.updatedRows} fila(s) agregada(s)`);
+                break;
+              }
+              case 'SHEET_CREAR': {
+                const [title] = params;
+                const result = await sheetsIntegration.createSpreadsheet(ownerUid, title);
+                await sendResult(`✅ Hoja creada: *${title}*\n📎 ${result.url}`);
+                break;
+              }
+              case 'SHEET_ANALIZAR': {
+                const [spreadsheetId, question] = params;
+                const data = await sheetsIntegration.readSheet(ownerUid, spreadsheetId, 'Sheet1');
+                const analysis = await sheetsIntegration.analyzeSheetData(data.values, question || '', aiGateway);
+                await sendResult(`📊 *Análisis IA:*\n\n${analysis}`);
+                break;
+              }
+              case 'DOC_CREAR': {
+                const [title, content] = params;
+                const result = await sheetsIntegration.createDocument(ownerUid, title, content || '');
+                await sendResult(`✅ Documento creado: *${title}*\n📎 ${result.url}`);
+                break;
+              }
+              case 'DOC_LEER': {
+                const [documentId] = params;
+                const data = await sheetsIntegration.readDocument(ownerUid, documentId);
+                const preview = (data.content || '').substring(0, 2000);
+                await sendResult(`📄 *Documento:*\n\n${preview}${data.content.length > 2000 ? '\n\n... (truncado)' : ''}`);
+                break;
+              }
+              case 'DOC_APPEND': {
+                const [documentId, text] = params;
+                await sheetsIntegration.appendDocument(ownerUid, documentId, text);
+                await sendResult(`✅ Texto agregado al documento`);
+                break;
+              }
+            }
+          } catch (tagErr) {
+            console.error(`${logPrefix} [SHEETS-TAG] ❌ ${tag}: ${tagErr.message}`);
+            await sendResult(`❌ Error con ${tag}: ${tagErr.message}`).catch(() => {});
+          }
+        }
+        // Strip all sheet/doc tags
+        aiMessage = aiMessage
+          .replace(/\[SHEET_LEER:[^\]]+\]/g, '').replace(/\[SHEET_ESCRIBIR:[^\]]+\]/g, '')
+          .replace(/\[SHEET_APPEND:[^\]]+\]/g, '').replace(/\[SHEET_CREAR:[^\]]+\]/g, '')
+          .replace(/\[SHEET_ANALIZAR:[^\]]+\]/g, '').replace(/\[DOC_CREAR:[^\]]+\]/g, '')
+          .replace(/\[DOC_LEER:[^\]]+\]/g, '').replace(/\[DOC_APPEND:[^\]]+\]/g, '')
+          .trim();
+      }
+    } catch (sheetsErr) {
+      console.error(`${logPrefix} [SHEETS-TAG] ❌ Module error:`, sheetsErr.message);
+    }
+  }
+
   // 11d. Limpiar tags residuales (correo maestro, cotización sin procesar, etc.)
   aiMessage = cleanResidualTags(aiMessage);
 

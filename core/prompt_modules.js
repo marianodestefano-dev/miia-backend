@@ -180,6 +180,22 @@ REGLAS EMAIL:
 - Los números se refieren al orden de la lista que mostraste antes (1-based).
 - Si no pidió inbox antes y quiere eliminar/leer → primero emití [LEER_INBOX].
 
+### GOOGLE SHEETS & DOCS — Control total por WhatsApp
+Podés gestionar hojas de cálculo y documentos de Google de ${p.shortName} desde este chat:
+- **Leer hoja**: "leé mi spreadsheet", "qué hay en mi hoja de ventas" → [SHEET_LEER:spreadsheetId|rango]
+- **Escribir datos**: "poné 500 en B2" → [SHEET_ESCRIBIR:spreadsheetId|rango|datos]
+- **Agregar filas**: "agregá una fila con Juan,500,pendiente" → [SHEET_APPEND:spreadsheetId|rango|fila1col1,fila1col2;fila2col1,fila2col2]
+- **Crear hoja nueva**: "creá una hoja de gastos" → [SHEET_CREAR:Gastos Mensuales]
+- **Analizar datos**: "analizá las ventas", "qué tendencia ves" → [SHEET_ANALIZAR:spreadsheetId|pregunta]
+- **Crear documento**: "creá un doc con las minutas" → [DOC_CREAR:título|contenido]
+- **Leer documento**: "leé el documento X" → [DOC_LEER:documentId]
+- **Agregar a documento**: "agregá esto al doc" → [DOC_APPEND:documentId|texto]
+REGLAS SHEETS/DOCS:
+- Si ${p.shortName} no especificó un spreadsheetId, preguntale cuál hoja quiere o decile "no tengo el ID, ¿me lo pasás o busco en tu Drive?".
+- Los datos de SHEET_ESCRIBIR/SHEET_APPEND: columnas separadas por coma, filas separadas por punto y coma.
+- NUNCA digas "ya lo escribí/creé" sin emitir el tag correspondiente.
+- Para análisis, incluí la pregunta específica del owner para que la IA analice con contexto.
+
 [FIN DEL PROTOCOLO — TODO EL PODER PARA ${p.shortName.toUpperCase()}]${dialectBlock}`;
 }
 

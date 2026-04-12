@@ -140,6 +140,7 @@ const featureAnnouncer = require('./core/feature_announcer');
 const tenantLogger = require('./core/tenant_logger');
 const gmailIntegration = require('./integrations/gmail_integration');
 const googleTasks = require('./integrations/google_tasks_integration');
+const sheetsIntegration = require('./integrations/google_sheets_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -7532,6 +7533,96 @@ REGLAS:
       } catch (propErr) {
         console.error(`[PROPONER_HORARIO] ❌ Error:`, propErr.message);
       }
+    }
+
+    // ═══ TAGS [SHEET_*] / [DOC_*] — Google Sheets & Docs desde WhatsApp ═══
+    // SOLO en self-chat: el owner pide a MIIA leer/escribir/crear hojas y docs
+    const sheetDocTags = sheetsIntegration.detectSheetTags(aiMessage);
+    if (sheetDocTags.length > 0 && isSelfChat && OWNER_UID) {
+      console.log(`[SHEETS-TAG] 📊 ${sheetDocTags.length} tag(s) detectado(s): ${sheetDocTags.map(t => t.tag).join(', ')}`);
+      for (const { tag, params } of sheetDocTags) {
+        try {
+          switch (tag) {
+            case 'SHEET_LEER': {
+              const [spreadsheetId, range] = params;
+              const data = await sheetsIntegration.readSheet(OWNER_UID, spreadsheetId, range || 'Sheet1');
+              const preview = (data.values || []).slice(0, 15).map(r => r.join(' | ')).join('\n');
+              const totalRows = data.totalRows || 0;
+              const summary = `📊 *Datos de la hoja* (${totalRows} filas):\n\n${preview}${totalRows > 15 ? `\n\n... y ${totalRows - 15} filas más` : ''}`;
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, summary, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ SHEET_LEER: ${totalRows} filas leídas de ${spreadsheetId}`);
+              break;
+            }
+            case 'SHEET_ESCRIBIR': {
+              const [spreadsheetId, range, rawData] = params;
+              const rows = rawData.split(';').map(r => r.split(',').map(c => c.trim()));
+              await sheetsIntegration.writeSheet(OWNER_UID, spreadsheetId, range, rows);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ Datos escritos en la hoja (rango: ${range})`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ SHEET_ESCRIBIR: ${rows.length} filas escritas en ${range}`);
+              break;
+            }
+            case 'SHEET_APPEND': {
+              const [spreadsheetId, range, rawData] = params;
+              const rows = rawData.split(';').map(r => r.split(',').map(c => c.trim()));
+              const result = await sheetsIntegration.appendSheet(OWNER_UID, spreadsheetId, range, rows);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ ${result.updatedRows} fila(s) agregada(s) a la hoja`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ SHEET_APPEND: ${result.updatedRows} filas agregadas`);
+              break;
+            }
+            case 'SHEET_CREAR': {
+              const [title] = params;
+              const result = await sheetsIntegration.createSpreadsheet(OWNER_UID, title);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ Hoja creada: *${title}*\n📎 ${result.url}`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ SHEET_CREAR: "${title}" → ${result.spreadsheetId}`);
+              break;
+            }
+            case 'SHEET_ANALIZAR': {
+              const [spreadsheetId, question] = params;
+              const data = await sheetsIntegration.readSheet(OWNER_UID, spreadsheetId, 'Sheet1');
+              const analysis = await sheetsIntegration.analyzeSheetData(data.values, question || '', aiGateway);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `📊 *Análisis IA:*\n\n${analysis}`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ SHEET_ANALIZAR: análisis completado`);
+              break;
+            }
+            case 'DOC_CREAR': {
+              const [title, content] = params;
+              const result = await sheetsIntegration.createDocument(OWNER_UID, title, content || '');
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ Documento creado: *${title}*\n📎 ${result.url}`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ DOC_CREAR: "${title}" → ${result.documentId}`);
+              break;
+            }
+            case 'DOC_LEER': {
+              const [documentId] = params;
+              const data = await sheetsIntegration.readDocument(OWNER_UID, documentId);
+              const preview = (data.content || '').substring(0, 2000);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `📄 *Contenido del documento:*\n\n${preview}${data.content.length > 2000 ? '\n\n... (contenido truncado)' : ''}`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ DOC_LEER: ${data.content.length} chars leídos`);
+              break;
+            }
+            case 'DOC_APPEND': {
+              const [documentId, text] = params;
+              await sheetsIntegration.appendDocument(OWNER_UID, documentId, text);
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ Texto agregado al documento`, { isSelfChat: true, skipEmoji: true });
+              console.log(`[SHEETS-TAG] ✅ DOC_APPEND: texto agregado`);
+              break;
+            }
+          }
+        } catch (tagErr) {
+          console.error(`[SHEETS-TAG] ❌ Error procesando ${tag}:`, tagErr.message);
+          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `❌ Error con ${tag}: ${tagErr.message}`, { isSelfChat: true, skipEmoji: true }).catch(() => {});
+        }
+      }
+      // Strip all sheet/doc tags from the message
+      aiMessage = aiMessage
+        .replace(/\[SHEET_LEER:[^\]]+\]/g, '')
+        .replace(/\[SHEET_ESCRIBIR:[^\]]+\]/g, '')
+        .replace(/\[SHEET_APPEND:[^\]]+\]/g, '')
+        .replace(/\[SHEET_CREAR:[^\]]+\]/g, '')
+        .replace(/\[SHEET_ANALIZAR:[^\]]+\]/g, '')
+        .replace(/\[DOC_CREAR:[^\]]+\]/g, '')
+        .replace(/\[DOC_LEER:[^\]]+\]/g, '')
+        .replace(/\[DOC_APPEND:[^\]]+\]/g, '')
+        .trim();
     }
 
     // Detectar tag de intención de compra
@@ -15714,8 +15805,6 @@ app.post('/api/calendar/disconnect', requireRole('owner', 'agent'), async (req, 
 // ═══════════════════════════════════════════════════════════════
 // GOOGLE SHEETS + DOCS API ENDPOINTS
 // ═══════════════════════════════════════════════════════════════
-
-const sheetsIntegration = require('./integrations/google_sheets_integration');
 
 // Listar spreadsheets del owner
 app.get('/api/sheets/list', requireRole('owner', 'admin'), async (req, res) => {
