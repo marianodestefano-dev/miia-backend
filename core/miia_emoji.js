@@ -2,12 +2,12 @@
  * MIIA Emoji Prefix System
  * Determina qué emoji usa MIIA antes de cada mensaje según contexto, fecha y contenido.
  *
- * Formato de salida: "🙍‍♀️: texto del mensaje"
+ * Formato de salida: "👱‍♀️: texto del mensaje"
  *
  * REGLA: El emoji se evalúa ANTES de enviar. Prioridad de arriba a abajo (primera coincidencia gana).
  */
 
-const DEFAULT_EMOJI = '🙍‍♀️';
+const DEFAULT_EMOJI = '👱‍♀️';
 
 // Estado persistente por owner (en memoria, se resetea con restart)
 const emojiState = {
@@ -144,8 +144,8 @@ function getMiiaEmoji(message, ctx = {}) {
 
   // ═══ PRIORIDAD 5: Trigger de contexto específico ═══
 
-  // Proactive / Background work → 🤹‍♀️ (MIIA haciendo malabares mientras owner descansa)
-  if (ctx.trigger === 'proactive' || ctx.trigger === 'background') return '🤹‍♀️';
+  // Proactive / Background / Heavy work → 🤹‍♀️ (MIIA haciendo malabares, trabajando a full)
+  if (ctx.trigger === 'proactive' || ctx.trigger === 'background' || ctx.trigger === 'heavy_work' || ctx.isMultiAction) return '🤹‍♀️';
 
   // Sport → 🤵‍♀️ (MIIA relatora elegante)
   if (ctx.trigger === 'sport') return '🤵‍♀️';
@@ -213,7 +213,7 @@ function getMiiaEmoji(message, ctx = {}) {
  */
 // Emojis oficiales de MIIA — solo estos cuentan como "ya tiene prefix"
 const MIIA_OFFICIAL_EMOJIS = new Set([
-  '🙍‍♀️', '🙎‍♀️', '👸', '🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️',
+  '👱‍♀️', '🙎‍♀️', '👸', '🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️',
   '🦸‍♀️', '👰‍♀️', '🤦‍♀️', '💆‍♀️', '🙇‍♀️', '🤹‍♀️',
   '🧛‍♀️', '🎅', '🤱',
   '👩‍⚖️', '👩‍🔧', '🤷‍♀️', '💁‍♀️', '🙋‍♀️', '👩‍🎓', '👩‍🏫',

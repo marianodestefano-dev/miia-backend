@@ -216,7 +216,160 @@ function getMetrics() {
   return result;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// CIRCUIT BREAKER — Protección contra cascada de fallos en APIs externas
+// ═══════════════════════════════════════════════════════════════
+//
+// Si una API (Gemini, Gmail, Calendar) falla N veces consecutivas,
+// el circuit breaker se "abre" y rechaza requests por un cooldown period.
+// Esto evita gastar recursos en requests que van a fallar.
+//
+// Estados: CLOSED (normal) → OPEN (bloqueado) → HALF_OPEN (probando)
+
+const _circuits = {};
+const CB_FAILURE_THRESHOLD = 3;   // Fallos consecutivos para abrir
+const CB_COOLDOWN_MS = 30_000;    // 30s de cooldown antes de probar de nuevo
+const CB_SUCCESS_TO_CLOSE = 2;    // Éxitos consecutivos en HALF_OPEN para cerrar
+
+/**
+ * Obtener o crear circuit breaker para un servicio.
+ * @param {string} service - Nombre del servicio ('gemini', 'gmail', 'calendar', etc.)
+ * @returns {Object} Estado del circuit
+ */
+function _getCircuit(service) {
+  if (!_circuits[service]) {
+    _circuits[service] = {
+      state: 'CLOSED',          // CLOSED | OPEN | HALF_OPEN
+      failures: 0,
+      successes: 0,
+      lastFailure: null,
+      lastStateChange: Date.now(),
+      totalFailures: 0,
+      totalSuccess: 0,
+    };
+  }
+  return _circuits[service];
+}
+
+/**
+ * ¿El circuit breaker permite ejecutar una request a este servicio?
+ * @param {string} service - Nombre del servicio
+ * @returns {{ allowed: boolean, state: string, reason: string }}
+ */
+function circuitAllows(service) {
+  const circuit = _getCircuit(service);
+
+  if (circuit.state === 'CLOSED') {
+    return { allowed: true, state: 'CLOSED', reason: 'circuit closed (normal)' };
+  }
+
+  if (circuit.state === 'OPEN') {
+    // ¿Ya pasó el cooldown?
+    if (Date.now() - circuit.lastStateChange > CB_COOLDOWN_MS) {
+      circuit.state = 'HALF_OPEN';
+      circuit.successes = 0;
+      circuit.lastStateChange = Date.now();
+      console.log(`[CIRCUIT-BREAKER] 🟡 ${service}: OPEN → HALF_OPEN (probando)`);
+      return { allowed: true, state: 'HALF_OPEN', reason: 'testing after cooldown' };
+    }
+    return { allowed: false, state: 'OPEN', reason: `circuit open — cooldown ${Math.ceil((CB_COOLDOWN_MS - (Date.now() - circuit.lastStateChange)) / 1000)}s` };
+  }
+
+  // HALF_OPEN → dejar pasar para probar
+  return { allowed: true, state: 'HALF_OPEN', reason: 'half-open test request' };
+}
+
+/**
+ * Registrar éxito de una request.
+ * @param {string} service
+ */
+function circuitSuccess(service) {
+  const circuit = _getCircuit(service);
+  circuit.totalSuccess++;
+
+  if (circuit.state === 'HALF_OPEN') {
+    circuit.successes++;
+    if (circuit.successes >= CB_SUCCESS_TO_CLOSE) {
+      circuit.state = 'CLOSED';
+      circuit.failures = 0;
+      circuit.lastStateChange = Date.now();
+      console.log(`[CIRCUIT-BREAKER] 🟢 ${service}: HALF_OPEN → CLOSED (recovered)`);
+    }
+  } else if (circuit.state === 'CLOSED') {
+    circuit.failures = 0; // Reset en éxito
+  }
+}
+
+/**
+ * Registrar fallo de una request.
+ * @param {string} service
+ * @param {string} [error] - Mensaje de error
+ */
+function circuitFailure(service, error = '') {
+  const circuit = _getCircuit(service);
+  circuit.failures++;
+  circuit.totalFailures++;
+  circuit.lastFailure = { ts: new Date().toISOString(), error };
+
+  if (circuit.state === 'HALF_OPEN') {
+    // Fallo en prueba → volver a OPEN
+    circuit.state = 'OPEN';
+    circuit.lastStateChange = Date.now();
+    console.warn(`[CIRCUIT-BREAKER] 🔴 ${service}: HALF_OPEN → OPEN (test failed: ${error})`);
+  } else if (circuit.state === 'CLOSED' && circuit.failures >= CB_FAILURE_THRESHOLD) {
+    circuit.state = 'OPEN';
+    circuit.lastStateChange = Date.now();
+    console.error(`[CIRCUIT-BREAKER] 🔴 ${service}: CLOSED → OPEN (${circuit.failures} consecutive failures: ${error})`);
+  }
+}
+
+/**
+ * Estado de todos los circuit breakers para monitoreo.
+ */
+function getCircuitStatus() {
+  const result = {};
+  for (const [service, circuit] of Object.entries(_circuits)) {
+    result[service] = {
+      state: circuit.state,
+      failures: circuit.failures,
+      totalFailures: circuit.totalFailures,
+      totalSuccess: circuit.totalSuccess,
+      lastFailure: circuit.lastFailure,
+    };
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PER-CONTACT RATE LIMIT — Max mensajes por contacto por minuto
+// ═══════════════════════════════════════════════════════════════
+
+const _contactLimits = {}; // { phone: [timestamp, ...] }
+const CONTACT_MAX_PER_MINUTE = 5;
+
+/**
+ * ¿Se puede enviar un mensaje más a este contacto?
+ * @param {string} phone
+ * @returns {boolean}
+ */
+function contactAllows(phone) {
+  if (!_contactLimits[phone]) _contactLimits[phone] = [];
+  const cutoff = Date.now() - 60_000;
+  _contactLimits[phone] = _contactLimits[phone].filter(t => t >= cutoff);
+  return _contactLimits[phone].length < CONTACT_MAX_PER_MINUTE;
+}
+
+/**
+ * Registrar envío a contacto.
+ * @param {string} phone
+ */
+function contactRecord(phone) {
+  if (!_contactLimits[phone]) _contactLimits[phone] = [];
+  _contactLimits[phone].push(Date.now());
+}
+
 module.exports = {
+  // Rate limiter original
   recordOutgoing,
   getCount24h,
   getLevel,
@@ -225,4 +378,15 @@ module.exports = {
   getMetrics,
   LEVELS,
   DEFAULT_DAILY_LIMIT,
+  // Circuit breaker
+  circuitAllows,
+  circuitSuccess,
+  circuitFailure,
+  getCircuitStatus,
+  CB_FAILURE_THRESHOLD,
+  CB_COOLDOWN_MS,
+  // Per-contact limit
+  contactAllows,
+  contactRecord,
+  CONTACT_MAX_PER_MINUTE,
 };

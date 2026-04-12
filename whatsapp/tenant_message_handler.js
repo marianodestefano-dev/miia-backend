@@ -47,7 +47,7 @@ const {
 const miiaInvocation = require('../core/miia_invocation');
 const featureAnnouncer = require('../core/feature_announcer');
 const securityContacts = require('../services/security_contacts');
-const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig } = require('../core/google_calendar');
+const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig, checkCalendarAvailability } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
 const { applyMiiaEmoji } = require('../core/miia_emoji');
 
@@ -62,6 +62,7 @@ const humanDelay = require('../core/human_delay');
 const contactClassifier = require('../core/contact_classifier');
 const weekendMode = require('../core/weekend_mode');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('../core/miia_postprocess');
+const { validatePreSend } = require('../core/miia_validator');
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
@@ -1992,6 +1993,119 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
   }
 
+  // 11d-HARTAZGO. Tag [HARTAZGO_CONFIRMADO:contactName] — Contacto harto → affinity 0 + silencio
+  const hartazgoMatch = aiMessage.match(/\[HARTAZGO_CONFIRMADO:([^\]]+)\]/);
+  if (hartazgoMatch) {
+    const hartazgoName = hartazgoMatch[1].trim();
+    aiMessage = aiMessage.replace(/\[HARTAZGO_CONFIRMADO:[^\]]+\]/g, '').trim();
+    console.log(`${logPrefix} [HARTAZGO-TMH] 📛 HARTAZGO confirmado: ${hartazgoName} (${phone}) → silencio`);
+    // Guardar en contact_index como silenciado
+    try {
+      await db().collection('users').doc(ownerUid).collection('contact_index').doc(basePhone)
+        .set({ silenced: true, silenceReason: 'hartazgo', silencedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      console.log(`${logPrefix} [HARTAZGO-TMH] ✅ Contacto marcado como silenciado en Firestore`);
+    } catch (e) {
+      console.error(`${logPrefix} [HARTAZGO-TMH] ❌ Error guardando silencio:`, e.message);
+    }
+    // Notificar al owner en self-chat
+    await sendToOwnerSelfChat(`📛 *${hartazgoName}* expresó hartazgo y confirmó. Lo silencié. Te sugiero hablarle personalmente.`);
+  }
+
+  // 11d-SILENCIAR. Tag [SILENCIAR_LEAD:contactName] — Lead preguntó si es IA → silencio + aviso owner
+  const silenciarMatch = aiMessage.match(/\[SILENCIAR_LEAD:([^\]]+)\]/);
+  if (silenciarMatch) {
+    const leadNameSilenced = silenciarMatch[1].trim();
+    aiMessage = aiMessage.replace(/\[SILENCIAR_LEAD:[^\]]+\]/g, '').trim();
+    console.log(`${logPrefix} [SILENCIAR-TMH] 🤫 Lead ${leadNameSilenced} (${phone}) preguntó si es IA → silenciando`);
+    // Guardar en contact_index como silenciado
+    try {
+      await db().collection('users').doc(ownerUid).collection('contact_index').doc(basePhone)
+        .set({ silenced: true, silenceReason: 'ai_question', silencedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    } catch (e) {
+      console.error(`${logPrefix} [SILENCIAR-TMH] ❌ Error:`, e.message);
+    }
+    // Notificar al owner en self-chat
+    await sendToOwnerSelfChat(`🤫 El lead *${leadNameSilenced}* insistió en saber si somos IA/bot. Me silencié para no comprometer la identidad. Te sugiero responderle vos directamente.`);
+    // NO enviar la respuesta de MIIA al lead — silencio total
+    return;
+  }
+
+  // 11d-COTIZACION. Tag [GENERAR_COTIZACION_PDF:{json}] — Generar y enviar cotización PDF
+  const cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
+  if (cotizTagIdx !== -1) {
+    const jsonStart = cotizTagIdx + '[GENERAR_COTIZACION_PDF:'.length;
+    let jsonEnd = -1;
+    let depth = 0;
+    for (let i = jsonStart; i < aiMessage.length; i++) {
+      if (aiMessage[i] === '{') depth++;
+      else if (aiMessage[i] === '}') { depth--; if (depth === 0) { jsonEnd = i + 1; break; } }
+    }
+    if (jsonEnd !== -1) {
+      let pdfOk = false;
+      try {
+        const cotizacionGenerator = require('../services/cotizacion_generator');
+        const jsonStr = aiMessage.substring(jsonStart, jsonEnd);
+        console.log(`${logPrefix} [COTIZ-TMH] JSON detectado: ${jsonStr.substring(0, 300)}`);
+        const cotizData = JSON.parse(jsonStr);
+        // Validación server-side: moneda correcta según país del lead
+        const PAIS_MONEDA_MAP = {
+          'COLOMBIA': 'COP', 'CHILE': 'CLP', 'MEXICO': 'MXN',
+          'ESPAÑA': 'EUR', 'ESPANA': 'EUR',
+          'REPUBLICA_DOMINICANA': 'USD', 'ARGENTINA': 'USD', 'INTERNACIONAL': 'USD',
+        };
+        if (!cotizData.pais || cotizData.pais === 'INTERNACIONAL') {
+          const leadPrefix = basePhone.substring(0, 4);
+          if (leadPrefix.startsWith('57')) cotizData.pais = 'COLOMBIA';
+          else if (leadPrefix.startsWith('56')) cotizData.pais = 'CHILE';
+          else if (leadPrefix.startsWith('52')) cotizData.pais = 'MEXICO';
+          else if (leadPrefix.startsWith('54')) cotizData.pais = 'ARGENTINA';
+          else if (leadPrefix.startsWith('34')) cotizData.pais = 'ESPAÑA';
+          else if (/^1(809|829|849)/.test(basePhone)) cotizData.pais = 'REPUBLICA_DOMINICANA';
+        }
+        const expectedMoneda = PAIS_MONEDA_MAP[cotizData.pais];
+        if (expectedMoneda && cotizData.moneda !== expectedMoneda) {
+          console.warn(`${logPrefix} [COTIZ-TMH] ⚠️ Moneda incorrecta: ${cotizData.moneda} → forzando ${expectedMoneda}`);
+          cotizData.moneda = expectedMoneda;
+        }
+        if (cotizData.moneda === 'EUR' && cotizData.modalidad !== 'anual') {
+          cotizData.modalidad = 'anual';
+        }
+        // Datos del owner para footer
+        try {
+          const ownerDoc = await db().collection('users').doc(ownerUid).get();
+          if (ownerDoc.exists) {
+            const od = ownerDoc.data();
+            cotizData.ownerName = od.name || od.displayName || 'Asesor';
+            cotizData.ownerEmail = od.email || '';
+            cotizData.ownerPhone = od.whatsapp || od.phone || '';
+          }
+        } catch (oe) { console.warn(`${logPrefix} [COTIZ-TMH] No se pudo leer owner:`, oe.message); }
+        if (!cotizData.nombre || cotizData.nombre === 'Cliente' || cotizData.nombre === 'Lead') {
+          cotizData.nombre = basePhone || cotizData.nombre;
+        }
+        // Enviar PDF — usa sendTenantMessage como safeSendMessage
+        const safeSend = async (to, content) => {
+          if (typeof content === 'string') await sendTenantMessage(tenantState, to, content);
+          else if (tenantState.sock) await tenantState.sock.sendMessage(to, content);
+        };
+        await cotizacionGenerator.enviarCotizacionWA(safeSend, phone, cotizData, isSelfChat);
+        pdfOk = true;
+        console.log(`${logPrefix} [COTIZ-TMH] ✅ PDF enviado a ${phone}`);
+      } catch (e) {
+        console.error(`${logPrefix} [COTIZ-TMH] ❌ Error PDF:`, e.message);
+      }
+      let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
+      if (pdfOk) {
+        ctx.conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada. No volver a enviarla a menos que lo pidan.]', timestamp: Date.now() });
+        aiMessage = textoAntes;
+      } else {
+        aiMessage = textoAntes + (textoAntes ? '\n\n' : '') + 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
+      }
+    }
+  } else {
+    aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '').trim();
+  }
+
   // 11d-RESPONDELE. Tag [RESPONDELE:destinatario|instrucción] — Owner pide enviar mensaje a contacto
   const respondeleTagMatch = aiMessage.match(/\[RESPONDELE:([^\]]+)\]/);
   if (respondeleTagMatch && isSelfChat) {
@@ -3011,6 +3125,47 @@ REGLAS:
         aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
       }
 
+      // ── TAG [PROPONER_HORARIO:duración] — MIIA propone slots libres del Calendar ──
+      const proponerMatch = aiMessage.match(/\[PROPONER_HORARIO(?::(\d+))?\]/);
+      if (proponerMatch) {
+        const duration = parseInt(proponerMatch[1]) || 60;
+        aiMessage = aiMessage.replace(/\[PROPONER_HORARIO(?::\d+)?\]/g, '').trim();
+        try {
+          // proposeCalendarSlot local — usa checkCalendarAvailability exportado de google_calendar
+          const schedCfg = await getCalScheduleConfig(ownerUid);
+          const workStart = schedCfg?.workStartHour || 9;
+          const workEnd = schedCfg?.workEndHour || 18;
+          const proposals = [];
+          for (let d = 0; d < 3 && proposals.length < 5; d++) {
+            const targetDate = new Date();
+            targetDate.setDate(targetDate.getDate() + d);
+            const day = targetDate.getDay();
+            if (day === 0 || day === 6) continue;
+            const dateStr = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`;
+            try {
+              const avail = await checkCalendarAvailability(dateStr, ownerUid);
+              for (const slot of avail.freeSlots) {
+                const [startStr] = slot.split(' - ');
+                const startHour = parseInt(startStr);
+                if (startHour < workStart || startHour + Math.ceil(duration / 60) > workEnd) continue;
+                proposals.push({ display: `${dateStr} de ${startHour}:00 a ${startHour + Math.ceil(duration / 60)}:00` });
+                if (proposals.length >= 5) break;
+              }
+            } catch (e) { console.warn(`${logPrefix} [PROPONER-TMH] ⚠️ ${dateStr}: ${e.message}`); }
+          }
+          if (proposals.length > 0) {
+            const slotsText = proposals.map((p, i) => `${i + 1}. ${p.display}`).join('\n');
+            aiMessage += `\n\n📅 *Horarios disponibles (${duration} min):*\n${slotsText}\n\n¿Cuál te queda mejor?`;
+            console.log(`${logPrefix} [PROPONER-TMH] ✅ ${proposals.length} slots propuestos`);
+          } else {
+            aiMessage += '\n\n📅 No encontré horarios libres en los próximos días. ¿Querés que busque más adelante?';
+            console.log(`${logPrefix} [PROPONER-TMH] ⚠️ Sin slots disponibles`);
+          }
+        } catch (propErr) {
+          console.error(`${logPrefix} [PROPONER-TMH] ❌ Error:`, propErr.message);
+        }
+      }
+
       // ── TAG [RECORDAR_OWNER:fecha|mensaje] — Contacto dice "recuérdale al owner que..." ──
       const recordOwnerMatch = aiMessage.match(/\[RECORDAR_OWNER:([^|]+)\|([^\]]+)\]/);
       if (recordOwnerMatch) {
@@ -3135,7 +3290,7 @@ REGLAS:
         .replace(/\[MENSAJE_PARA_OWNER:[^\]]+\]/g, '').replace(/\[CREAR_TAREA:[^\]]+\]/g, '')
         .replace(/\[LISTAR_TAREAS\]/g, '').replace(/\[COMPLETAR_TAREA:[^\]]+\]/g, '')
         .replace(/\[CANCELAR_EVENTO:[^\]]+\]/g, '').replace(/\[ELIMINAR_EVENTO:[^\]]+\]/g, '')
-        .replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim();
+        .replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').replace(/\[PROPONER_HORARIO(?::\d+)?\]/g, '').trim();
     }
   }
 
@@ -3210,12 +3365,33 @@ REGLAS:
     return;
   }
 
+  // ── PASO 12a: VALIDADOR PRE-ENVÍO — última barrera contra mentiras y leaks ──
+  {
+    const validation = validatePreSend(aiMessage, {
+      isSelfChat,
+      chatType: contactType || 'lead',
+      executionFlags: {
+        email: _emailTagProcessed,
+        agenda: _agendaTagProcessed,
+        tarea: _tareaTagProcessed,
+      },
+      logPrefix,
+    });
+    if (validation.wasModified) {
+      console.warn(`${logPrefix} [VALIDATOR] Mensaje corregido: ${validation.issues.join(', ')}`);
+      aiMessage = validation.message;
+    }
+  }
+
   // ── PASO 12b: Emoji de estado MIIA ──
   // applyMiiaEmoji SIEMPRE quita el emoji que puso la IA y pone el oficial
+  // Contar acciones ejecutadas para emoji 🤹‍��️ (multi-acción = MIIA trabajando a full)
+  const actionsExecuted = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed].filter(Boolean).length;
   aiMessage = applyMiiaEmoji(aiMessage, {
     isSelfChat,
     contactType: contactType || 'lead',
     messageBody,
+    isMultiAction: actionsExecuted >= 2,
   });
 
   // Guardar largo del mensaje entrante para human_delay contextual

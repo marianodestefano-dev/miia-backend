@@ -696,7 +696,9 @@ function cleanResidualTags(aiMessage) {
     .replace(/\[GUARDAR_(?:APRENDIZAJE|NOTA):[^\]]*\]/g, '')
     .replace(/\[LEAD_QUIERE_COMPRAR\]/g, '')
     .replace(/\[MSG_SPLIT\]/g, '')
-    .replace(/\[ENVIAR_CORREO:[^\]]*\]/g, '');
+    .replace(/\[ENVIAR_CORREO:[^\]]*\]/g, '')
+    .replace(/\[HARTAZGO_CONFIRMADO:[^\]]*\]/g, '')
+    .replace(/\[SILENCIAR_LEAD:[^\]]*\]/g, '');
 
   // ═══ UNIVERSAL TAG STRIPPER — NUNCA mostrar tags crudos al usuario ═══
   // Atrapa CUALQUIER tag con formato [ALGO_ALGO:...] o [ALGO_ALGO] que no fue procesado
