@@ -341,6 +341,212 @@ async function diagnoseCalendar(uid) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CHECK SLOT AVAILABILITY — Verificación inteligente de disponibilidad
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * BREATHING_RULES — Minutos de respiro antes/después según contexto.
+ * Aprobados por Mariano (sesión 12-abril-2026).
+ */
+const BREATHING_RULES = {
+  medical:  { before: 10, after: 10 },  // Cita médica / legal
+  business: { before: 15, after: 15 },  // Reunión negocio
+  lead:     { before: 30, after: 30 },  // Lead / demo
+  personal: { before: 0,  after: 15 },  // Familia / personal
+  owner:    { before: 0,  after: 0  },  // Self-chat (owner decide)
+};
+
+/**
+ * detectEventCategory — Detecta la categoría de un evento por su razón/hint.
+ * @param {string} reason - Razón del evento
+ * @param {string} chatType - Tipo de chat: 'owner', 'lead', 'miia_lead', 'family', 'team', etc.
+ * @returns {string} Categoría: 'medical', 'business', 'lead', 'personal', 'owner'
+ */
+function detectEventCategory(reason, chatType) {
+  const r = (reason || '').toLowerCase();
+
+  // Owner self-chat siempre = 'owner' (sin respiro forzado)
+  if (chatType === 'owner' || chatType === 'self') return 'owner';
+
+  // Médico/legal por contenido
+  if (/m[eé]dic|doctor|hospital|cl[ií]nica|dentist|odont|abogad|legal|juzgad|tribunal|urgencia|emergencia/i.test(r)) return 'medical';
+
+  // Lead / demo
+  if (chatType === 'lead' || chatType === 'miia_lead' || chatType === 'client') return 'lead';
+  if (/demo|presentaci[oó]n|propuesta|cotizaci[oó]n|venta/i.test(r)) return 'lead';
+
+  // Negocio por contenido
+  if (/reuni[oó]n|meeting|junta|comit[eé]|trabajo|oficina|proyecto|deadline/i.test(r)) return 'business';
+
+  // Familia / personal
+  if (chatType === 'family' || chatType === 'team' || chatType === 'group') return 'personal';
+  if (/cumplea[ñn]|almuerz|cena|fiesta|partido|deporte|amig/i.test(r)) return 'personal';
+
+  // Default según chatType
+  if (chatType === 'lead' || chatType === 'miia_lead') return 'lead';
+  return 'personal';
+}
+
+/**
+ * checkSlotAvailability — Verifica si un bloque de tiempo cabe en la agenda,
+ * considerando respiro antes y después.
+ *
+ * @param {string} uid - UID del owner
+ * @param {string} dateStr - Fecha ISO "2026-04-13"
+ * @param {number} startHour - Hora de inicio (0-23)
+ * @param {number} startMinute - Minuto de inicio (0-59)
+ * @param {number} durationMin - Duración del evento en minutos
+ * @param {string} eventCategory - 'medical', 'business', 'lead', 'personal', 'owner'
+ * @returns {Promise<{
+ *   available: boolean,
+ *   conflicts: Array<{title: string, start: Date, end: Date}>,
+ *   nearestSlot: {startH: number, startM: number, endH: number, endM: number, gapMinutes: number} | null,
+ *   breathingBefore: number,
+ *   breathingAfter: number,
+ *   requestedStart: string,
+ *   requestedEnd: string
+ * }>}
+ */
+async function checkSlotAvailability(uid, dateStr, startHour, startMinute, durationMin, eventCategory = 'personal') {
+  const breathing = BREATHING_RULES[eventCategory] || BREATHING_RULES.personal;
+  const result = {
+    available: false,
+    conflicts: [],
+    nearestSlot: null,
+    breathingBefore: breathing.before,
+    breathingAfter: breathing.after,
+    requestedStart: `${String(startHour).padStart(2, '0')}:${String(startMinute).padStart(2, '0')}`,
+    requestedEnd: '',
+  };
+
+  // Calcular bloque completo: respiro_antes + evento + respiro_después
+  const totalBlockMin = breathing.before + durationMin + breathing.after;
+  const eventEndTotal = startHour * 60 + startMinute + durationMin;
+  const eventEndH = Math.floor(eventEndTotal / 60);
+  const eventEndM = eventEndTotal % 60;
+  result.requestedEnd = `${String(eventEndH).padStart(2, '0')}:${String(eventEndM).padStart(2, '0')}`;
+
+  // Bloque con respiro (para verificar conflictos)
+  const blockStartMin = Math.max(0, startHour * 60 + startMinute - breathing.before);
+  const blockEndMin = startHour * 60 + startMinute + durationMin + breathing.after;
+
+  try {
+    const { cal, calId } = await getCalendarClient(uid);
+
+    // Buscar eventos del día completo (6am a 23pm para cubrir edge cases)
+    const dayStart = new Date(dateStr + 'T06:00:00');
+    const dayEnd = new Date(dateStr + 'T23:00:00');
+
+    const response = await cal.events.list({
+      calendarId: calId,
+      timeMin: dayStart.toISOString(),
+      timeMax: dayEnd.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime'
+    });
+
+    const events = (response.data.items || [])
+      .filter(e => e.status !== 'cancelled')
+      .map(e => ({
+        title: e.summary || '(sin título)',
+        start: new Date(e.start.dateTime || e.start.date),
+        end: new Date(e.end.dateTime || e.end.date),
+        startMin: null, endMin: null
+      }));
+
+    // Convertir a minutos del día para fácil comparación
+    for (const evt of events) {
+      evt.startMin = evt.start.getHours() * 60 + evt.start.getMinutes();
+      evt.endMin = evt.end.getHours() * 60 + evt.end.getMinutes();
+    }
+
+    // Verificar conflictos (incluyendo respiro)
+    for (const evt of events) {
+      if (evt.startMin < blockEndMin && evt.endMin > blockStartMin) {
+        result.conflicts.push({ title: evt.title, start: evt.start, end: evt.end, startMin: evt.startMin, endMin: evt.endMin });
+      }
+    }
+
+    result.available = result.conflicts.length === 0;
+
+    // Si no está disponible, buscar el hueco más cercano
+    if (!result.available) {
+      const schedCfg = await getScheduleConfig(uid);
+      const workStart = (schedCfg?.workStartHour || 9) * 60;
+      const workEnd = (schedCfg?.workEndHour || 18) * 60;
+
+      // Ordenar todos los eventos por inicio
+      const sorted = events.sort((a, b) => a.startMin - b.startMin);
+
+      // Buscar huecos entre eventos (y antes del primer evento / después del último)
+      const gaps = [];
+
+      // Hueco antes del primer evento
+      if (sorted.length === 0 || sorted[0].startMin > workStart) {
+        const gapEnd = sorted.length > 0 ? sorted[0].startMin : workEnd;
+        gaps.push({ startMin: workStart, endMin: gapEnd });
+      }
+
+      // Huecos entre eventos
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const gapStart = sorted[i].endMin;
+        const gapEnd = sorted[i + 1].startMin;
+        if (gapEnd - gapStart >= totalBlockMin) {
+          gaps.push({ startMin: gapStart, endMin: gapEnd });
+        }
+      }
+
+      // Hueco después del último evento
+      if (sorted.length > 0) {
+        const lastEnd = sorted[sorted.length - 1].endMin;
+        if (lastEnd < workEnd) {
+          gaps.push({ startMin: lastEnd, endMin: workEnd });
+        }
+      }
+
+      // Encontrar el hueco más cercano a la hora solicitada
+      const requestedMin = startHour * 60 + startMinute;
+      let bestGap = null;
+      let bestDistance = Infinity;
+
+      for (const gap of gaps) {
+        // El evento empieza después del respiro_antes dentro del hueco
+        const possibleStart = Math.max(gap.startMin + breathing.before, gap.startMin);
+        const possibleEnd = possibleStart + durationMin + breathing.after;
+
+        if (possibleEnd <= gap.endMin && possibleStart + durationMin <= workEnd) {
+          const distance = Math.abs(possibleStart - requestedMin);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            const sH = Math.floor(possibleStart / 60);
+            const sM = possibleStart % 60;
+            const eTotal = possibleStart + durationMin;
+            const eH = Math.floor(eTotal / 60);
+            const eM = eTotal % 60;
+            bestGap = {
+              startH: sH, startM: sM,
+              endH: eH, endM: eM,
+              gapMinutes: gap.endMin - gap.startMin
+            };
+          }
+        }
+      }
+
+      result.nearestSlot = bestGap;
+    }
+
+    console.log(`[AVAILABILITY] 📅 ${dateStr} ${result.requestedStart}-${result.requestedEnd} (${durationMin}min, cat=${eventCategory}, respiro=${breathing.before}+${breathing.after}): ${result.available ? '✅ LIBRE' : `❌ ${result.conflicts.length} conflicto(s)`}${result.nearestSlot ? ` → alternativa ${result.nearestSlot.startH}:${String(result.nearestSlot.startM).padStart(2,'0')}` : ''}`);
+
+  } catch (calErr) {
+    // Si Calendar no está conectado, asumir disponible (mejor agendar que perder el evento)
+    console.warn(`[AVAILABILITY] ⚠️ Calendar no disponible para uid=${uid.substring(0, 8)}: ${calErr.message} — asumiendo LIBRE`);
+    result.available = true;
+  }
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════
 
@@ -350,5 +556,8 @@ module.exports = {
   getScheduleConfig,
   createCalendarEvent,
   checkCalendarAvailability,
+  checkSlotAvailability,
+  detectEventCategory,
+  BREATHING_RULES,
   diagnoseCalendar
 };

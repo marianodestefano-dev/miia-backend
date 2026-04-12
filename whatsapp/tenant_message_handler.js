@@ -47,7 +47,7 @@ const {
 const miiaInvocation = require('../core/miia_invocation');
 const featureAnnouncer = require('../core/feature_announcer');
 const securityContacts = require('../services/security_contacts');
-const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig, checkCalendarAvailability } = require('../core/google_calendar');
+const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig, checkCalendarAvailability, checkSlotAvailability, detectEventCategory } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
 const { applyMiiaEmoji } = require('../core/miia_emoji');
 
@@ -2858,7 +2858,7 @@ REGLAS:
             let meetLink = null;
             const eventMode = (modo || 'presencial').toLowerCase();
 
-            // 1. Crear evento en Google Calendar
+            // 1. Parsear fecha/hora/duración y verificar disponibilidad
             try {
               const parsedDate = new Date(fecha);
               const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
@@ -2868,13 +2868,54 @@ REGLAS:
                 const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
                 const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
                 const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
+                // Calcular duración: parsear "Xmin" del hint, default 60
+                const thmHintDurMatch = (hint || '').match(/(\d+)\s*min/i);
+                const tmhAgendarDuration = thmHintDurMatch ? parseInt(thmHintDurMatch[1]) : 60;
+                const tmhAgEndTotal = startH * 60 + startMin + tmhAgendarDuration;
+                const tmhAgEndH = Math.floor(tmhAgEndTotal / 60);
+                const tmhAgEndM = tmhAgEndTotal % 60;
+                console.log(`${logPrefix} [AGENDA-TMH] 📅 Calendar: ${startH}:${String(startMin).padStart(2,'0')} → ${tmhAgEndH}:${String(tmhAgEndM).padStart(2,'0')} (${tmhAgendarDuration}min)`);
+
+                // ═══ VERIFICACIÓN DE DISPONIBILIDAD ═══
+                const evtCategory = detectEventCategory(razon, isSelfChat ? 'owner' : (contactType || 'lead'));
+                const slotCheck = await checkSlotAvailability(ownerUid, fecha.split('T')[0], startH, startMin, tmhAgendarDuration, evtCategory);
+
+                if (!slotCheck.available && evtCategory !== 'owner') {
+                  // Hay conflicto — informar según contexto
+                  const conflictNames = slotCheck.conflicts.map(c => `"${c.title}" (${String(c.start.getHours()).padStart(2,'0')}:${String(c.start.getMinutes()).padStart(2,'0')}-${String(c.end.getHours()).padStart(2,'0')}:${String(c.end.getMinutes()).padStart(2,'0')})`).join(', ');
+                  let altText = '';
+                  if (slotCheck.nearestSlot) {
+                    const ns = slotCheck.nearestSlot;
+                    altText = `Tengo disponible de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${slotCheck.nearestSlot.gapMinutes} minutos libres). ¿Te agendo ahí?`;
+                  } else {
+                    altText = 'No encontré otro horario disponible hoy. ¿Querés que busque otro día?';
+                  }
+                  console.log(`${logPrefix} [AGENDA-TMH] ⚠️ CONFLICTO: ${conflictNames} — alternativa: ${altText}`);
+
+                  // Reemplazar el tag en aiMessage con mensaje de conflicto
+                  const conflictMsg = `⚠️ A las ${slotCheck.requestedStart} ya tenés ${conflictNames}. ${altText}`;
+                  aiMessage = aiMessage.replace(tag, '');
+                  // Agregar conflicto al mensaje si la IA no lo tiene
+                  if (!aiMessage.includes('conflicto') && !aiMessage.includes('ocupado')) {
+                    aiMessage = conflictMsg;
+                  }
+                  _agendaTagProcessed = true;
+                  continue; // No agendar, ofrecer alternativa
+                }
+
+                // Si es owner y hay conflicto, solo informar pero agendar igual
+                if (!slotCheck.available && evtCategory === 'owner') {
+                  const conflictNames = slotCheck.conflicts.map(c => `"${c.title}"`).join(', ');
+                  console.log(`${logPrefix} [AGENDA-TMH] ℹ️ Owner agenda con conflicto (respetando decisión): ${conflictNames}`);
+                }
+
                 const calResult = await createCalendarEvent({
                   summary: razon || 'Evento MIIA',
                   dateStr: fecha.split('T')[0],
                   startHour: startH,
                   startMinute: startMin,
-                  endHour: startH + 1,
-                  endMinute: startMin,
+                  endHour: tmhAgEndH,
+                  endMinute: tmhAgEndM,
                   description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
                   uid: ownerUid,
                   timezone: ownerTz,
@@ -2931,6 +2972,7 @@ REGLAS:
                 scheduledForLocal: fecha,
                 ownerTimezone: effectiveTimezone,
                 reason: razon,
+                durationMinutes: tmhAgendarDuration,
                 promptHint: hint || '',
                 eventMode: eventMode,
                 eventLocation: ubicacion || '',
@@ -2981,6 +3023,39 @@ REGLAS:
             const ownerCountry = getCountryFromPhone(ownerPhone);
             const ownerTz = getTimezoneForCountry(ownerCountry);
 
+            // ═══ VERIFICACIÓN DE DISPONIBILIDAD ═══
+            const stHourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
+            const stStartH = stHourMatch ? parseInt(stHourMatch[1]) : 10;
+            const stStartM = stHourMatch ? parseInt(stHourMatch[2]) : 0;
+            const stHintDurMatch = (hint || '').match(/(\d+)\s*min/i);
+            const stDuration = stHintDurMatch ? parseInt(stHintDurMatch[1]) : 60;
+            const stCategory = detectEventCategory(razon, contactType || 'lead');
+            const stSlotCheck = await checkSlotAvailability(ownerUid, fecha.split('T')[0], stStartH, stStartM, stDuration, stCategory);
+
+            if (!stSlotCheck.available) {
+              const stConflictNames = stSlotCheck.conflicts.map(c => `"${c.title}" (${String(c.start.getHours()).padStart(2,'0')}:${String(c.start.getMinutes()).padStart(2,'0')}-${String(c.end.getHours()).padStart(2,'0')}:${String(c.end.getMinutes()).padStart(2,'0')})`).join(', ');
+              let stAltText = '';
+              if (stSlotCheck.nearestSlot) {
+                const ns = stSlotCheck.nearestSlot;
+                stAltText = `Tengo disponibilidad de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')}. ¿Le agendo ahí?`;
+              } else {
+                stAltText = 'No encontré otro horario disponible hoy. ¿Le gustaría otro día?';
+              }
+              console.log(`${logPrefix} [SOLICITAR_TURNO-TMH] ⚠️ CONFLICTO: ${stConflictNames} — alternativa: ${stAltText}`);
+
+              // Responder al contacto con alternativa
+              aiMessage = aiMessage.replace(tag, '');
+              aiMessage = `A esa hora tenemos un compromiso previo. ${stAltText} 😊`;
+
+              // Notificar al owner del intento
+              await sendToOwnerSelfChat(
+                `📋 *${contactName}* pidió turno a las ${stSlotCheck.requestedStart} pero hay conflicto con ${stConflictNames}.\n` +
+                `Le ofrecí alternativa: ${stAltText}`
+              );
+              _agendaTagProcessed = true;
+              continue; // No guardar solicitud, ofrecer alternativa
+            }
+
             let scheduledForUTC = fecha;
             try {
               const parsedLocal = new Date(fecha);
@@ -3005,6 +3080,7 @@ REGLAS:
                 scheduledForLocal: fecha,
                 ownerTimezone: ownerTz,
                 reason: razon,
+                durationMinutes: stDuration,
                 hint: hint || '',
                 eventMode: eventMode,
                 eventLocation: ubicacion || '',
@@ -3256,8 +3332,10 @@ REGLAS:
       }
 
       // ── TAG [MOVER_EVENTO:razón|fecha_vieja|fecha_nueva|duración_minutos] — Mover evento ──
+      // Abierto para: self-chat (owner), familia, equipo, grupos. Leads usan SOLICITAR_TURNO.
       const moverMatch = aiMessage.match(/\[MOVER_EVENTO:([^\]]+)\]/);
-      if (moverMatch && isSelfChat) {
+      const canMoveDirectly = isSelfChat || contactType === 'family' || contactType === 'team' || contactType === 'group';
+      if (moverMatch && canMoveDirectly) {
         const moverParts = moverMatch[1].split('|').map(p => p.trim());
         const [mSearchReason, mOldDate, mNewDate, mDurationStr] = moverParts;
         const mDurationFromTag = parseInt(mDurationStr) || 0; // 0 = usar duración original del evento
@@ -3332,6 +3410,41 @@ REGLAS:
             const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
             const ownerCountry = getCountryFromPhone(ownerPhone);
             const ownerTz = getTimezoneForCountry(ownerCountry);
+
+            // Calcular duración final: prioridad tag > original del evento > default 60
+            const mFinalDuration = mDurationFromTag || found.data.durationMinutes || 60;
+
+            // ═══ VERIFICACIÓN DE DISPONIBILIDAD DEL NUEVO SLOT ═══
+            const mNewHourMatch = mNewDate.match(/(\d{1,2}):(\d{2})/);
+            const mNewStartH = mNewHourMatch ? parseInt(mNewHourMatch[1]) : 10;
+            const mNewStartM = mNewHourMatch ? parseInt(mNewHourMatch[2]) : 0;
+            const mCategory = detectEventCategory(found.data.reason || mSearchReason, isSelfChat ? 'owner' : (contactType || 'lead'));
+            const mSlotCheck = await checkSlotAvailability(ownerUid, mNewDate.split('T')[0], mNewStartH, mNewStartM, mFinalDuration, mCategory);
+
+            if (!mSlotCheck.available && mCategory !== 'owner') {
+              const mConflictNames = mSlotCheck.conflicts.map(c => `"${c.title}" (${String(c.start.getHours()).padStart(2,'0')}:${String(c.start.getMinutes()).padStart(2,'0')}-${String(c.end.getHours()).padStart(2,'0')}:${String(c.end.getMinutes()).padStart(2,'0')})`).join(', ');
+              let mAltText = '';
+              if (mSlotCheck.nearestSlot) {
+                const ns = mSlotCheck.nearestSlot;
+                mAltText = `Hay disponibilidad de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} minutos libres). ¿Lo muevo ahí?`;
+              } else {
+                mAltText = 'No encontré otro horario libre hoy. ¿Querés que busque otro día?';
+              }
+              console.log(`${logPrefix} [MOVER-TMH] ⚠️ CONFLICTO en destino: ${mConflictNames} — alternativa: ${mAltText}`);
+
+              aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '');
+              aiMessage = `⚠️ A las ${mSlotCheck.requestedStart} hay ${mConflictNames}. ${mAltText}`;
+
+              // Notificar al owner si fue un contacto quien pidió
+              if (!isSelfChat) {
+                await sendToOwnerSelfChat(
+                  `📋 *${contactType === 'family' ? 'Familiar' : 'Contacto'}* pidió mover "${found.data.reason}" a las ${mSlotCheck.requestedStart} pero hay conflicto.\nLe ofrecí alternativa.`
+                );
+              }
+              _agendaTagProcessed = true;
+              // No break — usamos el flag para que no se procese más
+            } else {
+
             let newScheduledUTC = mNewDate;
             try {
               const parsedLocal = new Date(mNewDate);
@@ -3346,8 +3459,6 @@ REGLAS:
             // FIX Sesión 42M-F: movedFrom puede ser undefined si el evento no tiene scheduledForLocal
             const previousTime = found.data.scheduledForLocal || found.data.scheduledFor || mOldDate || 'desconocido';
 
-            // Calcular duración final: prioridad tag > original del evento > default 60
-            const mFinalDuration = mDurationFromTag || found.data.durationMinutes || 60;
             await found.doc.ref.update({
               scheduledFor: newScheduledUTC, scheduledForLocal: mNewDate,
               durationMinutes: mFinalDuration,
@@ -3432,6 +3543,14 @@ REGLAS:
                 aiMessage = `✅ Moví "${found.data.reason}" de ${previousTime} a ${mNewDate} en mi agenda, pero no pude actualizarlo en Google Calendar.`;
               }
             }
+
+            // Notificar al owner si fue un familiar/grupo quien pidió mover
+            if (!isSelfChat) {
+              await sendToOwnerSelfChat(
+                `📅 *${contactType === 'family' ? 'Familiar' : 'Contacto del grupo'}* movió "${found.data.reason}" a ${mNewDate}.`
+              );
+            }
+          } // cierre del else (slot disponible)
           } else if (!found) {
             console.warn(`${logPrefix} [MOVER-TMH] ⚠️ No se encontró evento para "${mSearchReason}"`);
           }

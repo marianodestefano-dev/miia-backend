@@ -6891,6 +6891,31 @@ REGLAS:
               const agendarEndH = Math.floor(agendarEndTotal / 60);
               const agendarEndM = agendarEndTotal % 60;
               console.log(`[AGENDA] 📅 Calendar: ${startH}:${String(startMin).padStart(2,'0')} → ${agendarEndH}:${String(agendarEndM).padStart(2,'0')} (${agendarDuration}min)`);
+
+              // ═══ VERIFICACIÓN DE DISPONIBILIDAD ═══
+              const srvEvtCategory = detectEventCategory(razon, isSelfChat ? 'owner' : postChatType);
+              const srvSlotCheck = await checkSlotAvailability(OWNER_UID, fecha.split('T')[0], startH, startMin, agendarDuration, srvEvtCategory);
+
+              if (!srvSlotCheck.available && srvEvtCategory !== 'owner') {
+                const srvConflictNames = srvSlotCheck.conflicts.map(c => `"${c.title}" (${String(c.start.getHours()).padStart(2,'0')}:${String(c.start.getMinutes()).padStart(2,'0')}-${String(c.end.getHours()).padStart(2,'0')}:${String(c.end.getMinutes()).padStart(2,'0')})`).join(', ');
+                let srvAltText = '';
+                if (srvSlotCheck.nearestSlot) {
+                  const ns = srvSlotCheck.nearestSlot;
+                  srvAltText = `Tengo disponible de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} minutos libres). ¿Te agendo ahí?`;
+                } else {
+                  srvAltText = 'No encontré otro horario disponible hoy. ¿Querés que busque otro día?';
+                }
+                console.log(`[AGENDA] ⚠️ CONFLICTO: ${srvConflictNames} — alternativa: ${srvAltText}`);
+                aiMessage = `⚠️ A las ${srvSlotCheck.requestedStart} ya tenés ${srvConflictNames}. ${srvAltText}`;
+                aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').trim();
+                continue; // No agendar, ofrecer alternativa
+              }
+
+              if (!srvSlotCheck.available && srvEvtCategory === 'owner') {
+                const srvConflictInfo = srvSlotCheck.conflicts.map(c => `"${c.title}"`).join(', ');
+                console.log(`[AGENDA] ℹ️ Owner agenda con conflicto (respetando decisión): ${srvConflictInfo}`);
+              }
+
               const calResult = await createCalendarEvent({
                 summary: razon || 'Evento MIIA',
                 dateStr: fecha.split('T')[0],
@@ -7513,6 +7538,19 @@ REGLAS:
           // Convertir nueva fecha a UTC
           const ownerCountryME = getCountryFromPhone(OWNER_PHONE);
           const ownerTzME = getTimezoneForCountry(ownerCountryME);
+
+          // ═══ VERIFICACIÓN DE DISPONIBILIDAD DEL NUEVO SLOT ═══
+          const meHourMatch = newDate.match(/(\d{1,2}):(\d{2})/);
+          const meStartH = meHourMatch ? parseInt(meHourMatch[1]) : 10;
+          const meStartM = meHourMatch ? parseInt(meHourMatch[2]) : 0;
+          const meFinalDur = durationMinutes || found.data.durationMinutes || 60;
+          // server.js MOVER_EVENTO solo se usa en self-chat → siempre 'owner'
+          const meSlotCheck = await checkSlotAvailability(OWNER_UID, newDate.split('T')[0], meStartH, meStartM, meFinalDur, 'owner');
+          if (!meSlotCheck.available) {
+            const meConflicts = meSlotCheck.conflicts.map(c => `"${c.title}"`).join(', ');
+            console.log(`[MOVER_EVENTO] ℹ️ Owner mueve con conflicto (respetando decisión): ${meConflicts}`);
+          }
+
           let newScheduledUTC = newDate;
           try {
             const parsedLocal = new Date(newDate);
@@ -17082,6 +17120,8 @@ app.post('/api/gmail/enable', requireRole('owner', 'agent'), express.json(), asy
 const getCalendarClient = googleCalendar.getCalendarClient;
 const checkCalendarAvailability = googleCalendar.checkCalendarAvailability;
 const createCalendarEvent = googleCalendar.createCalendarEvent;
+const checkSlotAvailability = googleCalendar.checkSlotAvailability;
+const detectEventCategory = googleCalendar.detectEventCategory;
 
 /**
  * proposeCalendarSlot — Busca el próximo hueco libre en Calendar y propone horarios.
