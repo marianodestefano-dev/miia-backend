@@ -45,6 +45,7 @@ const {
 } = require('../core/prompt_builder');
 
 const miiaInvocation = require('../core/miia_invocation');
+const featureAnnouncer = require('../core/feature_announcer');
 const securityContacts = require('../services/security_contacts');
 const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
@@ -1400,6 +1401,22 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     }
     // Dialecto del owner para self-chat
     if (countryContext) activeSystemPrompt += `\n\n${countryContext}`;
+
+    // ═══ "QUÉ PODÉS HACER" — Listar capacidades directamente (sin IA) ═══
+    if (effectiveMsg && featureAnnouncer.isCapabilitiesQuery(effectiveMsg)) {
+      const capMsg = featureAnnouncer.buildCapabilitiesSummary();
+      await safeSendMessage(phone, capMsg, { isSelfChat: true, skipEmoji: true });
+      console.log(`${logPrefix} 📋 CAPABILITIES: Categorías listadas para tenant owner`);
+      return;
+    }
+    if (effectiveMsg && featureAnnouncer.isCategoryDetailQuery(effectiveMsg)) {
+      const detail = featureAnnouncer.buildCategoryDetail(effectiveMsg);
+      if (detail) {
+        await safeSendMessage(phone, detail, { isSelfChat: true, skipEmoji: true });
+        console.log(`${logPrefix} 📋 CAPABILITIES: Detalle de categoría para tenant owner`);
+        return;
+      }
+    }
   } else if (contactType === 'group' && classification?.groupData) {
     const contactName = classification.name || ctx.leadNames[phone] || basePhone;
     activeSystemPrompt = buildGroupPrompt(classification.groupData, contactName, ctx.ownerProfile);

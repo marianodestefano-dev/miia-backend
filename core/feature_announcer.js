@@ -18,7 +18,7 @@
 // VERSIÓN ACTUAL Y CHANGELOG
 // ═══════════════════════════════════════════════════════════════
 
-const CURRENT_VERSION = '2.10.0';
+const CURRENT_VERSION = '2.11.0';
 const CURRENT_DATE = '2026-04-11';
 
 /**
@@ -27,41 +27,25 @@ const CURRENT_DATE = '2026-04-11';
  */
 const CHANGELOG = [
   {
-    id: 'security_contacts',
-    title: '🛡️ Contactos de Seguridad',
-    description: 'Ahora podés designar protectores y protegidos con 3 niveles de acceso. Si te pasa algo (SOS, caída), aviso a tus protectores por WhatsApp y email.',
-    commands: ['proteger a +54911...', 'mis protectores', 'mis protegidos', 'cambiar nivel'],
+    id: 'gmail_api',
+    title: '📧 Gmail conectado con un click',
+    description: 'Si ya conectaste Google Calendar, tu email también queda listo automáticamente. Leo, respondo, elimino y envío correos usando Gmail API — más rápido y seguro que antes.',
+    commands: ['mis correos', 'leé el 2', 'eliminá todos menos el 3', 'mandá correo a X'],
   },
   {
-    id: 'agent_selfchat',
-    title: '📋 Agentes: Self-chat de negocios',
-    description: 'Los agentes ahora tienen su propio chat conmigo, enfocado 100% en su negocio: agenda, tareas, citas, productos.',
+    id: 'owner_active_protection',
+    title: '🤝 No me meto cuando estás hablando',
+    description: 'Si vos estás respondiendo a un contacto, me quedo callada por 90 minutos para no pisarte. Y esto ahora se mantiene aunque haya un deploy.',
   },
   {
-    id: 'calendar_safe_hours_fix',
-    title: '📅 Recordatorios siempre puntuales',
-    description: 'Los eventos que vos creás (Google Calendar, self-chat) ahora SIEMPRE te recuerdo, incluso antes de las 10am.',
+    id: 'contact_types_crm',
+    title: '👥 Gestión completa de contactos',
+    description: 'Desde el dashboard podés ver y cambiar el tipo de cada contacto: Lead, Cliente, Familia, Equipo o Amigo. Los filtros ahora muestran cada categoría por separado.',
   },
   {
-    id: 'morning_briefing_always',
-    title: '🌅 Informe matutino garantizado',
-    description: 'Todos los días a las 8:30 AM te envío algo: si hay novedades te cuento, si no, te saludo y te deseo un buen día.',
-  },
-  {
-    id: 'security_alerts_email',
-    title: '📧 Alertas de seguridad por email',
-    description: 'Si alguien cambia la configuración de tu contacto de seguridad, te aviso por WhatsApp Y por email.',
-  },
-  {
-    id: 'email_management',
-    title: '📬 Gestión completa de email por WhatsApp',
-    description: 'Ahora puedo leer tu inbox, mostrarte los correos, abrir los que quieras, eliminar los que no sirvan y enviar emails nuevos — todo desde este chat.',
-    commands: ['mis correos', 'leé el 2 y el 5', 'eliminá todos menos el 3', 'mandá un correo a X'],
-  },
-  {
-    id: 'announcer_tts',
-    title: '🎤 Anuncios en audio',
-    description: 'Cuando tengo novedades importantes, te las cuento con una nota de voz además del texto.',
+    id: 'proactive_group_sync',
+    title: '💬 Mensajes proactivos sincronizados',
+    description: 'Cuando activás mensajes proactivos en un grupo, TODOS los contactos del grupo se activan automáticamente. Ya no hay que hacerlo uno por uno.',
   },
 ];
 
@@ -74,8 +58,8 @@ const CAPABILITIES = [
     'Consultar agenda: "qué tengo hoy?"',
     'Mover/cancelar eventos desde el chat',
     'Recordatorios automáticos 10min antes',
-    'Leer inbox: "mis correos" → ver, leer, eliminar, responder emails',
-    'Enviar email: "mandá correo a juan@mail.com con asunto X"',
+    'Leer inbox: "mis correos" → ver, leer, eliminar, responder emails (Gmail API automático)',
+    'Enviar email: "mandá correo a juan@mail.com con asunto X" (Gmail API o SMTP)',
     'Morning Briefing: informe diario a las 8:30 AM',
     'Nightly Brain: analizo tu día a las 23:00',
   ]},
