@@ -142,6 +142,7 @@ const gmailIntegration = require('./integrations/gmail_integration');
 const googleTasks = require('./integrations/google_tasks_integration');
 const sheetsIntegration = require('./integrations/google_sheets_integration');
 const reservationsIntegration = require('./integrations/reservations_integration');
+const googleServices = require('./integrations/google_services_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
 const privacyCounters = require('./core/privacy_counters');
@@ -7715,6 +7716,91 @@ REGLAS:
         .replace(/\[RESERVAR:[^\]]+\]/g, '')
         .replace(/\[CANCELAR_RESERVA:[^\]]+\]/g, '')
         .replace(/\[RATING_RESERVA:[^\]]+\]/g, '')
+        .trim();
+    }
+
+    // ═══ TAGS Google Services: [BUSCAR_CONTACTO], [BUSCAR_DRIVE], [BUSCAR_LUGAR], [BUSCAR_YOUTUBE], etc. ═══
+    const serviceTags = googleServices.detectServiceTags(aiMessage);
+    if (serviceTags.length > 0 && isSelfChat && OWNER_UID) {
+      console.log(`[GSERVICES-TAG] 🔗 ${serviceTags.length} tag(s): ${serviceTags.map(t => t.tag).join(', ')}`);
+      for (const { tag, params } of serviceTags) {
+        try {
+          switch (tag) {
+            case 'BUSCAR_CONTACTO': {
+              const contacts = await googleServices.listContacts(OWNER_UID, params[0], 10);
+              if (contacts.length > 0) {
+                const list = contacts.map((c, i) => `${i + 1}. *${c.name}*${c.phone ? ` 📞 ${c.phone}` : ''}${c.email ? ` 📧 ${c.email}` : ''}${c.company ? ` 🏢 ${c.company}` : ''}`).join('\n');
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `📇 *Contactos encontrados:*\n\n${list}`, { isSelfChat: true, skipEmoji: true });
+              } else {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `📇 No encontré contactos para "${params[0]}"`, { isSelfChat: true, skipEmoji: true });
+              }
+              break;
+            }
+            case 'CREAR_CONTACTO': {
+              const [name, phone, email, company] = params;
+              const nameParts = (name || '').split(' ');
+              const contact = await googleServices.createContact(OWNER_UID, {
+                firstName: nameParts[0] || '', lastName: nameParts.slice(1).join(' ') || '',
+                phone: phone || '', email: email || '', company: company || ''
+              });
+              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `✅ Contacto creado: *${contact.name}*`, { isSelfChat: true, skipEmoji: true });
+              break;
+            }
+            case 'BUSCAR_DRIVE': {
+              const files = await googleServices.listDriveFiles(OWNER_UID, params[0], 10);
+              if (files.length > 0) {
+                const list = files.map((f, i) => `${i + 1}. 📄 *${f.name}* (${f.size || f.type})\n   🔗 ${f.url || 'Sin link'}`).join('\n');
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `📁 *Archivos encontrados:*\n\n${list}`, { isSelfChat: true, skipEmoji: true });
+              } else {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `�� No encontré archivos para "${params[0]}"`, { isSelfChat: true, skipEmoji: true });
+              }
+              break;
+            }
+            case 'BUSCAR_LUGAR': {
+              const [query, location] = params;
+              const places = await googleServices.searchPlaces(query, location, aiGateway);
+              if (places.length > 0) {
+                const list = places.map((p, i) => `${i + 1}. *${p.name}* ${p.rating ? `⭐${p.rating}` : ''}\n   📍 ${p.address || '?'}${p.phone ? `\n   📞 ${p.phone}` : ''}`).join('\n\n');
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `📍 *Lugares encontrados:*\n\n${list}`, { isSelfChat: true, skipEmoji: true });
+              } else {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `📍 No encontré lugares para "${query}"`, { isSelfChat: true, skipEmoji: true });
+              }
+              break;
+            }
+            case 'BUSCAR_YOUTUBE': {
+              const videos = await googleServices.searchYouTube(params[0], 5);
+              if (videos.length > 0) {
+                const list = videos.map((v, i) => `${i + 1}. 🎬 *${v.title}*\n   📺 ${v.channel}\n   🔗 ${v.url}`).join('\n\n');
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `🎬 *Videos encontrados:*\n\n${list}`, { isSelfChat: true, skipEmoji: true });
+              } else {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `🎬 No encontré videos para "${params[0]}"`, { isSelfChat: true, skipEmoji: true });
+              }
+              break;
+            }
+            case 'BUSCAR_NEGOCIO': {
+              const [bizName, location] = params;
+              const profile = await googleServices.getBusinessProfile(bizName, location, aiGateway);
+              if (profile) {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `🏢 *${profile.name}*\n⭐ ${profile.rating || '?'}/5 (${profile.reviewCount || 0} reseñas)\n📍 ${profile.address || '?'}\n📞 ${profile.phone || '?'}\n🕐 ${profile.hours || '?'}\n���� ${profile.website || '?'}`,
+                  { isSelfChat: true, skipEmoji: true }
+                );
+              } else {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `🏢 No encontré perfil de negocio para "${bizName}"`, { isSelfChat: true, skipEmoji: true });
+              }
+              break;
+            }
+          }
+        } catch (tagErr) {
+          console.error(`[GSERVICES-TAG] ❌ ${tag}: ${tagErr.message}`);
+          await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `❌ Error con ${tag}: ${tagErr.message}`, { isSelfChat: true, skipEmoji: true }).catch(() => {});
+        }
+      }
+      aiMessage = aiMessage
+        .replace(/\[BUSCAR_CONTACTO:[^\]]+\]/g, '').replace(/\[CREAR_CONTACTO:[^\]]+\]/g, '')
+        .replace(/\[BUSCAR_DRIVE:[^\]]+\]/g, '').replace(/\[SUBIR_DRIVE:[^\]]+\]/g, '')
+        .replace(/\[BUSCAR_LUGAR:[^\]]+\]/g, '').replace(/\[BUSCAR_YOUTUBE:[^\]]+\]/g, '')
+        .replace(/\[BUSCAR_NEGOCIO:[^\]]+\]/g, '')
         .trim();
     }
 
@@ -15826,6 +15912,9 @@ app.get('/api/auth/google', (req, res) => {
       'https://www.googleapis.com/auth/spreadsheets',
       'https://www.googleapis.com/auth/documents',
       'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/contacts.readonly',
+      'https://www.googleapis.com/auth/contacts',
     ],
     state: uid  // pasamos uid para recuperarlo en el callback
   });
@@ -16030,6 +16119,105 @@ app.post('/api/docs/:documentId/append', requireRole('owner', 'admin'), express.
     res.json({ ok: true });
   } catch (e) {
     console.error('[DOCS-API] ❌ append error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// GOOGLE SERVICES API ENDPOINTS (Contacts, Drive, Places, YouTube)
+// ═══════════════════════════════════════════════════════════════
+
+// Google Contacts: buscar
+app.get('/api/contacts/search', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const contacts = await googleServices.listContacts(req.user.uid, req.query.q, parseInt(req.query.limit) || 20);
+    res.json({ ok: true, contacts });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ contacts search:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Contacts: crear
+app.post('/api/contacts', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const contact = await googleServices.createContact(req.user.uid, req.body);
+    res.json({ ok: true, contact });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ contacts create:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Drive: listar/buscar archivos
+app.get('/api/drive/files', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const files = await googleServices.listDriveFiles(req.user.uid, req.query.q, parseInt(req.query.limit) || 10);
+    res.json({ ok: true, files });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ drive list:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Google Drive: compartir
+app.post('/api/drive/:fileId/share', requireRole('owner', 'admin'), express.json(), async (req, res) => {
+  try {
+    const { email, role } = req.body;
+    if (!email) return res.status(400).json({ error: 'email requerido' });
+    const result = await googleServices.shareDriveFile(req.user.uid, req.params.fileId, email, role || 'reader');
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ drive share:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Places: buscar
+app.get('/api/places/search', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { q, location } = req.query;
+    if (!q) return res.status(400).json({ error: 'q requerido' });
+    const places = await googleServices.searchPlaces(q, location, aiGateway);
+    res.json({ ok: true, places });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ places search:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// YouTube: buscar videos
+app.get('/api/youtube/search', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    if (!req.query.q) return res.status(400).json({ error: 'q requerido' });
+    const videos = await googleServices.searchYouTube(req.query.q, parseInt(req.query.limit) || 5);
+    res.json({ ok: true, videos });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ youtube search:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// YouTube: info de canal
+app.get('/api/youtube/channel/:channelId', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const info = await googleServices.getChannelInfo(req.params.channelId);
+    res.json({ ok: true, channel: info });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ youtube channel:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Business Profile: buscar
+app.get('/api/business-profile/search', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const { name, location } = req.query;
+    if (!name) return res.status(400).json({ error: 'name requerido' });
+    const profile = await googleServices.getBusinessProfile(name, location, aiGateway);
+    res.json({ ok: true, profile });
+  } catch (e) {
+    console.error('[GSERVICES-API] ❌ business profile:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

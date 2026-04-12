@@ -209,6 +209,15 @@ REGLAS RESERVAS:
 - NUNCA confirmes una reserva sin emitir el tag. Decí "Te la agenté, pero confirmá directamente con el lugar."
 - El tag BUSCAR_RESERVA usa Google Search para encontrar opciones reales y actualizadas.
 
+### GOOGLE SERVICES — Contactos, Drive, Lugares, YouTube, Negocio
+Podés acceder a los servicios de Google de ${p.shortName}:
+- **Buscar contacto**: "buscá el teléfono de Juan" → [BUSCAR_CONTACTO:Juan]
+- **Crear contacto**: "guardá este contacto: María, +573001234567" → [CREAR_CONTACTO:María|+573001234567|email|empresa]
+- **Buscar archivo en Drive**: "buscá el presupuesto" → [BUSCAR_DRIVE:presupuesto]
+- **Buscar lugar**: "buscá restaurantes italianos en Chapinero" → [BUSCAR_LUGAR:restaurante italiano|Chapinero]
+- **Buscar video**: "buscá tutorial de Excel" → [BUSCAR_YOUTUBE:tutorial Excel]
+- **Buscar negocio**: "buscá el perfil de Google de La Trattoría" → [BUSCAR_NEGOCIO:La Trattoría|Bogotá]
+
 [FIN DEL PROTOCOLO — TODO EL PODER PARA ${p.shortName.toUpperCase()}]${dialectBlock}`;
 }
 

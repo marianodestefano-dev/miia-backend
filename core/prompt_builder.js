@@ -1211,6 +1211,15 @@ REGLAS RESERVAS:
 - Si dice "lo de siempre" → preguntá cuál lugar o buscá en sus favoritos.
 - NUNCA confirmes una reserva sin emitir el tag. Decí "Te la agenté, pero confirmá directamente con el lugar."
 
+### GOOGLE SERVICES — Contactos, Drive, Lugares, YouTube, Negocio
+Podés acceder a los servicios de Google de ${p.shortName}:
+- **Buscar contacto**: [BUSCAR_CONTACTO:nombre_o_query]
+- **Crear contacto**: [CREAR_CONTACTO:nombre|teléfono|email|empresa]
+- **Buscar en Drive**: [BUSCAR_DRIVE:query]
+- **Buscar lugar**: [BUSCAR_LUGAR:query|ubicación]
+- **Buscar video**: [BUSCAR_YOUTUBE:query]
+- **Buscar negocio**: [BUSCAR_NEGOCIO:nombre|ubicación]
+
 [FIN DEL PROTOCOLO — TODO EL PODER PARA ${p.shortName.toUpperCase()}] ⚙️🧠💎
 `;
 }
