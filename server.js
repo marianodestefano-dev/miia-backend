@@ -6884,13 +6884,20 @@ REGLAS:
               const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
               const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
               const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
+              // Calcular duración: usar hint si contiene "Xmin", default 60
+              const hintDurMatch = (hint || '').match(/(\d+)\s*min/i);
+              const agendarDuration = hintDurMatch ? parseInt(hintDurMatch[1]) : 60;
+              const agendarEndTotal = startH * 60 + startMin + agendarDuration;
+              const agendarEndH = Math.floor(agendarEndTotal / 60);
+              const agendarEndM = agendarEndTotal % 60;
+              console.log(`[AGENDA] 📅 Calendar: ${startH}:${String(startMin).padStart(2,'0')} → ${agendarEndH}:${String(agendarEndM).padStart(2,'0')} (${agendarDuration}min)`);
               const calResult = await createCalendarEvent({
                 summary: razon || 'Evento MIIA',
                 dateStr: fecha.split('T')[0],
                 startHour: startH,
                 startMinute: startMin,
-                endHour: startH + 1,
-                endMinute: startMin,
+                endHour: agendarEndH,
+                endMinute: agendarEndM,
                 description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
                 uid: OWNER_UID,
                 timezone: ownerTz,
@@ -6996,6 +7003,7 @@ REGLAS:
               leadTimezone: isMiiaCenterLeadReminder ? effectiveTimezone : undefined,
               leadCountry: isMiiaCenterLeadReminder ? tzCountry : undefined,
               reason: razon,
+              durationMinutes: hintDurMatch ? parseInt(hintDurMatch[1]) : 60,
               promptHint: hint || '',
               eventMode: eventMode,
               eventLocation: ubicacion || '',
@@ -7448,8 +7456,9 @@ REGLAS:
     const moverMatch = aiMessage.match(/\[MOVER_EVENTO:([^\]]+)\]/);
     if (moverMatch && isSelfChat) {
       const parts = moverMatch[1].split('|').map(p => p.trim());
-      const [searchReason, oldDate, newDate] = parts;
-      console.log(`[MOVER_EVENTO] 🔄 Buscando "${searchReason}" en ${oldDate} → mover a ${newDate}`);
+      const [searchReason, oldDate, newDate, durationStr] = parts;
+      const durationMinutes = parseInt(durationStr) || 0; // 0 = usar duración original del evento
+      console.log(`[MOVER_EVENTO] 🔄 Buscando "${searchReason}" en ${oldDate} → mover a ${newDate} (duración: ${durationMinutes || 'original'}min)`);
       try {
         const searchDateObj = oldDate ? new Date(oldDate) : new Date();
         const dayStart = new Date(searchDateObj); dayStart.setHours(0, 0, 0, 0);
@@ -7517,13 +7526,17 @@ REGLAS:
 
           // FIX Sesión 42M-F: movedFrom puede ser undefined si el evento no tiene scheduledForLocal
           const previousTimeSrv = found.data.scheduledForLocal || found.data.scheduledFor || oldDate || 'desconocido';
-          await found.doc.ref.update({
+          // Calcular duración final: prioridad IA > original del evento > default 60
+          const finalDuration = durationMinutes || found.data.durationMinutes || 60;
+          const updateData = {
             scheduledFor: newScheduledUTC,
             scheduledForLocal: newDate,
+            durationMinutes: finalDuration,
             movedFrom: previousTimeSrv,
             movedAt: new Date().toISOString(),
             preReminderSent: false // Reset reminder para nueva hora
-          });
+          };
+          await found.doc.ref.update(updateData);
           console.log(`[MOVER_EVENTO] ✅ Evento movido: "${found.data.reason}" de ${previousTimeSrv} → ${newDate}`);
           actionFeedback.recordActionResult(phone, 'mover', true, `"${found.data.reason}" movido de ${previousTimeSrv} a ${newDate}`);
 
@@ -7534,13 +7547,18 @@ REGLAS:
               const newHour = hourMatch ? parseInt(hourMatch[1]) : 10;
               const newMin = hourMatch ? parseInt(hourMatch[2]) : 0;
               const dateOnly = newDate.split('T')[0];
+              // Calcular hora fin desde duración real
+              const totalEndMin = newHour * 60 + newMin + finalDuration;
+              const calcEndHour = Math.floor(totalEndMin / 60);
+              const calcEndMin = totalEndMin % 60;
+              console.log(`[MOVER_EVENTO] 📅 Calendar: ${newHour}:${String(newMin).padStart(2,'0')} → ${calcEndHour}:${String(calcEndMin).padStart(2,'0')} (${finalDuration}min)`);
               const calResult = await createCalendarEvent({
                 summary: found.data.reason || 'Evento MIIA',
                 dateStr: dateOnly,
                 startHour: newHour,
                 startMinute: newMin,
-                endHour: newHour + 1,
-                endMinute: newMin,
+                endHour: calcEndHour,
+                endMinute: calcEndMin,
                 description: `Movido por MIIA. Antes: ${found.data.scheduledForLocal}`,
                 uid: OWNER_UID,
                 timezone: ownerTzME,

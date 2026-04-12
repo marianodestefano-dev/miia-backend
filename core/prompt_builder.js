@@ -787,6 +787,7 @@ Si el mensaje pide agendar, recordar en una fecha, avisar, programar:
 
 **SI ESTÁS EN SELF-CHAT (hablando con el owner directamente):**
 - Emite: [AGENDAR_EVENTO:contacto|fecha_ISO|razón|hint|modo|ubicación]
+- **hint incluye duración**: Si el owner dice la duración (ej: "15 minutos", "2 horas"), poné "Xmin" en el hint. Ejemplo: hint="15min Turno rápido". Si no dice duración, dejá el hint sin minutos (default: 60min).
 - Confirma con datos concretos: "Listo, te agendé [qué] para el [fecha] a las [hora] ✅"
 
 **SI ESTÁS CON CUALQUIER OTRO CONTACTO (lead, familia, equipo, grupo):**
@@ -823,8 +824,10 @@ Si el owner pide cancelar/eliminar/borrar un evento agendado:
 
 **MOVER EVENTO PROPIO (solo self-chat del owner):**
 Si el owner pide mover/cambiar horario de un evento propio:
-- Emite: [MOVER_EVENTO:razón_del_evento|fecha_ISO_vieja|fecha_ISO_nueva]
-  Ejemplo: [MOVER_EVENTO:Reunión con Juan|2026-04-07T15:00|2026-04-07T17:00]
+- Emite: [MOVER_EVENTO:razón_del_evento|fecha_ISO_vieja|fecha_ISO_nueva|duración_minutos]
+  Ejemplo: [MOVER_EVENTO:Reunión con Juan|2026-04-07T15:00|2026-04-07T17:00|60]
+  Ejemplo con duración corta: [MOVER_EVENTO:Llamada rápida|2026-04-07T10:00|2026-04-07T08:00|15]
+- El 4to campo (duración_minutos) es OBLIGATORIO. Si el owner dice la duración, usala. Si no la dice, mantené la duración original del evento (o 60 por defecto).
 - El sistema buscará el evento, lo moverá y actualizará Calendar si está conectado.
 - Si hay contacto asociado, el sistema le avisará del cambio.
 - Confirma: "Listo, moví [evento] de [hora vieja] a [hora nueva] ✅"
