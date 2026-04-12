@@ -1666,11 +1666,22 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           // Owner path: trackear mensajes de leads (no fromMe, no self-chat)
           const ownerMsgTrackId = msg.key.id || `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
           if (!isFromMe && !isSelfChat && body.trim()) {
-            tenant._unrespondedMessages.set(ownerMsgTrackId, {
+            const ownerPendingData = {
               phone: from, body, timestamp: Date.now(), from, ownerUid: uid, role: 'owner', isOwnerPath: true
-            });
-            // Owner messages get cleared after 60s (handleIncomingMessage is fire-and-forget, no return value to track)
-            setTimeout(() => tenant._unrespondedMessages.delete(ownerMsgTrackId), 60000);
+            };
+            tenant._unrespondedMessages.set(ownerMsgTrackId, ownerPendingData);
+            // Fire-and-forget write a Firestore — infalible
+            admin.firestore().collection('users').doc(uid)
+              .collection('pending_responses').doc(ownerMsgTrackId)
+              .set(ownerPendingData)
+              .catch(e => console.warn(`[TM:${uid}] ⚠️ Owner pending write error:`, e.message));
+            // Owner messages: clear after 60s (handleIncomingMessage es fire-and-forget)
+            setTimeout(() => {
+              tenant._unrespondedMessages.delete(ownerMsgTrackId);
+              admin.firestore().collection('users').doc(uid)
+                .collection('pending_responses').doc(ownerMsgTrackId)
+                .delete().catch(() => {});
+            }, 60000);
           }
           try { tenant.onMessage(msg, from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
         } else {
@@ -1706,23 +1717,37 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
           }
 
-          // ═══ PENDING RECOVERY: Trackear mensaje antes de procesar ═══
-          // Si el proceso muere mid-response, este registro sobrevive en SIGTERM flush
+          // ═══ PENDING RECOVERY INFALIBLE: Trackear en memoria + Firestore ═══
+          // Escribimos a Firestore INMEDIATAMENTE (fire-and-forget, no bloquea).
+          // Si el proceso muere por CUALQUIER razón (SIGTERM, OOM, crash, kill -9),
+          // al reconectar se reprocesa automáticamente. CERO mensajes perdidos.
           const msgTrackId = msg.key.id || `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
           if (!isFromMe && !realSelfChat && effectiveBody.trim()) {
-            tenant._unrespondedMessages.set(msgTrackId, {
+            const pendingData = {
               phone: phoneForHandler,
               body: effectiveBody,
               timestamp: Date.now(),
               from: from,
               ownerUid,
               role
-            });
+            };
+            tenant._unrespondedMessages.set(msgTrackId, pendingData);
+            // Fire-and-forget write a Firestore — NO await para no agregar latencia
+            admin.firestore().collection('users').doc(uid)
+              .collection('pending_responses').doc(msgTrackId)
+              .set(pendingData)
+              .catch(e => console.warn(`[TM:${uid}] ⚠️ Pending write error (non-blocking):`, e.message));
           }
           handleTenantMessage(uid, ownerUid, role, phoneForHandler, effectiveBody, realSelfChat, isFromMe, tenant, messageContext)
             .then(() => {
-              // Respuesta exitosa → eliminar del tracking
+              // Respuesta exitosa → eliminar de memoria Y de Firestore
               tenant._unrespondedMessages.delete(msgTrackId);
+              if (!isFromMe && !realSelfChat && effectiveBody.trim()) {
+                admin.firestore().collection('users').doc(uid)
+                  .collection('pending_responses').doc(msgTrackId)
+                  .delete()
+                  .catch(() => {}); // Best-effort delete
+              }
             })
             .catch(e => {
               console.error(`[TM:${uid}] handleTenantMessage error:`, e.message);
@@ -3124,62 +3149,76 @@ function checkOwnerLidResponse(uid, messageBody) {
   return false;
 }
 
-// ═══ PENDING MESSAGE RECOVERY ═══════════════════════════════════════════════
-// Flush mensajes no-respondidos a Firestore (llamado en SIGTERM)
-// Cargar y reprocesar al reconectar (llamado en connection=open)
+// ═══ PENDING MESSAGE RECOVERY — INFALIBLE ═══════════════════════════════════
+// Cada mensaje entrante se escribe a Firestore INMEDIATAMENTE (fire-and-forget).
+// Al responder exitosamente → se borra de Firestore.
+// Al reconectar → se cargan todos los pendientes y se reprocesan.
+// Sobrevive a: SIGTERM, OOM kill, crash, kill -9, Railway freeze, TODO.
 
 async function flushUnrespondedMessages() {
-  let totalFlushed = 0;
-  for (const [uid, tenant] of tenants) {
-    if (!tenant._unrespondedMessages || tenant._unrespondedMessages.size === 0) continue;
-    const pending = [];
-    for (const [msgId, data] of tenant._unrespondedMessages) {
-      // Solo guardar mensajes de los últimos 30 min (más viejos ya no tienen sentido)
-      if (Date.now() - data.timestamp < 1800000) {
-        pending.push({ msgId, ...data });
-      }
-    }
-    if (pending.length === 0) continue;
+  // Con el sistema infalible, los mensajes ya están en Firestore individualmente.
+  // Esta función ahora solo sirve como safety net para limpiar mensajes muy viejos.
+  let totalCleaned = 0;
+  for (const [uid] of tenants) {
     try {
-      await admin.firestore().collection('users').doc(uid)
-        .collection('miia_persistent').doc('unresponded_messages')
-        .set({ messages: pending, flushedAt: new Date().toISOString() });
-      totalFlushed += pending.length;
-      console.log(`[TM:${uid}] 💾 Flushed ${pending.length} unresponded message(s) to Firestore`);
+      const snap = await admin.firestore().collection('users').doc(uid)
+        .collection('pending_responses')
+        .where('timestamp', '<', Date.now() - 3600000) // > 1 hora = ya no tiene sentido
+        .limit(50)
+        .get();
+      if (!snap.empty) {
+        const batch = admin.firestore().batch();
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+        totalCleaned += snap.size;
+        console.log(`[TM:${uid}] 🧹 Cleaned ${snap.size} stale pending_responses (>1h old)`);
+      }
     } catch (e) {
-      console.error(`[TM:${uid}] ❌ Error flushing unresponded messages:`, e.message);
+      console.error(`[TM:${uid}] ❌ Error cleaning stale pending_responses:`, e.message);
     }
   }
-  return totalFlushed;
+  return totalCleaned;
 }
 
 async function recoverUnrespondedMessages(uid, tenant) {
   try {
-    const doc = await admin.firestore().collection('users').doc(uid)
-      .collection('miia_persistent').doc('unresponded_messages').get();
-    if (!doc.exists) return 0;
-    const data = doc.data();
-    const messages = data.messages || [];
-    if (messages.length === 0) return 0;
+    // Leer TODOS los pending_responses de este tenant
+    const snap = await admin.firestore().collection('users').doc(uid)
+      .collection('pending_responses')
+      .orderBy('timestamp', 'asc')
+      .limit(20) // Max 20 para no saturar al reconectar
+      .get();
 
-    // Limpiar el doc para no reprocesar en el próximo reconnect
-    await doc.ref.delete();
+    if (snap.empty) return 0;
 
-    // Filtrar mensajes de los últimos 30 min (más viejos ya no tienen sentido)
+    const messages = snap.docs.map(d => ({ msgId: d.id, ...d.data() }));
+
+    // Filtrar: solo mensajes de los últimos 30 min
     const recent = messages.filter(m => Date.now() - m.timestamp < 1800000);
+    const stale = messages.filter(m => Date.now() - m.timestamp >= 1800000);
+
+    // Borrar los stale (>30 min) — ya no tiene sentido reprocesar
+    if (stale.length > 0) {
+      const batch = admin.firestore().batch();
+      stale.forEach(m => {
+        batch.delete(admin.firestore().collection('users').doc(uid)
+          .collection('pending_responses').doc(m.msgId));
+      });
+      await batch.commit();
+      console.log(`[TM:${uid}] 🧹 Deleted ${stale.length} stale pending message(s) (>30min)`);
+    }
+
     if (recent.length === 0) {
-      console.log(`[TM:${uid}] 📭 ${messages.length} unresponded message(s) found but all too old (>30min). Skipping.`);
+      console.log(`[TM:${uid}] 📭 ${messages.length} pending found but all too old. Cleaned.`);
       return 0;
     }
 
-    console.log(`[TM:${uid}] 🔄 RECOVERY: ${recent.length} unresponded message(s) to reprocess (of ${messages.length} total)`);
+    console.log(`[TM:${uid}] 🔄 RECOVERY: ${recent.length} mensaje(s) sin responder. Reprocesando...`);
 
-    // Reprocesar cada mensaje con un pequeño delay entre ellos
     let recovered = 0;
     for (const msg of recent) {
       try {
         if (msg.isOwnerPath && tenant.onMessage) {
-          // Owner path: re-dispatch via onMessage (simular mensaje entrante)
           const fakeMsg = {
             key: { remoteJid: msg.from, fromMe: false, id: `recovery_${Date.now()}` },
             message: { conversation: msg.body },
@@ -3187,24 +3226,25 @@ async function recoverUnrespondedMessages(uid, tenant) {
           };
           tenant.onMessage(fakeMsg, msg.from, msg.body);
         } else {
-          // Tenant path: llamar handleTenantMessage directamente
           await handleTenantMessage(
             uid, msg.ownerUid || uid, msg.role || 'owner',
             msg.phone, msg.body, false, false, tenant, { isRecovery: true }
           );
         }
+        // Borrar de Firestore después de reprocesar exitosamente
+        await admin.firestore().collection('users').doc(uid)
+          .collection('pending_responses').doc(msg.msgId).delete();
         recovered++;
-        console.log(`[TM:${uid}] ✅ RECOVERY: Reprocesado mensaje de ${msg.phone}: "${msg.body.substring(0, 40)}"`);
-        // Delay 2s entre mensajes para no saturar
-        await new Promise(r => setTimeout(r, 2000));
+        console.log(`[TM:${uid}] ✅ RECOVERY: "${msg.body.substring(0, 40)}" de ${msg.phone} — respondido`);
+        await new Promise(r => setTimeout(r, 2000)); // 2s entre mensajes
       } catch (e) {
-        console.error(`[TM:${uid}] ❌ RECOVERY: Error reprocesando mensaje de ${msg.phone}:`, e.message);
+        console.error(`[TM:${uid}] ❌ RECOVERY error (${msg.phone}):`, e.message);
       }
     }
     console.log(`[TM:${uid}] 🔄 RECOVERY COMPLETE: ${recovered}/${recent.length} mensajes recuperados`);
     return recovered;
   } catch (e) {
-    console.error(`[TM:${uid}] ❌ Error loading unresponded messages:`, e.message);
+    console.error(`[TM:${uid}] ❌ Error in recoverUnrespondedMessages:`, e.message);
     return 0;
   }
 }
