@@ -12435,7 +12435,7 @@ app.post('/api/tenant/:uid/contact-groups', express.json(), async (req, res) => 
 app.put('/api/tenant/:uid/contact-groups/:groupId', express.json(), async (req, res) => {
   try {
     const { uid, groupId } = req.params;
-    const allowed = ['name', 'icon', 'tone', 'autoRespond', 'proactiveEnabled'];
+    const allowed = ['name', 'icon', 'tone', 'autoRespond', 'proactiveEnabled', 'humanDelayEnabled'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -12443,7 +12443,7 @@ app.put('/api/tenant/:uid/contact-groups/:groupId', express.json(), async (req, 
     updates.updatedAt = new Date().toISOString();
 
     await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).update(updates);
-    console.log(`[GROUPS] ✏️ Grupo ${groupId} actualizado`);
+    console.log(`[GROUPS] ✏️ Grupo ${groupId} actualizado: ${Object.keys(updates).join(', ')}`);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -12487,29 +12487,84 @@ app.get('/api/tenant/:uid/contact-groups/:groupId/contacts', async (req, res) =>
 app.post('/api/tenant/:uid/contact-groups/:groupId/contacts', express.json(), async (req, res) => {
   try {
     const { uid, groupId } = req.params;
-    const { phone, name, notes, proactiveEnabled } = req.body;
+    const { phone, name, nickname, relation, likes, fandom, notes, proactiveEnabled, ocupacion, edad, cumpleanos } = req.body;
     if (!phone) return res.status(400).json({ error: 'phone es requerido' });
+
+    // Heredar proactiveEnabled del grupo si no se especifica
+    let effectiveProactive = proactiveEnabled === true ? true : false;
+    if (proactiveEnabled === undefined) {
+      const groupDoc = await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).get();
+      if (groupDoc.exists && groupDoc.data().proactiveEnabled) effectiveProactive = true;
+    }
 
     const contactData = {
       name: (name || '').trim(),
+      nickname: (nickname || '').trim(),
+      relation: relation || '',
+      likes: (likes || '').trim(),
+      fandom: (fandom || '').trim(),
       notes: (notes || '').trim(),
-      proactiveEnabled: proactiveEnabled === true ? true : false,
+      ocupacion: (ocupacion || '').trim(),
+      edad: edad || '',
+      cumpleanos: (cumpleanos || '').trim(),
+      proactiveEnabled: effectiveProactive,
+      emergencyContact: false,
       addedAt: new Date().toISOString()
     };
 
-    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').doc(phone).set(contactData);
+    await db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').doc(phone).set(contactData, { merge: true });
 
     // Actualizar contact_index
     await db.collection('users').doc(uid).collection('contact_index').doc(phone).set({
       type: 'group',
       groupId,
       name: contactData.name,
+      nickname: contactData.nickname,
+      relation: contactData.relation,
       updatedAt: new Date().toISOString()
-    });
+    }, { merge: true });
 
     console.log(`[GROUPS] ✅ Contacto ${phone} (${name}) agregado al grupo ${groupId}`);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/tenant/:uid/contact-groups/:groupId/contacts/:phone — Actualizar contacto individual
+app.put('/api/tenant/:uid/contact-groups/:groupId/contacts/:phone', express.json(), async (req, res) => {
+  try {
+    const { uid, groupId, phone } = req.params;
+    const allowed = ['name', 'nickname', 'relation', 'likes', 'fandom', 'notes', 'emergencyContact', 'proactiveEnabled', 'ocupacion', 'edad', 'cumpleanos'];
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No hay campos para actualizar' });
+    }
+    updates.updatedAt = new Date().toISOString();
+
+    const docRef = db.collection('users').doc(uid).collection('contact_groups').doc(groupId).collection('contacts').doc(phone);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: `Contacto ${phone} no encontrado en grupo ${groupId}` });
+    }
+    await docRef.update(updates);
+
+    // Sincronizar contact_index si cambió nombre/relación
+    if (updates.name || updates.nickname || updates.relation) {
+      const indexUpdates = { updatedAt: updates.updatedAt };
+      if (updates.name) indexUpdates.name = updates.name;
+      if (updates.nickname) indexUpdates.nickname = updates.nickname;
+      if (updates.relation) indexUpdates.relation = updates.relation;
+      await db.collection('users').doc(uid).collection('contact_index').doc(phone).set(indexUpdates, { merge: true });
+    }
+
+    console.log(`[GROUPS] ✏️ Contacto ${phone} actualizado en grupo ${groupId}: ${Object.keys(updates).join(', ')}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(`[GROUPS] ❌ Error actualizando contacto ${req.params.phone}:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // DELETE /api/tenant/:uid/contact-groups/:groupId/contacts/:phone — Quitar contacto del grupo
