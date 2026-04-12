@@ -1322,7 +1322,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
         const isOffline = tenant.connectedAt && msgTs > 0 && msgTs < tenant.connectedAt - 5;
 
-        const myNumber = tenant.sock?.user?.id?.split(':')[0];
+        // ═══ BUG2-FIX: Usar ownerPhone (persistente) como fuente primaria ═══
+        // sock.user.id puede ser LID, null durante reconexión, o no estar poblado aún.
+        // tenant.ownerPhone se guarda UNA VEZ al conectar y siempre es el número real.
+        const myNumber = tenant.ownerPhone || tenant.sock?.user?.id?.split('@')[0]?.split(':')[0];
         const fromNumber = from?.split('@')[0]?.split(':')[0];
 
         // ═══ P6 FIX: Resolver LID→JID para detección correcta de self-chat ═══
@@ -1610,6 +1613,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const resolvedFromNumber = resolvedFrom?.split('@')[0]?.split(':')[0];
         const isSelfChat = isFromMe && myNumber && (myNumber === fromNumber || myNumber === resolvedFromNumber);
 
+        // ═══ BUG2-DIAG: Log cuando isFromMe pero isSelfChat=false (para debugging) ═══
+        if (isFromMe && !isSelfChat) {
+          console.log(`[TM:${uid}] 🔍 BUG2-DIAG: isFromMe=true pero isSelfChat=false → myNumber=${myNumber}, fromNumber=${fromNumber}, resolvedFromNumber=${resolvedFromNumber}, ownerPhone=${tenant.ownerPhone}, sock.user.id=${tenant.sock?.user?.id}`);
+        }
+
         // Mensaje offline → acumular en buffer (self-chat, leads, todos)
         // Solo ignorar si es MUY viejo (>10 min) y es self-chat
         if (isOffline) {
@@ -1685,11 +1693,13 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           }
           try { tenant.onMessage(msg, from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
         } else {
-          // ═══ P6 FIX: Usar resolvedFrom para self-chat detection + pasar JID resuelto ═══
+          // ═══ P6 FIX + BUG2-FIX: Self-chat detection robusto ═══
+          // Usar myNumber (ya incluye ownerPhone como fuente primaria)
           const realSelfChat = isFromMe && (
             from === `${myNumber}@s.whatsapp.net` ||
             from === tenant.sock?.user?.id ||
-            resolvedFrom === `${myNumber}@s.whatsapp.net`
+            resolvedFrom === `${myNumber}@s.whatsapp.net` ||
+            (tenant.ownerPhone && fromNumber === tenant.ownerPhone)
           );
           const ownerUid = tenant.ownerUid || uid;
           const role = tenant.role || 'owner';
@@ -2220,6 +2230,17 @@ function forceReconnect(uid, tenant, ioInstance, reason) {
     tenant._reconnecting = false;
     startBaileysConnection(uid, tenant, ioInstance);
   }, 5000);
+}
+
+// ─── Force Reconnect by UID (wrapper público) ──────────────────────────────
+// Usado por safeSendMessage cuando detecta ghost disconnect
+function forceReconnectByUid(uid, reason) {
+  const tenant = tenants.get(uid);
+  if (!tenant) {
+    console.warn(`[TM:${uid}] forceReconnectByUid: tenant no encontrado`);
+    return;
+  }
+  forceReconnect(uid, tenant, tenant.io || null, reason || 'external_recovery');
 }
 
 // ─── Verify Connection (Health Check Real) ──────────────────────────────────
@@ -3266,6 +3287,7 @@ module.exports = {
   checkOwnerLidResponse,
   verifyConnection,
   forceReconnect,
+  forceReconnectByUid,
   flushUnrespondedMessages,
   recoverUnrespondedMessages
 };

@@ -2309,7 +2309,674 @@ REGLAS:
     }
   }
 
-  // 11d. Limpiar tags residuales (correo maestro, cotización sin procesar, etc.)
+  // ═══════════════════════════════════════════════════════════════
+  // 11d-EMAIL. Tags [ENVIAR_EMAIL:], [ENVIAR_CORREO:], [LEER_INBOX], [EMAIL_LEER:], [EMAIL_ELIMINAR:], [EMAIL_ELIMINAR_EXCEPTO:]
+  // Migrado desde server.js para que TODOS los tenants puedan enviar/leer emails
+  // ═══════════════════════════════════════════════════════════════
+  if (ownerUid) {
+    try {
+      const gmailIntegration = require('../integrations/gmail_integration');
+      const emailManager = require('../services/email_manager');
+      const mailService = require('../services/mail_service');
+      const { getOAuth2Client } = require('../core/google_calendar');
+
+      // Helper: enviar al self-chat del owner
+      const sendToOwnerSelfChat = async (msg) => {
+        const selfJid = tenantState.sock?.user?.id;
+        if (selfJid && tenantState.sock) {
+          const ownerSelf = selfJid.includes(':') ? selfJid.split(':')[0] + '@s.whatsapp.net' : selfJid;
+          try { await tenantState.sock.sendMessage(ownerSelf, { text: msg }); } catch (e) { console.error(`${logPrefix} [EMAIL-TMH] ❌ Send to self error:`, e.message); }
+        }
+      };
+
+      // ── TAG [ENVIAR_CORREO:email|asunto|cuerpo] — MIIA envía email al lead via Gmail API / SMTP ──
+      const enviarCorreoMatch = aiMessage.match(/\[ENVIAR_CORREO:([^|]+)\|([^|]+)\|([^\]]+)\]/);
+      if (enviarCorreoMatch && !isSelfChat) {
+        const emailTo = enviarCorreoMatch[1].trim();
+        const emailSubject = enviarCorreoMatch[2].trim();
+        const emailBody = enviarCorreoMatch[3].trim();
+        aiMessage = aiMessage.replace(/\[ENVIAR_CORREO:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [EMAIL-TMH] 📧 Enviando correo a ${emailTo} — Asunto: "${emailSubject}" (lead ${phone})`);
+        try {
+          const emailFromName = ctx.ownerProfile?.businessName ? `${ctx.ownerProfile.businessName} - MIIA` : 'MIIA';
+          let emailResult = { success: false, error: 'No configurado' };
+
+          // Intentar Gmail API primero
+          try {
+            const ownerDoc = await db().collection('users').doc(ownerUid).get();
+            if (ownerDoc.exists && ownerDoc.data()?.googleTokens) {
+              emailResult = await gmailIntegration.sendGmailEmail(ownerUid, getOAuth2Client, emailTo, emailSubject, emailBody, emailFromName);
+            }
+          } catch (gmailErr) {
+            console.warn(`${logPrefix} [EMAIL-TMH] ⚠️ Gmail API send falló, intentando SMTP: ${gmailErr.message}`);
+          }
+
+          // Fallback: SMTP
+          if (!emailResult.success) {
+            emailResult = await mailService.sendGenericEmail(emailTo, emailSubject, emailBody, { fromName: emailFromName });
+          }
+
+          if (emailResult.success) {
+            console.log(`${logPrefix} [EMAIL-TMH] ✅ Correo enviado exitosamente a ${emailTo}`);
+            await sendToOwnerSelfChat(`📧 Email enviado a *${emailTo}* — Asunto: "${emailSubject}" (lead ${basePhone})`);
+          } else {
+            console.error(`${logPrefix} [EMAIL-TMH] ❌ Error enviando correo a ${emailTo}: ${emailResult.error}`);
+            await sendToOwnerSelfChat(`❌ No pude enviar email a ${emailTo}. Error: ${emailResult.error}. Lead ${basePhone} pidió: "${emailSubject}"`);
+          }
+        } catch (emailErr) {
+          console.error(`${logPrefix} [EMAIL-TMH] ❌ Excepción enviando correo:`, emailErr.message);
+        }
+      } else if (enviarCorreoMatch) {
+        aiMessage = aiMessage.replace(/\[ENVIAR_CORREO:[^\]]+\]/g, '').trim();
+      }
+
+      // ── TAG [ENVIAR_EMAIL:to|subject|body] — Owner envía email desde self-chat ──
+      const enviarEmailMatch = aiMessage.match(/\[ENVIAR_EMAIL:([^|]+)\|([^|]+)\|([^\]]+)\]/);
+      if (enviarEmailMatch && isSelfChat) {
+        const emailTo = enviarEmailMatch[1].trim();
+        const emailSubject = enviarEmailMatch[2].trim();
+        const emailBody = enviarEmailMatch[3].trim();
+        aiMessage = aiMessage.replace(/\[ENVIAR_EMAIL:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [EMAIL-TMH] 📧 Owner envía email a ${emailTo}: "${emailSubject}"`);
+        try {
+          const fromName = ctx.ownerProfile?.name || 'MIIA';
+          let emailResult = { success: false, error: 'No configurado' };
+
+          // Intentar Gmail API primero
+          try {
+            const ownerDoc = await db().collection('users').doc(ownerUid).get();
+            if (ownerDoc.exists && ownerDoc.data()?.googleTokens) {
+              emailResult = await gmailIntegration.sendGmailEmail(ownerUid, getOAuth2Client, emailTo, emailSubject, emailBody, fromName);
+              if (emailResult.success) console.log(`${logPrefix} [EMAIL-TMH] ✅ Gmail API: Email enviado a ${emailTo}`);
+            }
+          } catch (gmailSendErr) {
+            console.warn(`${logPrefix} [EMAIL-TMH] ⚠️ Gmail API send falló, intentando SMTP: ${gmailSendErr.message}`);
+          }
+
+          // Fallback: SMTP via emailManager
+          if (!emailResult.success) {
+            emailResult = await emailManager.sendEmail(emailTo, emailSubject, emailBody, fromName);
+            if (emailResult.success) console.log(`${logPrefix} [EMAIL-TMH] ✅ SMTP: Email enviado a ${emailTo}`);
+          }
+
+          if (emailResult.success) {
+            if (!aiMessage) aiMessage = `📧 Listo, le envié el correo a ${emailTo} — Asunto: "${emailSubject}"`;
+          } else {
+            console.error(`${logPrefix} [EMAIL-TMH] ❌ Error: ${emailResult.error}`);
+            if (!aiMessage) aiMessage = `❌ No pude enviar el correo a ${emailTo}: ${emailResult.error}`;
+          }
+        } catch (emailErr) {
+          console.error(`${logPrefix} [EMAIL-TMH] ❌ Excepción: ${emailErr.message}`);
+          if (!aiMessage) aiMessage = `❌ Error enviando correo: ${emailErr.message}`;
+        }
+      } else if (enviarEmailMatch) {
+        aiMessage = aiMessage.replace(/\[ENVIAR_EMAIL:[^\]]+\]/g, '').trim();
+      }
+
+      // ── TAG [LEER_INBOX] — Owner lee su bandeja de entrada ──
+      if (aiMessage.includes('[LEER_INBOX]') && isSelfChat) {
+        aiMessage = aiMessage.replace(/\[LEER_INBOX\]/g, '').trim();
+        console.log(`${logPrefix} [EMAIL-TMH] 📬 Owner solicita leer inbox`);
+        try {
+          let usedGmail = false;
+          try {
+            const ownerDoc = await db().collection('users').doc(ownerUid).get();
+            if (ownerDoc.exists && ownerDoc.data()?.googleTokens) {
+              const gmailResult = await gmailIntegration.getUnreadEmails(ownerUid, getOAuth2Client, { maxResults: 10 });
+              if (!gmailResult.error && gmailResult.emails.length >= 0) {
+                const adaptedEmails = gmailResult.emails.map(e => ({
+                  uid: e.id, fromName: e.from.replace(/<[^>]+>/, '').trim() || e.from,
+                  from: e.from, subject: e.subject, date: e.date, snippet: e.snippet,
+                  hasAttachments: false, _gmailId: e.id, _threadId: e.threadId, _source: 'gmail_api',
+                }));
+                emailManager.cacheEmails(ownerUid, adaptedEmails, { _source: 'gmail_api' });
+                aiMessage = emailManager.formatEmailList(adaptedEmails, gmailResult.summary.total || adaptedEmails.length);
+                usedGmail = true;
+                console.log(`${logPrefix} [EMAIL-TMH] ✅ Gmail API: ${adaptedEmails.length} emails via OAuth`);
+              }
+            }
+          } catch (gmailErr) {
+            console.warn(`${logPrefix} [EMAIL-TMH] ⚠️ Gmail API falló, intentando IMAP: ${gmailErr.message}`);
+          }
+
+          if (!usedGmail) {
+            const imapConfig = await emailManager.getOwnerImapConfig(ownerUid);
+            if (!imapConfig) {
+              aiMessage = '📭 Para gestionar tu correo, conectá Google Calendar desde el dashboard (Conexiones → Google). Es un solo click y MIIA accede a tu Gmail automáticamente.';
+            } else {
+              const result = await emailManager.fetchUnreadEmails(imapConfig, 10);
+              if (result.success) {
+                emailManager.cacheEmails(ownerUid, result.emails, imapConfig);
+                aiMessage = emailManager.formatEmailList(result.emails, result.count || result.emails.length);
+              } else {
+                aiMessage = `❌ Error leyendo tu inbox: ${result.error}`;
+              }
+            }
+          }
+        } catch (inboxErr) {
+          console.error(`${logPrefix} [EMAIL-TMH] ❌ Excepción leyendo inbox: ${inboxErr.message}`);
+          aiMessage = `❌ Error accediendo a tu correo: ${inboxErr.message}`;
+        }
+      }
+
+      // ── TAG [EMAIL_LEER:2,5] — Owner lee contenido de emails específicos ──
+      const emailLeerMatch = aiMessage.match(/\[EMAIL_LEER:([^\]]+)\]/);
+      if (emailLeerMatch && isSelfChat) {
+        const indices = emailLeerMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+        aiMessage = aiMessage.replace(/\[EMAIL_LEER:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [EMAIL-TMH] 📖 Owner quiere leer emails: ${indices.join(', ')}`);
+        const cached = emailManager.getCachedEmails(ownerUid);
+        if (!cached || !cached.emails.length) {
+          aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox" o "qué correos tengo".';
+        } else if (cached.imapConfig?._source === 'gmail_api') {
+          const results = [];
+          for (const idx of indices) {
+            const email = cached.emails[idx - 1];
+            if (!email) { results.push(`*${idx}.* ❌ No existe ese correo en la lista`); continue; }
+            try {
+              const fullEmail = await gmailIntegration.getFullEmail(ownerUid, getOAuth2Client, email._gmailId);
+              if (fullEmail.success && fullEmail.body) {
+                const body = fullEmail.body.substring(0, 800).replace(/\n{3,}/g, '\n\n');
+                results.push(`*${idx}. De: ${email.fromName}*\n📋 _${email.subject}_\n\n${body}`);
+              } else {
+                results.push(`*${idx}. De: ${email.fromName}*\n📋 _${email.subject}_\n\n${email.snippet || '(Sin contenido)'}`);
+              }
+            } catch (gmailReadErr) {
+              console.warn(`${logPrefix} [EMAIL-TMH] ⚠️ Gmail getFullEmail falló: ${gmailReadErr.message}`);
+              results.push(`*${idx}. De: ${email.fromName}*\n📋 _${email.subject}_\n\n${email.snippet || '(Sin contenido)'}`);
+            }
+          }
+          aiMessage = results.join('\n\n---\n\n');
+        } else {
+          aiMessage = emailManager.formatEmailContent(cached.emails, indices);
+        }
+      }
+
+      // ── TAG [EMAIL_ELIMINAR:1,3,4] — Owner elimina emails ──
+      const emailEliminarMatch = aiMessage.match(/\[EMAIL_ELIMINAR:([^\]]+)\]/);
+      if (emailEliminarMatch && isSelfChat) {
+        const indices = emailEliminarMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+        aiMessage = aiMessage.replace(/\[EMAIL_ELIMINAR:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [EMAIL-TMH] 🗑️ Owner quiere eliminar emails: ${indices.join(', ')}`);
+        const cached = emailManager.getCachedEmails(ownerUid);
+        if (!cached || !cached.emails.length) {
+          aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox" para ver tus correos.';
+        } else if (cached.imapConfig?._source === 'gmail_api') {
+          const gmailIdsToDelete = indices.map(i => cached.emails[i - 1]?._gmailId).filter(id => id != null);
+          if (gmailIdsToDelete.length === 0) {
+            aiMessage = '⚠️ Los números que indicaste no corresponden a emails de la lista.';
+          } else {
+            try {
+              const delResult = await gmailIntegration.trashEmails(ownerUid, getOAuth2Client, gmailIdsToDelete);
+              if (delResult.success) {
+                console.log(`${logPrefix} [EMAIL-TMH] ✅ Gmail: ${delResult.deleted} emails eliminados`);
+                emailManager.clearCache(ownerUid);
+                aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Tu bandeja está más limpia ahora.`;
+              } else {
+                aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+              }
+            } catch (delErr) {
+              console.error(`${logPrefix} [EMAIL-TMH] ❌ Gmail excepción eliminando: ${delErr.message}`);
+              aiMessage = `❌ Error: ${delErr.message}`;
+            }
+          }
+        } else {
+          const uidsToDelete = indices.map(i => cached.emails[i - 1]?.uid).filter(uid => uid != null);
+          if (uidsToDelete.length === 0) {
+            aiMessage = '⚠️ Los números que indicaste no corresponden a emails de la lista.';
+          } else {
+            try {
+              const delResult = await emailManager.deleteEmails(cached.imapConfig, uidsToDelete);
+              if (delResult.success) {
+                emailManager.clearCache(ownerUid);
+                aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Tu bandeja está más limpia ahora.`;
+              } else {
+                aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+              }
+            } catch (delErr) {
+              console.error(`${logPrefix} [EMAIL-TMH] ❌ IMAP excepción eliminando: ${delErr.message}`);
+              aiMessage = `❌ Error: ${delErr.message}`;
+            }
+          }
+        }
+      }
+
+      // ── TAG [EMAIL_ELIMINAR_EXCEPTO:2,5] — Owner elimina todos MENOS los indicados ──
+      const emailExceptoMatch = aiMessage.match(/\[EMAIL_ELIMINAR_EXCEPTO:([^\]]+)\]/);
+      if (emailExceptoMatch && isSelfChat) {
+        const keepIndices = emailExceptoMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+        aiMessage = aiMessage.replace(/\[EMAIL_ELIMINAR_EXCEPTO:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [EMAIL-TMH] 🗑️ Owner quiere eliminar todos EXCEPTO: ${keepIndices.join(', ')}`);
+        const cached = emailManager.getCachedEmails(ownerUid);
+        if (!cached || !cached.emails.length) {
+          aiMessage = '⚠️ No tengo emails en caché. Primero decime "leé mi inbox".';
+        } else if (cached.imapConfig?._source === 'gmail_api') {
+          const gmailIdsToDelete = cached.emails
+            .map((e, i) => ({ gmailId: e._gmailId, index: i + 1 }))
+            .filter(e => !keepIndices.includes(e.index)).map(e => e.gmailId).filter(id => id != null);
+          if (gmailIdsToDelete.length === 0) {
+            aiMessage = '✅ No hay emails para eliminar — todos están en la lista de conservar.';
+          } else {
+            try {
+              const delResult = await gmailIntegration.trashEmails(ownerUid, getOAuth2Client, gmailIdsToDelete);
+              if (delResult.success) {
+                emailManager.clearCache(ownerUid);
+                aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Conservé los que pediste (${keepIndices.join(', ')}).`;
+              } else {
+                aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+              }
+            } catch (delErr) {
+              console.error(`${logPrefix} [EMAIL-TMH] ❌ Gmail excepción: ${delErr.message}`);
+              aiMessage = `❌ Error: ${delErr.message}`;
+            }
+          }
+        } else {
+          const uidsToDelete = cached.emails
+            .map((e, i) => ({ uid: e.uid, index: i + 1 }))
+            .filter(e => !keepIndices.includes(e.index)).map(e => e.uid).filter(uid => uid != null);
+          if (uidsToDelete.length === 0) {
+            aiMessage = '✅ No hay emails para eliminar — todos están en la lista de conservar.';
+          } else {
+            try {
+              const delResult = await emailManager.deleteEmails(cached.imapConfig, uidsToDelete);
+              if (delResult.success) {
+                emailManager.clearCache(ownerUid);
+                aiMessage = `🗑️ Listo, eliminé ${delResult.deleted} correo${delResult.deleted > 1 ? 's' : ''}. Conservé los que pediste (${keepIndices.join(', ')}).`;
+              } else {
+                aiMessage = `❌ Error eliminando correos: ${delResult.error}`;
+              }
+            } catch (delErr) {
+              console.error(`${logPrefix} [EMAIL-TMH] ❌ IMAP excepción: ${delErr.message}`);
+              aiMessage = `❌ Error: ${delErr.message}`;
+            }
+          }
+        }
+      }
+    } catch (emailModuleErr) {
+      console.error(`${logPrefix} [EMAIL-TMH] ❌ Module error:`, emailModuleErr.message);
+      // Strip any email tags to prevent raw tags from reaching the user
+      aiMessage = aiMessage.replace(/\[ENVIAR_CORREO:[^\]]+\]/g, '').replace(/\[ENVIAR_EMAIL:[^\]]+\]/g, '')
+        .replace(/\[LEER_INBOX\]/g, '').replace(/\[EMAIL_LEER:[^\]]+\]/g, '')
+        .replace(/\[EMAIL_ELIMINAR:[^\]]+\]/g, '').replace(/\[EMAIL_ELIMINAR_EXCEPTO:[^\]]+\]/g, '').trim();
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 11d-AGENDA. Tags [AGENDAR_EVENTO:], [SOLICITAR_TURNO:], [CONSULTAR_AGENDA]
+  // Migrado desde server.js para que TODOS los tenants puedan agendar
+  // ═══════════════════════════════════════════════════════════════
+  if (ownerUid) {
+    try {
+      const { getOAuth2Client } = require('../core/google_calendar');
+
+      // Helper para obtener timezone desde país
+      const getTimezoneForCountry = (country) => {
+        const TZ_MAP = {
+          'CO': 'America/Bogota', 'AR': 'America/Argentina/Buenos_Aires', 'MX': 'America/Mexico_City',
+          'CL': 'America/Santiago', 'PE': 'America/Lima', 'EC': 'America/Guayaquil',
+          'VE': 'America/Caracas', 'US': 'America/New_York', 'ES': 'Europe/Madrid',
+          'BR': 'America/Sao_Paulo', 'DO': 'America/Santo_Domingo', 'UY': 'America/Montevideo',
+          'PY': 'America/Asuncion', 'BO': 'America/La_Paz', 'CR': 'America/Costa_Rica',
+          'PA': 'America/Panama', 'GT': 'America/Guatemala', 'HN': 'America/Tegucigalpa',
+          'SV': 'America/El_Salvador', 'NI': 'America/Managua',
+        };
+        return TZ_MAP[country] || 'America/Bogota';
+      };
+
+      // Helper: enviar al self-chat del owner
+      const sendToOwnerSelfChat = async (msg) => {
+        const selfJid = tenantState.sock?.user?.id;
+        if (selfJid && tenantState.sock) {
+          const ownerSelf = selfJid.includes(':') ? selfJid.split(':')[0] + '@s.whatsapp.net' : selfJid;
+          try { await tenantState.sock.sendMessage(ownerSelf, { text: msg }); } catch (e) { console.error(`${logPrefix} [AGENDA-TMH] ❌ Send to self error:`, e.message); }
+        }
+      };
+
+      // ── TAG [AGENDAR_EVENTO:contacto|fecha|razón|hint|modo|ubicación] ──
+      const agendarMatch = aiMessage.match(/\[AGENDAR_EVENTO:([^\]]+)\]/g);
+      if (agendarMatch) {
+        for (const tag of agendarMatch) {
+          const inner = tag.replace('[AGENDAR_EVENTO:', '').replace(']', '');
+          const parts = inner.split('|').map(p => p.trim());
+          if (parts.length >= 3) {
+            const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
+            const contactName = contacto;
+            let calendarOk = false;
+            let meetLink = null;
+            const eventMode = (modo || 'presencial').toLowerCase();
+
+            // 1. Crear evento en Google Calendar
+            try {
+              const parsedDate = new Date(fecha);
+              const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
+              const ownerCountry = getCountryFromPhone(ownerPhone);
+              const ownerTz = getTimezoneForCountry(ownerCountry);
+              if (!isNaN(parsedDate)) {
+                const hourMatch = fecha.match(/(\d{1,2}):(\d{2})/);
+                const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+                const calResult = await createCalendarEvent({
+                  summary: razon || 'Evento MIIA',
+                  dateStr: fecha.split('T')[0],
+                  startHour: startH,
+                  endHour: startH + 1,
+                  description: `Agendado por MIIA para ${contactName}. ${hint || ''}`.trim(),
+                  uid: ownerUid,
+                  timezone: ownerTz,
+                  eventMode: eventMode,
+                  location: eventMode === 'presencial' ? (ubicacion || '') : '',
+                  phoneNumber: (eventMode === 'telefono' || eventMode === 'telefónico') ? (ubicacion || contacto) : '',
+                  reminderMinutes: 10
+                });
+                calendarOk = true;
+                meetLink = calResult.meetLink || null;
+                console.log(`${logPrefix} [AGENDA-TMH] 📅 Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode}`);
+              }
+            } catch (calErr) {
+              console.warn(`${logPrefix} [AGENDA-TMH] ⚠️ Calendar no disponible: ${calErr.message}. Guardando solo en Firestore.`);
+              if (/no conectado|no tokens|googleTokens/i.test(calErr.message)) {
+                await sendToOwnerSelfChat(
+                  `⚠️ *Google Calendar no está conectado*\n\n` +
+                  `Agendé "${razon}" el ${fecha} en mi base de datos, pero NO pude sincronizarlo con tu Google Calendar.\n\n` +
+                  `👉 Para conectarlo, andá a tu *Dashboard → Conexiones → Google Calendar* y aprobá los permisos.`
+                );
+              }
+            }
+
+            // 2. Timezone del owner
+            const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
+            const ownerCountry = getCountryFromPhone(ownerPhone);
+            const effectiveTimezone = getTimezoneForCountry(ownerCountry);
+
+            // 3. Guardar en Firestore
+            try {
+              let scheduledForUTC = fecha;
+              try {
+                const parsedLocal = new Date(fecha);
+                if (!isNaN(parsedLocal)) {
+                  const localStr = new Date().toLocaleString('en-US', { timeZone: effectiveTimezone });
+                  const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                  const offsetMs = new Date(localStr) - new Date(utcStr);
+                  scheduledForUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+                  console.log(`${logPrefix} [AGENDA-TMH] 🕐 Fecha local: ${fecha} (${effectiveTimezone}) → UTC: ${scheduledForUTC}`);
+                }
+              } catch (tzErr) {
+                console.warn(`${logPrefix} [AGENDA-TMH] ⚠️ Error timezone: ${tzErr.message}`);
+              }
+
+              const isExternalContact = contacto && contacto !== 'self' && /^\d{8,15}$/.test(contacto.replace(/\D/g, ''));
+              const resolvedContactPhone = isExternalContact ? contacto : (isSelfChat ? 'self' : (basePhone || phone || contacto));
+
+              await db().collection('users').doc(ownerUid).collection('miia_agenda').add({
+                contactPhone: resolvedContactPhone,
+                contactName: contactName,
+                mentionedContact: contacto,
+                scheduledFor: scheduledForUTC,
+                scheduledForLocal: fecha,
+                ownerTimezone: effectiveTimezone,
+                reason: razon,
+                promptHint: hint || '',
+                eventMode: eventMode,
+                eventLocation: ubicacion || '',
+                meetLink: meetLink || '',
+                status: 'pending',
+                calendarSynced: calendarOk,
+                remindContact: !isSelfChat || isExternalContact,
+                reminderMinutes: 10,
+                requestedBy: phone,
+                createdAt: new Date().toISOString(),
+                source: isSelfChat ? 'owner_selfchat' : 'contact_request'
+              });
+              console.log(`${logPrefix} [AGENDA-TMH] ✅ Evento guardado en Firestore`);
+            } catch (e) {
+              console.error(`${logPrefix} [AGENDA-TMH] ❌ Error guardando en Firestore:`, e.message);
+            }
+
+            // 4. Notificar al owner si no es self-chat
+            if (!isSelfChat) {
+              const calStatus = calendarOk ? '📅 Calendar ✅' : '⚠️ Calendar no conectado';
+              const modeLabel = eventMode === 'virtual' ? '📹 Virtual' : (eventMode === 'telefono' || eventMode === 'telefónico') ? '📞 Telefónico' : '📍 Presencial';
+              await sendToOwnerSelfChat(
+                `📅 *${contactName}* pidió agendar:\n"${razon}" — ${fecha}\nModo: ${modeLabel}${ubicacion ? ` — ${ubicacion}` : ''}\n${calStatus}` +
+                (!calendarOk ? `\n\n💡 Conectá tu Calendar desde Dashboard → Conexiones.` : '')
+              );
+            }
+          }
+        }
+        aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').trim();
+      }
+
+      // ── TAG [SOLICITAR_TURNO:contacto|fecha|razón|hint|modo|ubicación] ──
+      const solicitarMatch = aiMessage.match(/\[SOLICITAR_TURNO:([^\]]+)\]/g);
+      if (solicitarMatch) {
+        for (const tag of solicitarMatch) {
+          const inner = tag.replace('[SOLICITAR_TURNO:', '').replace(']', '');
+          const parts = inner.split('|').map(p => p.trim());
+          if (parts.length >= 3) {
+            const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
+            const contactName = contacto;
+            const eventMode = (modo || 'presencial').toLowerCase();
+            const modeEmoji = eventMode === 'virtual' ? '📹' : (eventMode === 'telefono' || eventMode === 'telefónico') ? '📞' : '📍';
+            const modeLabel = eventMode === 'virtual' ? 'Virtual (Meet)' : (eventMode === 'telefono' || eventMode === 'telefónico') ? 'Telefónico' : 'Presencial';
+
+            const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
+            const ownerCountry = getCountryFromPhone(ownerPhone);
+            const ownerTz = getTimezoneForCountry(ownerCountry);
+
+            let scheduledForUTC = fecha;
+            try {
+              const parsedLocal = new Date(fecha);
+              if (!isNaN(parsedLocal)) {
+                const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+                const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                const offsetMs = new Date(localStr) - new Date(utcStr);
+                scheduledForUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+              }
+            } catch (tzErr) {
+              console.warn(`${logPrefix} [SOLICITAR_TURNO-TMH] ⚠️ Error timezone: ${tzErr.message}`);
+            }
+
+            // Guardar solicitud pendiente
+            let appointmentId = null;
+            try {
+              const docRef = await db().collection('users').doc(ownerUid).collection('pending_appointments').add({
+                contactPhone: contacto,
+                contactJid: phone,
+                contactName: contactName,
+                scheduledFor: scheduledForUTC,
+                scheduledForLocal: fecha,
+                ownerTimezone: ownerTz,
+                reason: razon,
+                hint: hint || '',
+                eventMode: eventMode,
+                eventLocation: ubicacion || '',
+                status: 'waiting_approval',
+                requestedBy: phone,
+                createdAt: new Date().toISOString()
+              });
+              appointmentId = docRef.id;
+              console.log(`${logPrefix} [SOLICITAR_TURNO-TMH] 📋 Solicitud ${appointmentId} creada`);
+            } catch (e) {
+              console.error(`${logPrefix} [SOLICITAR_TURNO-TMH] ❌ Error guardando solicitud:`, e.message);
+            }
+
+            // Notificar al owner en self-chat
+            const approvalMsg = `📋 *SOLICITUD DE TURNO* (ID: ${appointmentId ? appointmentId.slice(-6) : '???'})\n\n` +
+              `👤 *Contacto*: ${contactName}\n📅 *Fecha*: ${fecha}\n📝 *Motivo*: ${razon}\n` +
+              `${modeEmoji} *Modo*: ${modeLabel}${ubicacion ? ` — ${ubicacion}` : ''}\n\n` +
+              `Responde:\n✅ *"aprobar"* → agenda como está\n🕐 *"mover a las 16:00"* → cambia horario\n❌ *"rechazar"* → MIIA avisa al contacto` +
+              (hint ? `\n\n💬 Nota del contacto: ${hint}` : '');
+
+            await sendToOwnerSelfChat(approvalMsg);
+          }
+        }
+        aiMessage = aiMessage.replace(/\[SOLICITAR_TURNO:[^\]]+\]/g, '').trim();
+      }
+
+      // ── TAG [CONSULTAR_AGENDA] — MIIA consulta agenda del owner ──
+      if (aiMessage.includes('[CONSULTAR_AGENDA]') && isSelfChat) {
+        console.log(`${logPrefix} [AGENDA-TMH] 📅 Tag CONSULTAR_AGENDA detectado`);
+        aiMessage = aiMessage.replace(/\[CONSULTAR_AGENDA\]/g, '').trim();
+        try {
+          const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
+          const ownerCountry = getCountryFromPhone(ownerPhone);
+          const ownerTz = getTimezoneForCountry(ownerCountry);
+          const now = new Date();
+          const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+          const agendaSnap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
+            .where('status', '==', 'pending')
+            .where('scheduledFor', '>=', now.toISOString())
+            .where('scheduledFor', '<=', in7days.toISOString())
+            .orderBy('scheduledFor', 'asc').limit(20).get();
+
+          let agendaItems = [];
+          if (!agendaSnap.empty) {
+            agendaItems = agendaSnap.docs.map(d => {
+              const e = d.data();
+              const dateLocal = e.scheduledForLocal || e.scheduledFor || '';
+              const modeEmoji = e.eventMode === 'virtual' ? '📹' : e.eventMode === 'telefono' ? '📞' : '📍';
+              const contact = e.contactName || e.contactPhone || '';
+              return `  ${modeEmoji} ${dateLocal} | ${e.reason || '(sin título)'} | ${contact && contact !== 'self' ? `con ${contact}` : ''}`;
+            });
+          }
+
+          if (agendaItems.length > 0) {
+            aiMessage = `📅 *Tu agenda (próximos 7 días):*\n\n${agendaItems.join('\n')}`;
+          } else {
+            aiMessage = '📅 No tenés eventos agendados en los próximos 7 días.';
+          }
+        } catch (agendaErr) {
+          console.error(`${logPrefix} [AGENDA-TMH] ❌ Error consultando agenda: ${agendaErr.message}`);
+          aiMessage = '❌ Error consultando tu agenda. Intentá de nuevo.';
+        }
+      }
+
+      // ── TAG [RECORDAR_OWNER:fecha|mensaje] — Contacto dice "recuérdale al owner que..." ──
+      const recordOwnerMatch = aiMessage.match(/\[RECORDAR_OWNER:([^|]+)\|([^\]]+)\]/);
+      if (recordOwnerMatch) {
+        const recordFecha = recordOwnerMatch[1].trim();
+        const recordMsg = recordOwnerMatch[2].trim();
+        aiMessage = aiMessage.replace(/\[RECORDAR_OWNER:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [RECORDAR-TMH] ⏰ Recordatorio para owner: "${recordMsg}" → ${recordFecha}`);
+        try {
+          const selfJid = tenantState.sock?.user?.id;
+          const ownerNotifyPhone = selfJid ? (selfJid.includes(':') ? selfJid.split(':')[0] + '@s.whatsapp.net' : selfJid) : null;
+          await db().collection('users').doc(ownerUid).collection('miia_agenda').add({
+            type: 'recordatorio_contacto',
+            from: basePhone,
+            fromName: basePhone,
+            message: recordMsg,
+            scheduledFor: recordFecha,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'pending',
+            notifyTarget: 'owner',
+            notifyPhone: ownerNotifyPhone,
+            contactPhone: 'self'
+          });
+          console.log(`${logPrefix} [RECORDAR-TMH] ✅ Recordatorio agendado para owner`);
+        } catch (e) {
+          console.error(`${logPrefix} [RECORDAR-TMH] ❌ Error:`, e.message);
+        }
+      }
+
+      // ── TAG [RECORDAR_CONTACTO:fecha|mensaje] — Contacto dice "recuérdame que..." ──
+      const recordContactoMatch = aiMessage.match(/\[RECORDAR_CONTACTO:([^|]+)\|([^\]]+)\]/);
+      if (recordContactoMatch) {
+        const recordFecha = recordContactoMatch[1].trim();
+        const recordMsg = recordContactoMatch[2].trim();
+        aiMessage = aiMessage.replace(/\[RECORDAR_CONTACTO:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [RECORDAR-TMH] ⏰ Recordatorio para contacto ${basePhone}: "${recordMsg}" → ${recordFecha}`);
+        try {
+          await db().collection('users').doc(ownerUid).collection('miia_agenda').add({
+            type: 'recordatorio_contacto',
+            from: basePhone,
+            fromName: basePhone,
+            message: recordMsg,
+            scheduledFor: recordFecha,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            status: 'pending',
+            notifyTarget: 'contact',
+            notifyPhone: phone
+          });
+          console.log(`${logPrefix} [RECORDAR-TMH] ✅ Recordatorio agendado para contacto`);
+        } catch (e) {
+          console.error(`${logPrefix} [RECORDAR-TMH] ❌ Error:`, e.message);
+        }
+      }
+
+      // ── TAG [ALERTA_OWNER:mensaje] — MIIA pide acción manual del owner ──
+      const alertaOwnerMatch = aiMessage.match(/\[ALERTA_OWNER:([^\]]+)\]/);
+      if (alertaOwnerMatch) {
+        const alertMsg = alertaOwnerMatch[1].trim();
+        aiMessage = aiMessage.replace(/\[ALERTA_OWNER:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [ALERTA-TMH] 📢 Lead ${phone}: ${alertMsg}`);
+        await sendToOwnerSelfChat(`📢 *Acción requerida* — Lead ${basePhone}:\n${alertMsg}`);
+      }
+
+      // ── TAG [MENSAJE_PARA_OWNER:mensaje] — Contacto dice "dile al owner que..." ──
+      const msgOwnerMatch = aiMessage.match(/\[MENSAJE_PARA_OWNER:([^\]]+)\]/);
+      if (msgOwnerMatch) {
+        const msgForOwner = msgOwnerMatch[1].trim();
+        aiMessage = aiMessage.replace(/\[MENSAJE_PARA_OWNER:[^\]]+\]/g, '').trim();
+        console.log(`${logPrefix} [DILE-A-TMH] 📩 ${basePhone} → Owner: "${msgForOwner}"`);
+        await sendToOwnerSelfChat(`📩 *${basePhone}* te dice:\n"${msgForOwner}"`);
+      }
+
+      // ── TAG [CREAR_TAREA:título|fecha|notas] — Google Tasks ──
+      try {
+        const googleTasks = require('../integrations/google_tasks_integration');
+        const taskTag = googleTasks.parseTaskTag(aiMessage);
+        if (taskTag && isSelfChat) {
+          aiMessage = aiMessage.replace(taskTag.rawTag, '').trim();
+          console.log(`${logPrefix} [TASKS-TMH] 📋 Creando tarea: "${taskTag.title}"`);
+          try {
+            await googleTasks.createTask(ownerUid, getOAuth2Client, admin, {
+              title: taskTag.title, dueDate: taskTag.dueDate, notes: taskTag.notes || 'Creada por MIIA'
+            });
+            console.log(`${logPrefix} [TASKS-TMH] ✅ Tarea creada`);
+          } catch (e) {
+            console.error(`${logPrefix} [TASKS-TMH] ❌ Error creando tarea:`, e.message);
+          }
+        }
+
+        // ── TAG [LISTAR_TAREAS] ──
+        if (googleTasks.parseListTasksTag(aiMessage) && isSelfChat) {
+          aiMessage = aiMessage.replace(/\[LISTAR_TAREAS\]/g, '').trim();
+          try {
+            const tasks = await googleTasks.listTasks(ownerUid, getOAuth2Client, admin);
+            const formattedTasks = googleTasks.formatTasksList(tasks);
+            await sendToOwnerSelfChat(formattedTasks);
+          } catch (e) {
+            console.error(`${logPrefix} [TASKS-TMH] ❌ Error listando tareas:`, e.message);
+          }
+        }
+
+        // ── TAG [COMPLETAR_TAREA:título] ──
+        const completeTag = googleTasks.parseCompleteTaskTag(aiMessage);
+        if (completeTag && isSelfChat) {
+          aiMessage = aiMessage.replace(completeTag.rawTag, '').trim();
+          try {
+            await googleTasks.completeTask(ownerUid, getOAuth2Client, admin, { titleMatch: completeTag.titleMatch });
+            console.log(`${logPrefix} [TASKS-TMH] ✅ Tarea completada`);
+          } catch (e) {
+            console.error(`${logPrefix} [TASKS-TMH] ❌ Error completando tarea:`, e.message);
+          }
+        }
+      } catch (tasksModErr) {
+        console.warn(`${logPrefix} [TASKS-TMH] ⚠️ Module error:`, tasksModErr.message);
+      }
+
+    } catch (agendaModuleErr) {
+      console.error(`${logPrefix} [AGENDA-TMH] ❌ Module error:`, agendaModuleErr.message);
+      aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').replace(/\[SOLICITAR_TURNO:[^\]]+\]/g, '')
+        .replace(/\[CONSULTAR_AGENDA\]/g, '').replace(/\[RECORDAR_OWNER:[^\]]+\]/g, '')
+        .replace(/\[RECORDAR_CONTACTO:[^\]]+\]/g, '').replace(/\[ALERTA_OWNER:[^\]]+\]/g, '')
+        .replace(/\[MENSAJE_PARA_OWNER:[^\]]+\]/g, '').replace(/\[CREAR_TAREA:[^\]]+\]/g, '')
+        .replace(/\[LISTAR_TAREAS\]/g, '').replace(/\[COMPLETAR_TAREA:[^\]]+\]/g, '').trim();
+    }
+  }
+
+  // 11d-FINAL. Limpiar tags residuales (correo maestro, cotización sin procesar, etc.)
   aiMessage = cleanResidualTags(aiMessage);
 
   // 11e. Falso positivo → silenciar lead

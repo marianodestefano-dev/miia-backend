@@ -2372,10 +2372,27 @@ async function safeSendMessage(target, content, options = {}) {
     content = ZERO_WIDTH_MARKER + content;
   }
 
-  const ownerSock = getOwnerSock();
+  let ownerSock = getOwnerSock();
   if (!ownerSock) {
-    console.log(`⚠️ [INTERCEPTADO] WhatsApp no está listo.`);
-    return null;
+    // ═══ GHOST-DISCONNECT RECOVERY: Intentar reconectar y reintentar UNA vez ═══
+    console.warn(`⚠️ [INTERCEPTADO] WhatsApp no está listo — intentando recovery...`);
+    try {
+      const ownerStatus = tenantManager.getTenantStatus(OWNER_UID);
+      if (ownerStatus && !ownerStatus.isReady) {
+        console.log(`[RECOVERY] 🔄 Socket caído. Disparando forceReconnect para ${OWNER_UID}...`);
+        tenantManager.forceReconnectByUid(OWNER_UID, 'safeSendMessage_recovery');
+        // Esperar 8s para que reconecte
+        await new Promise(r => setTimeout(r, 8000));
+        ownerSock = getOwnerSock();
+      }
+    } catch (recoveryErr) {
+      console.error(`[RECOVERY] ❌ Error en recovery: ${recoveryErr.message}`);
+    }
+    if (!ownerSock) {
+      console.error(`⚠️ [INTERCEPTADO] WhatsApp no está listo después de recovery. Mensaje a ${target} PERDIDO.`);
+      return null;
+    }
+    console.log(`[RECOVERY] ✅ Socket recuperado — enviando mensaje a ${target}`);
   }
   // Rate limit global: máx. mensajes por hora para proteger el número
   const currentHour = new Date().getHours();
