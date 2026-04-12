@@ -1220,22 +1220,83 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
         gateDecision.reason = 'auto_classified_lead';
         gateDecision.action = 'none';
       } else {
-        // SIN keyword match → MIIA NO EXISTE. Notificar al owner y callar.
-        const ownerJid = tenantState.sock?.user?.id;
-        if (ownerJid) {
-          const pushName = messageContext?.pushName || '';
-          const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
-          const isLid = phoneDigits.length > 13;
-          const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
-          try {
-            await sendTenantMessage(tenantState, ownerJid, alertMsg);
-            console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin keyword match (MIIA callada)`);
-          } catch (e) {
-            console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
+        // ═══ SMART CLASSIFICATION: Buscar en TODAS las fuentes antes de preguntar al owner ═══
+        const pushName = messageContext?.pushName || '';
+        const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
+        const isLid = phoneDigits.length > 13;
+        let smartClassified = false;
+
+        // 1. Buscar en contact_groups (familia, equipo, amigos)
+        if (!smartClassified && ctx.contactGroups) {
+          for (const [groupId, group] of Object.entries(ctx.contactGroups)) {
+            const contacts = group.contacts || {};
+            if (contacts[basePhone]) {
+              console.log(`${logPrefix} 🔍 SMART-CLASS: ${basePhone} encontrado en grupo "${group.name || groupId}"`);
+              contactType = groupId === 'familia' ? 'familia' : groupId === 'equipo' ? 'equipo' : 'group';
+              ctx.contactTypes[phone] = contactType;
+              await saveContactIndex(ctx.ownerUid, basePhone, { type: contactType, groupId, name: pushName || contacts[basePhone].name || '' });
+              gateDecision.respond = false; // Grupos requieren "Hola MIIA"
+              gateDecision.reason = 'smart_classified_group';
+              gateDecision.action = 'none';
+              smartClassified = true;
+              break;
+            }
           }
         }
-        console.log(`${logPrefix} 🤫 Sin keyword match para ${basePhone} — MIIA NO EXISTE (no auto-clasificar sin evidencia)`);
-        // gateDecision.respond sigue en false → silencio total
+
+        // 2. Buscar en agenda del owner (¿tiene cita con este número hoy?)
+        if (!smartClassified) {
+          try {
+            const agendaSnap = await require('firebase-admin').firestore()
+              .collection('users').doc(ctx.ownerUid).collection('miia_agenda')
+              .where('contactPhone', '==', basePhone)
+              .where('status', '==', 'pending')
+              .limit(1).get();
+            if (!agendaSnap.empty) {
+              const evt = agendaSnap.docs[0].data();
+              console.log(`${logPrefix} 🔍 SMART-CLASS: ${basePhone} tiene cita agendada "${evt.reason}" → clasificar como lead`);
+              contactType = 'lead';
+              ctx.contactTypes[phone] = 'lead';
+              const bizId = ctx.businesses?.[0]?.id || null;
+              await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: pushName || evt.contactName || '' });
+              gateDecision.respond = true;
+              gateDecision.reason = 'smart_classified_agenda';
+              gateDecision.action = 'none';
+              smartClassified = true;
+            }
+          } catch (agErr) {
+            console.warn(`${logPrefix} ⚠️ SMART-CLASS agenda check error: ${agErr.message}`);
+          }
+        }
+
+        // 3. Buscar en conversaciones pasadas (¿MIIA habló con este número antes?)
+        if (!smartClassified && ctx.conversations[phone] && ctx.conversations[phone].length > 0) {
+          console.log(`${logPrefix} 🔍 SMART-CLASS: ${basePhone} tiene ${ctx.conversations[phone].length} mensajes previos → clasificar como lead`);
+          contactType = 'lead';
+          ctx.contactTypes[phone] = 'lead';
+          const bizId = ctx.businesses?.[0]?.id || null;
+          await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: pushName || '' });
+          gateDecision.respond = true;
+          gateDecision.reason = 'smart_classified_history';
+          gateDecision.action = 'none';
+          smartClassified = true;
+        }
+
+        // 4. Si nada funcionó → MIIA NO EXISTE. Notificar al owner con contexto enriquecido.
+        if (!smartClassified) {
+          const ownerJid = tenantState.sock?.user?.id;
+          if (ownerJid) {
+            const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
+            try {
+              await sendTenantMessage(tenantState, ownerJid, alertMsg);
+              console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin match en ninguna fuente (MIIA callada)`);
+            } catch (e) {
+              console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
+            }
+          }
+          console.log(`${logPrefix} 🤫 SMART-CLASS: Sin match para ${basePhone} en keywords, grupos, agenda ni historial — MIIA NO EXISTE`);
+          // gateDecision.respond sigue en false → silencio total
+        }
       }
     } else {
       // 2+ negocios → notificar al owner para que clasifique
