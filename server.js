@@ -966,9 +966,13 @@ async function runAgendaEngine() {
         ? ` IMPORTANTE: Este recordatorio debió enviarse hace ${delayMinutes} minutos pero hubo un problema técnico. Disculpate brevemente por el retraso de forma natural (ej: "Perdón por el retraso!") y luego dale el recordatorio.`
         : '';
 
+      // Hora formateada legible
+      const evtHora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : (evt.scheduledFor ? new Date(evt.scheduledFor).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' }) : '');
+      const modeStr = evt.mode === 'virtual' ? ' (virtual — Google Meet)' : evt.mode === 'telefono' ? ' (llamada telefónica)' : evt.location ? ` (en ${evt.location})` : '';
+
       const prompt = isOwnerReminder
-        ? `Sos MIIA. Recordale a tu owner (${evtContact}) este evento de su agenda: "${evtReason}"${mentioned ? ` (con ${mentioned})` : ''}.${lateContext} Mensaje breve en self-chat, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`
-        : `Sos MIIA. Tenés que recordarle a ${evtContact} sobre: "${evtReason}".${lateContext} Mensaje breve, natural, máximo 2 líneas, máximo 200 caracteres. Sin decorados.`;
+        ? `Sos MIIA, asistente personal. Recordale a tu owner sobre este evento:\n- Qué: "${evtReason}"\n- Cuándo: ${evtHora ? `a las ${evtHora}` : 'ahora'}${mentioned ? `\n- Con quién: ${mentioned}` : ''}${modeStr ? `\n- Modalidad: ${modeStr}` : ''}${lateContext}\nGenerá un mensaje cálido y útil. Incluí la hora, el qué y el con quién. Si es presencial con ubicación, mencionala. Si es virtual, recordá que tiene link de Meet. Máximo 3 líneas. Tono: amigable, directo, con tu personalidad MIIA. NO uses formato de lista — escribí como si fuera un chat natural.`
+        : `Sos MIIA. Tenés que recordarle a ${evtContact} sobre:\n- Qué: "${evtReason}"\n- Cuándo: ${evtHora ? `a las ${evtHora}` : 'ahora'}${mentioned ? `\n- Con quién: ${mentioned}` : ''}${modeStr ? `\n- Modalidad: ${modeStr}` : ''}${lateContext}\nGenerá un recordatorio natural y claro. Incluí hora y detalle. Máximo 2 líneas, tono amable. NO uses formato de lista.`;
 
       let enableSearch = evt.searchBefore || false;
 
