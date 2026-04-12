@@ -2979,6 +2979,46 @@ REGLAS:
   // 11d-FINAL. Limpiar tags residuales (correo maestro, cotización sin procesar, etc.)
   aiMessage = cleanResidualTags(aiMessage);
 
+  // ═══════════════════════════════════════════════════════════════
+  // 11d-PROMESA-ROTA. Detectar cuando MIIA dice "ya lo hice" sin haber emitido tag
+  // Si MIIA confirma una acción pero NO emitió el tag → la acción NO se ejecutó → PROMESA ROTA
+  // En vez de dejar pasar la mentira, reemplazamos la confirmación falsa por honestidad
+  // ═══════════════════════════════════════════════════════════════
+  {
+    const msgLower = aiMessage.toLowerCase();
+    const originalMsg = messageBody?.toLowerCase() || '';
+
+    // Detectar si el owner pidió una acción
+    const pidioEmail = /\b(correo|email|mail|mand[aá]le?\s*(un\s*)?(correo|email|mail)|env[ií]a(le|r)?.*correo)\b/i.test(originalMsg);
+    const pidioAgendar = /\b(agend[aá]|record[aá]|cumplea[nñ]os|reuni[oó]n|cita|turno|a\s*las\s*\d)/i.test(originalMsg);
+    const pidioTarea = /\b(tarea|to.?do|pendiente|lista\s+de)\b/i.test(originalMsg);
+
+    // Detectar si MIIA confirma la acción
+    const confirmaEjecucion = /\b(ya\s*(lo\s*)?(mand[eé]|envi[eé]|agend[eé]|cre[eé]|hice|est[aá]\s*(saliendo|listo|enviado|agendado))|listo.*✅|en\s*camino|correo.*saliendo|ya\s*qued[oó]|ya.*agendad[oa])\b/i.test(msgLower);
+
+    // Detectar si realmente se procesó un tag (las variables de estado se setean en los bloques 11d-*)
+    // Si no hay evidencia de tag procesado en los logs previos, es mentira
+    const tieneTagEmail = /\[ENVIAR_CORREO:[^\]]+\]|\[ENVIAR_EMAIL:[^\]]+\]/i.test(aiMessage);
+    const tieneTagAgenda = /\[AGENDAR_EVENTO:[^\]]+\]|\[SOLICITAR_TURNO:[^\]]+\]/i.test(aiMessage);
+    const tieneTagTarea = /\[CREAR_TAREA:[^\]]+\]/i.test(aiMessage);
+
+    if (pidioEmail && confirmaEjecucion && !tieneTagEmail) {
+      console.error(`${logPrefix} 🚨 [PROMESA-ROTA] MIIA dice que envió email pero NO emitió [ENVIAR_CORREO:] — CORRIGIENDO`);
+      aiMessage = aiMessage.replace(/ya\s*(lo\s*)?(mand[eé]|envi[eé]).*?(✅|📧|correo|email)[^.!]*[.!]?/gi, '').trim();
+      aiMessage += '\n\n⚠️ Necesito que me confirmes los datos para poder enviar el correo correctamente. ¿A qué email lo mando, con qué asunto y qué quieres que diga?';
+    }
+
+    if (pidioAgendar && confirmaEjecucion && !tieneTagAgenda) {
+      console.error(`${logPrefix} 🚨 [PROMESA-ROTA] MIIA dice que agendó pero NO emitió [AGENDAR_EVENTO:] — CORRIGIENDO`);
+      aiMessage = aiMessage.replace(/ya\s*(lo\s*)?(agend[eé]|cre[eé]).*?(✅|📅|agendad[oa]|memoria)[^.!]*[.!]?/gi, '').trim();
+      aiMessage += '\n\n⚠️ Para agendarlo de verdad en tu calendario, necesito confirmar: ¿la fecha y hora exactas?';
+    }
+
+    if (pidioTarea && confirmaEjecucion && !tieneTagTarea) {
+      console.error(`${logPrefix} 🚨 [PROMESA-ROTA] MIIA dice que creó tarea pero NO emitió [CREAR_TAREA:] — CORRIGIENDO`);
+    }
+  }
+
   // 11e. Falso positivo → silenciar lead
   if (aiMessage.includes('[FALSO_POSITIVO]')) {
     aiMessage = aiMessage.replace(/\[FALSO_POSITIVO\]/g, '').trim();
