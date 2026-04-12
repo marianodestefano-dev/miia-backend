@@ -10206,6 +10206,54 @@ app.post('/api/tenant/init', express.json(), async (req, res) => {
     }
   } catch (e) { console.log(`[TM:${uid}] No se pudo verificar rol:`, e.message); }
 
+  // ═══ AUTO-PROVISIONING: crear business default + grupos si no existen ═══
+  // Esto es fire-and-forget (no bloquea la respuesta al frontend)
+  (async () => {
+    try {
+      const userRef = admin.firestore().collection('users').doc(uid);
+      const uDoc = await userRef.get();
+      const uData = uDoc.exists ? uDoc.data() : {};
+      const role = uData.role || 'owner';
+      if (!['admin', 'owner', 'founder'].includes(role)) return; // Solo owners
+
+      // Business default
+      const bizSnap = await userRef.collection('businesses').limit(1).get();
+      if (bizSnap.empty) {
+        const bizData = {
+          name: uData.businessName || uData.name || 'Mi Negocio',
+          description: uData.businessDescription || '',
+          ownerRole: uData.role || '',
+          email: uData.email || '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          autoProvisioned: true
+        };
+        const bizRef = await userRef.collection('businesses').add(bizData);
+        await userRef.update({ defaultBusinessId: bizRef.id });
+        console.log(`[INIT] 🏢 Auto-provisioned business "${bizData.name}" (${bizRef.id}) para ${uid}`);
+      }
+
+      // Grupos default (familia, equipo)
+      const grpSnap = await userRef.collection('contact_groups').limit(1).get();
+      if (grpSnap.empty) {
+        const defaults = [
+          { id: 'familia', name: 'Familia', icon: '👨‍👩‍👧‍👦', tone: 'Habla con cariño y confianza, como un amigo cercano de la familia.' },
+          { id: 'equipo', name: 'Equipo', icon: '👥', tone: 'Habla profesional pero amigable, como un compañero de trabajo.' }
+        ];
+        for (const g of defaults) {
+          await userRef.collection('contact_groups').doc(g.id).set({
+            name: g.name, icon: g.icon, tone: g.tone,
+            autoRespond: false, proactiveEnabled: false,
+            createdAt: new Date().toISOString()
+          });
+        }
+        console.log(`[INIT] 👥 Auto-provisioned contact groups (familia, equipo) para ${uid}`);
+      }
+    } catch (provErr) {
+      console.warn(`[INIT] ⚠️ Auto-provisioning no-bloqueante falló para ${uid}:`, provErr.message);
+    }
+  })();
+
   console.log(`[INIT] 📊 Responding - isReady: ${tenant.isReady}, hasQR: ${!!tenant.qrCode}`);
   res.json({
     success: true,
@@ -11491,13 +11539,57 @@ app.get('/api/tenant/:uid/audit-summary', async (req, res) => {
 // (Legacy — redirigen al defaultBusinessId para backward compat)
 // ============================================
 
+// Helper: resolver defaultBusinessId para un uid (con auto-creación si no existe)
+async function resolveDefaultBizId(uid) {
+  const userDoc = await admin.firestore().collection('users').doc(uid).get();
+  const userData = userDoc.exists ? userDoc.data() : {};
+  if (userData.defaultBusinessId) {
+    // Verificar que el business existe
+    const bizDoc = await admin.firestore().collection('users').doc(uid).collection('businesses').doc(userData.defaultBusinessId).get();
+    if (bizDoc.exists) return userData.defaultBusinessId;
+  }
+  // Buscar el primer business que exista
+  const bizSnap = await admin.firestore().collection('users').doc(uid).collection('businesses').limit(1).get();
+  if (!bizSnap.empty) {
+    const bizId = bizSnap.docs[0].id;
+    await admin.firestore().collection('users').doc(uid).update({ defaultBusinessId: bizId }).catch(() => {});
+    return bizId;
+  }
+  // No hay businesses → crear uno default desde datos legacy
+  const brainDoc = await admin.firestore().collection('users').doc(uid).collection('miia_persistent').doc('training_data').get();
+  const bizData = {
+    name: userData.businessName || userData.name || 'Mi Negocio',
+    description: userData.businessDescription || userData.role || '',
+    ownerRole: userData.role || '',
+    email: userData.email || '',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    autoMigrated: true
+  };
+  const docRef = await admin.firestore().collection('users').doc(uid).collection('businesses').add(bizData);
+  if (brainDoc.exists && brainDoc.data()?.content) {
+    await admin.firestore().collection('users').doc(uid).collection('businesses').doc(docRef.id)
+      .collection('brain').doc('business_cerebro').set({ content: brainDoc.data().content, updatedAt: new Date().toISOString() });
+  }
+  await admin.firestore().collection('users').doc(uid).set({ defaultBusinessId: docRef.id }, { merge: true });
+  console.log(`[BIZ-COMPAT] ✅ Auto-creado negocio default "${bizData.name}" (${docRef.id}) para ${uid}`);
+  return docRef.id;
+}
+
 // ── Training Products (grilla) ──────────────────────────────────────────────
 
 app.get('/api/tenant/:uid/train/products', async (req, res) => {
   try {
     const { uid } = req.params;
-    const snapshot = await admin.firestore().collection('training_products').doc(uid).collection('items').orderBy('createdAt', 'desc').get();
-    const products = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    const bizId = await resolveDefaultBizId(uid);
+    // Leer desde business-scoped path
+    const snap = await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('products').orderBy('createdAt', 'desc').get();
+    let products = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Fallback: si no hay productos en business path, intentar legacy
+    if (products.length === 0) {
+      const legacySnap = await admin.firestore().collection('training_products').doc(uid).collection('items').orderBy('createdAt', 'desc').get();
+      products = legacySnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
     res.json(products);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -11507,6 +11599,7 @@ app.get('/api/tenant/:uid/train/products', async (req, res) => {
 app.post('/api/tenant/:uid/train/product', express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
+    const bizId = await resolveDefaultBizId(uid);
     const { name, description, price, pricePromo, stock, extras } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'name requerido' });
 
@@ -11520,7 +11613,8 @@ app.post('/api/tenant/:uid/train/product', express.json(), async (req, res) => {
       createdAt: new Date().toISOString()
     };
 
-    const docRef = await admin.firestore().collection('training_products').doc(uid).collection('items').add(productData);
+    // Escribir en business-scoped path
+    const docRef = await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('products').add(productData);
 
     // Inject into tenant brain
     const learningText = `Producto: ${productData.name} — ${productData.description}. Precio: ${productData.price}${productData.pricePromo ? ` (Promo: ${productData.pricePromo})` : ''}${productData.stock ? ` · Stock: ${productData.stock}` : ''}`;
@@ -11535,11 +11629,13 @@ app.post('/api/tenant/:uid/train/product', express.json(), async (req, res) => {
 app.delete('/api/tenant/:uid/train/product/:productId', async (req, res) => {
   try {
     const { uid, productId } = req.params;
-    await admin.firestore().collection('training_products').doc(uid).collection('items').doc(productId).delete();
+    const bizId = await resolveDefaultBizId(uid);
+    // Intentar borrar de business-scoped path
+    await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('products').doc(productId).delete();
+    // También intentar borrar de legacy por si acaso
+    await admin.firestore().collection('training_products').doc(uid).collection('items').doc(productId).delete().catch(() => {});
 
-    // Rebuild tenant brain without this product
     await rebuildTenantBrainFromFirestore(uid);
-
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -11551,9 +11647,14 @@ app.delete('/api/tenant/:uid/train/product/:productId', async (req, res) => {
 app.get('/api/tenant/:uid/train/contact-rules', async (req, res) => {
   try {
     const { uid } = req.params;
-    const doc = await admin.firestore().collection('contact_rules').doc(uid).get();
-    if (!doc.exists) return res.json({ lead_keywords: [], client_keywords: [] });
-    res.json(doc.data());
+    const bizId = await resolveDefaultBizId(uid);
+    // Intentar business-scoped primero
+    const bizDoc = await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('contact_rules').get();
+    if (bizDoc.exists) return res.json(bizDoc.data());
+    // Fallback legacy
+    const legacyDoc = await admin.firestore().collection('contact_rules').doc(uid).get();
+    if (legacyDoc.exists) return res.json(legacyDoc.data());
+    res.json({ lead_keywords: [], client_keywords: [] });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -11562,6 +11663,7 @@ app.get('/api/tenant/:uid/train/contact-rules', async (req, res) => {
 app.post('/api/tenant/:uid/train/contact-rules', express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
+    const bizId = await resolveDefaultBizId(uid);
     const { lead_keywords, client_keywords } = req.body;
     const { validateKeyword } = require('./core/contact_gate');
 
@@ -11578,11 +11680,11 @@ app.post('/api/tenant/:uid/train/contact-rules', express.json(), async (req, res
       updatedAt: new Date().toISOString()
     };
 
+    // Escribir en business-scoped path Y legacy (dual-write para compat)
+    await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('contact_rules').set(rulesData);
     await admin.firestore().collection('contact_rules').doc(uid).set(rulesData, { merge: true });
 
-    // Rebuild brain with new rules
     await rebuildTenantBrainFromFirestore(uid);
-
     res.json({ success: true, rules: rulesData });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -11594,8 +11696,15 @@ app.post('/api/tenant/:uid/train/contact-rules', express.json(), async (req, res
 app.get('/api/tenant/:uid/train/sessions', async (req, res) => {
   try {
     const { uid } = req.params;
-    const snapshot = await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').orderBy('createdAt', 'desc').get();
-    const sessions = snapshot.docs.map(d => ({ date: d.id, ...d.data() }));
+    const bizId = await resolveDefaultBizId(uid);
+    // Business-scoped primero
+    const bizSnap = await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('sessions').orderBy('createdAt', 'desc').get();
+    let sessions = bizSnap.docs.map(d => ({ date: d.id, ...d.data() }));
+    // Fallback legacy
+    if (sessions.length === 0) {
+      const legacySnap = await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').orderBy('createdAt', 'desc').get();
+      sessions = legacySnap.docs.map(d => ({ date: d.id, ...d.data() }));
+    }
     res.json(sessions);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -11605,6 +11714,7 @@ app.get('/api/tenant/:uid/train/sessions', async (req, res) => {
 app.post('/api/tenant/:uid/train/session', express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
+    const bizId = await resolveDefaultBizId(uid);
     const { messages, trainingBlock } = req.body;
     if (!messages || !trainingBlock) return res.status(400).json({ error: 'messages and trainingBlock required' });
 
@@ -11627,7 +11737,8 @@ app.post('/api/tenant/:uid/train/session', express.json(), async (req, res) => {
       updatedAt: new Date().toISOString()
     };
 
-    await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(dateKey).set(sessionData);
+    // Escribir en business-scoped path
+    await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('sessions').doc(dateKey).set(sessionData);
 
     // Inject into tenant brain
     tenantManager.appendTenantTraining(uid, trainingBlock);
@@ -11641,12 +11752,19 @@ app.post('/api/tenant/:uid/train/session', express.json(), async (req, res) => {
 app.patch('/api/tenant/:uid/train/session/:date', express.json(), async (req, res) => {
   try {
     const { uid, date } = req.params;
+    const bizId = await resolveDefaultBizId(uid);
     const { additionalText } = req.body;
     if (!additionalText) return res.status(400).json({ error: 'additionalText required' });
 
-    const docRef = admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(date);
-    const doc = await docRef.get();
-    if (!doc.exists) return res.status(404).json({ error: 'Session not found' });
+    // Intentar business-scoped primero, fallback legacy
+    let docRef = admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('sessions').doc(date);
+    let doc = await docRef.get();
+    if (!doc.exists) {
+      // Fallback legacy
+      docRef = admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(date);
+      doc = await docRef.get();
+      if (!doc.exists) return res.status(404).json({ error: 'Session not found' });
+    }
 
     const existing = doc.data();
     const updatedBlock = existing.trainingBlock + '\n' + additionalText;
@@ -11656,9 +11774,7 @@ app.patch('/api/tenant/:uid/train/session/:date', express.json(), async (req, re
       updatedAt: new Date().toISOString()
     });
 
-    // Rebuild brain with updated session
     await rebuildTenantBrainFromFirestore(uid);
-
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -11668,11 +11784,12 @@ app.patch('/api/tenant/:uid/train/session/:date', express.json(), async (req, re
 app.delete('/api/tenant/:uid/train/session/:date', async (req, res) => {
   try {
     const { uid, date } = req.params;
-    await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(date).delete();
+    const bizId = await resolveDefaultBizId(uid);
+    // Borrar de ambos paths
+    await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('sessions').doc(date).delete().catch(() => {});
+    await admin.firestore().collection('training_sessions').doc(uid).collection('sessions').doc(date).delete().catch(() => {});
 
-    // Rebuild brain without this session
     await rebuildTenantBrainFromFirestore(uid);
-
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -11684,8 +11801,13 @@ app.delete('/api/tenant/:uid/train/session/:date', async (req, res) => {
 app.get('/api/tenant/:uid/train/payment-methods', async (req, res) => {
   try {
     const { uid } = req.params;
-    const doc = await admin.firestore().collection('payment_methods').doc(uid).get();
-    res.json(doc.exists ? (doc.data().methods || []) : []);
+    const bizId = await resolveDefaultBizId(uid);
+    // Business-scoped primero
+    const bizDoc = await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('payment_methods').get();
+    if (bizDoc.exists) return res.json(bizDoc.data().methods || []);
+    // Fallback legacy
+    const legacyDoc = await admin.firestore().collection('payment_methods').doc(uid).get();
+    res.json(legacyDoc.exists ? (legacyDoc.data().methods || []) : []);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -11694,9 +11816,12 @@ app.get('/api/tenant/:uid/train/payment-methods', async (req, res) => {
 app.post('/api/tenant/:uid/train/payment-methods', express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
+    const bizId = await resolveDefaultBizId(uid);
     const { methods } = req.body;
     if (!Array.isArray(methods)) return res.status(400).json({ error: 'methods array required' });
 
+    // Dual-write: business-scoped + legacy
+    await admin.firestore().collection('users').doc(uid).collection('businesses').doc(bizId).collection('config').doc('payment_methods').set({ methods, updatedAt: new Date().toISOString() });
     await admin.firestore().collection('payment_methods').doc(uid).set({ methods, updatedAt: new Date() });
 
     // Rebuild brain: inyectar métodos activos según su tipo estructurado
