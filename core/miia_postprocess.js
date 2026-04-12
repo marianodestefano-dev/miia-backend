@@ -470,7 +470,18 @@ function parseAuditResponse(text) {
  * @returns {{ approved: boolean, finalMessage: string, audits: object[], action: string }}
  */
 function runPostprocess(aiMessage, opts = {}) {
-  const { chatType = 'selfchat', contactName = '', hasSearchData = false, revealAsAI = false, allowedTriggerTypes = [] } = opts;
+  let { chatType = 'selfchat', contactName = '', hasSearchData = false, revealAsAI = false, allowedTriggerTypes = [] } = opts;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 🛡️ GUARDIA POSTPROCESS: miia_lead/miia_client SOLO válidos desde server.js (MIIA CENTER)
+  // Si llega desde TMH (tenants), es un BUG. Degradar a 'lead' + alertar.
+  // Sin opts._fromMiiaCenter, estos chatTypes NO deben existir.
+  // ═══════════════════════════════════════════════════════════════════
+  if ((chatType === 'miia_lead' || chatType === 'miia_client') && !opts._fromMiiaCenter) {
+    console.error(`[POSTPROCESS] 🚨🔴 GUARDIA: chatType='${chatType}' sin flag _fromMiiaCenter — posible corrupción. Degradando a 'lead'.`);
+    chatType = 'lead';
+  }
+
   const audits = [];
   let finalMessage = aiMessage;
   let worstAction = 'ok'; // ok < strip < regenerate < veto

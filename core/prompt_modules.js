@@ -534,14 +534,32 @@ function assemblePrompt(opts) {
   const { chatType, messageBody, ownerProfile, context = {} } = opts;
   const p = resolveProfile(ownerProfile);
   const ctx = context;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 🛡️ GUARDIA DE INTEGRIDAD: miia_lead SOLO puede existir en MIIA CENTER
+  // Si alguien pasa chatType='miia_lead' pero el profile NO es MIIA_SALES_PROFILE,
+  // es un BUG o una corrupción. Degradar a 'lead' seguro + alertar.
+  // PROTEGE: que un tenant NUNCA reciba instrucciones de "decí que sos IA"
+  // ═══════════════════════════════════════════════════════════════════
+  const isMiiaCenterProfile = p.name === 'MIIA' && p.businessName === 'MIIA' && (p.role || '').includes('ventas');
+  if (chatType === 'miia_lead' && !isMiiaCenterProfile) {
+    console.error(`[PROMPT_MODULES] 🚨🔴 GUARDIA INTEGRIDAD: chatType='miia_lead' con profile "${p.name}/${p.businessName}" — NO ES MIIA CENTER. Degradando a 'lead' para proteger identidad.`);
+    opts.chatType = 'lead'; // Degradar a lead seguro
+  }
+  if (chatType === 'miia_client' && !isMiiaCenterProfile) {
+    console.error(`[PROMPT_MODULES] 🚨🔴 GUARDIA INTEGRIDAD: chatType='miia_client' con profile "${p.name}/${p.businessName}" — NO ES MIIA CENTER. Degradando a 'lead'.`);
+    opts.chatType = 'lead';
+  }
+  const safeChatType = opts.chatType || chatType;
+
   // Inyectar chatType en ctx para que los módulos puedan adaptar su comportamiento
-  ctx.chatType = chatType;
+  ctx.chatType = safeChatType;
 
   // 1. Clasificar intención
-  const intents = classifyMessage(messageBody, chatType);
+  const intents = classifyMessage(messageBody, safeChatType);
 
   // 2. Seleccionar módulos
-  const moduleNames = selectModules(chatType, intents);
+  const moduleNames = selectModules(safeChatType, intents);
 
   // 3. Generar bloques
   const blocks = [];
@@ -572,11 +590,11 @@ function assemblePrompt(opts) {
   const divergences = [];
 
   // Check: selfchat DEBE tener mod_selfchat
-  if (chatType === 'selfchat' && !loaded.includes('mod_selfchat')) {
+  if (safeChatType === 'selfchat' && !loaded.includes('mod_selfchat')) {
     divergences.push('CRITICO: selfchat sin mod_selfchat cargado');
   }
   // Check: lead DEBE tener mod_lead_sales
-  if ((chatType === 'lead' || chatType === 'miia_lead') && !loaded.includes('mod_lead_sales')) {
+  if ((safeChatType === 'lead' || safeChatType === 'miia_lead') && !loaded.includes('mod_lead_sales')) {
     divergences.push('CRITICO: lead sin mod_lead_sales cargado');
   }
   // Check: core modules SIEMPRE presentes
@@ -590,7 +608,7 @@ function assemblePrompt(opts) {
   // 4b. Inyectar PERSONALIDAD de MIIA (ADN Emocional)
   // Detectar tema del mensaje para cargar opiniones relevantes
   const detectedTopic = miiaPersonality.detectTopic(messageBody);
-  const personalityBlock = miiaPersonality.buildPersonalityPrompt(chatType, detectedTopic, ctx.contactPrefs);
+  const personalityBlock = miiaPersonality.buildPersonalityPrompt(safeChatType, detectedTopic, ctx.contactPrefs);
   if (personalityBlock) {
     blocks.push(personalityBlock);
     loaded.push('mod_personality');
@@ -601,7 +619,7 @@ function assemblePrompt(opts) {
 
   // 6. Metadatos para logging
   const meta = {
-    chatType,
+    chatType: safeChatType,
     intents,
     modulesLoaded: loaded,
     modulesSkipped: skipped,
@@ -618,7 +636,7 @@ function assemblePrompt(opts) {
   if (errors.length > 0) {
     console.error(`[PROMPT_MODULES] ❌ ERRORES:`, errors);
   }
-  console.log(`[PROMPT_MODULES] ✅ ${chatType} | intents=[${intents}] | loaded=[${loaded}] | ~${meta.tokenEstimate} tokens`);
+  console.log(`[PROMPT_MODULES] ✅ ${safeChatType} | intents=[${intents}] | loaded=[${loaded}] | ~${meta.tokenEstimate} tokens`);
 
   return { prompt, meta };
 }

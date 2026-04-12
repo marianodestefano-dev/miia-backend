@@ -5694,6 +5694,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         contactName: postContactName,
         contactPhone: basePhone,
         hasSearchData: searchTriggered,
+        _fromMiiaCenter: true, // 🛡️ GUARDIA: server.js = MIIA CENTER, habilita miia_lead/miia_client
       });
 
       // Aplicar correcciones del regex (strips)
@@ -5767,7 +5768,7 @@ REGLAS:
             const strictHint = `\n\n⚠️ CORRECCIÓN OBLIGATORIA: Tu respuesta anterior fue rechazada porque: ${regexResult.vetoReason}. Genera una nueva respuesta COMPLETAMENTE DIFERENTE que NO cometa este error. PROHIBIDO: empezar con "¡Hola, jefe!", decir "ya agendé" sin haber agendado, inventar fechas o eventos. Si no puedes confirmar una acción, di "dejame verificar". Si no tienes datos exactos, di "no encontré el dato preciso". Respuesta máximo 2 oraciones, directa, sin preámbulos.`;
             const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + strictHint, ownerAIConfig, { enableSearch: searchTriggered });
             aiMessage = regenResult.text;
-            const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
+            const recheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered, _fromMiiaCenter: true });
             aiMessage = recheck.approved ? recheck.finalMessage : getFallbackMessage(regexResult.vetoReason, postChatType);
           } catch (regenErr) {
             console.error(`[POSTPROCESS] ❌ Error regenerando: ${regenErr.message}`);
@@ -5796,7 +5797,7 @@ REGLAS:
             const auditRegenResult = await aiGateway.smartCall(aiContext, fullPrompt + aiHint, ownerAIConfig, { enableSearch: searchTriggered });
             aiMessage = auditRegenResult.text;
             // Re-verificar con regex — si TAMBIÉN falla, usar fallback seguro (NUNCA enviar mensaje vetado)
-            const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
+            const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered, _fromMiiaCenter: true });
             if (!finalCheck.approved && finalCheck.action === 'veto') {
               console.error(`[POSTPROCESS:AI] 🚫 Regeneración del auditor TAMBIÉN vetada por regex: ${finalCheck.vetoReason} — usando fallback seguro`);
               aiMessage = getFallbackMessage(finalCheck.vetoReason, postChatType);
@@ -5823,7 +5824,7 @@ REGLAS:
             const improveResult = await aiGateway.smartCall(aiContext, fullPrompt + aiHint, ownerAIConfig, regenOpts);
             aiMessage = improveResult.text;
             // Re-verificar con regex — si TAMBIÉN falla, usar fallback seguro (NUNCA enviar mensaje vetado)
-            const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered });
+            const finalCheck = runPostprocess(aiMessage || '', { chatType: postChatType, contactName: postContactName, hasSearchData: searchTriggered, _fromMiiaCenter: true });
             if (!finalCheck.approved && finalCheck.action === 'veto') {
               console.error(`[POSTPROCESS:AI] 🚫 Mejora del auditor TAMBIÉN vetada por regex: ${finalCheck.vetoReason} — usando fallback seguro`);
               aiMessage = getFallbackMessage(finalCheck.vetoReason, postChatType);
