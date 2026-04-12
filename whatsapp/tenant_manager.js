@@ -669,7 +669,11 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}, options = {}) 
     onContacts: options.onContacts || null, // Callback for contacts sync (LID mapping)
     ownerUid: options.ownerUid || uid,     // UID del owner (agents apuntan al owner)
     role: options.role || 'owner',         // 'owner' | 'agent'
-    isOwnerAccount: options.isOwnerAccount || false  // true = procesar self-chat (fromMe)
+    isOwnerAccount: options.isOwnerAccount || false,  // true = procesar self-chat (fromMe)
+    // ═══ PENDING MESSAGE RECOVERY: Cola de mensajes sin responder ═══
+    // Rastrea mensajes que MIIA recibió pero aún no respondió.
+    // Si el proceso muere mid-response, estos se recuperan al reconectar.
+    _unrespondedMessages: new Map() // key: msgId, value: { phone, body, timestamp, from }
   };
 
   tenants.set(uid, tenant);
@@ -898,6 +902,24 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         if (tenant.onReady) {
           try { tenant.onReady(sock); } catch (e) { console.error(`[TM:${uid}] onReady error:`, e.message); }
         }
+
+        // ═══ PENDING RECOVERY: Reprocesar mensajes que quedaron sin responder ═══
+        // Esperar 10s para que todo esté inicializado antes de reprocesar
+        setTimeout(async () => {
+          try {
+            const recovered = await recoverUnrespondedMessages(uid, tenant);
+            if (recovered > 0) {
+              // Notificar al owner que se recuperaron mensajes
+              const selfJid = sock.user?.id;
+              if (selfJid && tenant.sock) {
+                const noticeMsg = `🔄 *MIIA se reconectó* y recuperó ${recovered} mensaje(s) que quedaron sin responder durante la desconexión. Ya los procesé.`;
+                tenant.sock.sendMessage(selfJid, { text: noticeMsg }).catch(() => {});
+              }
+            }
+          } catch (e) {
+            console.error(`[TM:${uid}] ❌ RECOVERY post-connect error:`, e.message);
+          }
+        }, 10000);
       }
 
       // Connection opened successfully → reset counters + start preventive systems
@@ -1641,6 +1663,15 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const lidTag = (resolvedFrom !== from) ? ` [LID→${resolvedFrom.split('@')[0]}]` : '';
         console.log(`[TM:${uid}] 📨 Message from ${from}${lidTag}${isSelfChat ? ' (self-chat)' : ''}: "${body.substring(0, 40)}"`);
         if (tenant.onMessage) {
+          // Owner path: trackear mensajes de leads (no fromMe, no self-chat)
+          const ownerMsgTrackId = msg.key.id || `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+          if (!isFromMe && !isSelfChat && body.trim()) {
+            tenant._unrespondedMessages.set(ownerMsgTrackId, {
+              phone: from, body, timestamp: Date.now(), from, ownerUid: uid, role: 'owner', isOwnerPath: true
+            });
+            // Owner messages get cleared after 60s (handleIncomingMessage is fire-and-forget, no return value to track)
+            setTimeout(() => tenant._unrespondedMessages.delete(ownerMsgTrackId), 60000);
+          }
           try { tenant.onMessage(msg, from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
         } else {
           // ═══ P6 FIX: Usar resolvedFrom para self-chat detection + pasar JID resuelto ═══
@@ -1675,8 +1706,28 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
           }
 
+          // ═══ PENDING RECOVERY: Trackear mensaje antes de procesar ═══
+          // Si el proceso muere mid-response, este registro sobrevive en SIGTERM flush
+          const msgTrackId = msg.key.id || `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+          if (!isFromMe && !realSelfChat && effectiveBody.trim()) {
+            tenant._unrespondedMessages.set(msgTrackId, {
+              phone: phoneForHandler,
+              body: effectiveBody,
+              timestamp: Date.now(),
+              from: from,
+              ownerUid,
+              role
+            });
+          }
           handleTenantMessage(uid, ownerUid, role, phoneForHandler, effectiveBody, realSelfChat, isFromMe, tenant, messageContext)
-            .catch(e => console.error(`[TM:${uid}] handleTenantMessage error:`, e.message));
+            .then(() => {
+              // Respuesta exitosa → eliminar del tracking
+              tenant._unrespondedMessages.delete(msgTrackId);
+            })
+            .catch(e => {
+              console.error(`[TM:${uid}] handleTenantMessage error:`, e.message);
+              // NO eliminar — si falló, queremos reintentarlo al reconectar
+            });
         }
       }
     });
@@ -3073,6 +3124,91 @@ function checkOwnerLidResponse(uid, messageBody) {
   return false;
 }
 
+// ═══ PENDING MESSAGE RECOVERY ═══════════════════════════════════════════════
+// Flush mensajes no-respondidos a Firestore (llamado en SIGTERM)
+// Cargar y reprocesar al reconectar (llamado en connection=open)
+
+async function flushUnrespondedMessages() {
+  let totalFlushed = 0;
+  for (const [uid, tenant] of tenants) {
+    if (!tenant._unrespondedMessages || tenant._unrespondedMessages.size === 0) continue;
+    const pending = [];
+    for (const [msgId, data] of tenant._unrespondedMessages) {
+      // Solo guardar mensajes de los últimos 30 min (más viejos ya no tienen sentido)
+      if (Date.now() - data.timestamp < 1800000) {
+        pending.push({ msgId, ...data });
+      }
+    }
+    if (pending.length === 0) continue;
+    try {
+      await admin.firestore().collection('users').doc(uid)
+        .collection('miia_persistent').doc('unresponded_messages')
+        .set({ messages: pending, flushedAt: new Date().toISOString() });
+      totalFlushed += pending.length;
+      console.log(`[TM:${uid}] 💾 Flushed ${pending.length} unresponded message(s) to Firestore`);
+    } catch (e) {
+      console.error(`[TM:${uid}] ❌ Error flushing unresponded messages:`, e.message);
+    }
+  }
+  return totalFlushed;
+}
+
+async function recoverUnrespondedMessages(uid, tenant) {
+  try {
+    const doc = await admin.firestore().collection('users').doc(uid)
+      .collection('miia_persistent').doc('unresponded_messages').get();
+    if (!doc.exists) return 0;
+    const data = doc.data();
+    const messages = data.messages || [];
+    if (messages.length === 0) return 0;
+
+    // Limpiar el doc para no reprocesar en el próximo reconnect
+    await doc.ref.delete();
+
+    // Filtrar mensajes de los últimos 30 min (más viejos ya no tienen sentido)
+    const recent = messages.filter(m => Date.now() - m.timestamp < 1800000);
+    if (recent.length === 0) {
+      console.log(`[TM:${uid}] 📭 ${messages.length} unresponded message(s) found but all too old (>30min). Skipping.`);
+      return 0;
+    }
+
+    console.log(`[TM:${uid}] 🔄 RECOVERY: ${recent.length} unresponded message(s) to reprocess (of ${messages.length} total)`);
+
+    // Reprocesar cada mensaje con un pequeño delay entre ellos
+    let recovered = 0;
+    for (const msg of recent) {
+      try {
+        if (msg.isOwnerPath && tenant.onMessage) {
+          // Owner path: re-dispatch via onMessage (simular mensaje entrante)
+          const fakeMsg = {
+            key: { remoteJid: msg.from, fromMe: false, id: `recovery_${Date.now()}` },
+            message: { conversation: msg.body },
+            pushName: 'Recovery'
+          };
+          tenant.onMessage(fakeMsg, msg.from, msg.body);
+        } else {
+          // Tenant path: llamar handleTenantMessage directamente
+          await handleTenantMessage(
+            uid, msg.ownerUid || uid, msg.role || 'owner',
+            msg.phone, msg.body, false, false, tenant, { isRecovery: true }
+          );
+        }
+        recovered++;
+        console.log(`[TM:${uid}] ✅ RECOVERY: Reprocesado mensaje de ${msg.phone}: "${msg.body.substring(0, 40)}"`);
+        // Delay 2s entre mensajes para no saturar
+        await new Promise(r => setTimeout(r, 2000));
+      } catch (e) {
+        console.error(`[TM:${uid}] ❌ RECOVERY: Error reprocesando mensaje de ${msg.phone}:`, e.message);
+      }
+    }
+    console.log(`[TM:${uid}] 🔄 RECOVERY COMPLETE: ${recovered}/${recent.length} mensajes recuperados`);
+    return recovered;
+  } catch (e) {
+    console.error(`[TM:${uid}] ❌ Error loading unresponded messages:`, e.message);
+    return 0;
+  }
+}
+
 module.exports = {
   initTenant,
   destroyTenant,
@@ -3089,5 +3225,7 @@ module.exports = {
   getConnectedTenants,
   checkOwnerLidResponse,
   verifyConnection,
-  forceReconnect
+  forceReconnect,
+  flushUnrespondedMessages,
+  recoverUnrespondedMessages
 };

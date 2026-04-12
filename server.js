@@ -78,6 +78,8 @@ process.on('SIGTERM', async () => {
   try { await saveAffinityToFirestore(); console.log('[SHUTDOWN] ✅ Affinity guardado'); } catch (e) { console.error('[SHUTDOWN] ❌ Error affinity:', e.message); }
   try { await saveToFirestore(); console.log('[SHUTDOWN] ✅ Persistent data guardado'); } catch (e) { console.error('[SHUTDOWN] ❌ Error persistent:', e.message); }
   try { const { persistTenantConversations } = require('./whatsapp/tenant_message_handler'); await persistTenantConversations(); console.log('[SHUTDOWN] ✅ TMH conversations guardadas'); } catch (e) { console.error('[SHUTDOWN] ❌ Error TMH convos:', e.message); }
+  // Flush mensajes no-respondidos para recovery post-reconnect
+  try { const { flushUnrespondedMessages } = require('./whatsapp/tenant_manager'); const flushed = await flushUnrespondedMessages(); console.log(`[SHUTDOWN] ✅ ${flushed} unresponded message(s) flushed`); } catch (e) { console.error('[SHUTDOWN] ❌ Error flushing unresponded:', e.message); }
   // Guardar timestamp de shutdown para que AUTO-INIT sepa cuánto estuvo offline
   try {
     await admin.firestore().collection('system').doc('shutdown_state').set({
