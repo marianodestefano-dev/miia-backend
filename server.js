@@ -16401,6 +16401,47 @@ app.post('/api/reservations/favorites', requireRole('owner', 'admin'), express.j
 });
 
 // ═══════════════════════════════════════════════════════════════
+// R3: FAVORITOS INTELIGENTES + RATING
+// ═══════════════════════════════════════════════════════════════
+
+// Smart lookup: "lo de siempre"
+app.get('/api/reservations/smart-favorite', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { hint, type } = req.query;
+    const result = await reservationsIntegration.smartFavoriteLookup(uid, hint, type);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error(`[API] ❌ smart-favorite:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Reservas pendientes de rating
+app.get('/api/reservations/pending-rating', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const results = await reservationsIntegration.getReservationsPendingRating(uid);
+    res.json({ success: true, data: results });
+  } catch (err) {
+    console.error(`[API] ❌ pending-rating:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Historial de visitas a un negocio
+app.get('/api/reservations/history/:phone', requireRole('owner', 'admin'), async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const history = await reservationsIntegration.getVisitHistory(uid, req.params.phone);
+    res.json({ success: true, data: history });
+  } catch (err) {
+    console.error(`[API] ❌ visit-history:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // R2: RED INTER-MIIA — Endpoints de red de negocios
 // ═══════════════════════════════════════════════════════════════
 

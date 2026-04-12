@@ -513,6 +513,102 @@ async function rateReservation(uid, reservationId, rating) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// R3: FAVORITOS INTELIGENTES + RATING POST-RESERVA
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * R3: Buscar el favorito más probable cuando el owner dice "lo de siempre".
+ * Analiza tipo de negocio, frecuencia de visitas, y hora del día.
+ * @param {string} uid
+ * @param {string} hint - Pista del owner ("lo de siempre", "el de siempre", etc.)
+ * @param {string} type - Tipo de negocio si fue mencionado
+ * @returns {object|null} Favorito más probable
+ */
+async function smartFavoriteLookup(uid, hint, type) {
+  const favorites = await getFavorites(uid, type);
+  if (favorites.length === 0) return null;
+
+  // Si solo hay un favorito del tipo → es ese
+  if (favorites.length === 1) {
+    console.log(`[RESERVATIONS-R3] ⭐ "Lo de siempre" → único favorito: ${favorites[0].name}`);
+    return favorites[0];
+  }
+
+  // Ordenar por visitCount (más visitado primero)
+  favorites.sort((a, b) => {
+    const countA = typeof a.visitCount === 'number' ? a.visitCount : 0;
+    const countB = typeof b.visitCount === 'number' ? b.visitCount : 0;
+    return countB - countA;
+  });
+
+  // Si el hint incluye parte del nombre, filtrar
+  if (hint && hint.length > 3) {
+    const hintLower = hint.toLowerCase();
+    const nameMatch = favorites.find(f =>
+      (f.name || '').toLowerCase().includes(hintLower)
+    );
+    if (nameMatch) {
+      console.log(`[RESERVATIONS-R3] ⭐ "Lo de siempre" + hint "${hint}" → ${nameMatch.name}`);
+      return nameMatch;
+    }
+  }
+
+  // Devolver el más visitado
+  console.log(`[RESERVATIONS-R3] ⭐ "Lo de siempre" → más frecuente: ${favorites[0].name} (${favorites[0].visitCount || 1} visitas)`);
+  return favorites[0];
+}
+
+/**
+ * R3: Obtener reservas pendientes de rating (completadas sin calificar).
+ * Esto permite que MIIA pregunte proactivamente "¿cómo te fue?".
+ * @param {string} uid
+ * @returns {Array} Reservas que necesitan rating
+ */
+async function getReservationsPendingRating(uid) {
+  const snap = await db.collection('users').doc(uid)
+    .collection('miia_reservations')
+    .where('status', '==', 'confirmed')
+    .orderBy('date', 'asc')
+    .limit(10)
+    .get();
+
+  const now = new Date();
+  const pendingRating = [];
+
+  for (const doc of snap.docs) {
+    const data = { id: doc.id, ...doc.data() };
+    // Solo incluir si la fecha ya pasó y no tiene rating
+    if (data.date && !data.personalRating) {
+      const reservationDate = new Date(data.date);
+      // Si la reserva fue ayer o antes → pedir rating
+      if (reservationDate < now) {
+        pendingRating.push(data);
+      }
+    }
+  }
+
+  console.log(`[RESERVATIONS-R3] 📊 ${pendingRating.length} reservas pendientes de rating`);
+  return pendingRating;
+}
+
+/**
+ * R3: Obtener historial de visitas a un negocio específico.
+ */
+async function getVisitHistory(uid, businessPhone) {
+  const cleanPhone = (businessPhone || '').replace(/[^0-9]/g, '');
+  if (!cleanPhone) return [];
+
+  const snap = await db.collection('users').doc(uid)
+    .collection('miia_reservations')
+    .where('businessPhone', '==', cleanPhone)
+    .orderBy('createdAt', 'desc')
+    .limit(10)
+    .get();
+
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+// ═══════════════════════════════════════════════════════════════
 // FORMATEO — Resultados legibles para WhatsApp
 // ═══════════════════════════════════════════════════════════════
 
@@ -611,6 +707,11 @@ module.exports = {
   sendInterMiiaReservation,
   getReceivedReservations,
   updateReceivedReservation,
+
+  // R3: Favoritos inteligentes + rating
+  smartFavoriteLookup,
+  getReservationsPendingRating,
+  getVisitHistory,
 
   // Constants
   RESERVATION_TYPES,
