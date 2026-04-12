@@ -70,12 +70,24 @@ process.on('uncaughtException', (err) => {
   // NO process.exit() — Railway reinicia el proceso, pero queremos intentar seguir
 });
 
-// Graceful shutdown: flush affinity a Firestore antes de cerrar
+// Graceful shutdown: flush TODO a Firestore antes de cerrar (deploy/restart/crash)
+// Esto permite que al arrancar de nuevo, AUTO-INIT reconecte rápido sin perder datos
 process.on('SIGTERM', async () => {
-  console.log('[SHUTDOWN] SIGTERM recibido — guardando datos en Firestore...');
-  try { await saveAffinityToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error affinity:', e.message); }
-  try { await saveToFirestore(); } catch (e) { console.error('[SHUTDOWN] Error persistent:', e.message); }
-  try { const { persistTenantConversations } = require('./whatsapp/tenant_message_handler'); await persistTenantConversations(); } catch (e) { console.error('[SHUTDOWN] Error TMH convos:', e.message); }
+  console.log('[SHUTDOWN] ⚠️ SIGTERM recibido — guardando TODOS los datos antes de morir...');
+  const shutdownStart = Date.now();
+  try { await saveAffinityToFirestore(); console.log('[SHUTDOWN] ✅ Affinity guardado'); } catch (e) { console.error('[SHUTDOWN] ❌ Error affinity:', e.message); }
+  try { await saveToFirestore(); console.log('[SHUTDOWN] ✅ Persistent data guardado'); } catch (e) { console.error('[SHUTDOWN] ❌ Error persistent:', e.message); }
+  try { const { persistTenantConversations } = require('./whatsapp/tenant_message_handler'); await persistTenantConversations(); console.log('[SHUTDOWN] ✅ TMH conversations guardadas'); } catch (e) { console.error('[SHUTDOWN] ❌ Error TMH convos:', e.message); }
+  // Guardar timestamp de shutdown para que AUTO-INIT sepa cuánto estuvo offline
+  try {
+    await admin.firestore().collection('system').doc('shutdown_state').set({
+      shutdownAt: new Date().toISOString(),
+      uptimeSeconds: Math.round((Date.now() - shutdownStart) / 1000),
+      reason: 'SIGTERM'
+    });
+    console.log('[SHUTDOWN] ✅ Shutdown state guardado en Firestore');
+  } catch (e) { console.error('[SHUTDOWN] ❌ Error shutdown state:', e.message); }
+  console.log(`[SHUTDOWN] 🏁 Shutdown completo en ${Date.now() - shutdownStart}ms. Adiós.`);
   process.exit(0);
 });
 
@@ -9942,14 +9954,28 @@ app.post('/api/consent/adn', express.json(), async (req, res) => {
   }
 });
 
-app.get('/api/status', (req, res) => {
-  // Check tenant first if uid param provided
+app.get('/api/status', async (req, res) => {
   const uid = req.query.uid;
-  if (uid) {
-    const status = tenantManager.getTenantStatus(uid);
-    return res.json({ connected: status.isReady, hasQR: status.hasQR, tenant: uid });
+  if (!uid) return res.json({ connected: false, hasQR: false });
+
+  const status = tenantManager.getTenantStatus(uid);
+  const result = { connected: status.isReady, hasQR: status.hasQR, tenant: uid };
+
+  // verify=true → prueba REAL con sendPresenceUpdate (no solo isReady)
+  // Detecta desconexiones fantasma donde Baileys cree estar conectado pero WhatsApp cortó
+  if (req.query.verify === 'true' && status.isReady) {
+    const probe = await tenantManager.verifyConnection(uid);
+    result.verified = probe.alive;
+    result.latencyMs = probe.latencyMs;
+    if (!probe.alive) {
+      result.connected = false; // Corregir: el dashboard NO debe mostrar "Conectado"
+      result.ghostDisconnect = true;
+      result.probeError = probe.error;
+      console.warn(`[STATUS] ⚠️ uid=${uid}: isReady=true pero verify FALLÓ → ghost disconnect`);
+    }
   }
-  res.json({ connected: false, hasQR: false });
+
+  res.json(result);
 });
 
 // ─── /api/conversations — contacts.html-compatible format ─────────────────────

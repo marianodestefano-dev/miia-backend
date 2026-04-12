@@ -739,94 +739,94 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
     tenant.sock = sock;
 
-    // ═══ TÉCNICA 2: Heartbeat + Watchdog ═══
-    // Railway proxy mata WS inactivas (~10-15 min). keepAliveIntervalMs de Baileys
-    // envía pings WS de bajo nivel que el proxy L7 puede ignorar.
-    // Solución: heartbeat a nivel aplicación cada 3 min que genera tráfico WS real.
+    // ═══ TÉCNICA 2: Heartbeat + Watchdog V2 ═══
+    // PROBLEMA RESUELTO: el watchdog viejo usaba _lastSocketActivity que se actualizaba
+    // con ws.ping() exitosos. Pero ws.ping() puede ser exitoso sin que WhatsApp
+    // realmente esté vivo (desconexión fantasma). MIIA dice "Conectado" pero no responde.
+    //
+    // SOLUCIÓN: separar 2 métricas:
+    //   _lastPingOk    — ws.ping() exitoso (solo dice que el WebSocket está abierto)
+    //   _lastRealEvent — mensaje real recibido o connection.update (WhatsApp REALMENTE vivo)
+    //
+    // Heartbeat: ws.ping() cada 3 min (mantiene Railway proxy feliz)
+    // Watchdog V2: cada 5 min, si no hubo _lastRealEvent en 10 min → prueba activa
+    //   con sendPresenceUpdate(). Si falla → reconecta.
     if (tenant._watchdog) clearInterval(tenant._watchdog);
     if (tenant._heartbeat) clearInterval(tenant._heartbeat);
-    tenant._lastSocketActivity = Date.now();
+    if (tenant._activeProbe) clearInterval(tenant._activeProbe);
+    const now = Date.now();
+    tenant._lastSocketActivity = now; // backward compat
+    tenant._lastPingOk = now;
+    tenant._lastRealEvent = now;
+    tenant._probeFailCount = 0;
 
-    // Heartbeat: mantiene el socket vivo para Railway con tráfico WS real
-    // FIX: NO usar sendPresenceUpdate('available') — genera notificación visible
-    // al owner cada 3 min (suena/vibra el teléfono). Usar ping WS nativo.
+    // Heartbeat: ws.ping() cada 3 min — solo mantiene WS vivo para Railway
     tenant._heartbeat = setInterval(async () => {
       if (!tenant.isReady || !tenant.sock) return;
       try {
         const ws = tenant.sock.ws;
         if (ws && typeof ws.ping === 'function') {
           const wsState = ws.readyState;
-          if (wsState === 1) {
-            // Socket OPEN → ping WS nativo
+          if (wsState === 1 || wsState === undefined) {
             ws.ping();
-            tenant._lastSocketActivity = Date.now();
-          } else if (wsState === undefined) {
-            // Railway proxy: readyState puede ser undefined pero socket funcional
-            // Intentar ping igual — si falla, el catch lo maneja
-            try {
-              ws.ping();
-              tenant._lastSocketActivity = Date.now();
-            } catch (_) {
-              // ping falló → socket no funcional, no actualizar actividad
-            }
+            tenant._lastPingOk = Date.now();
+            tenant._lastSocketActivity = Date.now(); // backward compat
           }
-          // wsState 0 (CONNECTING), 2 (CLOSING), 3 (CLOSED) → no hacer nada
-        } else if (tenant.sock && !ws) {
-          // sock existe pero sin ws → socket en transición, actualizar actividad
-          // para evitar watchdog falso positivo durante reconexión
-          tenant._lastSocketActivity = Date.now();
         }
       } catch (e) {
         console.warn(`[TM:${uid}] ⚠️ Heartbeat ping failed: ${e.message}`);
       }
     }, 180000); // Cada 3 minutos
 
-    // Watchdog: detecta socket REALMENTE muerto y reconecta
-    // Umbral: 15 min sin actividad (antes era 7 — causaba reconexiones innecesarias)
-    // Condición: readyState debe ser explícitamente NO-OPEN (2 o 3), no undefined
+    // Watchdog V2 (Active Probe): detecta desconexión fantasma
+    // Cada 5 min revisa si hubo actividad REAL. Si no → sendPresenceUpdate como probe.
+    // Si el probe falla → socket fantasma → reconectar.
     setTimeout(() => {
-    tenant._watchdog = setInterval(() => {
-      if (!tenant.isReady) return;
-      const silentMinutes = (Date.now() - tenant._lastSocketActivity) / 60000;
-      if (silentMinutes > 15 && tenant.sock) {
-        const ws = tenant.sock.ws;
-        const wsState = ws?.readyState;
-        // Solo reconectar si: no tiene ws, o readyState es CLOSING(2)/CLOSED(3)
-        // readyState undefined en Railway proxy = puede estar OK → NO reconectar
-        const isDead = !ws || wsState === 2 || wsState === 3;
-        if (isDead) {
-          if (tenant._reconnecting) return; // Anti-cascada
-          console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket muerto (ws=${ws ? 'exists' : 'null'}, readyState=${wsState}, silent ${Math.round(silentMinutes)}min). Reconectando...`);
-          tenant._reconnecting = true;
-          try { tenant.sock.end(undefined); } catch (_) {}
-          tenant.sock = null;
-          tenant.isReady = false;
-          tenant._initializing = true;
-          setTimeout(() => {
-            tenant._reconnecting = false;
-            startBaileysConnection(uid, tenant, ioInstance);
-          }, 5000);
-        } else if (silentMinutes > 30) {
-          // 30 min sin actividad con readyState undefined → algo anda mal, reconectar
-          if (tenant._reconnecting) return;
-          console.warn(`[TM:${uid}] 🐛 WATCHDOG: Socket inactivo 30+ min (readyState=${wsState}). Reconectando por precaución...`);
-          tenant._reconnecting = true;
-          try { tenant.sock.end(undefined); } catch (_) {}
-          tenant.sock = null;
-          tenant.isReady = false;
-          tenant._initializing = true;
-          setTimeout(() => {
-            tenant._reconnecting = false;
-            startBaileysConnection(uid, tenant, ioInstance);
-          }, 5000);
+    tenant._watchdog = setInterval(async () => {
+      if (!tenant.isReady || !tenant.sock || tenant._reconnecting) return;
+
+      const silentMinutes = (Date.now() - (tenant._lastRealEvent || 0)) / 60000;
+      const ws = tenant.sock.ws;
+      const wsState = ws?.readyState;
+
+      // Caso 1: ws explícitamente muerto (CLOSING/CLOSED/null)
+      if (!ws || wsState === 2 || wsState === 3) {
+        console.warn(`[TM:${uid}] 🐛 WATCHDOG-V2: Socket MUERTO (ws=${ws ? 'exists' : 'null'}, readyState=${wsState}). Reconectando...`);
+        forceReconnect(uid, tenant, ioInstance, 'watchdog_dead_socket');
+        return;
+      }
+
+      // Caso 2: 10+ min sin actividad real → probe activo
+      if (silentMinutes > 10) {
+        console.log(`[TM:${uid}] 🔍 WATCHDOG-V2: ${Math.round(silentMinutes)}min sin actividad real. Ejecutando probe activo...`);
+        try {
+          // sendPresenceUpdate es la operación más liviana que hace un roundtrip real a WhatsApp
+          // Si falla, la conexión es fantasma
+          await Promise.race([
+            tenant.sock.sendPresenceUpdate('available'),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('probe timeout')), 15000))
+          ]);
+          // Probe exitoso → WhatsApp está vivo, resetear contador
+          tenant._probeFailCount = 0;
+          tenant._lastRealEvent = Date.now(); // probe confirmó que está vivo
+          console.log(`[TM:${uid}] ✅ WATCHDOG-V2: Probe exitoso — WhatsApp confirmado vivo`);
+        } catch (probeErr) {
+          tenant._probeFailCount = (tenant._probeFailCount || 0) + 1;
+          console.warn(`[TM:${uid}] ⚠️ WATCHDOG-V2: Probe FALLÓ (#${tenant._probeFailCount}): ${probeErr.message}`);
+          // 2 fallos consecutivos → reconectar (evitar falso positivo por timeout puntual)
+          if (tenant._probeFailCount >= 2) {
+            console.error(`[TM:${uid}] 🐛 WATCHDOG-V2: ${tenant._probeFailCount} probes fallidos consecutivos. DESCONEXIÓN FANTASMA detectada. Reconectando...`);
+            forceReconnect(uid, tenant, ioInstance, 'watchdog_ghost_disconnect');
+          }
         }
       }
-    }, 300000); // Cada 5 minutos (antes 3 — muy agresivo)
-    }, 90000); // Offset 90s para intercalar con heartbeat
+    }, 300000); // Cada 5 minutos
+    }, 90000); // Offset 90s para dar tiempo a la conexión inicial
 
     // ─── Connection updates (QR, auth, ready) ───
     sock.ev.on('connection.update', async (update) => {
-      tenant._lastSocketActivity = Date.now(); // Watchdog: cualquier evento = socket vivo
+      tenant._lastSocketActivity = Date.now(); // backward compat
+      tenant._lastRealEvent = Date.now(); // Watchdog V2: connection.update = WhatsApp REALMENTE vivo
       const { connection, lastDisconnect, qr } = update;
 
       // QR code received
@@ -1096,7 +1096,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     const offlineBuffer = {}; // { [jid]: { msgs: [], timer: null } }
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      tenant._lastSocketActivity = Date.now(); // Watchdog: mensaje recibido = socket vivo
+      tenant._lastSocketActivity = Date.now(); // backward compat
+      tenant._lastRealEvent = Date.now(); // Watchdog V2: mensaje REAL recibido = WhatsApp vivo
       for (const msg of messages) {
         const _m = msg.message || {};
         const b = _m.conversation || _m.extendedTextMessage?.text || _m.imageMessage?.caption || _m.videoMessage?.caption
@@ -2121,6 +2122,57 @@ async function destroyTenant(uid) {
   }
 }
 
+// ─── Force Reconnect (usado por Watchdog V2) ───────────────────────────────
+
+function forceReconnect(uid, tenant, ioInstance, reason) {
+  if (tenant._reconnecting) {
+    console.log(`[TM:${uid}] ⏸️ forceReconnect(${reason}): ya hay reconexión en curso — ignorando`);
+    return;
+  }
+  console.warn(`[TM:${uid}] 🔄 FORCE-RECONNECT (reason: ${reason}). Matando socket y reconectando...`);
+  tenant._reconnecting = true;
+  tenant._probeFailCount = 0;
+  try { if (tenant.sock) tenant.sock.end(undefined); } catch (_) {}
+  tenant.sock = null;
+  tenant.isReady = false;
+  tenant._initializing = true;
+  // Notificar al dashboard que se perdió conexión temporalmente
+  if (ioInstance) {
+    ioInstance.to(`tenant:${uid}`).emit('whatsapp_reconnecting', { uid, reason });
+  }
+  setTimeout(() => {
+    tenant._reconnecting = false;
+    startBaileysConnection(uid, tenant, ioInstance);
+  }, 5000);
+}
+
+// ─── Verify Connection (Health Check Real) ──────────────────────────────────
+// Intenta un roundtrip real a WhatsApp. Devuelve { alive, latencyMs, error }.
+// Usado por GET /api/status?verify=true para que el dashboard NO mienta.
+
+async function verifyConnection(uid) {
+  const t = tenants.get(uid);
+  if (!t || !t.isReady || !t.sock) {
+    return { alive: false, error: 'not_connected', latencyMs: null };
+  }
+  const start = Date.now();
+  try {
+    await Promise.race([
+      t.sock.sendPresenceUpdate('available'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('verify timeout 10s')), 10000))
+    ]);
+    const latencyMs = Date.now() - start;
+    t._lastRealEvent = Date.now(); // Probe exitoso = actividad real confirmada
+    t._probeFailCount = 0;
+    console.log(`[TM:${uid}] ✅ VERIFY: WhatsApp alive (${latencyMs}ms)`);
+    return { alive: true, latencyMs, error: null };
+  } catch (e) {
+    const latencyMs = Date.now() - start;
+    console.warn(`[TM:${uid}] ❌ VERIFY: WhatsApp NOT alive (${latencyMs}ms): ${e.message}`);
+    return { alive: false, latencyMs, error: e.message };
+  }
+}
+
 // ─── Status ─────────────────────────────────────────────────────────────────
 
 function getTenantStatus(uid) {
@@ -2132,7 +2184,9 @@ function getTenantStatus(uid) {
     isAuthenticated: !!t.isAuthenticated,
     hasQR: !!t.qrCode,
     qrCode: t.qrCode,
-    conversationCount: Object.keys(t.conversations).length
+    conversationCount: Object.keys(t.conversations).length,
+    lastRealEvent: t._lastRealEvent || 0,
+    probeFailCount: t._probeFailCount || 0
   };
 }
 
@@ -3033,5 +3087,7 @@ module.exports = {
   getConnectionMetrics,
   resolveLidFromContacts,
   getConnectedTenants,
-  checkOwnerLidResponse
+  checkOwnerLidResponse,
+  verifyConnection,
+  forceReconnect
 };
