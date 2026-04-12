@@ -142,6 +142,7 @@ const gmailIntegration = require('./integrations/gmail_integration');
 const googleTasks = require('./integrations/google_tasks_integration');
 const sheetsIntegration = require('./integrations/google_sheets_integration');
 const reservationsIntegration = require('./integrations/reservations_integration');
+const miiaGifs = require('./core/miia_gifs');
 const googleServices = require('./integrations/google_services_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
@@ -8037,6 +8038,19 @@ REGLAS:
       }
 
       await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx, isMiiaSalesLead: isMiiaSalesLead || isMiiaSupportClient });
+
+      // 🎬 P-GIFS: Enviar GIF demostrativo si MIIA está presentando un feature al lead
+      if (isMiiaSalesLead && !isSelfChat && getOwnerSock()) {
+        try {
+          const gifs = await miiaGifs.detectAndPrepareGifs(aiMessage, phone);
+          for (const gif of gifs) {
+            await new Promise(r => setTimeout(r, 1200)); // Pausa natural antes del GIF
+            await miiaGifs.sendGif(getOwnerSock(), phone, gif.buffer, gif.caption);
+          }
+        } catch (gifErr) {
+          console.warn(`[MIIA-GIFS] ⚠️ Error en pipeline GIF:`, gifErr.message);
+        }
+      }
     }
 
     io.emit('ai_response', {
@@ -15271,6 +15285,9 @@ biweeklyReport.setReportDependencies({
 });
 
 server.listen(PORT, () => {
+  // 🎬 MIIA GIFS — Inicializar directorio de GIFs
+  miiaGifs.initGifDirectory();
+
   // 🛡️ INTEGRITY GUARDS — Verificar que los fixes críticos siguen intactos
   integrityGuards.runIntegrityChecks();
   // Re-verificar cada 6 horas (protección contra hot-reloads parciales)
