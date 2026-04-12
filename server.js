@@ -642,6 +642,34 @@ async function runFollowupEngine() {
     } catch (e) { continue; }
 
     if (fData.silenced) continue;
+
+    // Variables del lead (usadas en re-contacto Y followup normal)
+    const leadName = leadNames[phone] || '';
+    const firstName = leadName ? leadName.split(' ')[0] : '';
+    const lastUserMsg = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
+    const lastMiiaMsg = msgs.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
+
+    // Re-contacto 7d: si tiene recontactAt pendiente y ya pasó el tiempo, ejecutar
+    if (fData.coldFarewellSent && fData.recontactAt && !fData.recontactSent) {
+      if (new Date(fData.recontactAt).getTime() <= Date.now()) {
+        console.log(`[FOLLOWUP] 🔄 Re-contacto 7d para ${baseNum} (despedida fue el ${fData.coldFarewellAt})`);
+        try {
+          const rePrompt = biologicalClock.buildFollowupPrompt('farewell_recontact', firstName, lastUserMsg, lastMiiaMsg, 0, userProfile);
+          const reResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, rePrompt, {}, { enableSearch: false });
+          const reMsg = reResult?.text?.trim();
+          if (reMsg && reMsg.length > 10) {
+            await safeSendMessage(phone, reMsg);
+            console.log(`[FOLLOWUP] 🔄✅ Re-contacto 7d enviado a ${baseNum}: "${reMsg.substring(0, 80)}"`);
+          }
+        } catch (reErr) {
+          console.warn(`[FOLLOWUP] ⚠️ Error re-contacto 7d: ${reErr.message}`);
+        }
+        await followupRef.set({ ...fData, recontactSent: true, recontactSentAt: new Date().toISOString(), silenced: true, archived: true }, { merge: true });
+        sent++;
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      continue;
+    }
     if (fData.count >= followupMax) {
       if (followupFinal === 'archive' && !fData.archived) {
         await followupRef.set({ ...fData, archived: true, archivedAt: new Date().toISOString() }, { merge: true });
@@ -651,16 +679,59 @@ async function runFollowupEngine() {
     }
 
     // Biological Clock: clasificar estado del lead y generar followup contextual
-    const leadName = leadNames[phone] || '';
-    const firstName = leadName ? leadName.split(' ')[0] : '';
-    const lastUserMsg = msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
-    const lastMiiaMsg = msgs.filter(m => m.role === 'assistant').slice(-1)[0]?.content || '';
     const leadState = biologicalClock.classifyLeadState(lastUserMsg, lastMiiaMsg, conversationMetadata[phone]);
 
-    // Si el lead está frío (dijo "no me interesa" etc) → no seguir
-    if (leadState.state === 'cold') {
-      console.log(`[FOLLOWUP] ❄️ Lead ${baseNum} está frío (señal: ${leadState.signal}). Archivando.`);
-      await followupRef.set({ ...fData, silenced: true, coldReason: leadState.signal, coldAt: new Date().toISOString() }, { merge: true });
+    // Si el lead está frío (dijo "no me interesa" etc) → despedida elegante + silenciar
+    if (leadState.state === 'cold' && !fData.coldFarewellSent) {
+      console.log(`[FOLLOWUP] ❄️ Lead ${baseNum} está frío (señal: ${leadState.signal}). Enviando despedida elegante.`);
+      try {
+        const coldPrompt = biologicalClock.buildFollowupPrompt('cold', firstName, lastUserMsg, lastMiiaMsg, fData.count || 0, userProfile);
+        const coldResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, coldPrompt, {}, { enableSearch: false });
+        const coldMsg = coldResult?.text?.trim();
+        if (coldMsg && coldMsg.length > 10) {
+          await safeSendMessage(phone, coldMsg);
+          console.log(`[FOLLOWUP] 👋❄️ Despedida cold enviada a ${baseNum}: "${coldMsg.substring(0, 80)}..."`);
+        }
+      } catch (coldErr) {
+        console.warn(`[FOLLOWUP] ⚠️ Error en despedida cold: ${coldErr.message}`);
+      }
+      // Programar re-contacto a 7 días
+      await followupRef.set({
+        ...fData,
+        coldFarewellSent: true,
+        coldFarewellAt: new Date().toISOString(),
+        coldReason: leadState.signal,
+        recontactAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+        silenced: false // NO silenciar todavía — el re-contacto a 7d necesita encontrarlo
+      }, { merge: true });
+      sent++;
+      // Notificar al owner
+      safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+        `❄️ *${firstName || baseNum}* dijo que no le interesa. Le mandé una despedida con clase.\nEn 7 días le escribo una última vez. Si querés que no lo recontacte, decime "no recontactar ${firstName || baseNum}".`,
+        { isSelfChat: true }
+      ).catch(() => {});
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
+    }
+    // Si es frío y ya se envió despedida → verificar si toca re-contacto a 7 días
+    if (leadState.state === 'cold' && fData.coldFarewellSent) {
+      if (fData.recontactAt && new Date(fData.recontactAt).getTime() <= Date.now() && !fData.recontactSent) {
+        console.log(`[FOLLOWUP] 🔄 Re-contacto 7d para lead frío ${baseNum}`);
+        try {
+          const recontactPrompt = biologicalClock.buildFollowupPrompt('farewell_recontact', firstName, lastUserMsg, lastMiiaMsg, 0, userProfile);
+          const reResult = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, recontactPrompt, {}, { enableSearch: false });
+          const reMsg = reResult?.text?.trim();
+          if (reMsg && reMsg.length > 10) {
+            await safeSendMessage(phone, reMsg);
+            console.log(`[FOLLOWUP] 🔄✅ Re-contacto 7d enviado a ${baseNum}: "${reMsg.substring(0, 80)}..."`);
+          }
+        } catch (reErr) {
+          console.warn(`[FOLLOWUP] ⚠️ Error en re-contacto 7d: ${reErr.message}`);
+        }
+        await followupRef.set({ ...fData, recontactSent: true, recontactSentAt: new Date().toISOString(), silenced: true }, { merge: true });
+        sent++;
+        await new Promise(r => setTimeout(r, 3000));
+      }
       continue;
     }
 
@@ -703,10 +774,16 @@ async function runFollowupEngine() {
       sent++;
       console.log(`[FOLLOWUP] 📤 ${isLast ? '👋 DESPEDIDA' : `Seguimiento ${fData.count + 1}/${followupMax}`} → ${baseNum}`);
 
-      // Si es despedida, notificar al owner en self-chat (contextual, no hardcoded)
+      // Si es despedida, notificar al owner + programar re-contacto 7 días
       if (isLast) {
-        const despedidaNotif = `👋 *${firstName || baseNum}* — cerré el seguimiento después de ${followupMax} intentos sin respuesta.\nÚltimo que dijo: "${lastUserMsg.substring(0, 60)}"\nSi querés que lo retome, avisame.`;
+        const despedidaNotif = `👋 *${firstName || baseNum}* — cerré el seguimiento después de ${followupMax} intentos sin respuesta.\nÚltimo que dijo: "${lastUserMsg.substring(0, 60)}"\nEn 7 días le escribo una última vez. Si no querés, decime "no recontactar ${firstName || baseNum}".`;
         safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, despedidaNotif, { isSelfChat: true }).catch(() => {});
+        // Programar re-contacto a 7 días
+        await followupRef.set({
+          recontactAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+          coldFarewellSent: true,
+          coldFarewellAt: new Date().toISOString(),
+        }, { merge: true });
       }
     } catch (e) {
       console.error(`[FOLLOWUP] ❌ Error enviando a ${baseNum}:`, e.message);
