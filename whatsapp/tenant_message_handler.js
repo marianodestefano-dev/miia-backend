@@ -1311,10 +1311,18 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   // ── PASO 6: Si es isFromMe pero NO self-chat → registrar presencia del owner y NO responder ──
   if (isFromMe && !isSelfChat) {
-    // OWNER PRESENCE: marcar que el owner está activamente chateando con este contacto
+    // Si MIIA está activa por trigger para este contacto → owner PARTICIPA sin bloquear a MIIA
+    if (ctx.miiaActive[phone]) {
+      ctx.miiaActive[phone] = Date.now(); // Renovar timeout — actividad humana
+      console.log(`${logPrefix} 🤝 OWNER PARTICIPA con ${basePhone} — MIIA sigue activa (conversación 3-way, 30min timeout). NO se registra ownerActiveChats.`);
+      // NO setear ownerActiveChats — MIIA no se silencia
+      // El mensaje del owner ya quedó en ctx.conversations (línea ~1307)
+      return; // No procesar el mensaje del owner con IA, solo registrar como contexto
+    }
+    // OWNER PRESENCE normal: marcar que el owner está activamente chateando
     if (!ctx.ownerActiveChats) ctx.ownerActiveChats = {};
     ctx.ownerActiveChats[phone] = Date.now();
-    console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} registrado (owner activo — MIIA callada por 30min).`);
+    console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} registrado (owner activo — MIIA callada por 90min).`);
 
     // ═══ AUTO-RECLASIFICACIÓN PROACTIVA: lead → client ═══
     // Si el owner dice palabras clave de cierre de venta a un lead → reclasificar a client
@@ -1429,15 +1437,16 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
 
   // Actualizar estado de activación ANTES del gate
-  // Auto-timeout: MIIA se desactiva si pasaron 10 minutos sin mensajes del contacto
-  const MIIA_ACTIVE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos
+  // Auto-timeout: MIIA se desactiva si pasaron 30 minutos sin mensajes de NINGÚN humano
+  // (ni owner ni contacto — 30min de silencio total = MIIA se retira)
+  const MIIA_ACTIVE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
   if (ctx.miiaActive[phone] && !isHolaMiia) {
     const elapsed = Date.now() - ctx.miiaActive[phone];
     if (elapsed > MIIA_ACTIVE_TIMEOUT_MS) {
       delete ctx.miiaActive[phone];
       console.log(`${logPrefix} ⏰ MIIA auto-desactivada para ${basePhone} (${Math.round(elapsed / 60000)}min sin actividad)`);
     } else {
-      // Renovar timestamp en cada mensaje (la ventana de 10min se reinicia)
+      // Renovar timestamp en cada mensaje de CUALQUIER humano (owner o contacto)
       ctx.miiaActive[phone] = Date.now();
     }
   }
@@ -4354,7 +4363,13 @@ async function sendTenantMessage(tenantState, phone, content) {
   const isSelfChatMsg = sockBasePhone === targetBasePhone;
   const isGroupMsg = phone.endsWith('@g.us');
 
-  if (!isSelfChatMsg && !isGroupMsg) {
+  // 🚀 VELOCIDAD IA: Si MIIA está activa por trigger (conversación 3-way), responde INSTANTÁNEO
+  const isMiiaActiveForPhone = !!ctx?.miiaActive?.[phone];
+  if (isMiiaActiveForPhone) {
+    console.log(`[TMH:${tenantState.uid}] ⚡ VELOCIDAD IA: miiaActive para ${targetBasePhone} — skip delay completo`);
+  }
+
+  if (!isSelfChatMsg && !isGroupMsg && !isMiiaActiveForPhone) {
     // 🛡️ FIX: Usar contactType REAL del contacto, no hardcodeado 'lead'
     // Sin esto, familia/equipo reciben delay de lead (2.5-15s + chance 20-45s busy)
     const contactTypeForDelay = ctx?.contactTypes?.[phone] || ctx?.contactTypes?.[`${targetBasePhone}@s.whatsapp.net`] || 'lead';
