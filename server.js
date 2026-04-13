@@ -4934,11 +4934,8 @@ ${yaConoce ? '- PROHIBIDO presentarte. PROHIBIDO decir "soy MIIA", "soy la asist
               // Primera vez: solo si NUNCA hubo contacto previo
               const isFirstContact = !yaConoce;
 
-              let finalMsg = cleanMsg;
-              if (isFirstContact) {
-                // Solo en el VERDADERO primer contacto: explicar HOLA MIIA / CHAU MIIA
-                finalMsg = `${cleanMsg}\n\nSi querés seguir hablando conmigo, escribí *HOLA MIIA* y acá estaré. Y cuando quieras que me retire, *CHAU MIIA*. 😊`;
-              }
+              // La familia ya sabe cómo funciona MIIA — NUNCA agregar instrucciones de trigger
+              const finalMsg = cleanMsg;
 
               await safeSendMessage(targetSerialized, finalMsg);
               familyInfo.isHandshakeDone = true;
