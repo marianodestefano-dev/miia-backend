@@ -1058,7 +1058,8 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
                 eventMode: appt.eventMode || 'presencial',
                 location: appt.eventMode === 'presencial' ? (appt.eventLocation || '') : '',
                 phoneNumber: (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? (appt.eventLocation || '') : '',
-                reminderMinutes: 10
+                reminderMinutes: 10,
+                agendaType: appt.agendaType || 'personal'
               });
               calendarOk = true;
               meetLink = calResult.meetLink || null;
@@ -3114,18 +3115,22 @@ REGLAS:
         }
       };
 
-      // ── TAG [AGENDAR_EVENTO:contacto|fecha|razón|hint|modo|ubicación] ──
+      // ── TAG [AGENDAR_EVENTO:contacto|fecha|razón|hint|modo|ubicación|agenda] ──
       const agendarMatch = aiMessage.match(/\[AGENDAR_EVENTO:([^\]]+)\]/g);
       if (agendarMatch) {
         for (const tag of agendarMatch) {
           const inner = tag.replace('[AGENDAR_EVENTO:', '').replace(']', '');
           const parts = inner.split('|').map(p => p.trim());
           if (parts.length >= 3) {
-            const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
+            const [contacto, fecha, razon, hint, modo, ubicacion, agendaField] = parts;
             const contactName = contacto;
             let calendarOk = false;
             let meetLink = null;
             const eventMode = (modo || 'presencial').toLowerCase();
+            // DUAL AGENDA: 'personal' o 'work'. Default: leads→work, self-chat→personal
+            const agendaType = (agendaField && /^(personal|work|trabajo)$/i.test(agendaField))
+              ? (agendaField.toLowerCase() === 'trabajo' ? 'work' : agendaField.toLowerCase())
+              : (isSelfChat ? 'personal' : 'work');
 
             // 1. Parsear fecha/hora/duración y verificar disponibilidad
             try {
@@ -3180,6 +3185,7 @@ REGLAS:
                       hint: hint || '',
                       eventMode: eventMode,
                       eventLocation: ubicacion || '',
+                      agendaType: agendaType || 'personal',
                       nearestSlot: slotCheck.nearestSlot || null,
                       conflicts: conflictNames,
                       status: 'waiting_approval',
@@ -3228,12 +3234,13 @@ REGLAS:
                   eventMode: eventMode,
                   location: eventMode === 'presencial' ? (ubicacion || '') : '',
                   phoneNumber: (eventMode === 'telefono' || eventMode === 'telefónico') ? (ubicacion || contacto) : '',
-                  reminderMinutes: 10
+                  reminderMinutes: 10,
+                  agendaType
                 });
                 calendarOk = true;
                 meetLink = calResult.meetLink || null;
                 var calendarEventId = calResult.eventId || null;
-                console.log(`${logPrefix} [AGENDA-TMH] 📅 Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} calEventId=${calendarEventId}`);
+                console.log(`${logPrefix} [AGENDA-TMH] 📅 Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} agenda=${agendaType} calEventId=${calendarEventId}`);
               }
             } catch (calErr) {
               console.warn(`${logPrefix} [AGENDA-TMH] ⚠️ Calendar no disponible: ${calErr.message}. Guardando solo en Firestore.`);
@@ -3286,6 +3293,7 @@ REGLAS:
                 status: 'pending',
                 calendarSynced: calendarOk,
                 calendarEventId: calendarEventId || null,
+                agendaType: agendaType || 'personal',
                 remindContact: !isSelfChat || isExternalContact,
                 reminderMinutes: 10,
                 requestedBy: phone,

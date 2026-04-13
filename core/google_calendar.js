@@ -38,7 +38,11 @@ function getOAuth2Client() {
  * @returns {Promise<{cal: object, calId: string}>} Cliente de Calendar + calendarId
  * @throws {Error} Si el usuario no tiene googleTokens configurados
  */
-async function getCalendarClient(uid) {
+/**
+ * @param {string} uid - UID del owner
+ * @param {string} [agendaType] - 'personal' | 'work'. Si no se pasa, usa el default del usuario.
+ */
+async function getCalendarClient(uid, agendaType) {
   const doc = await admin.firestore().collection('users').doc(uid).get();
   const data = doc.exists ? doc.data() : {};
   if (!data.googleTokens) throw new Error('Google Calendar no conectado para este usuario');
@@ -49,7 +53,36 @@ async function getCalendarClient(uid) {
     const updated = { ...data.googleTokens, ...tokens };
     await admin.firestore().collection('users').doc(uid).set({ googleTokens: updated }, { merge: true });
   });
-  return { cal: google.calendar({ version: 'v3', auth: oauth2Client }), calId: data.googleCalendarId || 'primary' };
+
+  // ═══ DUAL AGENDA: Resolver calendarId según agendaType ═══
+  // Prioridad: calendars.{agendaType}.id → googleCalendarId → 'primary'
+  const calendars = data.calendars || {};
+  let calId;
+  if (agendaType && calendars[agendaType]?.id) {
+    calId = calendars[agendaType].id;
+    console.log(`[GCAL] 📅 Usando agenda "${agendaType}": ${calId}`);
+  } else {
+    calId = data.googleCalendarId || 'primary';
+  }
+
+  return { cal: google.calendar({ version: 'v3', auth: oauth2Client }), calId, calendars };
+}
+
+/**
+ * Retorna los IDs de TODOS los calendarios configurados del usuario (para check cruzado).
+ * @param {string} uid
+ * @returns {Promise<string[]>} Array de calendarIds (sin duplicados)
+ */
+async function getAllCalendarIds(uid) {
+  const doc = await admin.firestore().collection('users').doc(uid).get();
+  const data = doc.exists ? doc.data() : {};
+  const ids = new Set();
+  const defaultId = data.googleCalendarId || 'primary';
+  ids.add(defaultId);
+  const calendars = data.calendars || {};
+  if (calendars.personal?.id) ids.add(calendars.personal.id);
+  if (calendars.work?.id) ids.add(calendars.work.id);
+  return [...ids];
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -94,8 +127,8 @@ async function getScheduleConfig(uid) {
  * @param {string} opts.phoneNumber - Número de teléfono para modo telefónico (opcional)
  * @param {number} opts.reminderMinutes - Minutos antes para recordatorio (default: 10)
  */
-async function createCalendarEvent({ summary, dateStr, startHour, endHour, startMinute, endMinute, attendeeEmail, description, uid, timezone, eventMode, location, phoneNumber, reminderMinutes }) {
-  const { cal, calId } = await getCalendarClient(uid);
+async function createCalendarEvent({ summary, dateStr, startHour, endHour, startMinute, endMinute, attendeeEmail, description, uid, timezone, eventMode, location, phoneNumber, reminderMinutes, agendaType }) {
+  const { cal, calId } = await getCalendarClient(uid, agendaType);
 
   // Determinar timezone: parámetro explícito > scheduleConfig del user > default Bogotá
   let tz = timezone;
@@ -180,8 +213,9 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, start
 
   const meetLink = response.data?.conferenceData?.entryPoints?.find(e => e.entryPointType === 'video')?.uri || null;
 
-  console.log(`[GCAL] ✅ Evento creado: "${summary}" el ${dateStr} ${sH}:${sM} (${tz}) modo=${mode} reminder=${reminder}min uid=${uid}${meetLink ? ` meet=${meetLink}` : ''}`);
-  return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink, meetLink, mode };
+  const agLabel = agendaType ? ` agenda=${agendaType}` : '';
+  console.log(`[GCAL] ✅ Evento creado: "${summary}" el ${dateStr} ${sH}:${sM} (${tz}) modo=${mode}${agLabel} reminder=${reminder}min uid=${uid}${meetLink ? ` meet=${meetLink}` : ''}`);
+  return { ok: true, eventId: response.data.id, htmlLink: response.data.htmlLink, meetLink, mode, agendaType: agendaType || 'default' };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -431,28 +465,43 @@ async function checkSlotAvailability(uid, dateStr, startHour, startMinute, durat
   const blockEndMin = startHour * 60 + startMinute + durationMin + breathing.after;
 
   try {
-    const { cal, calId } = await getCalendarClient(uid);
+    const { cal } = await getCalendarClient(uid);
 
-    // Buscar eventos del día completo (6am a 23pm para cubrir edge cases)
+    // ═══ DUAL AGENDA: Consultar TODOS los calendarios del usuario ═══
+    // Un conflicto en CUALQUIER agenda bloquea el horario (persona es una sola)
+    const allCalIds = await getAllCalendarIds(uid);
     const dayStart = new Date(dateStr + 'T06:00:00');
     const dayEnd = new Date(dateStr + 'T23:00:00');
 
-    const response = await cal.events.list({
-      calendarId: calId,
-      timeMin: dayStart.toISOString(),
-      timeMax: dayEnd.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime'
-    });
+    let allEvents = [];
+    for (const cId of allCalIds) {
+      try {
+        const response = await cal.events.list({
+          calendarId: cId,
+          timeMin: dayStart.toISOString(),
+          timeMax: dayEnd.toISOString(),
+          singleEvents: true,
+          orderBy: 'startTime'
+        });
+        const calEvents = (response.data.items || [])
+          .filter(e => e.status !== 'cancelled')
+          .map(e => ({
+            title: e.summary || '(sin título)',
+            start: new Date(e.start.dateTime || e.start.date),
+            end: new Date(e.end.dateTime || e.end.date),
+            startMin: null, endMin: null,
+            calendarId: cId
+          }));
+        allEvents = allEvents.concat(calEvents);
+      } catch (calListErr) {
+        console.warn(`[AVAILABILITY] ⚠️ No pude leer calendario ${cId}: ${calListErr.message} — ignorando`);
+      }
+    }
+    if (allCalIds.length > 1) {
+      console.log(`[AVAILABILITY] 📅 Consultados ${allCalIds.length} calendarios, ${allEvents.length} eventos totales`);
+    }
 
-    const events = (response.data.items || [])
-      .filter(e => e.status !== 'cancelled')
-      .map(e => ({
-        title: e.summary || '(sin título)',
-        start: new Date(e.start.dateTime || e.start.date),
-        end: new Date(e.end.dateTime || e.end.date),
-        startMin: null, endMin: null
-      }));
+    const events = allEvents;
 
     // Convertir a minutos del día para fácil comparación
     for (const evt of events) {
@@ -553,6 +602,7 @@ async function checkSlotAvailability(uid, dateStr, startHour, startMinute, durat
 module.exports = {
   getOAuth2Client,
   getCalendarClient,
+  getAllCalendarIds,
   getScheduleConfig,
   createCalendarEvent,
   checkCalendarAvailability,

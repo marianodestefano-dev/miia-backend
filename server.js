@@ -3005,7 +3005,8 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
                   eventMode: appt.eventMode || 'presencial',
                   location: appt.eventMode === 'presencial' ? (appt.eventLocation || '') : '',
                   phoneNumber: (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? (appt.eventLocation || '') : '',
-                  reminderMinutes: 10
+                  reminderMinutes: 10,
+                  agendaType: appt.agendaType || 'personal'
                 });
                 calendarOk = true;
                 meetLink = calResult.meetLink || null;
@@ -6955,20 +6956,25 @@ REGLAS:
       }
     }
 
-    // Detectar tag [AGENDAR_EVENTO:contacto|fecha|razón|hint|modo|ubicación]
+    // Detectar tag [AGENDAR_EVENTO:contacto|fecha|razón|hint|modo|ubicación|agenda]
     // modo: presencial (default) | virtual | telefono
     // ubicación: dirección física o número de teléfono según modo
+    // agenda: personal | work (default: self-chat→personal, leads→work)
     const agendarMatch = aiMessage.match(/\[AGENDAR_EVENTO:([^\]]+)\]/g);
     if (agendarMatch) {
       for (const tag of agendarMatch) {
         const inner = tag.replace('[AGENDAR_EVENTO:', '').replace(']', '');
         const parts = inner.split('|').map(p => p.trim());
         if (parts.length >= 3) {
-          const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
+          const [contacto, fecha, razon, hint, modo, ubicacion, agendaField] = parts;
           const contactName = leadNames[`${contacto}@s.whatsapp.net`] || contacto;
           let calendarOk = false;
           let meetLink = null;
           const eventMode = (modo || 'presencial').toLowerCase();
+          // DUAL AGENDA: 'personal' o 'work'. Default: leads→work, self-chat→personal
+          const agendaType = (agendaField && /^(personal|work|trabajo)$/i.test(agendaField))
+            ? (agendaField.toLowerCase() === 'trabajo' ? 'work' : agendaField.toLowerCase())
+            : (isSelfChat ? 'personal' : 'work');
 
           // 1. Intentar crear evento en Google Calendar
           // TODOS los recordatorios van a Calendar — MIIA CENTER usa su propio calendar (hola@miia-app.com)
@@ -7025,6 +7031,7 @@ REGLAS:
                     hint: hint || '',
                     eventMode: eventMode,
                     eventLocation: ubicacion || '',
+                    agendaType: agendaType || 'personal',
                     nearestSlot: srvSlotCheck.nearestSlot || null,
                     conflicts: srvConflictNames,
                     status: 'waiting_approval',
@@ -7070,12 +7077,13 @@ REGLAS:
                 eventMode: eventMode,
                 location: eventMode === 'presencial' ? (ubicacion || '') : '',
                 phoneNumber: (eventMode === 'telefono' || eventMode === 'telefónico') ? (ubicacion || contacto) : '',
-                reminderMinutes: 10
+                reminderMinutes: 10,
+                agendaType
               });
               calendarOk = true;
               meetLink = calResult.meetLink || null;
               var srvCalEventId2 = calResult.eventId || null;
-              console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} calEventId=${srvCalEventId2}${meetLink ? ` meet=${meetLink}` : ''}`);
+              console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} agenda=${agendaType} calEventId=${srvCalEventId2}${meetLink ? ` meet=${meetLink}` : ''}`);
               actionFeedback.recordActionResult(phone, 'agendar', true, `"${razon}" agendado el ${fecha} para ${contactName} — Calendar OK`);
 
               // CAPA 4: Verificar asíncronamente que el evento realmente existe en Calendar
@@ -7177,6 +7185,7 @@ REGLAS:
               status: 'pending',
               calendarSynced: calendarOk,
               calendarEventId: srvCalEventId2 || null,
+              agendaType: agendaType || 'personal',
               remindContact: shouldRemindContact,
               reminderMinutes: 10,
               requestedBy: phone,
@@ -17413,6 +17422,65 @@ app.get('/api/tenant/:uid/calendar/diagnose', async (req, res) => {
     res.json(result);
   } catch (e) {
     console.error(`[GCAL-DIAG] ❌ Error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DUAL AGENDA — Configurar calendarios personal + work
+// ═══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/tenant/:uid/calendars', async (req, res) => {
+  const { uid } = req.params;
+  try {
+    const db = admin.firestore();
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (!userDoc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const data = userDoc.data();
+    const calendars = data.calendars || {};
+    const legacy = data.googleCalendarId || 'primary';
+    console.log(`[CALENDARS] 📅 GET calendars uid=${uid} → personal=${calendars.personal?.id || legacy}, work=${calendars.work?.id || 'no configurado'}`);
+    res.json({
+      calendars: {
+        personal: calendars.personal || { id: legacy, name: 'Personal' },
+        work: calendars.work || null
+      },
+      googleCalendarId: legacy
+    });
+  } catch (e) {
+    console.error(`[CALENDARS] ❌ GET error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/tenant/:uid/calendars', async (req, res) => {
+  const { uid } = req.params;
+  const { calendars } = req.body;
+  if (!calendars || typeof calendars !== 'object') {
+    return res.status(400).json({ error: 'Se requiere { calendars: { personal: { id, name }, work: { id, name } } }' });
+  }
+  try {
+    const db = admin.firestore();
+    const userRef = db.collection('users').doc(uid);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    const update = {};
+    if (calendars.personal?.id) {
+      update['calendars.personal'] = { id: calendars.personal.id, name: calendars.personal.name || 'Personal' };
+    }
+    if (calendars.work?.id) {
+      update['calendars.work'] = { id: calendars.work.id, name: calendars.work.name || 'Trabajo' };
+    }
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Al menos un calendario debe tener id' });
+    }
+
+    await userRef.update(update);
+    console.log(`[CALENDARS] ✅ PUT calendars uid=${uid} → ${JSON.stringify(update)}`);
+    res.json({ ok: true, updated: update });
+  } catch (e) {
+    console.error(`[CALENDARS] ❌ PUT error:`, e.message);
     res.status(500).json({ error: e.message });
   }
 });
