@@ -993,6 +993,262 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     }
   }
 
+  // ── PASO 1d: APROBACIÓN UNIFICADA DE AGENDA — Owner responde en self-chat ──
+  // Detecta: "aprobar", "agendar igual", "mover igual", "alternativa", "rechazar", "mover a las X"
+  // Busca en pending_appointments (status=waiting_approval) y ejecuta la acción.
+  if (isSelfChat && role === 'owner' && messageBody) {
+    const apMsgLower = messageBody.toLowerCase().trim();
+    const apIsApproval = /^(aprobar|apruebo|agendar igual|mover igual|sí|si|dale|ok|listo|aprobado)$/i.test(apMsgLower);
+    const apIsRejection = /^(rechazar|rechazo|no|negar|negado|cancelar)$/i.test(apMsgLower);
+    const apIsAlternative = /^(alternativa|alt)$/i.test(apMsgLower);
+    const apMoveMatch = apMsgLower.match(/^(?:mover|cambiar|pasar)\s+(?:a\s+las?\s+)?(\d{1,2})[:\.]?(\d{2})?\s*$/i);
+
+    if (apIsApproval || apIsRejection || apIsAlternative || apMoveMatch) {
+      try {
+        const pendingSnap = await db().collection('users').doc(ownerUid)
+          .collection('pending_appointments')
+          .where('status', '==', 'waiting_approval')
+          .orderBy('createdAt', 'desc')
+          .limit(1)
+          .get();
+
+        if (!pendingSnap.empty) {
+          const apptDoc = pendingSnap.docs[0];
+          const appt = apptDoc.data();
+          const pendingType = appt.type || 'turno';
+          const contactJid = appt.contactJid;
+          const contactName = appt.contactName;
+          const duration = appt.durationMinutes || 60;
+          const ownerPhone = getBasePhone(tenantState.sock?.user?.id || '');
+          const ownerCountry = getCountryFromPhone(ownerPhone);
+          const _apTzMap = {
+            'CO': 'America/Bogota', 'MX': 'America/Mexico_City', 'AR': 'America/Argentina/Buenos_Aires',
+            'CL': 'America/Santiago', 'PE': 'America/Lima', 'EC': 'America/Guayaquil',
+            'VE': 'America/Caracas', 'US': 'America/New_York', 'ES': 'Europe/Madrid',
+            'BR': 'America/Sao_Paulo', 'DO': 'America/Santo_Domingo', 'UY': 'America/Montevideo',
+            'PY': 'America/Asuncion', 'BO': 'America/La_Paz', 'CR': 'America/Costa_Rica',
+            'PA': 'America/Panama', 'GT': 'America/Guatemala', 'HN': 'America/Tegucigalpa',
+            'SV': 'America/El_Salvador', 'NI': 'America/Managua',
+          };
+          const ownerTz = _apTzMap[ownerCountry] || appt.ownerTimezone || 'America/Bogota';
+          const { safeSendMessage } = require('./tenant_manager');
+          const { createCalendarEvent, getCalendarClient } = require('../core/google_calendar');
+
+          console.log(`${logPrefix} [APPROVAL-TMH] 📋 Procesando "${apMsgLower}" para pendiente tipo=${pendingType} contacto=${contactName}`);
+
+          // HELPER: Crear evento en Calendar + Firestore
+          const _tmhCreateAndConfirm = async (scheduleLocal, durationMin) => {
+            const hourMatch = scheduleLocal.match(/(\d{1,2}):(\d{2})/);
+            const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
+            const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
+            const endTotal = startH * 60 + startMin + durationMin;
+            const endH = Math.floor(endTotal / 60);
+            const endM = endTotal % 60;
+
+            let calendarOk = false, meetLink = null, calEventId = null;
+            try {
+              const calResult = await createCalendarEvent({
+                summary: appt.reason || 'Evento MIIA',
+                dateStr: scheduleLocal.split('T')[0],
+                startHour: startH, startMinute: startMin,
+                endHour: endH, endMinute: endM,
+                description: `Agendado por MIIA para ${contactName}. ${appt.hint || ''}`.trim(),
+                uid: ownerUid, timezone: ownerTz,
+                eventMode: appt.eventMode || 'presencial',
+                location: appt.eventMode === 'presencial' ? (appt.eventLocation || '') : '',
+                phoneNumber: (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? (appt.eventLocation || '') : '',
+                reminderMinutes: 10
+              });
+              calendarOk = true;
+              meetLink = calResult.meetLink || null;
+              calEventId = calResult.eventId || null;
+            } catch (calErr) {
+              console.warn(`${logPrefix} [APPROVAL-TMH] ⚠️ Calendar: ${calErr.message}`);
+            }
+
+            let scheduledUTC = scheduleLocal;
+            try {
+              const parsedLocal = new Date(scheduleLocal);
+              if (!isNaN(parsedLocal)) {
+                const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+                const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                const offsetMs = new Date(localStr) - new Date(utcStr);
+                scheduledUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+              }
+            } catch (e) { /* usar local */ }
+
+            await db().collection('users').doc(ownerUid).collection('miia_agenda').add({
+              contactPhone: appt.contactPhone,
+              contactName: contactName,
+              scheduledFor: scheduledUTC,
+              scheduledForLocal: scheduleLocal,
+              ownerTimezone: ownerTz,
+              reason: appt.reason,
+              durationMinutes: durationMin,
+              eventMode: appt.eventMode || 'presencial',
+              eventLocation: appt.eventLocation || '',
+              meetLink: meetLink || '',
+              status: 'pending',
+              calendarSynced: calendarOk,
+              calendarEventId: calEventId,
+              reminderMinutes: 10,
+              requestedBy: contactJid,
+              createdAt: new Date().toISOString(),
+              source: 'approved_by_owner'
+            });
+
+            await apptDoc.ref.update({ status: 'approved', approvedAt: new Date().toISOString() });
+
+            if (contactJid) {
+              const modeEmoji = appt.eventMode === 'virtual' ? '📹' : (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? '📞' : '📍';
+              const meetInfo = meetLink ? `\n🔗 Link: ${meetLink}` : '';
+              const locationInfo = appt.eventLocation ? ` en ${appt.eventLocation}` : '';
+              const fechaLegible = scheduleLocal.replace('T', ' a las ').substring(0, 16);
+              const confirmMsg = `✅ ¡Listo! Tu ${appt.reason} quedó para el ${fechaLegible}${locationInfo}. ${modeEmoji}${meetInfo}\nTe aviso antes del evento 😊`;
+              await safeSendMessage(uid, contactJid, confirmMsg);
+            }
+            return { calendarOk, calEventId };
+          };
+
+          // HELPER: Mover evento existente
+          const _tmhMoveAndConfirm = async (newScheduleLocal, durationMin) => {
+            const origDocId = appt.originalEventDocId;
+            const hourMatch = newScheduleLocal.match(/(\d{1,2}):(\d{2})/);
+            const newH = hourMatch ? parseInt(hourMatch[1]) : 10;
+            const newMin = hourMatch ? parseInt(hourMatch[2]) : 0;
+            const endTotal = newH * 60 + newMin + durationMin;
+            const endH = Math.floor(endTotal / 60);
+            const endM = endTotal % 60;
+
+            let newScheduledUTC = newScheduleLocal;
+            try {
+              const parsedLocal = new Date(newScheduleLocal);
+              if (!isNaN(parsedLocal)) {
+                const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+                const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                const offsetMs = new Date(localStr) - new Date(utcStr);
+                newScheduledUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+              }
+            } catch (e) { /* usar local */ }
+
+            if (origDocId) {
+              try {
+                await db().collection('users').doc(ownerUid)
+                  .collection('miia_agenda').doc(origDocId).update({
+                    scheduledFor: newScheduledUTC,
+                    scheduledForLocal: newScheduleLocal,
+                    durationMinutes: durationMin,
+                    movedFrom: appt.originalDate || 'desconocido',
+                    movedAt: new Date().toISOString(),
+                    preReminderSent: false
+                  });
+              } catch (moveErr) {
+                console.warn(`${logPrefix} [APPROVAL-TMH] ⚠️ Error moviendo en Firestore: ${moveErr.message}`);
+              }
+            }
+
+            let calendarMoved = false;
+            try {
+              const { cal, calId } = await getCalendarClient(ownerUid);
+              let gCalEventId = null;
+              if (origDocId) {
+                const origDoc = await db().collection('users').doc(ownerUid)
+                  .collection('miia_agenda').doc(origDocId).get();
+                if (origDoc.exists) gCalEventId = origDoc.data().calendarEventId;
+              }
+              if (gCalEventId) {
+                const newDateStr = newScheduleLocal.split('T')[0];
+                await cal.events.patch({
+                  calendarId: calId, eventId: gCalEventId,
+                  requestBody: {
+                    start: { dateTime: `${newDateStr}T${String(newH).padStart(2,'0')}:${String(newMin).padStart(2,'0')}:00`, timeZone: ownerTz },
+                    end: { dateTime: `${newDateStr}T${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}:00`, timeZone: ownerTz }
+                  }
+                });
+                calendarMoved = true;
+              }
+            } catch (calErr) {
+              console.warn(`${logPrefix} [APPROVAL-TMH] ⚠️ Calendar move: ${calErr.message}`);
+            }
+
+            await apptDoc.ref.update({ status: 'approved_move', approvedAt: new Date().toISOString() });
+
+            if (contactJid) {
+              const fechaLegible = newScheduleLocal.replace('T', ' a las ').substring(0, 16);
+              await safeSendMessage(uid, contactJid, `✅ ¡Listo! Tu ${appt.reason} se movió al ${fechaLegible}.\nTe aviso antes del evento 😊`);
+            }
+            return { calendarMoved };
+          };
+
+          // ═══ APROBAR ═══
+          if (apIsApproval) {
+            if (pendingType === 'mover_conflicto') {
+              const result = await _tmhMoveAndConfirm(appt.scheduledForLocal, duration);
+              await safeSendMessage(uid, phone, `✅ Movido "${appt.reason}" → ${appt.scheduledForLocal.replace('T', ' ').substring(0, 16)} y avisé a *${contactName}*.${result.calendarMoved ? ' 📅' : ''}`);
+            } else {
+              const result = await _tmhCreateAndConfirm(appt.scheduledForLocal, duration);
+              const fechaLeg = appt.scheduledForLocal.replace('T', ' a las ').substring(0, 16);
+              await safeSendMessage(uid, phone, `✅ Confirmé a *${contactName}* su ${appt.reason} — ${fechaLeg}${result.calendarOk ? ' 📅' : ' ⚠️ Calendar no conectado'}`);
+            }
+            console.log(`${logPrefix} [APPROVAL-TMH] ✅ ${pendingType} aprobado: "${appt.reason}" para ${contactName}`);
+            return;
+
+          // ═══ ALTERNATIVA ═══
+          } else if (apIsAlternative) {
+            const ns = appt.nearestSlot;
+            if (ns && contactJid) {
+              const altStart = `${String(ns.startH).padStart(2,'0')}:${String(ns.startM).padStart(2,'0')}`;
+              const altEnd = `${String(ns.endH).padStart(2,'0')}:${String(ns.endM).padStart(2,'0')}`;
+              const dateOnly = appt.scheduledForLocal.split('T')[0];
+              await safeSendMessage(uid, contactJid, `Revisé la agenda y ese horario está ocupado. Tengo disponible de ${altStart} a ${altEnd}. ¿Te sirve? 😊`);
+              await apptDoc.ref.update({ status: 'alternative_offered', alternativeOffered: `${dateOnly}T${altStart}:00`, alternativeOfferedAt: new Date().toISOString() });
+              await safeSendMessage(uid, phone, `🕐 Le ofrecí a *${contactName}* el horario alternativo (${altStart}-${altEnd}).`);
+            } else {
+              await safeSendMessage(uid, phone, `⚠️ No hay horario alternativo disponible para *${contactName}*.`);
+            }
+            console.log(`${logPrefix} [APPROVAL-TMH] 🕐 Alternativa procesada para ${contactName}`);
+            return;
+
+          // ═══ RECHAZAR ═══
+          } else if (apIsRejection) {
+            await apptDoc.ref.update({ status: 'rejected', rejectedAt: new Date().toISOString() });
+            if (contactJid) {
+              const rejectMsg = pendingType === 'mover_conflicto'
+                ? `No es posible mover tu ${appt.reason} a ese horario. ¿Querés proponer otro? 😊`
+                : `No pudimos agendar tu ${appt.reason} para esa fecha. ¿Querés proponer otro horario? 😊`;
+              await safeSendMessage(uid, contactJid, rejectMsg);
+            }
+            await safeSendMessage(uid, phone, `❌ Rechazado. Le avisé a *${contactName}* y le ofrecí reprogramar.`);
+            console.log(`${logPrefix} [APPROVAL-TMH] ❌ ${pendingType} rechazado: "${appt.reason}" de ${contactName}`);
+            return;
+
+          // ═══ MOVER A OTRO HORARIO ═══
+          } else if (apMoveMatch) {
+            const newHour = parseInt(apMoveMatch[1]);
+            const newMin = apMoveMatch[2] || '00';
+            const newHourStr = String(newHour).padStart(2, '0');
+            const dateOnly = appt.scheduledForLocal.split('T')[0];
+            const newScheduleLocal = `${dateOnly}T${newHourStr}:${newMin}:00`;
+
+            if (pendingType === 'mover_conflicto') {
+              const result = await _tmhMoveAndConfirm(newScheduleLocal, duration);
+              await safeSendMessage(uid, phone, `✅ Movido "${appt.reason}" → ${newHourStr}:${newMin} y avisé a *${contactName}*.${result.calendarMoved ? ' 📅' : ''}`);
+            } else {
+              const result = await _tmhCreateAndConfirm(newScheduleLocal, duration);
+              await safeSendMessage(uid, phone, `✅ Agendé a *${contactName}* a las ${newHourStr}:${newMin}.${result.calendarOk ? ' 📅' : ''}`);
+            }
+            console.log(`${logPrefix} [APPROVAL-TMH] 🕐 ${pendingType} movido a ${newHourStr}:${newMin} para ${contactName}`);
+            return;
+          }
+        } else {
+          console.log(`${logPrefix} [APPROVAL-TMH] ℹ️ Owner escribió "${apMsgLower}" pero no hay solicitudes pendientes`);
+        }
+      } catch (apErr) {
+        console.error(`${logPrefix} [APPROVAL-TMH] ❌ Error procesando aprobación:`, apErr.message);
+      }
+    }
+  }
+
   // ── PASO 2: Verificar horario ──
   // Excluidos del check: self-chat, familia, equipo, fromMe (mensajes del propio owner)
   if (!isSelfChat && !isFromMe && !isWithinScheduleConfig(ctx.scheduleConfig)) {
@@ -2896,13 +3152,39 @@ REGLAS:
                   aiMessage = aiMessage.replace(tag, '');
                   aiMessage = 'Déjame verificar la disponibilidad y te confirmo en breve 😊';
 
-                  // 2. Consultar al owner en self-chat con opciones claras
+                  // 2. Guardar evento pendiente en Firestore para que el handler pueda actuar
+                  let conflictPendingId = null;
+                  try {
+                    const pendingRef = await db().collection('users').doc(ownerUid).collection('pending_appointments').add({
+                      type: 'agendar_conflicto',
+                      contactPhone: contacto,
+                      contactJid: phone,
+                      contactName: contactName || basePhone,
+                      scheduledForLocal: fecha,
+                      ownerTimezone: ownerTz,
+                      reason: razon,
+                      durationMinutes: tmhAgendarDuration,
+                      hint: hint || '',
+                      eventMode: eventMode,
+                      eventLocation: ubicacion || '',
+                      nearestSlot: slotCheck.nearestSlot || null,
+                      conflicts: conflictNames,
+                      status: 'waiting_approval',
+                      createdAt: new Date().toISOString()
+                    });
+                    conflictPendingId = pendingRef.id;
+                    console.log(`${logPrefix} [AGENDA-TMH] 📋 Conflicto pendiente guardado: ${conflictPendingId}`);
+                  } catch (saveErr) {
+                    console.error(`${logPrefix} [AGENDA-TMH] ❌ Error guardando conflicto pendiente:`, saveErr.message);
+                  }
+
+                  // 3. Consultar al owner en self-chat con opciones claras
                   const contactLabel = contactType === 'family' ? 'Tu familiar' : (contactType === 'team' ? 'Tu equipo' : `El contacto`);
                   const approvalMsg =
                     `📅 *CONFLICTO DE AGENDA*\n\n` +
                     `${contactLabel} *${contactName || basePhone}* quiere agendar:\n` +
                     `📝 "${razon}" — ${fecha} (${tmhAgendarDuration}min)\n\n` +
-                    `��️ A esa hora tenés: ${conflictNames}\n` +
+                    `⚠️ A esa hora tenés: ${conflictNames}\n` +
                     `${altText ? `\n💡 ${altText}\n` : ''}\n` +
                     `Respondé:\n` +
                     `✅ *"agendar igual"* → lo agendo como pide\n` +
@@ -3058,7 +3340,34 @@ REGLAS:
               aiMessage = aiMessage.replace(tag, '');
               aiMessage = 'Déjame consultar la disponibilidad y te confirmo en breve 😊';
 
-              // 2. Consultar al owner en self-chat
+              // 2. Guardar solicitud pendiente CON datos del conflicto
+              let stConflictPendingId = null;
+              try {
+                const stPendingRef = await db().collection('users').doc(ownerUid).collection('pending_appointments').add({
+                  type: 'turno_conflicto',
+                  contactPhone: contacto,
+                  contactJid: phone,
+                  contactName: contactName || basePhone,
+                  scheduledForLocal: fecha,
+                  ownerTimezone: ownerTz,
+                  reason: razon,
+                  durationMinutes: stDuration,
+                  hint: hint || '',
+                  eventMode: eventMode,
+                  eventLocation: ubicacion || '',
+                  nearestSlot: stSlotCheck.nearestSlot || null,
+                  conflicts: stConflictNames,
+                  status: 'waiting_approval',
+                  requestedBy: phone,
+                  createdAt: new Date().toISOString()
+                });
+                stConflictPendingId = stPendingRef.id;
+                console.log(`${logPrefix} [SOLICITAR_TURNO-TMH] 📋 Conflicto turno pendiente: ${stConflictPendingId}`);
+              } catch (stSaveErr) {
+                console.error(`${logPrefix} [SOLICITAR_TURNO-TMH] ❌ Error guardando conflicto:`, stSaveErr.message);
+              }
+
+              // 3. Consultar al owner en self-chat
               const stApprovalMsg =
                 `📋 *SOLICITUD DE TURNO CON CONFLICTO*\n\n` +
                 `👤 *${contactName || basePhone}* quiere turno:\n` +
@@ -3073,7 +3382,7 @@ REGLAS:
 
               await sendToOwnerSelfChat(stApprovalMsg);
               _agendaTagProcessed = true;
-              continue; // No guardar solicitud hasta que el owner decida
+              continue; // No crear solicitud duplicada — ya está guardada con conflicto
             }
 
             let scheduledForUTC = fecha;
@@ -3456,7 +3765,35 @@ REGLAS:
               aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '');
               aiMessage = 'Déjame verificar la disponibilidad para ese cambio y te confirmo 😊';
 
-              // 2. Consultar al owner en self-chat
+              // 2. Guardar movimiento pendiente en Firestore
+              let mConflictPendingId = null;
+              try {
+                const mPendingRef = await db().collection('users').doc(ownerUid).collection('pending_appointments').add({
+                  type: 'mover_conflicto',
+                  contactPhone: found.data.contactPhone || basePhone,
+                  contactJid: phone,
+                  contactName: contactName || basePhone,
+                  originalEventDocId: found.doc.id,
+                  originalReason: found.data.reason || mSearchReason,
+                  originalDate: found.data.scheduledForLocal || mOldDate,
+                  scheduledForLocal: mNewDate,
+                  ownerTimezone: ownerTz,
+                  reason: found.data.reason || mSearchReason,
+                  durationMinutes: mFinalDuration,
+                  eventMode: found.data.eventMode || 'presencial',
+                  eventLocation: found.data.eventLocation || '',
+                  nearestSlot: mSlotCheck.nearestSlot || null,
+                  conflicts: mConflictNames,
+                  status: 'waiting_approval',
+                  createdAt: new Date().toISOString()
+                });
+                mConflictPendingId = mPendingRef.id;
+                console.log(`${logPrefix} [MOVER-TMH] 📋 Conflicto mover pendiente: ${mConflictPendingId}`);
+              } catch (mSaveErr) {
+                console.error(`${logPrefix} [MOVER-TMH] ❌ Error guardando conflicto mover:`, mSaveErr.message);
+              }
+
+              // 3. Consultar al owner en self-chat
               const contactLabel = contactType === 'family' ? 'Tu familiar' : 'Contacto del grupo';
               const mApprovalMsg =
                 `📅 *SOLICITUD DE MOVER EVENTO CON CONFLICTO*\n\n` +

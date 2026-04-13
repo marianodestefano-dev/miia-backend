@@ -2949,16 +2949,18 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
       (conversations[phone] || []).slice().reverse().find(m => m.role === 'user')?.content || null;
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // APROBACIÓN DE TURNOS — Owner responde "aprobar", "rechazar", "mover a las X"
-    // Solo en self-chat del owner. Intercepta ANTES de enviar a la IA.
+    // APROBACIÓN UNIFICADA — Owner responde a conflictos de agenda / turnos / movimientos
+    // Detecta: "aprobar", "agendar igual", "mover igual", "alternativa", "rechazar", "mover a las X"
+    // Busca en pending_appointments (status=waiting_approval) y ejecuta la acción.
     // ═══════════════════════════════════════════════════════════════════════════
     if (isSelfChat && effectiveMsg) {
       const msgLower = (effectiveMsg || '').toLowerCase().trim();
-      const isApproval = /^(aprobar|apruebo|sí|si|dale|ok|listo|aprobado)$/i.test(msgLower);
+      const isApproval = /^(aprobar|apruebo|agendar igual|mover igual|sí|si|dale|ok|listo|aprobado)$/i.test(msgLower);
       const isRejection = /^(rechazar|rechazo|no|negar|negado|cancelar)$/i.test(msgLower);
+      const isAlternative = /^(alternativa|alt)$/i.test(msgLower);
       const moveMatch = msgLower.match(/^(?:mover|cambiar|pasar)\s+(?:a\s+las?\s+)?(\d{1,2})[:\.]?(\d{2})?\s*$/i);
 
-      if (isApproval || isRejection || moveMatch) {
+      if (isApproval || isRejection || isAlternative || moveMatch) {
         try {
           // Buscar la solicitud más reciente pendiente de aprobación
           const pendingSnap = await admin.firestore()
@@ -2971,30 +2973,35 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
           if (!pendingSnap.empty) {
             const apptDoc = pendingSnap.docs[0];
             const appt = apptDoc.data();
+            const pendingType = appt.type || 'turno'; // backward compat: sin type = turno viejo
             const contactJid = appt.contactJid;
             const contactName = appt.contactName;
+            const ownerCountry = getCountryFromPhone(OWNER_PHONE);
+            const ownerTz = getTimezoneForCountry(ownerCountry);
+            const duration = appt.durationMinutes || 60;
 
-            if (isApproval) {
-              // ═══ APROBAR: Crear el evento en Calendar + Firestore ═══
-              const ownerCountry = getCountryFromPhone(OWNER_PHONE);
-              const ownerTz = getTimezoneForCountry(ownerCountry);
-              const hourMatch = appt.scheduledForLocal.match(/(\d{1,2}):(\d{2})/);
+            console.log(`[APPROVAL] 📋 Procesando "${msgLower}" para pendiente tipo=${pendingType} contacto=${contactName} razón="${appt.reason}"`);
+
+            // ═══════════════════════════════════════════════════════════
+            // HELPER: Crear evento en Calendar + Firestore (reutilizado)
+            // ═══════════════════════════════════════════════════════════
+            const _createAndConfirm = async (scheduleLocal, durationMin, notifyContact = true) => {
+              const hourMatch = scheduleLocal.match(/(\d{1,2}):(\d{2})/);
               const startH = hourMatch ? parseInt(hourMatch[1]) : 10;
               const startMin = hourMatch ? parseInt(hourMatch[2]) : 0;
+              const endTotal = startH * 60 + startMin + durationMin;
+              const endH = Math.floor(endTotal / 60);
+              const endM = endTotal % 60;
 
-              let calendarOk = false;
-              let meetLink = null;
+              let calendarOk = false, meetLink = null, calEventId = null;
               try {
                 const calResult = await createCalendarEvent({
                   summary: appt.reason || 'Evento MIIA',
-                  dateStr: appt.scheduledForLocal.split('T')[0],
-                  startHour: startH,
-                  startMinute: startMin,
-                  endHour: startH + 1,
-                  endMinute: startMin,
+                  dateStr: scheduleLocal.split('T')[0],
+                  startHour: startH, startMinute: startMin,
+                  endHour: endH, endMinute: endM,
                   description: `Agendado por MIIA para ${contactName}. ${appt.hint || ''}`.trim(),
-                  uid: OWNER_UID,
-                  timezone: ownerTz,
+                  uid: OWNER_UID, timezone: ownerTz,
                   eventMode: appt.eventMode || 'presencial',
                   location: appt.eventMode === 'presencial' ? (appt.eventLocation || '') : '',
                   phoneNumber: (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? (appt.eventLocation || '') : '',
@@ -3002,25 +3009,38 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
                 });
                 calendarOk = true;
                 meetLink = calResult.meetLink || null;
-                var srvCalEventId = calResult.eventId || null;
+                calEventId = calResult.eventId || null;
               } catch (calErr) {
-                console.warn(`[TURNO-APROBADO] ⚠️ Calendar: ${calErr.message}`);
+                console.warn(`[APPROVAL] ⚠️ Calendar: ${calErr.message}`);
               }
+
+              // Convertir a UTC
+              let scheduledUTC = scheduleLocal;
+              try {
+                const parsedLocal = new Date(scheduleLocal);
+                if (!isNaN(parsedLocal)) {
+                  const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
+                  const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
+                  const offsetMs = new Date(localStr) - new Date(utcStr);
+                  scheduledUTC = new Date(parsedLocal.getTime() - offsetMs).toISOString();
+                }
+              } catch (e) { /* usar local */ }
 
               // Guardar en miia_agenda
               await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
                 contactPhone: appt.contactPhone,
                 contactName: contactName,
-                scheduledFor: appt.scheduledFor,
-                scheduledForLocal: appt.scheduledForLocal,
+                scheduledFor: scheduledUTC,
+                scheduledForLocal: scheduleLocal,
                 ownerTimezone: ownerTz,
                 reason: appt.reason,
+                durationMinutes: durationMin,
                 eventMode: appt.eventMode || 'presencial',
                 eventLocation: appt.eventLocation || '',
                 meetLink: meetLink || '',
                 status: 'pending',
                 calendarSynced: calendarOk,
-                calendarEventId: srvCalEventId || null,
+                calendarEventId: calEventId,
                 reminderMinutes: 10,
                 requestedBy: contactJid,
                 createdAt: new Date().toISOString(),
@@ -3030,50 +3050,34 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
               await apptDoc.ref.update({ status: 'approved', approvedAt: new Date().toISOString() });
 
               // Notificar al contacto
-              const modeEmoji = appt.eventMode === 'virtual' ? '📹' : (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? '📞' : '📍';
-              const meetInfo = meetLink ? `\n🔗 Link: ${meetLink}` : '';
-              const locationInfo = appt.eventLocation ? ` en ${appt.eventLocation}` : '';
-              // Confirmación contextual al contacto (no hardcoded)
-              const fechaLegible = appt.scheduledForLocal ? appt.scheduledForLocal.replace('T', ' a las ').substring(0, 16) : 'fecha confirmada';
-              const confirmMsg = `✅ ¡Listo! Tu ${appt.reason} quedó para el ${fechaLegible}${locationInfo}. ${modeEmoji}${meetInfo}\nTe aviso antes del evento 😊`;
+              if (notifyContact && contactJid) {
+                const modeEmoji = appt.eventMode === 'virtual' ? '📹' : (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? '📞' : '📍';
+                const meetInfo = meetLink ? `\n🔗 Link: ${meetLink}` : '';
+                const locationInfo = appt.eventLocation ? ` en ${appt.eventLocation}` : '';
+                const fechaLegible = scheduleLocal.replace('T', ' a las ').substring(0, 16);
+                const confirmMsg = `✅ ¡Listo! Tu ${appt.reason} quedó para el ${fechaLegible}${locationInfo}. ${modeEmoji}${meetInfo}\nTe aviso antes del evento 😊`;
+                await safeSendMessage(contactJid, confirmMsg);
+              }
 
-              await safeSendMessage(contactJid, confirmMsg);
-              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-                `✅ Confirmé a *${contactName}* su ${appt.reason} — ${fechaLegible}${calendarOk ? ' 📅 Calendar ✅' : ' ⚠️ Calendar no conectado'}`,
-                { isSelfChat: true, skipEmoji: true });
+              return { calendarOk, calEventId, meetLink };
+            };
 
-              console.log(`[TURNO-APROBADO] ✅ ${contactName}: "${appt.reason}" aprobado por owner`);
-              return;
-
-            } else if (isRejection) {
-              // ═══ RECHAZAR: Notificar al contacto ═══
-              await apptDoc.ref.update({ status: 'rejected', rejectedAt: new Date().toISOString() });
-
-              const rejectMsg = `No pudimos agendar tu ${appt.reason} para esa fecha. ¿Querés proponer otro horario? 😊`;
-              await safeSendMessage(contactJid, rejectMsg);
-              await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-                `❌ Rechacé el turno de *${contactName}* (${appt.reason}) y le ofrecí reprogramar.`,
-                { isSelfChat: true, skipEmoji: true });
-
-              console.log(`[TURNO-RECHAZADO] ❌ ${contactName}: "${appt.reason}" rechazado por owner`);
-              return;
-
-            } else if (moveMatch) {
-              // ═══ MOVER: Cambiar horario y aprobar ═══
-              const newHour = parseInt(moveMatch[1]);
-              const newMin = moveMatch[2] ? moveMatch[2] : '00';
-              const newHourStr = String(newHour).padStart(2, '0');
-
-              // Recalcular fecha con nuevo horario
-              const dateOnly = appt.scheduledForLocal.split('T')[0];
-              const newScheduledLocal = `${dateOnly}T${newHourStr}:${newMin}:00`;
+            // ═══════════════════════════════════════════════════════════
+            // HELPER: Mover evento existente en Calendar + Firestore
+            // ═══════════════════════════════════════════════════════════
+            const _moveAndConfirm = async (newScheduleLocal, durationMin) => {
+              const origDocId = appt.originalEventDocId;
+              const hourMatch = newScheduleLocal.match(/(\d{1,2}):(\d{2})/);
+              const newH = hourMatch ? parseInt(hourMatch[1]) : 10;
+              const newMin = hourMatch ? parseInt(hourMatch[2]) : 0;
+              const endTotal = newH * 60 + newMin + durationMin;
+              const endH = Math.floor(endTotal / 60);
+              const endM = endTotal % 60;
 
               // Convertir a UTC
-              const ownerCountry = getCountryFromPhone(OWNER_PHONE);
-              const ownerTz = getTimezoneForCountry(ownerCountry);
-              let newScheduledUTC = newScheduledLocal;
+              let newScheduledUTC = newScheduleLocal;
               try {
-                const parsedLocal = new Date(newScheduledLocal);
+                const parsedLocal = new Date(newScheduleLocal);
                 if (!isNaN(parsedLocal)) {
                   const localStr = new Date().toLocaleString('en-US', { timeZone: ownerTz });
                   const utcStr = new Date().toLocaleString('en-US', { timeZone: 'UTC' });
@@ -3082,72 +3086,168 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
                 }
               } catch (e) { /* usar local */ }
 
-              let calendarOk = false;
-              let meetLink = null;
-              try {
-                const calResult = await createCalendarEvent({
-                  summary: appt.reason || 'Evento MIIA',
-                  dateStr: dateOnly,
-                  startHour: newHour,
-                  endHour: newHour + 1,
-                  description: `Agendado por MIIA para ${contactName}. ${appt.hint || ''}`.trim(),
-                  uid: OWNER_UID,
-                  timezone: ownerTz,
-                  eventMode: appt.eventMode || 'presencial',
-                  location: appt.eventMode === 'presencial' ? (appt.eventLocation || '') : '',
-                  phoneNumber: (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? (appt.eventLocation || '') : '',
-                  reminderMinutes: 10
-                });
-                calendarOk = true;
-                meetLink = calResult.meetLink || null;
-              } catch (calErr) {
-                console.warn(`[TURNO-MOVIDO] ⚠️ Calendar: ${calErr.message}`);
+              // Actualizar evento original en miia_agenda
+              if (origDocId) {
+                try {
+                  await admin.firestore().collection('users').doc(OWNER_UID)
+                    .collection('miia_agenda').doc(origDocId).update({
+                      scheduledFor: newScheduledUTC,
+                      scheduledForLocal: newScheduleLocal,
+                      durationMinutes: durationMin,
+                      movedFrom: appt.originalDate || 'desconocido',
+                      movedAt: new Date().toISOString(),
+                      preReminderSent: false
+                    });
+                  console.log(`[APPROVAL] ✅ Evento ${origDocId} movido en Firestore`);
+                } catch (moveErr) {
+                  console.warn(`[APPROVAL] ⚠️ Error moviendo en Firestore: ${moveErr.message}`);
+                }
               }
 
-              // Guardar en miia_agenda con nuevo horario
-              await admin.firestore().collection('users').doc(OWNER_UID).collection('miia_agenda').add({
-                contactPhone: appt.contactPhone,
-                contactName: contactName,
-                scheduledFor: newScheduledUTC,
-                scheduledForLocal: newScheduledLocal,
-                ownerTimezone: ownerTz,
-                reason: appt.reason,
-                eventMode: appt.eventMode || 'presencial',
-                eventLocation: appt.eventLocation || '',
-                meetLink: meetLink || '',
-                status: 'pending',
-                calendarSynced: calendarOk,
-                reminderMinutes: 10,
-                requestedBy: contactJid,
-                createdAt: new Date().toISOString(),
-                source: 'moved_by_owner'
-              });
+              // Mover en Google Calendar
+              let calendarMoved = false;
+              try {
+                const { getCalendarClient } = require('./core/google_calendar');
+                const { cal, calId } = await getCalendarClient(OWNER_UID);
+                const newDateStr = newScheduleLocal.split('T')[0];
+                const newStartDT = `${newDateStr}T${String(newH).padStart(2,'0')}:${String(newMin).padStart(2,'0')}:00`;
+                const newEndDT = `${newDateStr}T${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}:00`;
 
-              await apptDoc.ref.update({
-                status: 'moved',
-                movedTo: newScheduledLocal,
-                movedAt: new Date().toISOString()
-              });
+                // Buscar evento en Calendar por calendarEventId o por título+fecha
+                let gCalEventId = null;
+                if (origDocId) {
+                  const origDoc = await admin.firestore().collection('users').doc(OWNER_UID)
+                    .collection('miia_agenda').doc(origDocId).get();
+                  if (origDoc.exists) gCalEventId = origDoc.data().calendarEventId;
+                }
+                if (gCalEventId) {
+                  await cal.events.patch({
+                    calendarId: calId, eventId: gCalEventId,
+                    requestBody: {
+                      start: { dateTime: newStartDT, timeZone: ownerTz },
+                      end: { dateTime: newEndDT, timeZone: ownerTz }
+                    }
+                  });
+                  calendarMoved = true;
+                  console.log(`[APPROVAL] 📅 Calendar movido: ${gCalEventId}`);
+                }
+              } catch (calErr) {
+                console.warn(`[APPROVAL] ⚠️ Calendar move: ${calErr.message}`);
+              }
 
-              // Notificar al contacto con nuevo horario
-              const modeEmoji = appt.eventMode === 'virtual' ? '📹' : (appt.eventMode === 'telefono' || appt.eventMode === 'telefónico') ? '📞' : '📍';
-              const meetInfo = meetLink ? `\n🔗 Link: ${meetLink}` : '';
-              const confirmMsg = `✅ ¡Confirmado! Tu ${appt.reason} quedó agendado para el ${dateOnly} a las ${newHourStr}:${newMin}. ${modeEmoji}${meetInfo}\nTe voy a recordar antes del evento. 😊`;
+              await apptDoc.ref.update({ status: 'approved_move', approvedAt: new Date().toISOString() });
 
-              await safeSendMessage(contactJid, confirmMsg);
+              // Notificar al contacto
+              if (contactJid) {
+                const fechaLegible = newScheduleLocal.replace('T', ' a las ').substring(0, 16);
+                const confirmMsg = `✅ ¡Listo! Tu ${appt.reason} se movió al ${fechaLegible}.\nTe aviso antes del evento 😊`;
+                await safeSendMessage(contactJid, confirmMsg);
+              }
+
+              return { calendarMoved };
+            };
+
+            // ═══════════════════════════════════════════════════════════
+            // ACCIÓN: APROBAR (agendar igual / mover igual / aprobar)
+            // ═══════════════════════════════════════════════════════════
+            if (isApproval) {
+              if (pendingType === 'mover_conflicto') {
+                // Mover el evento original al nuevo horario
+                const result = await _moveAndConfirm(appt.scheduledForLocal, duration);
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `✅ Movido "${appt.reason}" → ${appt.scheduledForLocal.replace('T', ' ').substring(0, 16)} y avisé a *${contactName}*.${result.calendarMoved ? ' 📅 Calendar ✅' : ''}`,
+                  { isSelfChat: true, skipEmoji: true });
+                console.log(`[APPROVAL] ✅ MOVER aprobado: "${appt.reason}" para ${contactName}`);
+              } else {
+                // Crear evento nuevo (turno, agendar_conflicto, turno_conflicto)
+                const result = await _createAndConfirm(appt.scheduledForLocal, duration);
+                const fechaLegible = appt.scheduledForLocal.replace('T', ' a las ').substring(0, 16);
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `✅ Confirmé a *${contactName}* su ${appt.reason} — ${fechaLegible}${result.calendarOk ? ' 📅 Calendar ✅' : ' ⚠️ Calendar no conectado'}`,
+                  { isSelfChat: true, skipEmoji: true });
+                console.log(`[APPROVAL] ✅ ${pendingType} aprobado: "${appt.reason}" para ${contactName}`);
+              }
+              return;
+
+            // ═══════════════════════════════════════════════════════════
+            // ACCIÓN: ALTERNATIVA — ofrecer horario alternativo al contacto
+            // ═══════════════════════════════════════════════════════════
+            } else if (isAlternative) {
+              const ns = appt.nearestSlot;
+              if (ns && contactJid) {
+                const altStart = `${String(ns.startH).padStart(2,'0')}:${String(ns.startM).padStart(2,'0')}`;
+                const altEnd = `${String(ns.endH).padStart(2,'0')}:${String(ns.endM).padStart(2,'0')}`;
+                const dateOnly = appt.scheduledForLocal.split('T')[0];
+                const altMsg = `Revisé la agenda y ese horario está ocupado. Tengo disponible de ${altStart} a ${altEnd}. ¿Te sirve? 😊`;
+                await safeSendMessage(contactJid, altMsg);
+
+                // Actualizar pendiente con el nuevo horario propuesto (queda esperando respuesta del contacto)
+                await apptDoc.ref.update({
+                  status: 'alternative_offered',
+                  alternativeOffered: `${dateOnly}T${altStart}:00`,
+                  alternativeOfferedAt: new Date().toISOString()
+                });
+
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `🕐 Le ofrecí a *${contactName}* el horario alternativo (${altStart}-${altEnd}). Si acepta, te aviso.`,
+                  { isSelfChat: true, skipEmoji: true });
+                console.log(`[APPROVAL] 🕐 Alternativa ofrecida a ${contactName}: ${altStart}-${altEnd}`);
+              } else {
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `⚠️ No hay horario alternativo disponible para ofrecerle a *${contactName}*.`,
+                  { isSelfChat: true, skipEmoji: true });
+                console.log(`[APPROVAL] ⚠️ No hay alternativa disponible para ${contactName}`);
+              }
+              return;
+
+            // ═══════════════════════════════════════════════════════════
+            // ACCIÓN: RECHAZAR
+            // ═══════════════════════════════════════════════════════════
+            } else if (isRejection) {
+              await apptDoc.ref.update({ status: 'rejected', rejectedAt: new Date().toISOString() });
+
+              if (contactJid) {
+                const rejectMsg = pendingType === 'mover_conflicto'
+                  ? `No es posible mover tu ${appt.reason} a ese horario. ¿Querés proponer otro? 😊`
+                  : `No pudimos agendar tu ${appt.reason} para esa fecha. ¿Querés proponer otro horario? 😊`;
+                await safeSendMessage(contactJid, rejectMsg);
+              }
               await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
-                `✅ Turno movido a las ${newHourStr}:${newMin} y confirmado a *${contactName}*.${calendarOk ? ' 📅 En tu Calendar.' : ''}`,
+                `❌ Rechazado. Le avisé a *${contactName}* y le ofrecí reprogramar.`,
                 { isSelfChat: true, skipEmoji: true });
+              console.log(`[APPROVAL] ❌ ${pendingType} rechazado: "${appt.reason}" de ${contactName}`);
+              return;
 
-              console.log(`[TURNO-MOVIDO] 🕐 ${contactName}: "${appt.reason}" movido a ${newHourStr}:${newMin}`);
+            // ═══════════════════════════════════════════════════════════
+            // ACCIÓN: MOVER A OTRO HORARIO — "mover a las X:XX"
+            // ═══════════════════════════════════════════════════════════
+            } else if (moveMatch) {
+              const newHour = parseInt(moveMatch[1]);
+              const newMin = moveMatch[2] || '00';
+              const newHourStr = String(newHour).padStart(2, '0');
+              const dateOnly = appt.scheduledForLocal.split('T')[0];
+              const newScheduleLocal = `${dateOnly}T${newHourStr}:${newMin}:00`;
+
+              if (pendingType === 'mover_conflicto') {
+                const result = await _moveAndConfirm(newScheduleLocal, duration);
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `✅ Movido "${appt.reason}" → ${newHourStr}:${newMin} y avisé a *${contactName}*.${result.calendarMoved ? ' 📅 Calendar ✅' : ''}`,
+                  { isSelfChat: true, skipEmoji: true });
+              } else {
+                const result = await _createAndConfirm(newScheduleLocal, duration);
+                await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`,
+                  `✅ Agendé a *${contactName}* a las ${newHourStr}:${newMin} en vez del horario original.${result.calendarOk ? ' 📅 Calendar ✅' : ''}`,
+                  { isSelfChat: true, skipEmoji: true });
+              }
+              console.log(`[APPROVAL] 🕐 ${pendingType} movido a ${newHourStr}:${newMin}: "${appt.reason}" para ${contactName}`);
               return;
             }
           } else {
-            // No hay turnos pendientes pero el owner escribió "aprobar"/"rechazar"
-            console.log(`[TURNO] ℹ️ Owner escribió "${msgLower}" pero no hay turnos pendientes`);
+            // No hay pendientes pero el owner escribió una respuesta de aprobación
+            console.log(`[APPROVAL] ℹ️ Owner escribió "${msgLower}" pero no hay solicitudes pendientes`);
           }
         } catch (apptErr) {
-          console.error(`[TURNO] ❌ Error procesando aprobación:`, apptErr.message);
+          console.error(`[APPROVAL] ❌ Error procesando aprobación:`, apptErr.message);
         }
       }
     }
@@ -6911,7 +7011,31 @@ REGLAS:
                 aiMessage = 'Déjame verificar la disponibilidad y te confirmo en breve 😊';
                 aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').trim();
 
-                // 2. Consultar al owner en self-chat
+                // 2. Guardar evento pendiente en Firestore
+                try {
+                  const srvPendingRef = await admin.firestore().collection('users').doc(OWNER_UID).collection('pending_appointments').add({
+                    type: 'agendar_conflicto',
+                    contactPhone: contacto,
+                    contactJid: `${basePhone}@s.whatsapp.net`,
+                    contactName: contactName || basePhone,
+                    scheduledForLocal: fecha,
+                    ownerTimezone: ownerTz,
+                    reason: razon,
+                    durationMinutes: agendarDuration,
+                    hint: hint || '',
+                    eventMode: eventMode,
+                    eventLocation: ubicacion || '',
+                    nearestSlot: srvSlotCheck.nearestSlot || null,
+                    conflicts: srvConflictNames,
+                    status: 'waiting_approval',
+                    createdAt: new Date().toISOString()
+                  });
+                  console.log(`[AGENDA] 📋 Conflicto pendiente guardado: ${srvPendingRef.id}`);
+                } catch (srvSaveErr) {
+                  console.error(`[AGENDA] ❌ Error guardando conflicto pendiente:`, srvSaveErr.message);
+                }
+
+                // 3. Consultar al owner en self-chat
                 const ownerJidApproval = `${OWNER_PHONE}@s.whatsapp.net`;
                 const srvApprovalMsg =
                   `📅 *CONFLICTO DE AGENDA*\n\n` +
