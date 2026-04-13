@@ -1350,13 +1350,25 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   }
 
   // ── PASO 6b: OWNER PRESENCE CHECK — Si el owner envió un mensaje reciente, MIIA se calla ──
+  // EXCEPCIÓN: Si el contacto dice "Hola MIIA" o invoca a MIIA, la intención es EXPLÍCITA
+  // → override del cooldown. El contacto QUIERE hablar con MIIA, no con el owner.
   if (!isSelfChat && ctx.ownerActiveChats && ctx.ownerActiveChats[phone]) {
     const OWNER_PRESENCE_COOLDOWN_MS = 90 * 60 * 1000; // 90 minutos (como promete el FAQ)
     const elapsed = Date.now() - ctx.ownerActiveChats[phone];
     if (elapsed < OWNER_PRESENCE_COOLDOWN_MS) {
-      const minsAgo = Math.round(elapsed / 60000);
-      console.log(`${logPrefix} 🤫 OWNER ACTIVO con ${basePhone} (hace ${minsAgo}min) — MIIA NO responde. Cooldown: ${Math.round((OWNER_PRESENCE_COOLDOWN_MS - elapsed) / 60000)}min restantes.`);
-      return;
+      // Detección temprana de trigger — ¿el contacto quiere hablar con MIIA explícitamente?
+      const earlyTrigger = detectMiiaTrigger(messageBody, !!messageContext?.isTranscribedAudio);
+      const earlyChau = detectChauMiiaTrigger(messageBody);
+      const earlyInvocation = miiaInvocation.isInvocation(messageBody);
+      if (earlyTrigger.trigger || earlyChau.trigger || earlyInvocation) {
+        const triggerType = earlyTrigger.trigger ? `"${earlyTrigger.match}"` : earlyChau.trigger ? '"Chau MIIA"' : 'invocación';
+        console.log(`${logPrefix} 🎯 OWNER ACTIVO pero contacto dijo ${triggerType} — TRIGGER OVERRIDE (MIIA responde)`);
+        delete ctx.ownerActiveChats[phone]; // Limpiar cooldown — el contacto eligió MIIA
+      } else {
+        const minsAgo = Math.round(elapsed / 60000);
+        console.log(`${logPrefix} 🤫 OWNER ACTIVO con ${basePhone} (hace ${minsAgo}min) — MIIA NO responde. Cooldown: ${Math.round((OWNER_PRESENCE_COOLDOWN_MS - elapsed) / 60000)}min restantes.`);
+        return;
+      }
     } else {
       // Cooldown expirado → limpiar y permitir que MIIA responda
       delete ctx.ownerActiveChats[phone];
