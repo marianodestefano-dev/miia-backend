@@ -62,6 +62,7 @@ const ACTION_CONFIRMATIONS = {
 function validatePreSend(message, ctx = {}) {
   const issues = [];
   const logPrefix = ctx.logPrefix || '[VALIDATOR]';
+  const logOnly = ctx.logOnly || false;
   let wasModified = false;
   let msg = message;
 
@@ -87,19 +88,24 @@ function validatePreSend(message, ctx = {}) {
     const flags = ctx.executionFlags;
     for (const [action, pattern] of Object.entries(ACTION_CONFIRMATIONS)) {
       if (pattern.test(msg) && flags[action] === false) {
-        console.error(`${logPrefix} 🚨 [VALIDATOR:PROMESA-ROTA] MIIA dice que hizo ${action} pero flag=${flags[action]} — CORRIGIENDO`);
-        // Reemplazar confirmación falsa por respuesta honesta
-        const replacements = {
-          email: 'Lo intenté pero hubo un problema técnico con el correo. Voy a reintentarlo.',
-          agenda: 'No pude agendar el evento por un problema técnico. ¿Querés que lo intente de nuevo?',
-          tarea: 'No pude crear la tarea por un problema técnico. Reintentando...',
-          cancel: 'No pude eliminar el evento. Puede que necesite que lo hagas manualmente desde el calendario.',
-          move: 'No pude mover el evento por un problema técnico. ¿Querés que lo intente de nuevo?',
-          cotizacion: 'Hubo un problema generando la cotización. Intenta de nuevo en un momento.',
-        };
-        msg = replacements[action] || 'Hubo un problema ejecutando esa acción. ¿Querés que lo intente de nuevo?';
-        issues.push(`promesa_rota:${action}`);
-        wasModified = true;
+        if (logOnly) {
+          console.error(`${logPrefix} 🚨 [VALIDATOR:PROMESA-ROTA:LOG-ONLY] MIIA dice que hizo ${action} pero flag=${flags[action]} — NO corrigiendo (log-only)`);
+          issues.push(`promesa_rota_logonly:${action}`);
+        } else {
+          console.error(`${logPrefix} 🚨 [VALIDATOR:PROMESA-ROTA] MIIA dice que hizo ${action} pero flag=${flags[action]} — CORRIGIENDO`);
+          // Reemplazar confirmación falsa por respuesta honesta
+          const replacements = {
+            email: 'Lo intenté pero hubo un problema técnico con el correo. Voy a reintentarlo.',
+            agenda: 'No pude agendar el evento por un problema técnico. ¿Querés que lo intente de nuevo?',
+            tarea: 'No pude crear la tarea por un problema técnico. Reintentando...',
+            cancel: 'No pude eliminar el evento. Puede que necesite que lo hagas manualmente desde el calendario.',
+            move: 'No pude mover el evento por un problema técnico. ¿Querés que lo intente de nuevo?',
+            cotizacion: 'Hubo un problema generando la cotización. Intenta de nuevo en un momento.',
+          };
+          msg = replacements[action] || 'Hubo un problema ejecutando esa acción. ¿Querés que lo intente de nuevo?';
+          issues.push(`promesa_rota:${action}`);
+          wasModified = true;
+        }
         break; // Solo corregir la primera promesa rota encontrada
       }
     }

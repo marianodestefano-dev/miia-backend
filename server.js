@@ -160,6 +160,7 @@ const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_
 const integrityGuards = require('./core/integrity_guards');
 const healthMonitor = require('./core/health_monitor');
 const actionFeedback = require('./core/action_feedback');
+const { validatePreSend } = require('./core/miia_validator');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert, classifyUnknownContact } = require('./core/contact_gate');
 const miiaInvocation = require('./core/miia_invocation');
 const outreachEngine = require('./core/outreach_engine');
@@ -6307,6 +6308,9 @@ REGLAS:
       return;
     }
 
+    // ═══ EXECUTION FLAGS — Anti-mentira: rastrear qué acciones realmente se ejecutaron ═══
+    const _execFlags = { email: false, agenda: false, cancel: false, cotizacion: false, move: false };
+
     // ── TAG [ENVIAR_CORREO:email|asunto|cuerpo] — MIIA envía email al lead via Gmail API / SMTP ──
     const enviarCorreoMatch = aiMessage.match(/\[ENVIAR_CORREO:([^|]+)\|([^|]+)\|([^\]]+)\]/);
     if (enviarCorreoMatch) {
@@ -6338,6 +6342,7 @@ REGLAS:
 
         if (emailResult.success) {
           console.log(`[EMAIL] ✅ Correo enviado exitosamente a ${emailTo}`);
+          _execFlags.email = true;
           actionFeedback.recordActionResult(phone, 'email', true, `Email enviado a ${emailTo} — "${emailSubject}"`);
           const ownerJidEmail = getOwnerSock()?.user?.id;
           if (ownerJidEmail) {
@@ -6395,6 +6400,7 @@ REGLAS:
         }
 
         if (emailResult.success) {
+          _execFlags.email = true;
           if (!aiMessage) aiMessage = `📧 Listo, le envié el correo a ${emailTo} — Asunto: "${emailSubject}"`;
         } else {
           console.error(`[EMAIL-MGR] ❌ Error: ${emailResult.error}`);
@@ -6839,6 +6845,7 @@ REGLAS:
           console.log(`[COTIZ] isSelfChat=${isSelfChat}, phone=${phone}`);
           await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChat);
           pdfOk = true;
+          _execFlags.cotizacion = true;
           console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
           actionFeedback.recordActionResult(phone, 'cotizacion', true, `Cotización PDF generada y enviada`);
         } catch (e) {
@@ -7083,6 +7090,7 @@ REGLAS:
                 agendaType
               });
               calendarOk = true;
+              _execFlags.agenda = true;
               meetLink = calResult.meetLink || null;
               var srvCalEventId2 = calResult.eventId || null;
               console.log(`[AGENDA] 📅 Google Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} agenda=${agendaType} calEventId=${srvCalEventId2}${meetLink ? ` meet=${meetLink}` : ''}`);
@@ -7111,6 +7119,7 @@ REGLAS:
           } catch (calErr) {
             console.warn(`[AGENDA] ⚠️ Google Calendar no disponible: ${calErr.message}. Guardando en Firestore.`);
             actionFeedback.recordActionResult(phone, 'agendar', true, `"${razon}" guardado en Firestore (Calendar no conectado)`);
+            _execFlags.agenda = true; // Firestore OK = acción ejecutada (aunque Calendar no esté)
 
             // ═══ FIX: Informar al owner CÓMO resolver (sentido común) ═══
             if (/no conectado|no tokens|googleTokens/i.test(calErr.message)) {
@@ -7589,6 +7598,7 @@ REGLAS:
         // ═══ PASO B: Actualizar Firestore ═══
         if (found) {
           await found.doc.ref.update({ status: 'cancelled', cancelledAt: new Date().toISOString(), cancelMode: mode });
+          _execFlags.cancel = true;
           console.log(`[CANCELAR_EVENTO] ✅ Firestore: "${found.data.reason}" marcado cancelled`);
           actionFeedback.recordActionResult(phone, 'cancelar', calendarDeleted, `"${found.data.reason}" cancelado (calendar=${calendarDeleted}, modo=${mode})`);
 
@@ -7727,6 +7737,7 @@ REGLAS:
             preReminderSent: false // Reset reminder para nueva hora
           };
           await found.doc.ref.update(updateData);
+          _execFlags.move = true;
           console.log(`[MOVER_EVENTO] ✅ Evento movido: "${found.data.reason}" de ${previousTimeSrv} → ${newDate}`);
           actionFeedback.recordActionResult(phone, 'mover', true, `"${found.data.reason}" movido de ${previousTimeSrv} a ${newDate}`);
 
@@ -8470,6 +8481,19 @@ REGLAS:
             }
           }
         }
+      }
+
+      // ═══ ANTI-MENTIRA: Validar que MIIA no confirme acciones que no ejecutó (LOG-ONLY Etapa A) ═══
+      const _postChatType = conversationMetadata[phone]?.contactType || (isSelfChat ? 'owner' : 'lead');
+      const _validation = validatePreSend(aiMessage, {
+        isSelfChat,
+        chatType: _postChatType,
+        executionFlags: _execFlags,
+        logPrefix: `[SRV:***${basePhone.slice(-4)}]`,
+        logOnly: true, // Etapa A: solo loguear, NO modificar mensaje
+      });
+      if (_validation.issues.length > 0) {
+        console.warn(`[ANTI-MENTIRA:SRV] ⚠️ ${_validation.issues.length} issue(s) en mensaje a ***${basePhone.slice(-4)}: ${_validation.issues.join(', ')}`);
       }
 
       await safeSendMessage(phone, aiMessage, { isSelfChat, emojiCtx, isMiiaSalesLead: isMiiaSalesLead || isMiiaSupportClient });
