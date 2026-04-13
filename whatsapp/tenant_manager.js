@@ -2091,6 +2091,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       }, 60000); // 60 segundos debounce
     };
 
+    // ═══ FIX 2: Throttle contacts sync log — resumen cada 30s en vez de cada evento ═══
+    let _contactSyncAccum = 0;
+    let _contactSyncTimer = null;
+
     sock.ev.on('contacts.upsert', (contacts) => {
       if (tenant.onContacts) {
         try { tenant.onContacts(contacts); } catch (e) {
@@ -2106,7 +2110,14 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         }
       }
       if (lidCount > 0) {
-        console.log(`[TM:${uid}] 📇 Contacts sync: ${lidCount} LID→JID mappings (total: ${Object.keys(tenant._lidMap).length})`);
+        _contactSyncAccum += lidCount;
+        if (!_contactSyncTimer) {
+          _contactSyncTimer = setTimeout(() => {
+            console.log(`[TM:${uid}] 📇 Contacts sync: ${_contactSyncAccum} LID→JID mappings (total: ${Object.keys(tenant._lidMap).length})`);
+            _contactSyncAccum = 0;
+            _contactSyncTimer = null;
+          }, 30000);
+        }
         _saveLidMapDebounced();
       }
     });
