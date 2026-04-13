@@ -39,13 +39,24 @@ const crypto = require('crypto');
 // IDENTITY FIELDS — These are what tie us to the QR scan.
 // If these survive, we NEVER need to scan QR again.
 // ═══════════════════════════════════════════════════════════════════
-const IDENTITY_FIELDS = [
+// ── SACRED: Campos criptográficos vinculados al QR scan ──
+// Si estos sobreviven, NUNCA necesitamos re-escanear QR.
+// Cambios en estos = identity change REAL → backup rotation.
+const SACRED_IDENTITY = [
   'noiseKey', 'pairingEphemeralKeyPair', 'signedIdentityKey',
   'signedPreKey', 'registrationId', 'advSecretKey',
-  'processedHistoryMessages', 'nextPreKeyId', 'firstUnuploadedPreKeyId',
-  'accountSyncCounter', 'accountSettings', 'me', 'account',
-  'signalIdentities', 'platform', 'lastAccountSyncTimestamp'
+  'me', 'account', 'signalIdentities', 'platform'
 ];
+
+// ── STATE: Contadores/timestamps que cambian frecuentemente ──
+// Se guardan en creds normalmente pero NO disparan backup rotation.
+const STATE_FIELDS = [
+  'processedHistoryMessages', 'nextPreKeyId', 'firstUnuploadedPreKeyId',
+  'accountSyncCounter', 'accountSettings', 'lastAccountSyncTimestamp'
+];
+
+// Todos juntos (para extractIdentity, restoreIdentity — backward compat)
+const IDENTITY_FIELDS = [...SACRED_IDENTITY, ...STATE_FIELDS];
 
 /**
  * Extract only identity fields from creds object.
@@ -68,7 +79,13 @@ function extractIdentity(creds) {
 function hashIdentity(identity) {
   if (!identity) return 'null';
   try {
-    const serialized = JSON.stringify(identity, BufferJSON.replacer);
+    // Solo hashear SACRED fields — STATE fields cambian frecuentemente
+    // y no representan un cambio real de identidad
+    const sacredOnly = {};
+    for (const field of SACRED_IDENTITY) {
+      if (identity[field] !== undefined) sacredOnly[field] = identity[field];
+    }
+    const serialized = JSON.stringify(sacredOnly, BufferJSON.replacer);
     return crypto.createHash('sha256').update(serialized).digest('hex').substring(0, 16);
   } catch {
     return 'error';
