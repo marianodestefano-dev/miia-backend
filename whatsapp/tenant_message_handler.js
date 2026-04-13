@@ -1290,9 +1290,13 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   // ── PASO 5: Guardar mensaje entrante (con contexto de respuesta/reenvío) ──
   if (!ctx.conversations[phone]) ctx.conversations[phone] = [];
+  // En 3-way (miiaActive + isFromMe): marcar como owner, no como assistant
+  // Para que la IA distinga entre lo que dijo MIIA vs lo que dijo el owner
+  const ownerName = ctx.ownerProfile?.shortName || ctx.ownerProfile?.name || 'Owner';
+  const is3wayOwnerMsg = isFromMe && !isSelfChat && !!ctx.miiaActive[phone];
   const msgEntry = {
-    role: isSelfChat ? 'user' : (isFromMe ? 'assistant' : 'user'),
-    content: messageBody,
+    role: isSelfChat ? 'user' : (isFromMe && !is3wayOwnerMsg ? 'assistant' : 'user'),
+    content: is3wayOwnerMsg ? `[${ownerName}]: ${messageBody}` : messageBody,
     timestamp: Date.now()
   };
   // Enriquecer con contexto de quoted reply o forwarded
@@ -1314,10 +1318,18 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     // Si MIIA está activa por trigger para este contacto → owner PARTICIPA sin bloquear a MIIA
     if (ctx.miiaActive[phone]) {
       ctx.miiaActive[phone] = Date.now(); // Renovar timeout — actividad humana
-      console.log(`${logPrefix} 🤝 OWNER PARTICIPA con ${basePhone} — MIIA sigue activa (conversación 3-way, 30min timeout). NO se registra ownerActiveChats.`);
-      // NO setear ownerActiveChats — MIIA no se silencia
-      // El mensaje del owner ya quedó en ctx.conversations (línea ~1307)
-      return; // No procesar el mensaje del owner con IA, solo registrar como contexto
+      // ¿El owner le habla a MIIA? (menciona "miia" en cualquier forma)
+      const ownerTalksToMiia = /\bmiia\b/i.test(messageBody);
+      if (ownerTalksToMiia) {
+        console.log(`${logPrefix} 🎤 OWNER HABLA CON MIIA en 3-way con ${basePhone} — MIIA responde. Msg: "${messageBody.substring(0, 60)}"`);
+        // NO return — dejar que fluya al pipeline, MIIA responde al owner
+        // NO setear ownerActiveChats — MIIA no se silencia
+      } else {
+        console.log(`${logPrefix} 🤝 OWNER PARTICIPA con ${basePhone} (sin mencionar MIIA) — contexto registrado, MIIA sigue activa (30min timeout).`);
+        // NO setear ownerActiveChats — MIIA no se silencia
+        // El mensaje del owner ya quedó en ctx.conversations con prefijo [OwnerName]:
+        return; // Solo contexto, MIIA no responde a esto
+      }
     }
     // OWNER PRESENCE normal: marcar que el owner está activamente chateando
     if (!ctx.ownerActiveChats) ctx.ownerActiveChats = {};
