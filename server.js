@@ -54,6 +54,9 @@ console.log = (...args) => { if (_isSignalNoise(...args)) return; _origLog(...ar
 console.warn = (...args) => { if (_isSignalNoise(...args)) return; _origWarn(...args); };
 console.error = (...args) => { if (_isSignalNoise(...args)) return; _origErr(...args); };
 
+// ═══ TOKEN ENCRYPTION — Encriptación de tokens sensibles en Firestore ═══
+const tokenEncryption = require('./core/token_encryption');
+
 // ═══ RESILIENCE SHIELD — Monitoreo centralizado de salud ═══
 const shield = require('./core/resilience_shield');
 
@@ -5924,10 +5927,12 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         : aiGateway.CONTEXTS.LEAD_RESPONSE;
 
     // ownerConfig: aiTier/aiProvider/aiApiKey del owner (Firestore). Default = standard tier.
+    // Desencriptar apiKey si viene encriptada desde Firestore
+    const rawApiKey = userProfile.aiApiKey || null;
     const ownerAIConfig = {
       aiTier: userProfile.aiTier || 'standard',
       aiProvider: userProfile.aiProvider || null,
-      aiApiKey: userProfile.aiApiKey || null,
+      aiApiKey: rawApiKey ? tokenEncryption.decrypt(rawApiKey) || rawApiKey : null,
     };
 
     console.log(`[MIIA] 🧠 AI Gateway: ctx=${aiContext}, tier=${ownerAIConfig.aiTier}, search=${searchTriggered} — ${basePhone}`);
@@ -13154,8 +13159,12 @@ app.get('/api/tenant/:uid/ai-config', async (req, res) => {
       configs = [{ provider: data.ai_provider, apiKey: data.ai_api_key, active: true, addedAt: Date.now() }];
     }
 
-    // Return configs with masked keys
-    const masked = configs.map(c => ({
+    // Desencriptar keys para uso interno, luego maskear para respuesta
+    const decryptedConfigs = configs.map(c => ({
+      ...c,
+      apiKey: c.apiKey ? tokenEncryption.decrypt(c.apiKey) || c.apiKey : c.apiKey
+    }));
+    const masked = decryptedConfigs.map(c => ({
       provider: c.provider,
       providerLabel: PROVIDER_LABELS[c.provider] || c.provider,
       keyPreview: maskApiKey(c.apiKey),
@@ -13164,7 +13173,7 @@ app.get('/api/tenant/:uid/ai-config', async (req, res) => {
     }));
 
     // Also return active provider for backward compat
-    const active = configs.find(c => c.active);
+    const active = decryptedConfigs.find(c => c.active);
     res.json({
       configs: masked,
       provider: active ? active.provider : 'gemini',
@@ -13208,20 +13217,26 @@ app.put('/api/tenant/:uid/ai-config', express.json(), async (req, res) => {
       configs.push({ provider, apiKey: apiKey.trim(), active: configs.length === 0, addedAt: Date.now() });
     }
 
+    // Encriptar API keys antes de guardar en Firestore
+    const configsForFirestore = configs.map(c => ({
+      ...c,
+      apiKey: c.apiKey ? tokenEncryption.encrypt(c.apiKey) : c.apiKey
+    }));
+
     // Update Firestore
     const activeConfig = configs.find(c => c.active);
     const update = {
-      ai_configs: configs,
+      ai_configs: configsForFirestore,
       ai_updated_at: admin.firestore.FieldValue.serverTimestamp()
     };
-    // Backward compat fields
+    // Backward compat fields (también encriptados)
     if (activeConfig) {
       update.ai_provider = activeConfig.provider;
-      update.ai_api_key = activeConfig.apiKey;
+      update.ai_api_key = tokenEncryption.encrypt(activeConfig.apiKey);
     }
     await admin.firestore().collection('users').doc(uid).update(update);
 
-    // Update running tenant with active config
+    // Update running tenant with active config (plaintext en memoria)
     if (activeConfig) {
       tenantManager.setTenantAIConfig(uid, activeConfig.provider, activeConfig.apiKey);
     }
@@ -13257,7 +13272,9 @@ app.post('/api/tenant/:uid/ai-config/activate', express.json(), async (req, res)
       ai_updated_at: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    tenantManager.setTenantAIConfig(uid, provider, target.apiKey);
+    // Desencriptar para uso en memoria
+    const decryptedKey = target.apiKey ? tokenEncryption.decrypt(target.apiKey) || target.apiKey : target.apiKey;
+    tenantManager.setTenantAIConfig(uid, provider, decryptedKey);
 
     res.json({ success: true, provider, providerLabel: PROVIDER_LABELS[provider] });
   } catch (err) {
@@ -13331,8 +13348,9 @@ app.delete('/api/tenant/:uid/ai-config/:provider', async (req, res) => {
       configs[0].active = true;
       update.ai_configs = configs;
       update.ai_provider = configs[0].provider;
-      update.ai_api_key = configs[0].apiKey;
-      tenantManager.setTenantAIConfig(uid, configs[0].provider, configs[0].apiKey);
+      update.ai_api_key = configs[0].apiKey; // Ya encriptada desde Firestore
+      const decKey = configs[0].apiKey ? tokenEncryption.decrypt(configs[0].apiKey) || configs[0].apiKey : configs[0].apiKey;
+      tenantManager.setTenantAIConfig(uid, configs[0].provider, decKey);
     } else if (configs.length === 0) {
       update.ai_provider = admin.firestore.FieldValue.delete();
       update.ai_api_key = admin.firestore.FieldValue.delete();
@@ -16194,11 +16212,18 @@ server.listen(PORT, () => {
             const userData = userDoc.data();
             const savedNumber = userData.whatsapp_number || null;
             let gKey = userData.gemini_api_key || '';
+            // Desencriptar si viene encriptada desde Firestore
+            if (gKey && tokenEncryption.isEncrypted(gKey)) {
+              gKey = tokenEncryption.decrypt(gKey) || '';
+            }
             // Caso excepcional: usuario con useOwnerApiKey usa la key del admin
             if (!gKey && userData.useOwnerApiKey && OWNER_UID) {
               try {
                 const ownerDoc = await admin.firestore().collection('users').doc(OWNER_UID).get();
                 gKey = ownerDoc.data()?.gemini_api_key || '';
+                if (gKey && tokenEncryption.isEncrypted(gKey)) {
+                  gKey = tokenEncryption.decrypt(gKey) || '';
+                }
                 if (gKey) console.log(`[AUTO-INIT] 🔑 ${uid.substring(0,12)}... usando API key del owner`);
               } catch (e) {}
             }

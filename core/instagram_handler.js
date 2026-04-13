@@ -23,6 +23,7 @@
  */
 
 const admin = require('firebase-admin');
+const tokenEncryption = require('./token_encryption');
 
 // ═══════════════════════════════════════════════════════════════
 // CONSTANTES
@@ -55,6 +56,10 @@ async function getInstagramToken(uid) {
     if (!doc.exists) return null;
     const data = doc.data();
 
+    // Desencriptar tokens si vienen encriptados
+    if (data.accessToken) data.accessToken = tokenEncryption.decrypt(data.accessToken) || data.accessToken;
+    if (data.pageAccessToken) data.pageAccessToken = tokenEncryption.decrypt(data.pageAccessToken) || data.pageAccessToken;
+
     // Verificar si el token necesita refresh
     if (data.expiresAt) {
       const expiresDate = new Date(data.expiresAt);
@@ -80,11 +85,16 @@ async function getInstagramToken(uid) {
  */
 async function saveInstagramToken(uid, tokenData) {
   try {
+    // Encriptar tokens antes de guardar
+    const dataToSave = { ...tokenData };
+    if (dataToSave.accessToken) dataToSave.accessToken = tokenEncryption.encrypt(dataToSave.accessToken);
+    if (dataToSave.pageAccessToken) dataToSave.pageAccessToken = tokenEncryption.encrypt(dataToSave.pageAccessToken);
+
     await admin.firestore()
       .collection('users').doc(uid)
       .collection('integrations').doc('instagram')
       .set({
-        ...tokenData,
+        ...dataToSave,
         updatedAt: new Date().toISOString()
       }, { merge: true });
     console.log(`[INSTAGRAM] ✅ Token guardado para ${uid.substring(0, 8)}...`);

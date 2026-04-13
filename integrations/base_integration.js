@@ -2,6 +2,11 @@
  * Base class for all MIIA integrations (YouTube, Cocina, Gym, Spotify, etc.)
  * Patrón plugin — cada integración hereda de esta clase.
  */
+const tokenEncryption = require('../core/token_encryption');
+
+// Campos OAuth sensibles que se encriptan/desencriptan automáticamente
+const SENSITIVE_FIELDS = ['accessToken', 'refreshToken', 'pageAccessToken', 'apiKey'];
+
 class BaseIntegration {
   constructor({ type, displayName, emoji, checkIntervalMs = 3600000 }) {
     this.type = type;
@@ -37,26 +42,41 @@ class BaseIntegration {
     throw new Error(`${this.type}.check() no implementado`);
   }
 
-  /** Obtener preferencias desde Firestore */
+  /** Obtener preferencias desde Firestore (desencripta tokens automáticamente) */
   async getPrefs(admin, ownerUid) {
     try {
       const doc = await admin.firestore()
         .collection('users').doc(ownerUid)
         .collection('miia_interests').doc(this.type)
         .get();
-      return doc.exists ? doc.data() : null;
+      if (!doc.exists) return null;
+      const data = doc.data();
+      // Desencriptar campos sensibles
+      for (const field of SENSITIVE_FIELDS) {
+        if (data[field] && tokenEncryption.isEncrypted(data[field])) {
+          data[field] = tokenEncryption.decrypt(data[field]) || data[field];
+        }
+      }
+      return data;
     } catch (e) {
       console.error(`[${this.type.toUpperCase()}] Error leyendo prefs:`, e.message);
       return null;
     }
   }
 
-  /** Guardar preferencias en Firestore */
+  /** Guardar preferencias en Firestore (encripta tokens automáticamente) */
   async savePrefs(admin, ownerUid, prefs) {
+    // Encriptar campos sensibles antes de guardar
+    const toSave = { ...prefs };
+    for (const field of SENSITIVE_FIELDS) {
+      if (toSave[field] && typeof toSave[field] === 'string') {
+        toSave[field] = tokenEncryption.encrypt(toSave[field]);
+      }
+    }
     await admin.firestore()
       .collection('users').doc(ownerUid)
       .collection('miia_interests').doc(this.type)
-      .set(prefs, { merge: true });
+      .set(toSave, { merge: true });
   }
 
   _log(msg) { console.log(`[${this.emoji} ${this.type.toUpperCase()}] ${msg}`); }

@@ -51,6 +51,7 @@ function _getMasterKey() {
     return null;
   }
 
+  console.log(`[ENCRYPTION] ✅ Key configurada (length: ${keyHex.length})`); // TEMPORAL — quitar después del primer deploy exitoso
   _masterKey = Buffer.from(keyHex, 'hex');
   return _masterKey;
 }
