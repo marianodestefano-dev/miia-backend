@@ -2881,26 +2881,37 @@ REGLAS:
                 const slotCheck = await checkSlotAvailability(ownerUid, fecha.split('T')[0], startH, startMin, tmhAgendarDuration, evtCategory);
 
                 if (!slotCheck.available && evtCategory !== 'owner') {
-                  // Hay conflicto — informar según contexto
+                  // Hay conflicto — CONSULTAR AL OWNER antes de decidir
                   const conflictNames = slotCheck.conflicts.map(c => `"${c.title}" (${String(c.start.getHours()).padStart(2,'0')}:${String(c.start.getMinutes()).padStart(2,'0')}-${String(c.end.getHours()).padStart(2,'0')}:${String(c.end.getMinutes()).padStart(2,'0')})`).join(', ');
                   let altText = '';
                   if (slotCheck.nearestSlot) {
                     const ns = slotCheck.nearestSlot;
-                    altText = `Tengo disponible de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${slotCheck.nearestSlot.gapMinutes} minutos libres). ¿Te agendo ahí?`;
+                    altText = `Alternativa más cercana: ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} min libres).`;
                   } else {
-                    altText = 'No encontré otro horario disponible hoy. ¿Querés que busque otro día?';
+                    altText = 'No hay otro horario disponible hoy.';
                   }
-                  console.log(`${logPrefix} [AGENDA-TMH] ⚠️ CONFLICTO: ${conflictNames} — alternativa: ${altText}`);
+                  console.log(`${logPrefix} [AGENDA-TMH] ⚠️ CONFLICTO: ${conflictNames} — consultando al owner`);
 
-                  // Reemplazar el tag en aiMessage con mensaje de conflicto
-                  const conflictMsg = `⚠️ A las ${slotCheck.requestedStart} ya tenés ${conflictNames}. ${altText}`;
+                  // 1. Responder al contacto: "déjame verificar"
                   aiMessage = aiMessage.replace(tag, '');
-                  // Agregar conflicto al mensaje si la IA no lo tiene
-                  if (!aiMessage.includes('conflicto') && !aiMessage.includes('ocupado')) {
-                    aiMessage = conflictMsg;
-                  }
+                  aiMessage = 'Déjame verificar la disponibilidad y te confirmo en breve 😊';
+
+                  // 2. Consultar al owner en self-chat con opciones claras
+                  const contactLabel = contactType === 'family' ? 'Tu familiar' : (contactType === 'team' ? 'Tu equipo' : `El contacto`);
+                  const approvalMsg =
+                    `📅 *CONFLICTO DE AGENDA*\n\n` +
+                    `${contactLabel} *${contactName || basePhone}* quiere agendar:\n` +
+                    `📝 "${razon}" — ${fecha} (${tmhAgendarDuration}min)\n\n` +
+                    `��️ A esa hora tenés: ${conflictNames}\n` +
+                    `${altText ? `\n💡 ${altText}\n` : ''}\n` +
+                    `Respondé:\n` +
+                    `✅ *"agendar igual"* → lo agendo como pide\n` +
+                    (slotCheck.nearestSlot ? `🕐 *"alternativa"* → le ofrezco el horario alternativo\n` : '') +
+                    `❌ *"rechazar"* → le aviso que no hay disponibilidad`;
+
+                  await sendToOwnerSelfChat(approvalMsg);
                   _agendaTagProcessed = true;
-                  continue; // No agendar, ofrecer alternativa
+                  continue; // No agendar hasta que el owner decida
                 }
 
                 // Si es owner y hay conflicto, solo informar pero agendar igual
@@ -3037,23 +3048,32 @@ REGLAS:
               let stAltText = '';
               if (stSlotCheck.nearestSlot) {
                 const ns = stSlotCheck.nearestSlot;
-                stAltText = `Tengo disponibilidad de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')}. ¿Le agendo ahí?`;
+                stAltText = `Alternativa más cercana: ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} min libres).`;
               } else {
-                stAltText = 'No encontré otro horario disponible hoy. ¿Le gustaría otro día?';
+                stAltText = 'No hay otro horario disponible hoy.';
               }
-              console.log(`${logPrefix} [SOLICITAR_TURNO-TMH] ⚠️ CONFLICTO: ${stConflictNames} — alternativa: ${stAltText}`);
+              console.log(`${logPrefix} [SOLICITAR_TURNO-TMH] ⚠️ CONFLICTO: ${stConflictNames} — consultando al owner`);
 
-              // Responder al contacto con alternativa
+              // 1. Responder al contacto: "déjame verificar"
               aiMessage = aiMessage.replace(tag, '');
-              aiMessage = `A esa hora tenemos un compromiso previo. ${stAltText} 😊`;
+              aiMessage = 'Déjame consultar la disponibilidad y te confirmo en breve 😊';
 
-              // Notificar al owner del intento
-              await sendToOwnerSelfChat(
-                `📋 *${contactName}* pidió turno a las ${stSlotCheck.requestedStart} pero hay conflicto con ${stConflictNames}.\n` +
-                `Le ofrecí alternativa: ${stAltText}`
-              );
+              // 2. Consultar al owner en self-chat
+              const stApprovalMsg =
+                `📋 *SOLICITUD DE TURNO CON CONFLICTO*\n\n` +
+                `👤 *${contactName || basePhone}* quiere turno:\n` +
+                `📝 "${razon}" — ${fecha} (${stDuration}min)\n` +
+                `${modeEmoji} Modo: ${modeLabel}\n\n` +
+                `⚠️ A esa hora tenés: ${stConflictNames}\n` +
+                `${stAltText ? `\n💡 ${stAltText}\n` : ''}\n` +
+                `Respondé:\n` +
+                `✅ *"aprobar"* → agendo el turno como pide\n` +
+                (stSlotCheck.nearestSlot ? `🕐 *"alternativa"* → le ofrezco el horario alternativo\n` : '') +
+                `❌ *"rechazar"* → le aviso que no hay disponibilidad`;
+
+              await sendToOwnerSelfChat(stApprovalMsg);
               _agendaTagProcessed = true;
-              continue; // No guardar solicitud, ofrecer alternativa
+              continue; // No guardar solicitud hasta que el owner decida
             }
 
             let scheduledForUTC = fecha;
@@ -3426,23 +3446,31 @@ REGLAS:
               let mAltText = '';
               if (mSlotCheck.nearestSlot) {
                 const ns = mSlotCheck.nearestSlot;
-                mAltText = `Hay disponibilidad de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} minutos libres). ¿Lo muevo ahí?`;
+                mAltText = `Alternativa más cercana: ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} min libres).`;
               } else {
-                mAltText = 'No encontré otro horario libre hoy. ¿Querés que busque otro día?';
+                mAltText = 'No hay otro horario libre hoy.';
               }
-              console.log(`${logPrefix} [MOVER-TMH] ⚠️ CONFLICTO en destino: ${mConflictNames} — alternativa: ${mAltText}`);
+              console.log(`${logPrefix} [MOVER-TMH] ⚠️ CONFLICTO en destino: ${mConflictNames} — consultando al owner`);
 
+              // 1. Responder al contacto: "déjame verificar"
               aiMessage = aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '');
-              aiMessage = `⚠️ A las ${mSlotCheck.requestedStart} hay ${mConflictNames}. ${mAltText}`;
+              aiMessage = 'Déjame verificar la disponibilidad para ese cambio y te confirmo 😊';
 
-              // Notificar al owner si fue un contacto quien pidió
-              if (!isSelfChat) {
-                await sendToOwnerSelfChat(
-                  `📋 *${contactType === 'family' ? 'Familiar' : 'Contacto'}* pidió mover "${found.data.reason}" a las ${mSlotCheck.requestedStart} pero hay conflicto.\nLe ofrecí alternativa.`
-                );
-              }
+              // 2. Consultar al owner en self-chat
+              const contactLabel = contactType === 'family' ? 'Tu familiar' : 'Contacto del grupo';
+              const mApprovalMsg =
+                `📅 *SOLICITUD DE MOVER EVENTO CON CONFLICTO*\n\n` +
+                `${contactLabel} *${contactName || basePhone}* quiere mover:\n` +
+                `📝 "${found.data.reason}" → ${mNewDate} (${mFinalDuration}min)\n\n` +
+                `⚠️ A esa hora tenés: ${mConflictNames}\n` +
+                `${mAltText ? `\n💡 ${mAltText}\n` : ''}\n` +
+                `Respondé:\n` +
+                `✅ *"mover igual"* → muevo el evento como pide\n` +
+                (mSlotCheck.nearestSlot ? `🕐 *"alternativa"* → le ofrezco el horario alternativo\n` : '') +
+                `❌ *"rechazar"* → le aviso que no se puede mover ahí`;
+
+              await sendToOwnerSelfChat(mApprovalMsg);
               _agendaTagProcessed = true;
-              // No break — usamos el flag para que no se procese más
             } else {
 
             let newScheduledUTC = mNewDate;

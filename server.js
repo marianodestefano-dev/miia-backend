@@ -6901,14 +6901,31 @@ REGLAS:
                 let srvAltText = '';
                 if (srvSlotCheck.nearestSlot) {
                   const ns = srvSlotCheck.nearestSlot;
-                  srvAltText = `Tengo disponible de ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} minutos libres). ¿Te agendo ahí?`;
+                  srvAltText = `Alternativa más cercana: ${ns.startH}:${String(ns.startM).padStart(2,'0')} a ${ns.endH}:${String(ns.endM).padStart(2,'0')} (${ns.gapMinutes} min libres).`;
                 } else {
-                  srvAltText = 'No encontré otro horario disponible hoy. ¿Querés que busque otro día?';
+                  srvAltText = 'No hay otro horario disponible hoy.';
                 }
-                console.log(`[AGENDA] ⚠️ CONFLICTO: ${srvConflictNames} — alternativa: ${srvAltText}`);
-                aiMessage = `⚠️ A las ${srvSlotCheck.requestedStart} ya tenés ${srvConflictNames}. ${srvAltText}`;
+                console.log(`[AGENDA] ⚠️ CONFLICTO: ${srvConflictNames} — consultando al owner`);
+
+                // 1. Responder al contacto: "déjame verificar"
+                aiMessage = 'Déjame verificar la disponibilidad y te confirmo en breve 😊';
                 aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').trim();
-                continue; // No agendar, ofrecer alternativa
+
+                // 2. Consultar al owner en self-chat
+                const ownerJidApproval = `${OWNER_PHONE}@s.whatsapp.net`;
+                const srvApprovalMsg =
+                  `📅 *CONFLICTO DE AGENDA*\n\n` +
+                  `👤 *${contactName || basePhone}* quiere agendar:\n` +
+                  `📝 "${razon}" — ${fecha} (${agendarDuration}min)\n\n` +
+                  `⚠️ A esa hora tenés: ${srvConflictNames}\n` +
+                  `${srvAltText ? `\n💡 ${srvAltText}\n` : ''}\n` +
+                  `Respondé:\n` +
+                  `✅ *"agendar igual"* → lo agendo como pide\n` +
+                  (srvSlotCheck.nearestSlot ? `🕐 *"alternativa"* → le ofrezco el horario alternativo\n` : '') +
+                  `❌ *"rechazar"* → le aviso que no hay disponibilidad`;
+                safeSendMessage(ownerJidApproval, srvApprovalMsg, {}).catch(e => console.error(`[AGENDA] ❌ Error notificando owner:`, e.message));
+
+                continue; // No agendar hasta que el owner decida
               }
 
               if (!srvSlotCheck.available && srvEvtCategory === 'owner') {
