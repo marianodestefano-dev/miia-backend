@@ -829,6 +829,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   // ═══ TRY/CATCH GLOBAL — Protección contra crash silencioso ═══
   // Sin esto, un error no capturado en cualquier tag handler = MIIA se calla y el owner no sabe por qué
+  let _responseSentOk = false; // Declarado fuera del try para que catch lo vea
   try {
 
   const basePhone = getBasePhone(phone);
@@ -4198,6 +4199,7 @@ REGLAS:
   if (ctx) ctx._lastIncomingLength = (messageBody || '').length;
 
   // MSG_SPLIT: dividir en 2 mensajes humanos
+  // _responseSentOk se declara al inicio del try/catch global (línea ~831)
   const parts = splitMessage(aiMessage);
   if (parts && parts.length >= 2) {
     console.log(`${logPrefix} ✂️ Mensaje dividido en ${parts.length} partes`);
@@ -4207,6 +4209,7 @@ REGLAS:
   } else {
     await sendTenantMessage(tenantState, phone, maybeAddTypo(aiMessage));
   }
+  _responseSentOk = true; // Respuesta enviada — si algo posterior falla, NO mandar error al contacto
 
   // ── PASO 12b: Enterprise lead — post-respuesta: transferir a owner si la IA lo decidió ──
   if (contactType === 'enterprise_lead' && hasTransferTag) {
@@ -4268,13 +4271,16 @@ REGLAS:
     // ═══ CATCH GLOBAL — MIIA NUNCA se queda callada ═══
     console.error(`${logPrefix} 🔥 ERROR FATAL en handleTenantMessage para ${phone}: ${fatalErr.message}`);
     console.error(`${logPrefix} 🔥 Stack: ${fatalErr.stack}`);
-    // Intentar enviar mensaje de error al usuario para que sepa que pasó algo
+    // Solo enviar error al usuario si la respuesta NO se envió aún.
+    // Si _responseSentOk=true, la respuesta ya llegó y mandar otro msg sería doble burbuja.
     try {
-      if (tenantState?.sock && tenantState.isReady) {
+      if (tenantState?.sock && tenantState.isReady && !_responseSentOk) {
         const errorMsg = isSelfChat
           ? `⚠️ Tuve un error interno procesando tu mensaje. Por favor intentá de nuevo. (Error: ${fatalErr.message?.substring(0, 100)})`
           : '⚠️ Disculpa, tuve un problema técnico. ¿Podrías repetir tu mensaje?';
         await tenantState.sock.sendMessage(phone, { text: errorMsg });
+      } else if (_responseSentOk) {
+        console.warn(`${logPrefix} ⚠️ Error post-respuesta (respuesta YA enviada, NO se manda doble burbuja): ${fatalErr.message}`);
       }
     } catch (sendErr) {
       console.error(`${logPrefix} 🔥 No pude ni enviar error al usuario: ${sendErr.message}`);
