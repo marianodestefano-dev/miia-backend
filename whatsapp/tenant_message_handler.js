@@ -2306,7 +2306,7 @@ ${countryContext ? countryContext : ''}
 
   // Cerebro de negocio + datos personales privados
   const cerebroStr = ctx.businessCerebro || '';
-  const personalStr = (role === 'owner' && ctx.personalBrain) ? `\n\n[DATOS PERSONALES PRIVADOS — SOLO TÚ VES ESTO]:\n${ctx.personalBrain}` : '';
+  const personalStr = (isSelfChat && role === 'owner' && ctx.personalBrain) ? `\n\n[DATOS PERSONALES PRIVADOS — SOLO TÚ VES ESTO]:\n${ctx.personalBrain}` : '';
 
   // Pendientes de aprendizaje dudoso (solo en self-chat del owner)
   let pendingStr = '';
