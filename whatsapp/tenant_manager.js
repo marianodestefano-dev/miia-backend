@@ -945,14 +945,14 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         tenant._preemptiveRefresh = setInterval(async () => {
           if (!tenant.isReady || !tenant._sessionApis) return;
           try {
-            console.log(`[TM:${uid}] 🔄 Pre-emptive session key refresh (preventivo cada 6h)...`);
+            console.log(`[TM:${uid}] 🔄 Pre-emptive session key refresh (preventivo cada 24h)...`);
             const purged = await tenant._sessionApis.purgeSessionKeys();
             await tenant._sessionApis.recordHealth('healthy', `Pre-emptive refresh: ${purged} keys purged`);
             console.log(`[TM:${uid}] ✅ Pre-emptive refresh completado (${purged} keys)`);
           } catch (e) {
             console.warn(`[TM:${uid}] Pre-emptive refresh error:`, e.message);
           }
-        }, 6 * 60 * 60 * 1000); // Cada 6 horas
+        }, 24 * 60 * 60 * 1000); // Cada 24 horas
 
         // ═══ TÉCNICA 4: Connection telemetry ═══
         // Logueamos métricas de la conexión para poder diagnosticar patrones.
