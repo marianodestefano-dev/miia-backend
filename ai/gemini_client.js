@@ -15,7 +15,9 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const DEFAULT_MODEL = 'gemini-2.5-flash'; // 2.0-flash → 404, 1.5-flash → 404, 2.5-pro → 503
 const RETRY_DELAYS = [8000, 20000, 45000];
 const MAX_RETRIES = 3;
-const FETCH_TIMEOUT_MS = 30000; // 30s — si Gemini no responde, abortar (previene isProcessing stuck)
+const FETCH_TIMEOUT_MS = 45000; // 45s default — si Gemini no responde, abortar (previene isProcessing stuck)
+const FETCH_TIMEOUT_HEAVY_MS = 60000; // 60s para queries pesadas (google_search, thinking)
+const FETCH_WARNING_MS = 40000; // Warning a los 40s (antes del abort)
 
 /**
  * Extract text from a Gemini API response body.
@@ -71,9 +73,16 @@ async function callGemini(apiKey, prompt, opts = {}) {
     ...(Object.keys(genConfig).length > 0 && { generationConfig: genConfig })
   };
 
+  // Timeout dinámico: 60s si usa google_search o thinking (queries pesadas), 45s default
+  const isHeavyQuery = opts.enableSearch || (opts.thinkingBudget != null && opts.thinkingBudget > 0);
+  const timeoutMs = opts.timeout || (isHeavyQuery ? FETCH_TIMEOUT_HEAVY_MS : FETCH_TIMEOUT_MS);
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const warningTimer = setTimeout(() => {
+      console.warn(`[GEMINI] ⚠️ fetch lleva ${FETCH_WARNING_MS/1000}s sin respuesta (timeout en ${(timeoutMs - FETCH_WARNING_MS)/1000}s más)`);
+    }, FETCH_WARNING_MS);
+    const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -81,7 +90,8 @@ async function callGemini(apiKey, prompt, opts = {}) {
         body: JSON.stringify(payload),
         signal: controller.signal
       });
-      clearTimeout(timeout);
+      clearTimeout(warningTimer);
+      clearTimeout(abortTimer);
 
       if (response.ok) {
         const data = await response.json();
@@ -101,16 +111,17 @@ async function callGemini(apiKey, prompt, opts = {}) {
       const errText = await response.text();
       throw new Error(`Gemini API error: ${response.status} - ${errText.substring(0, 200)}`);
     } catch (err) {
-      clearTimeout(timeout);
+      clearTimeout(warningTimer);
+      clearTimeout(abortTimer);
       if (err.name === 'AbortError') {
-        console.error(`[GEMINI] ⏰ TIMEOUT: fetch abortado después de ${FETCH_TIMEOUT_MS/1000}s (attempt ${attempt + 1}/${retries})`);
+        console.error(`[GEMINI] ⏰ TIMEOUT: fetch abortado después de ${timeoutMs/1000}s (attempt ${attempt + 1}/${retries})`);
         if (attempt < retries) {
           const delay = RETRY_DELAYS[attempt] || 45000;
           console.warn(`[GEMINI] Reintentando en ${delay / 1000}s...`);
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
-        throw new Error(`Gemini timeout after ${FETCH_TIMEOUT_MS/1000}s (${retries} retries exhausted)`);
+        throw new Error(`Gemini timeout after ${timeoutMs/1000}s (${retries} retries exhausted)`);
       }
       if (attempt === retries) throw err;
       if (err.message.includes('Gemini API error')) throw err;
@@ -156,17 +167,23 @@ async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
     ...(Object.keys(genConfig).length > 0 && { generationConfig: genConfig })
   };
 
+  // callGeminiChat siempre es conversación multi-turn → timeout estándar 45s
+  const timeoutMs = opts.timeout || FETCH_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const warningTimer = setTimeout(() => {
+    console.warn(`[GEMINI] ⚠️ callGeminiChat lleva ${FETCH_WARNING_MS/1000}s sin respuesta (timeout en ${(timeoutMs - FETCH_WARNING_MS)/1000}s más)`);
+  }, FETCH_WARNING_MS);
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    console.log(`[GEMINI] Chat request: ${messages.length} msgs, prompt ${systemPrompt.length} chars`);
+    console.log(`[GEMINI] Chat request: ${messages.length} msgs, prompt ${systemPrompt.length} chars (timeout ${timeoutMs/1000}s)`);
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal: controller.signal
     });
-    clearTimeout(timeout);
+    clearTimeout(warningTimer);
+    clearTimeout(abortTimer);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -184,9 +201,10 @@ async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
     console.log(`[GEMINI] OK: ${text.length} chars`);
     return text;
   } catch (error) {
-    clearTimeout(timeout);
+    clearTimeout(warningTimer);
+    clearTimeout(abortTimer);
     if (error.name === 'AbortError') {
-      console.error(`[GEMINI] ⏰ TIMEOUT en callGeminiChat: fetch abortado después de ${FETCH_TIMEOUT_MS/1000}s`);
+      console.error(`[GEMINI] ⏰ TIMEOUT en callGeminiChat: fetch abortado después de ${timeoutMs/1000}s`);
       return null;
     }
     console.error('[GEMINI] CRITICAL ERROR:', error.message);
