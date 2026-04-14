@@ -46,7 +46,7 @@ const ENGINE_PROFILES = {
     name: 'Combustión',
     emoji: '🔥',
     browser: ['MIIA', 'Chrome', '120.0.0'],
-    keepAliveIntervalMs: 25_000,
+    keepAliveIntervalMs: 45_000,
     connectTimeoutMs: 60_000,
     retryRequestDelayMs: 250,
     markOnlineOnConnect: false,
