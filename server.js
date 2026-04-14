@@ -9759,10 +9759,19 @@ async function handleIncomingMessage(message) {
       saveDB();
 
       // Si ya hay una respuesta programada, marcar para re-procesar al terminar
+      // FIX C-005: verificar edad AQUÍ (antes hacía return sin verificar → isProcessing stuck forever)
       if (isProcessing[effectiveTarget]) {
-        pendingResponses[effectiveTarget] = true;
-        console.log(`[WA] Mensaje acumulado para ${effectiveTarget} (respuesta ya programada, pendingResponse marcado).`);
-        return;
+        const stuckAge = Date.now() - (isProcessing[effectiveTarget] || 0);
+        if (typeof isProcessing[effectiveTarget] === 'number' && stuckAge > 120000) {
+          console.warn(`[WA] ⚠️ isProcessing STUCK en primer check para ${effectiveTarget} (${Math.round(stuckAge/1000)}s) — forzando reset`);
+          delete isProcessing[effectiveTarget];
+          delete pendingResponses[effectiveTarget];
+          // NO return — continuar procesando normalmente
+        } else {
+          pendingResponses[effectiveTarget] = true;
+          console.log(`[WA] Mensaje acumulado para ${effectiveTarget} (isProcessing desde hace ${Math.round(stuckAge/1000)}s, pendingResponse marcado).`);
+          return;
+        }
       }
     } else {
       // Mensaje saliente manual de Mariano

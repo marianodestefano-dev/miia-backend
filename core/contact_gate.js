@@ -229,10 +229,13 @@ function shouldMiiaRespond(opts) {
 }
 
 /**
- * Generar mensaje de notificación al owner cuando un desconocido escribe sin keywords
+ * Generar mensaje de alerta al owner cuando un desconocido escribe.
+ * Formato C-003: incluye opciones de clasificación con anti-spam.
  *
  * @param {string} basePhone - Número del contacto
  * @param {string} messageBody - Lo que escribió
+ * @param {string} pushName - Nombre de WhatsApp (puede ser vacío)
+ * @param {Object} opts - { isLid: boolean }
  * @returns {string} Mensaje para el self-chat del owner
  */
 function buildUnknownContactAlert(basePhone, messageBody, pushName, opts = {}) {
@@ -246,28 +249,36 @@ function buildUnknownContactAlert(basePhone, messageBody, pushName, opts = {}) {
     || digitsOnly.length > 13;
 
   // REGLA ABSOLUTA: NUNCA mostrar números LID al owner. NUNCA.
-  let contactLine;
+  const lines = ['📩 *Nuevo contacto desconocido*', ''];
+
   if (isLid) {
-    // LID → SOLO pushName si existe, NUNCA el número
-    contactLine = pushName
-      ? `Contacto: *${pushName}*`
-      : `Alguien te escribió`;
-  } else if (pushName) {
-    contactLine = `Contacto: *${pushName}* (+${basePhone})`;
+    if (pushName) {
+      lines.push(`👤 Nombre WhatsApp: "${pushName}"`);
+    } else {
+      lines.push('👤 Contacto sin nombre (número oculto)');
+    }
   } else {
-    contactLine = `Número: +${basePhone}`;
+    lines.push(`📞 Número: +${basePhone}`);
+    if (pushName) lines.push(`👤 Nombre WhatsApp: "${pushName}"`);
   }
 
-  return `📱 *Nuevo mensaje*\n\n` +
-    `${contactLine}\n` +
-    `Dice: "${preview}"\n\n` +
-    `No respondí porque no lo tengo clasificado.\n\n` +
-    `¿Quién es? Respondé:\n` +
-    `• *amigo* / *es mi primo* / *conocido*\n` +
-    `• *familia* / *es mi hermano* / *es mi tío*\n` +
-    `• *lead* → lo agrego como lead\n` +
-    `• *respondele* → le escribo presentándome\n` +
-    `• *ignorar* → no le respondo nunca más`;
+  lines.push(
+    `💬 Te escribió: "${preview}"`,
+    '',
+    'Por precaución no le respondí todavía. ¿Cómo lo clasifico?',
+    '',
+    'Respondé con:',
+    '• "lead" → lo atiendo como lead del negocio',
+    '• "cliente" → cliente existente',
+    '• "familia" → contacto familiar',
+    '• "equipo" → miembro del equipo',
+    '• "ignorar" → no responder nunca',
+    '• "bloquear" → bloqueo total',
+    '',
+    'Si no respondés, queda en silencio. Cuando lo clasifiques, proceso todo lo que haya acumulado de él.'
+  );
+
+  return lines.join('\n');
 }
 
 /**

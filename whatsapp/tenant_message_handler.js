@@ -398,6 +398,86 @@ async function saveContactIndex(ownerUid, phone, data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// BLOQUEO PRECAUTORIO — Contactos desconocidos (CARTA C-003)
+// ═══════════════════════════════════════════════════════════════
+
+const MIIA_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
+
+/**
+ * Bloqueo precautorio para contactos desconocidos.
+ * - Primera vez: envía 1 alerta al owner via self-chat, marca alertSentToOwner=true
+ * - Siguientes veces: silencio total, solo incrementa messageCount (anti-spam)
+ * - Guard defensivo: nunca bloquea para MIIA CENTER (miia_leads son desconocidos por definición)
+ */
+async function handleUnknownContactBlock(ctx, basePhone, phone, messageBody, pushName, isLid, tenantState, logPrefix) {
+  // Guard defensivo MIIA CENTER — AJUSTE 3
+  if (ctx.ownerUid === MIIA_CENTER_UID) {
+    console.log(`${logPrefix} 🏢 MIIA CENTER: desconocido ${basePhone} NO se bloquea (flujo miia_lead)`);
+    return;
+  }
+
+  const contactRef = db().collection('users').doc(ctx.ownerUid).collection('contact_index').doc(basePhone);
+
+  try {
+    const snap = await contactRef.get();
+    const existing = snap.exists ? snap.data() : null;
+
+    // ¿Ya se alertó al owner sobre este contacto?
+    const alertAlreadySent = existing && existing.alertSentToOwner === true;
+
+    // ¿Contacto bloqueado o ignorado?
+    if (existing && (existing.status === 'ignored' || existing.status === 'blocked')) {
+      await contactRef.update({
+        messageCount: admin.firestore.FieldValue.increment(1),
+        lastMessageAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      console.log(`${logPrefix} 🚫 ${basePhone} es ${existing.status} — silencio total (msg #${(existing.messageCount || 0) + 1})`);
+      return;
+    }
+
+    if (!alertAlreadySent) {
+      // Primera vez — enviar alerta al owner
+      const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
+      const ownerJid = tenantState.sock?.user?.id;
+      if (ownerJid) {
+        try {
+          await sendTenantMessage(tenantState, ownerJid, alertMsg);
+          console.log(`${logPrefix} 📩 BLOQUEO PRECAUTORIO: ${isLid ? (pushName || 'LID') : basePhone} — alerta enviada al owner`);
+        } catch (e) {
+          console.error(`${logPrefix} ❌ Error enviando alerta de desconocido al owner:`, e.message);
+        }
+      }
+
+      await contactRef.set({
+        status: 'unknown',
+        alertSentToOwner: true,
+        alertSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        firstSeenAt: existing?.firstSeenAt || admin.firestore.FieldValue.serverTimestamp(),
+        messageCount: admin.firestore.FieldValue.increment(1),
+        lastMessageAt: admin.firestore.FieldValue.serverTimestamp(),
+        awaitingClassification: true,
+        lastUnreadMessage: (messageBody || '').substring(0, 500),
+        name: pushName || existing?.name || null,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } else {
+      // Ya alertado — acumular en silencio (anti-spam)
+      await contactRef.update({
+        messageCount: admin.firestore.FieldValue.increment(1),
+        lastMessageAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastUnreadMessage: (messageBody || '').substring(0, 500)
+      });
+      console.log(`${logPrefix} 🔇 ${basePhone} desconocido — alerta ya enviada, acumulando silencioso (msg #${(existing?.messageCount || 0) + 1})`);
+    }
+
+    console.log(`${logPrefix} 🤫 BLOQUEO PRECAUTORIO: ${basePhone} sin clasificar — MIIA NO RESPONDE`);
+  } catch (e) {
+    console.error(`${logPrefix} ❌ Error en bloqueo precautorio de ${basePhone}:`, e.message);
+    // En caso de error de Firestore, mantener el silencio (fail safe — mejor no responder que responder mal)
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // FUZZY PHONE LOOKUP — BUG1-FIX
 // ═══════════════════════════════════════════════════════════════
 
@@ -470,18 +550,28 @@ async function classifyContact(ctx, basePhone, messageBody, tenantState) {
   // PASO 0: contact_index
   const cached = await lookupContactIndex(ownerUid, basePhone);
   if (cached) {
-    console.log(`${logPrefix} 📇 PASO 0: contact_index hit → type=${cached.type}, group=${cached.groupId || '-'}, biz=${cached.businessId || '-'}`);
-    if (cached.type === 'group' && cached.groupId && ctx.contactGroups[cached.groupId]) {
-      return { type: 'group', groupId: cached.groupId, groupData: ctx.contactGroups[cached.groupId], name: cached.name };
+    // BLOQUEO PRECAUTORIO: Si el contacto está en awaitingClassification, NO retornar como clasificado.
+    // Dejarlo caer al PASO 7 donde handleUnknownContactBlock lo maneja con anti-spam.
+    if (cached.awaitingClassification || cached.status === 'unknown') {
+      console.log(`${logPrefix} 📇 PASO 0: contact_index hit → status=${cached.status}, awaitingClassification=true — skip (bloqueo precautorio activo)`);
+      // NO retornar — seguir la cascada de clasificación
+    } else if (cached.status === 'ignored' || cached.status === 'blocked') {
+      console.log(`${logPrefix} 📇 PASO 0: contact_index hit → status=${cached.status} — silencio total`);
+      return { type: cached.status, _blocked: true };
+    } else {
+      console.log(`${logPrefix} 📇 PASO 0: contact_index hit → type=${cached.type}, group=${cached.groupId || '-'}, biz=${cached.businessId || '-'}`);
+      if (cached.type === 'group' && cached.groupId && ctx.contactGroups[cached.groupId]) {
+        return { type: 'group', groupId: cached.groupId, groupData: ctx.contactGroups[cached.groupId], name: cached.name };
+      }
+      if (cached.type === 'lead' && cached.businessId) {
+        return { type: 'lead', businessId: cached.businessId, name: cached.name };
+      }
+      // Enterprise leads: pasar TODOS los datos del contact_index para discovery
+      if (cached.type === 'enterprise_lead') {
+        return { ...cached, type: 'enterprise_lead' };
+      }
+      return { type: cached.type || 'lead', name: cached.name };
     }
-    if (cached.type === 'lead' && cached.businessId) {
-      return { type: 'lead', businessId: cached.businessId, name: cached.name };
-    }
-    // Enterprise leads: pasar TODOS los datos del contact_index para discovery
-    if (cached.type === 'enterprise_lead') {
-      return { ...cached, type: 'enterprise_lead' };
-    }
-    return { type: cached.type || 'lead', name: cached.name };
   }
 
   // PASO 1: Buscar en contact_groups (también legacy familyContacts/teamContacts)
@@ -1252,6 +1342,151 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     }
   }
 
+  // ── PASO 1e: Comandos de clasificación de contactos desconocidos (CARTA C-003) ──
+  // Si owner escribe "lead", "cliente", "familia", etc. en self-chat → clasificar último contacto pendiente
+  if (isSelfChat && role === 'owner' && messageBody) {
+    // AJUSTE 2: Regex permisiva — acepta "lead", "es lead", "marcar como lead", "lead!", etc.
+    const classifyMatch = messageBody.trim().match(/^\s*(?:es\s+|marcar?\s+(?:como\s+)?|poner\s+(?:como\s+)?)?(lead|cliente|familia|equipo|ignorar|bloquear|siguiente|sig|próximo|proximo)[!.\s]*$/i);
+    if (classifyMatch) {
+      const command = classifyMatch[1].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const isNextCommand = command === 'siguiente' || command === 'sig' || command === 'proximo';
+
+      try {
+        // Buscar contactos pendientes de clasificación
+        // Query simple sin orderBy para evitar composite index — ordenamos client-side
+        const pendingSnap = await db().collection('users').doc(ownerUid)
+          .collection('contact_index')
+          .where('awaitingClassification', '==', true)
+          .limit(20)
+          .get();
+
+        if (pendingSnap.empty) {
+          console.log(`${logPrefix} [CLASSIFY-CMD] ℹ️ Owner escribió "${messageBody.trim()}" pero no hay contactos pendientes de clasificación`);
+          // No consumir — dejar que pase a la IA (puede ser otra cosa)
+        } else {
+          // Ordenar por alertSentAt desc (client-side para evitar composite index)
+          const pendingDocs = pendingSnap.docs.sort((a, b) => {
+            const aTime = a.data().alertSentAt?._seconds || 0;
+            const bTime = b.data().alertSentAt?._seconds || 0;
+            return bTime - aTime; // desc — más reciente primero
+          });
+          const targetDoc = pendingDocs[0]; // Más reciente
+          const targetPhone = targetDoc.id;
+          const targetData = targetDoc.data();
+
+          if (isNextCommand) {
+            // Comando "siguiente" — mostrar el siguiente contacto pendiente
+            if (pendingDocs.length > 0) {
+              const nextData = pendingDocs[0].data();
+              const nextPhone = pendingDocs[0].id;
+              const alertMsg = buildUnknownContactAlert(nextPhone, nextData.lastUnreadMessage || '(sin mensaje)', nextData.name || '', {});
+              const ownerJid = tenantState.sock?.user?.id;
+              if (ownerJid) await sendTenantMessage(tenantState, ownerJid, alertMsg);
+              console.log(`${logPrefix} [CLASSIFY-CMD] 📋 Mostrando siguiente pendiente: ${nextPhone}`);
+            }
+            return; // Comando consumido
+          }
+
+          // Mapear comando a tipo y status
+          let newType, newStatus;
+          switch (command) {
+            case 'lead': newType = 'lead'; newStatus = 'classified'; break;
+            case 'cliente': newType = 'client'; newStatus = 'classified'; break;
+            case 'familia': newType = 'familia'; newStatus = 'classified'; break;
+            case 'equipo': newType = 'equipo'; newStatus = 'classified'; break;
+            case 'ignorar': newType = targetData.type || 'unknown'; newStatus = 'ignored'; break;
+            case 'bloquear': newType = targetData.type || 'unknown'; newStatus = 'blocked'; break;
+            default: break;
+          }
+
+          if (newType && newStatus) {
+            // Actualizar contact_index
+            await targetDoc.ref.update({
+              type: newType,
+              status: newStatus,
+              awaitingClassification: false,
+              classifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+              classifiedBy: 'owner',
+              updatedAt: new Date().toISOString()
+            });
+
+            // Si familia/equipo → agregar a contact_groups
+            if (newType === 'familia' || newType === 'equipo') {
+              try {
+                await db().collection('users').doc(ownerUid)
+                  .collection('contact_groups').doc(newType)
+                  .collection('contacts').doc(targetPhone)
+                  .set({
+                    name: targetData.name || '',
+                    addedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    proactiveEnabled: false
+                  }, { merge: true });
+              } catch (grpErr) {
+                console.error(`${logPrefix} [CLASSIFY-CMD] ⚠️ Error agregando a contact_groups/${newType}:`, grpErr.message);
+              }
+            }
+
+            // Actualizar contexto en memoria
+            const targetJid = `${targetPhone}@s.whatsapp.net`;
+            ctx.contactTypes[targetJid] = newType;
+
+            // Generar respuesta al contacto si fue clasificado (no ignorado/bloqueado)
+            let processedCount = 0;
+            if (newStatus === 'classified') {
+              // Leer mensajes acumulados del contacto desde ctx.conversations
+              const accumulated = ctx.conversations[targetJid] || [];
+              const userMsgs = accumulated.filter(m => m.role === 'user');
+              processedCount = userMsgs.length;
+
+              if (processedCount > 0) {
+                // Re-inyectar el mensaje en el pipeline normal vía llamada recursiva
+                // El contacto ya está clasificado, así que pasará el gate normalmente
+                const lastMsg = userMsgs[userMsgs.length - 1];
+                try {
+                  console.log(`${logPrefix} [CLASSIFY-CMD] 📨 Re-procesando ${processedCount} msgs de ${targetPhone} como ${newType}`);
+                  // Llamar handleTenantMessage para el último mensaje del contacto
+                  // El contacto ahora está en contact_index con status=classified → flujo normal
+                  await handleTenantMessage(uid, ownerUid, role, targetJid, lastMsg.content, false, false, tenantState, {
+                    pushName: targetData.name || '',
+                    _reprocessFromClassification: true
+                  });
+                } catch (reErr) {
+                  console.error(`${logPrefix} [CLASSIFY-CMD] ❌ Error re-procesando msgs de ${targetPhone}:`, reErr.message);
+                }
+              }
+            }
+
+            // Confirmar al owner
+            const statusLabel = newStatus === 'classified' ? newType : newStatus;
+            const phoneDisplay = targetPhone.length > 13 ? (targetData.name || 'contacto') : `+${targetPhone}`;
+            let confirmMsg = `✅ Clasificado ${phoneDisplay} como *${statusLabel}*.`;
+            if (processedCount > 0) {
+              confirmMsg += ` Procesé ${processedCount} mensaje${processedCount !== 1 ? 's' : ''} acumulado${processedCount !== 1 ? 's' : ''} y respondí.`;
+            }
+
+            // AJUSTE 1: Si quedan más pendientes, avisar
+            const remaining = pendingDocs.length - 1;
+            if (remaining > 0) {
+              const nextPhones = pendingDocs.slice(1, 4).map(d => {
+                const dd = d.data();
+                return dd.name ? `*${dd.name}* (+${d.id})` : `+${d.id}`;
+              });
+              confirmMsg += `\n\nTengo ${remaining} contacto${remaining !== 1 ? 's' : ''} más pendiente${remaining !== 1 ? 's' : ''}: ${nextPhones.join(', ')}${remaining > 3 ? '...' : ''}. Escribí "siguiente" para ver uno a uno.`;
+            }
+
+            const ownerJid = tenantState.sock?.user?.id;
+            if (ownerJid) await sendTenantMessage(tenantState, ownerJid, confirmMsg);
+            console.log(`${logPrefix} [CLASSIFY-CMD] ✅ Owner clasificó ${targetPhone} como ${statusLabel}. Pendientes restantes: ${remaining}`);
+            return; // Comando consumido
+          }
+        }
+      } catch (classErr) {
+        console.error(`${logPrefix} [CLASSIFY-CMD] ❌ Error procesando comando de clasificación:`, classErr.message);
+        // No consumir — dejar que pase a la IA
+      }
+    }
+  }
+
   // ── PASO 2: Verificar horario ──
   // Excluidos del check: self-chat, familia, equipo, fromMe (mensajes del propio owner)
   if (!isSelfChat && !isFromMe && !isWithinScheduleConfig(ctx.scheduleConfig)) {
@@ -1413,6 +1648,13 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     } else {
       // Cascada de clasificación
       classification = await classifyContact(ctx, basePhone, messageBody, tenantState);
+
+      // BLOQUEO PRECAUTORIO: Si contact_index dice ignored/blocked → silencio total
+      if (classification._blocked) {
+        console.log(`${logPrefix} 🚫 Contacto ${basePhone} ${classification.type} — silencio total (bloqueo precautorio)`);
+        return;
+      }
+
       contactType = classification.type;
 
       // Map group/legacy types
@@ -1630,49 +1872,36 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
         }
 
         // 3. Buscar en conversaciones pasadas (¿MIIA habló con este número antes?)
-        if (!smartClassified && ctx.conversations[phone] && ctx.conversations[phone].length > 0) {
-          console.log(`${logPrefix} 🔍 SMART-CLASS: ${basePhone} tiene ${ctx.conversations[phone].length} mensajes previos → clasificar como lead`);
-          contactType = 'lead';
-          ctx.contactTypes[phone] = 'lead';
-          const bizId = ctx.businesses?.[0]?.id || null;
-          await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: pushName || '' });
-          gateDecision.respond = true;
-          gateDecision.reason = 'smart_classified_history';
-          gateDecision.action = 'none';
-          smartClassified = true;
+        // NOTA: NO contar mensajes de la sesión actual (acumulados durante bloqueo precautorio)
+        // Solo contar si HAY respuestas de assistant → evidencia de que MIIA ya habló con este contacto antes
+        if (!smartClassified && ctx.conversations[phone]) {
+          const hasAssistantReplies = ctx.conversations[phone].some(m => m.role === 'assistant');
+          if (hasAssistantReplies) {
+            console.log(`${logPrefix} 🔍 SMART-CLASS: ${basePhone} tiene ${ctx.conversations[phone].length} mensajes previos CON respuestas → clasificar como lead`);
+            contactType = 'lead';
+            ctx.contactTypes[phone] = 'lead';
+            const bizId = ctx.businesses?.[0]?.id || null;
+            await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: pushName || '', status: 'classified', classifiedBy: 'auto', classifiedAt: new Date().toISOString() });
+            gateDecision.respond = true;
+            gateDecision.reason = 'smart_classified_history';
+            gateDecision.action = 'none';
+            smartClassified = true;
+          }
         }
 
-        // 4. Si nada funcionó → MIIA NO EXISTE. Notificar al owner con contexto enriquecido.
+        // 4. Si nada funcionó → BLOQUEO PRECAUTORIO con anti-spam
+        // MIIA NO responde. Alerta al owner UNA sola vez. Acumula en silencio.
         if (!smartClassified) {
-          const ownerJid = tenantState.sock?.user?.id;
-          if (ownerJid) {
-            const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
-            try {
-              await sendTenantMessage(tenantState, ownerJid, alertMsg);
-              console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin match en ninguna fuente (MIIA callada)`);
-            } catch (e) {
-              console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
-            }
-          }
-          console.log(`${logPrefix} 🤫 SMART-CLASS: Sin match para ${basePhone} en keywords, grupos, agenda ni historial — MIIA NO EXISTE`);
+          await handleUnknownContactBlock(ctx, basePhone, phone, messageBody, pushName, isLid, tenantState, logPrefix);
           // gateDecision.respond sigue en false → silencio total
         }
       }
     } else {
-      // 2+ negocios → notificar al owner para que clasifique
-      const ownerJid = tenantState.sock?.user?.id;
-      if (ownerJid) {
-        const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
-        const isLid = phoneDigits.length > 13;
-        const pushName = messageContext?.pushName || '';
-        const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
-        try {
-          await sendTenantMessage(tenantState, ownerJid, alertMsg);
-          console.log(`${logPrefix} 📢 Owner notificado: desconocido ${isLid ? (pushName || 'LID') : basePhone} sin keyword match (${businesses.length} negocios)`);
-        } catch (e) {
-          console.error(`${logPrefix} ❌ Error notificando al owner sobre desconocido:`, e.message);
-        }
-      }
+      // 2+ negocios → BLOQUEO PRECAUTORIO (misma lógica anti-spam)
+      const phoneDigits = (basePhone || '').replace(/[^0-9]/g, '');
+      const isLid = phoneDigits.length > 13;
+      const pushName = messageContext?.pushName || '';
+      await handleUnknownContactBlock(ctx, basePhone, phone, messageBody, pushName, isLid, tenantState, logPrefix);
     }
   }
 

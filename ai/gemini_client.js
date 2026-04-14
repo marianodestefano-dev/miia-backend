@@ -15,6 +15,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const DEFAULT_MODEL = 'gemini-2.5-flash'; // 2.0-flash → 404, 1.5-flash → 404, 2.5-pro → 503
 const RETRY_DELAYS = [8000, 20000, 45000];
 const MAX_RETRIES = 3;
+const FETCH_TIMEOUT_MS = 30000; // 30s — si Gemini no responde, abortar (previene isProcessing stuck)
 
 /**
  * Extract text from a Gemini API response body.
@@ -71,12 +72,16 @@ async function callGemini(apiKey, prompt, opts = {}) {
   };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: controller.signal
       });
+      clearTimeout(timeout);
 
       if (response.ok) {
         const data = await response.json();
@@ -96,6 +101,17 @@ async function callGemini(apiKey, prompt, opts = {}) {
       const errText = await response.text();
       throw new Error(`Gemini API error: ${response.status} - ${errText.substring(0, 200)}`);
     } catch (err) {
+      clearTimeout(timeout);
+      if (err.name === 'AbortError') {
+        console.error(`[GEMINI] ⏰ TIMEOUT: fetch abortado después de ${FETCH_TIMEOUT_MS/1000}s (attempt ${attempt + 1}/${retries})`);
+        if (attempt < retries) {
+          const delay = RETRY_DELAYS[attempt] || 45000;
+          console.warn(`[GEMINI] Reintentando en ${delay / 1000}s...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw new Error(`Gemini timeout after ${FETCH_TIMEOUT_MS/1000}s (${retries} retries exhausted)`);
+      }
       if (attempt === retries) throw err;
       if (err.message.includes('Gemini API error')) throw err;
       console.warn(`[GEMINI] Network error — retry in 5s (${attempt + 1}/${retries}): ${err.message}`);
@@ -140,13 +156,17 @@ async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
     ...(Object.keys(genConfig).length > 0 && { generationConfig: genConfig })
   };
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     console.log(`[GEMINI] Chat request: ${messages.length} msgs, prompt ${systemPrompt.length} chars`);
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal
     });
+    clearTimeout(timeout);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -164,6 +184,11 @@ async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
     console.log(`[GEMINI] OK: ${text.length} chars`);
     return text;
   } catch (error) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      console.error(`[GEMINI] ⏰ TIMEOUT en callGeminiChat: fetch abortado después de ${FETCH_TIMEOUT_MS/1000}s`);
+      return null;
+    }
     console.error('[GEMINI] CRITICAL ERROR:', error.message);
     return null;
   }
