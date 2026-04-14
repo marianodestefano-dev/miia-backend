@@ -1439,6 +1439,7 @@ let morningWakeupDone   = '';        // evita repetir el despertar en el mismo d
 let morningBriefingDone = '';        // evita repetir el briefing en el mismo día
 let _pendingOwnerConfirm = null;     // Confirmación pendiente del owner (cambio permanente)
 let briefingPendingApproval = [];    // novedades regulatorias esperando aprobación de Mariano
+// SAFE: MIIA_CIERRE solo se usa en safeSendMessage a equipo (4734) y familia (4784) — nunca llega a leads
 const MIIA_CIERRE = `\n\n_Si quieres seguir hablando, responde *HOLA MIIA*. Si prefieres terminar, escribe *CHAU MIIA*._`;
 
 // Humanizer cache — se refresca desde Firestore cada 60s
@@ -3483,6 +3484,7 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // SAFE: Detección de triggers entrantes de familia/equipo (dileAMode) — nunca genera prompt a leads
     // MANEJO DE COMANDOS "DILE A" — HOLA MIIA / CHAU MIIA
     // Detecta cuando contactos de "dile a" activan/desactivan conversación
     // ═══════════════════════════════════════════════════════════════════════════
@@ -9693,6 +9695,7 @@ async function handleIncomingMessage(message) {
     const bodyLower = (body || '').toLowerCase();
 
     // ── INVOCACIÓN / CIERRE DE SESIÓN MIIA ──────────────────────────────────
+    // SAFE: Parser de triggers entrantes — detección, no generación de prompt
     // MIIA se activa al ser mencionada y permanece activa hasta "chau miia"
     if (!conversationMetadata[effectiveTarget]) conversationMetadata[effectiveTarget] = {};
     const isMIIASessionActive = !!conversationMetadata[effectiveTarget].miiaSessionActive;
@@ -11171,6 +11174,7 @@ function getDialectForPhone(contactPhone) {
 
 // ═══ HELPER: Fallback contextual para contactos familia/equipo/grupos ═══
 // Genera textos fallback SIN IA, usando contexto del contacto y owner
+// SAFE: buildContextualFallback solo se llama desde dileA (familia/equipo, isFamily:true) — nunca llega a leads
 function buildContextualFallback(type, { contactName, ownerName, contactPhone, emoji } = {}) {
   const country = getCountryFromPhone(contactPhone || OWNER_PHONE || '57');
   const isVos = country === 'AR';

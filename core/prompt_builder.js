@@ -339,9 +339,10 @@ const PRIORIDADES_COMPACTAS = buildPrioridadesCompactas('familia');
  * VADEMECUM RULES — Reglas de comportamiento en runtime (parametrizadas)
  */
 function buildVademecum(p, chatType) {
-  // I-20 (trigger commands) se OMITE completamente para leads/clients/miia_leads
+  // I-20 (trigger commands) se OMITE completamente para leads/clients/miia_leads/miia_clients
   // porque la IA a veces lo incluye en la respuesta aunque diga "PROHIBIDO"
-  const isLeadContext = chatType === 'lead' || chatType === 'miia_lead' || chatType === 'client';
+  // BUG-C1 C-034: Consistente con LEAD_CHAT_TYPES en prompt_modules.js
+  const isLeadContext = ['lead', 'miia_lead', 'client', 'miia_client'].includes(chatType);
   const triggerBlock = isLeadContext ? '' : `
 - **TRIGGER OBLIGATORIO (I-20) — SOLO FAMILIA/EQUIPO/GRUPOS y SELF-CHAT:**
   * "Hola MIIA" (con dos ii) → ACTIVA la conversación (SOLO en chats de familia, equipo, grupos)

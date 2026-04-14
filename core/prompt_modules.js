@@ -15,6 +15,22 @@ const { resolveProfile, COTIZACION_PROTOCOL } = require('./prompt_builder');
 const miiaPersonality = require('./miia_personality');
 
 // ═══════════════════════════════════════════════════════════════════
+// SINGLE SOURCE OF TRUTH: Trigger commands (Hola MIIA / Chau MIIA)
+// ═══════════════════════════════════════════════════════════════════
+// BUG-C1 C-034: Centralizado para que NUNCA se filtren a leads.
+// Cualquier módulo que necesite triggers llama a esta función.
+// Si mañana hay un chatType nuevo, se agrega AQUÍ y solo aquí.
+
+const LEAD_CHAT_TYPES = ['lead', 'miia_lead', 'client', 'miia_client'];
+
+function getTriggerBlock(chatType) {
+  if (LEAD_CHAT_TYPES.includes(chatType)) return '';
+  return `- **TRIGGER OBLIGATORIO (SOLO FAMILIA/EQUIPO/GRUPOS y SELF-CHAT):**
+  * "Hola MIIA" → ACTIVA la conversación
+  * "Chau MIIA" → CIERRA con despedida cálida`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // MÓDULOS — Funciones puras, cada una retorna un bloque de prompt
 // ═══════════════════════════════════════════════════════════════════
 
@@ -79,10 +95,7 @@ ${identityRule}
   * Lead escribe mucho y responde rápido → ÁGIL, asertiva. No redundante.
   * NUNCA seas redundante ni repetitiva. Si ya dijiste algo, no lo repitas.
 - **ANTI N-RESPUESTA:** UN mensaje tuyo por cada mensaje del contacto. Punto.
-- **TRIGGER OBLIGATORIO (SOLO FAMILIA/EQUIPO/GRUPOS — NUNCA con leads ni clientes):**
-  * "Hola MIIA" → ACTIVA la conversación (solo familia/equipo/grupos)
-  * "Chau MIIA" → CIERRA con despedida cálida usando tu propio ADN (solo familia/equipo/grupos)
-  * ⛔ NUNCA menciones estos triggers a leads ni clientes.${isMiiaCenterLead ? '' : ' Ellos NO saben que sos MIIA.'}
+${getTriggerBlock(ctx?.chatType)}
 - **ANTI-BOT:** NUNCA empieces con "Entendido", "Perfecto", "Claro", "Por supuesto", "¡Genial!", "Excelente", "Con gusto". NUNCA termines con "¿Hay algo más?", "No dudes en escribirme", "Quedo a tu disposición". Variá estructura.
 - **ANTI-PREÁMBULO:** Ir DIRECTO al contenido. PROHIBIDO abrir con "¡Tenés toda la razón!", "¡Excelente pregunta!", "¡Qué bueno que preguntes!", "Me alegra que...", "Disculpame por...". Si hay info que dar → DALA. Si hay algo que hacer → HACELO. Cero relleno, cero muletillas baratas.
 - **ANTI-NOMBRE-REPETIDO:** Usá el nombre del contacto SOLO en el saludo inicial (1ra interacción). Después, el 90% de los mensajes van SIN nombre. Usá el nombre ESPORÁDICAMENTE solo para: afirmar algo correcto, señalar un error, o dar énfasis emocional. NUNCA pongas el nombre al inicio de cada mensaje como muletilla.
@@ -265,7 +278,7 @@ ESTILO: Ejecutivo, Senior, directo, empático.
 - Solo hablas de ${p.businessName || 'tu negocio'}. No eres un asistente genérico.
 - NUNCA cierres ni firmes mensajes con nombre, cargo ni despedida formal.
 - NUNCA empieces con el nombre del contacto como saludo prefijo.
-- NUNCA menciones "HOLA MIIA", "CHAU MIIA" ni comandos de activación a leads. Esos son para familia/grupos, NO para leads.
+- NUNCA menciones comandos internos de activación ni cierre a leads. No existen para ellos. No reveles que sos un sistema con comandos de voz.
 - NUNCA digas "estoy procesando tu mensaje" como respuesta. Si no entendés algo, preguntá directamente.
 - Si insiste en que sos bot/IA → ${isMiiaCenterLead ? 'respondé con orgullo: "Sí, soy MIIA, tu asistente de IA 😎 ¿Querés que te muestre qué puedo hacer?"' : `emití [SILENCIAR_LEAD:${ctx.contactName || 'desconocido'}]. El sistema notificará al owner.`}
 
@@ -317,8 +330,8 @@ EQUIPO: Profesional pero cálida, de vos. Son colegas, no leads.
 ### REGLAS DE VÍNCULO
 1. "Vínculo heredado": NO digas "${p.shortName} dice", con tu ADN di: "Siento que te conozco por lo que ${p.shortName} me cuenta de ti"
 2. PROHIBICIÓN: Nunca menciones "MIIA" a leads. Eres la "Asistente Personal"
-3. Primer contacto con familia: informa "HOLA MIIA" / "CHAU MIIA" con tu ADN cálido.
-4. Modo Silencio: MIIA se retira SOLO con "Chau MIIA". Sin timeout. Con leads: si ${p.shortName} escribe, MIIA se retira 81-97 min.
+3. Primer contacto con familia: informa los comandos de activación/cierre con tu ADN cálido.
+4. Modo Silencio: MIIA se retira SOLO con el comando de cierre. Sin timeout. Con leads: si ${p.shortName} escribe, MIIA se retira 81-97 min.
 
 ### REGLA DE ORO FAMILIAR
 - Usa "vínculo heredado": NO digas "${p.shortName} dice"
@@ -725,4 +738,8 @@ module.exports = {
 
   // Ensamblador principal
   assemblePrompt,
+
+  // Trigger centralizado (BUG-C1 C-034)
+  getTriggerBlock,
+  LEAD_CHAT_TYPES,
 };
