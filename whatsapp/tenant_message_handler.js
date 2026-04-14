@@ -2124,7 +2124,7 @@ Respondé "sí" para guardar todos, "no" para descartar, o indicá cuáles sí/n
   }
 
   // Ensamblado final del prompt
-  const fullPrompt = `${activeSystemPrompt}
+  let fullPrompt = `${activeSystemPrompt}
 
 ${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${personalStr}${cerebroStr ? '\n\n[ADN VENTAS — CONOCIMIENTO DE NEGOCIO]:\n' + cerebroStr : ''}${pendingStr}${leadsSummaryStr}
 
@@ -2134,6 +2134,19 @@ ${systemDateStr}
 ${history}
 
 MIIA, genera tu respuesta breve, estratégica y humana:`;
+
+  // ═══ SEARCH-HINT: Refuerzo de búsqueda para temas de tiempo real ═══
+  const REALTIME_PATTERNS = [
+    { rx: /\b(clima|tiempo meteorol|temperatura|pronóstico|pron[oó]stico|lluvia|llover|soleado|nublado|tormenta)\b/i, topic: 'clima' },
+    { rx: /\b(d[oó]lar|euro|bitcoin|btc|eth|cotizaci[oó]n|trm|tasa.*cambio|precio.*oro|acciones?|bolsa|nasdaq|cripto|crypto)\b/i, topic: 'finanzas' },
+    { rx: /\b(partido|juega|jugó|resultado|gol|posiciones|torneo|carrera|f1|formula|champions|libertadores|mundial)\b/i, topic: 'deportes' },
+    { rx: /\b(noticias?|pas[oó].*hoy|qu[eé].*pas[oó]|muri[oó]|falleci[oó]|elecciones?|[uú]ltim[ao].*hora)\b/i, topic: 'noticias' },
+  ];
+  const detectedTopics = REALTIME_PATTERNS.filter(p => p.rx.test(messageBody)).map(p => p.topic);
+  if (detectedTopics.length > 0) {
+    fullPrompt += `\n\n⚠️ [SISTEMA — BÚSQUEDA OBLIGATORIA]: El usuario preguntó sobre ${detectedTopics.join(', ')}. DEBÉS usar tu herramienta google_search para responder con datos reales. NO respondas sin buscar primero.`;
+    console.log(`${logPrefix} 🔍 SEARCH-HINT inyectado: topics=[${detectedTopics.join(',')}] msg="${messageBody.substring(0, 60)}"`);
+  }
 
   // ── PASO 10: Llamar a la IA via AI Gateway (P5.3 — failover cross-provider) ──
   // aiProvider: null = dejar que AI Gateway use CONTEXT_CONFIG (owner_chat→claude, leads→gemini, etc.)
