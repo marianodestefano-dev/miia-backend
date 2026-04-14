@@ -1416,63 +1416,6 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
             const businessCount = (tenant._businesses || []).length;
             if (businessCount <= 1) {
-              // ═══ FIX C-013 #1: Gates de seguridad ANTES del fastpath ═══
-              // Post-incidente bot Coordinadora (2026-04-14): el fastpath
-              // clasificaba TODO como lead sin validar. Ahora verificamos:
-              //   Gate A: isPotentialBot → si true, NO fastpath
-              //   Gate B: matchesBusinessKeywords → si NO matchea, NO fastpath
-              // Si algún gate falla, el contacto cae al flujo normal de TMH
-              // donde C-004 (bloqueo precautorio) sí puede actuar.
-              // ⚠️ El fastpath en sí NO se modifica — solo agregamos gates.
-
-              // Gate A: ¿Es un bot conocido?
-              const { isPotentialBot } = require('../core/message_logic');
-              if (isPotentialBot(body)) {
-                console.warn(`[TM:${uid}] [FASTPATH-BYPASS] ${lidBase} — isPotentialBot=true. Mensaje: "${body.substring(0, 80)}". Enviando a flujo normal.`);
-                // NO fastpath — continuar al flujo normal (pending_silent, TMH, etc.)
-              } else {
-                // Gate B: ¿El mensaje matchea keywords del negocio?
-                let keywordsMatch = false;
-                try {
-                  const { matchesBusinessKeywords, getOwnerBusinessKeywords } = require('../core/contact_gate');
-                  const { getOrCreateContext } = require('./tenant_message_handler');
-                  const ownerUidGate = tenant.ownerUid || uid;
-                  // Intentar obtener keywords del contexto TMH si existe
-                  let keywords = [];
-                  try {
-                    const ctx = await getOrCreateContext(ownerUidGate);
-                    keywords = getOwnerBusinessKeywords(ctx);
-                  } catch (_) {
-                    // Si no hay contexto TMH, intentar cargar keywords de businesses directamente
-                    const biz = tenant._businesses?.[0];
-                    if (biz && biz.contact_rules && biz.contact_rules.lead_keywords) {
-                      keywords = biz.contact_rules.lead_keywords;
-                    }
-                  }
-                  if (keywords.length === 0) {
-                    // Sin keywords configuradas = no podemos validar → permitir fastpath
-                    // (para no bloquear MIIA CENTER si no tiene keywords)
-                    keywordsMatch = true;
-                    console.log(`[TM:${uid}] [FASTPATH-GATE] Sin keywords configuradas — fastpath permitido por default`);
-                  } else {
-                    const result = matchesBusinessKeywords(body, keywords);
-                    keywordsMatch = result.matched;
-                    if (!keywordsMatch) {
-                      console.warn(`[TM:${uid}] [FASTPATH-BYPASS] ${lidBase} — mensaje NO matchea ninguna keyword de negocio. Enviando a flujo normal. Mensaje: "${body.substring(0, 80)}"`);
-                    } else {
-                      console.log(`[TM:${uid}] [FASTPATH-GATE] ✅ Keyword match: "${result.keyword}"`);
-                    }
-                  }
-                } catch (gateErr) {
-                  // Error cargando keywords — permitir fastpath para no romper flujo
-                  keywordsMatch = true;
-                  console.warn(`[TM:${uid}] [FASTPATH-GATE] ⚠️ Error en gate B: ${gateErr.message} — fastpath permitido por safety`);
-                }
-
-                if (!keywordsMatch) {
-                  // Gate B falló — NO fastpath, continuar al flujo normal
-                  // (se manejará abajo como pending_silent o flujo normal de TMH)
-                } else {
               // FAST-PATH: Un solo negocio → todo desconocido es lead, procesar YA
               const contactName = pushName || `Lead ${lidBase.substring(0, 6)}`;
               console.log(`[TM:${uid}] 🚀 LID-FASTPATH: ${lidBase} (${contactName}) → lead directo (${businessCount} negocio${businessCount === 1 ? '' : 's'}). Sin clasificación.`);
@@ -1517,8 +1460,6 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
               _addToDailySummary(uid, tenant, `Nuevo lead: *${contactName}* escribió: "${body.substring(0, 80)}${body.length > 80 ? '...' : ''}" — respondido automáticamente`);
               continue; // Procesado — siguiente mensaje
-                } // cierre else keywordsMatch (Gate B pass)
-              } // cierre else isPotentialBot (Gate A pass)
             }
 
             // ═══ PENDING_SILENT: Contacto ya en Pendientes — bufferear + re-intentar clasificación ═══

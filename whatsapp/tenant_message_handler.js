@@ -58,6 +58,7 @@ const {
   getOwnerClientKeywords, classifyUnknownContact, buildUnknownContactAlert
 } = require('../core/contact_gate');
 const rateLimiter = require('../core/rate_limiter');
+const loopWatcher = require('../core/loop_watcher');
 const humanDelay = require('../core/human_delay');
 const contactClassifier = require('../core/contact_classifier');
 const weekendMode = require('../core/weekend_mode');
@@ -925,6 +926,17 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
 
   const basePhone = getBasePhone(phone);
 
+  // ═══ C-019: Registrar mensaje ENTRANTE en loop watcher (cuenta combinada in+out) ═══
+  // Solo para contactos externos, NO self-chat
+  if (!isSelfChat) {
+    // Si ya esta pausado, cortar procesamiento inmediatamente
+    if (loopWatcher.isLoopPaused(uid, phone)) {
+      console.warn(`${logPrefix} 🚫 LOOP PAUSA ACTIVA (incoming): ${phone} pausado INDEFINIDAMENTE. Mensaje entrante IGNORADO.`);
+      return;
+    }
+    loopWatcher.recordMessage(uid, phone);
+  }
+
   // ── PASO 1b: @LID — Verificar si el owner responde a una consulta de identificación ──
   // checkOwnerLidResponse retorna:
   //   true  = mensaje consumido (solo clasificación, ej: "Es Juan") → no enviar a IA
@@ -1082,6 +1094,26 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       } catch (e) {
         console.error(`${logPrefix} ⚠️ Error validando OTP de seguridad: ${e.message}`);
       }
+    }
+  }
+
+  // ── PASO 1c2: Comando "MIIA retomá con +57XXX" — Despausar contacto (C-019) ──
+  // Owner ordena reactivar un contacto pausado por el circuit breaker anti-loop.
+  // UNICA forma de despausar. Sin este comando, MIIA queda callada FOREVER con ese contacto.
+  if (isSelfChat && role === 'owner' && messageBody) {
+    const resumeMatch = messageBody.match(/^MIIA\s+(retom[aá]|reactiv[aá]|despaus[aá]|resum[ií]|volver\s+a\s+hablar)(?:\s+con)?\s*\+?([\d\s\-]+\d)/i);
+    if (resumeMatch) {
+      const rawPhone = resumeMatch[2].replace(/[\s\-]/g, ''); // Normalizar: quitar espacios y guiones
+      const phoneJid = `${rawPhone}@s.whatsapp.net`;
+      console.log(`${logPrefix} 🔄 LOOP-RESUME: Owner ordena retomar con ${rawPhone}`);
+      const wasReset = loopWatcher.resetLoop(uid, phoneJid);
+      const { safeSendMessage: tmSend } = require('./tenant_manager');
+      if (wasReset) {
+        await tmSend(uid, phone, `✅ Listo, retomo con +${rawPhone}. Si vuelve a entrar en loop, te aviso de nuevo.`);
+      } else {
+        await tmSend(uid, phone, `ℹ️ El contacto +${rawPhone} no estaba pausado. Todo normal.`);
+      }
+      return;
     }
   }
 
@@ -4645,6 +4677,46 @@ async function sendTenantMessage(tenantState, phone, content) {
     return null;
   }
 
+  // ═══ FIX C-013 #2: Rate limit per-contact per-tenant (ajuste C-019) ═══
+  // Ventana 30s. Familia/equipo: 10 msgs. Leads/clientes: 5 msgs.
+  // Self-chat excluido (alertas del sistema).
+  const targetBase = phone.split('@')[0];
+  const sockBase = (tenantState.sock?.user?.id || '').split(':')[0].split('@')[0];
+  const isSelfTarget = sockBase === targetBase;
+  if (!isSelfTarget) {
+    // Obtener contactType para limite diferenciado
+    const ctxForRL = tenantContexts.get(tenantState.uid);
+    const contactTypeForRL = ctxForRL?.contactTypes?.[phone] || ctxForRL?.contactTypes?.[`${targetBase}@s.whatsapp.net`] || 'unknown';
+    if (!rateLimiter.contactAllows(tenantState.uid, phone, contactTypeForRL)) {
+      const max = (contactTypeForRL === 'familia' || contactTypeForRL === 'equipo') ? rateLimiter.CONTACT_MAX_FAMILY : rateLimiter.CONTACT_MAX_DEFAULT;
+      console.warn(`[TMH:${tenantState.uid}] 🚫 RATE LIMIT PER-CONTACT: ${phone} (tipo=${contactTypeForRL}) superó ${max} msgs/${rateLimiter.CONTACT_WINDOW_MS/1000}s. Mensaje NO enviado.`);
+      return null;
+    }
+  }
+
+  // ═══ FIX C-013 #3: Circuit breaker anti-loop (ajuste C-019) ═══
+  // Cuenta msgs COMBINADOS (in+out). Umbral 10 en 30s. Pausa INDEFINIDA.
+  // Solo el owner puede reactivar con "MIIA retomá con +XXXX".
+  if (!isSelfTarget) {
+    const loopCheck = loopWatcher.checkAndRecord(tenantState.uid, phone);
+    if (!loopCheck.allowed) {
+      if (loopCheck.loopDetected) {
+        console.error(`[TMH:${tenantState.uid}] 🚨 LOOP DETECTADO con ${phone}: ${loopCheck.count} msgs combinados en <30s. PAUSADO INDEFINIDAMENTE.`);
+        // Alertar al owner en self-chat
+        const ownerJid = `${sockBase}@s.whatsapp.net`;
+        const alertMsg = `🚨 *ALERTA ANTI-LOOP*\n\nDetecté un posible loop con el contacto ${targetBase}.\n${loopCheck.count} mensajes combinados en menos de 30 segundos.\n\nPausé las respuestas a ese contacto. No le voy a hablar más hasta que me ordenes retomar.\n\nSi querés que retome: escribime\n   MIIA retomá con +${targetBase}\n\nSi preferís no hablar más con ese número: no hagas nada. Me quedo callada.`;
+        try {
+          await tenantState.sock.sendMessage(ownerJid, { text: alertMsg });
+        } catch (alertErr) {
+          console.error(`[TMH:${tenantState.uid}] ⚠️ Error enviando alerta anti-loop:`, alertErr.message);
+        }
+      } else {
+        console.warn(`[TMH:${tenantState.uid}] 🚫 LOOP PAUSA ACTIVA: ${phone} pausado INDEFINIDAMENTE. Mensaje NO enviado. Owner debe escribir "MIIA retomá con +${targetBase}".`);
+      }
+      return null;
+    }
+  }
+
   // Recortar mensajes muy largos (máx 1200 chars)
   if (typeof content === 'string' && content.length > 1200) {
     let cutPoint = content.lastIndexOf('\n\n', 1200);
@@ -4729,6 +4801,7 @@ async function sendTenantMessage(tenantState, phone, content) {
     // Enviar
     const sentMsg = await tenantState.sock.sendMessage(phone, { text: content });
     rateLimiter.recordOutgoing(tenantState.uid);
+    if (!isSelfTarget) rateLimiter.contactRecord(tenantState.uid, phone);
     try { require('../core/privacy_counters').recordOutgoing(tenantState.uid); } catch (_) {}
 
     // ═══ BUG3b-FIX: Registrar msgId enviado para prevenir auto-respuesta ═══

@@ -176,6 +176,7 @@ const miiaGifs = require('./core/miia_gifs');
 const googleServices = require('./integrations/google_services_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
+const loopWatcher = require('./core/loop_watcher');
 const privacyCounters = require('./core/privacy_counters');
 const contactClassifier = require('./core/contact_classifier');
 const slotPrivacy = require('./core/slot_privacy');
@@ -2446,6 +2447,40 @@ async function safeSendMessage(target, content, options = {}) {
     return null;
   }
   hourlySendLog.count++;
+
+  // ═══ FIX C-013 #2+#3: Rate limit per-contact + Circuit breaker anti-loop (REGLA 3 MIIAS, C-019+C-021) ═══
+  // MIIA CENTER: pausa con AUTO-RESET diario 00:00 COT (C-021).
+  // Un lead puede tener un mal dia; al dia siguiente quizas es cliente genuino.
+  // Excluir self-chat (alertas del sistema al owner).
+  const targetBaseForRL = target.split('@')[0].split(':')[0];
+  const isSelfChatRL = targetBaseForRL === OWNER_PHONE;
+  if (!isSelfChatRL && OWNER_UID) {
+    // Rate limit per-contact: leads siempre son default (5/30s) en MIIA CENTER
+    if (!rateLimiter.contactAllows(OWNER_UID, target, 'lead')) {
+      console.warn(`[WA] 🚫 RATE LIMIT PER-CONTACT: ${target} superó ${rateLimiter.CONTACT_MAX_DEFAULT} msgs/${rateLimiter.CONTACT_WINDOW_MS/1000}s. Mensaje NO enviado.`);
+      return null;
+    }
+    // Circuit breaker anti-loop: >10 msgs combinados en <30s = pausa hasta 00:00 COT (C-021: autoResetDaily)
+    const loopCheck = loopWatcher.checkAndRecord(OWNER_UID, target, { autoResetDaily: true });
+    if (!loopCheck.allowed) {
+      if (loopCheck.loopDetected) {
+        console.error(`[WA] 🚨 LOOP DETECTADO con ${target}: ${loopCheck.count} msgs combinados en <30s. PAUSADO HASTA 00:00 COT.`);
+        // Alertar al owner en self-chat
+        const selfJid = `${OWNER_PHONE}@s.whatsapp.net`;
+        const alertMsg = `🚨 *ALERTA ANTI-LOOP — MIIA CENTER*\n\nDetecté un posible loop con +${targetBaseForRL}.\n${loopCheck.count} mensajes combinados en menos de 30 segundos. Pausé ese contacto.\n\nMañana a las 00:00 vuelvo a tratarlo normal automáticamente. Si querés que retome antes, escribime:\n   MIIA retomá con +${targetBaseForRL}`;
+        try {
+          const ownerSockAlert = getOwnerSock();
+          if (ownerSockAlert) await ownerSockAlert.sendMessage(selfJid, { text: alertMsg });
+        } catch (alertErr) {
+          console.error(`[WA] ⚠️ Error enviando alerta anti-loop:`, alertErr.message);
+        }
+      } else {
+        console.warn(`[WA] 🚫 LOOP PAUSA ACTIVA (MIIA CENTER): ${target} pausado hasta 00:00 COT. Mensaje NO enviado.`);
+      }
+      return null;
+    }
+    rateLimiter.contactRecord(OWNER_UID, target);
+  }
 
   // ═══ SPLIT INTELIGENTE: Decide contextualmente si partir la respuesta en múltiples mensajes ═══
   // Analiza estructura del contenido: listas, múltiples temas, secciones con emojis
@@ -9032,6 +9067,22 @@ async function handleIncomingMessage(message) {
       selfChatLoopCounter[targetPhoneId] = { count: 0, lastTime: 0 };
       return;
     }
+
+    // ═══ C-019: Comando "MIIA retomá con +57XXX" — Despausar contacto (MIIA CENTER) ═══
+    const resumeMatchSrv = body.match(/^MIIA\s+(retom[aá]|reactiv[aá]|despaus[aá]|resum[ií]|volver\s+a\s+hablar)(?:\s+con)?\s*\+?([\d\s\-]+\d)/i);
+    if (resumeMatchSrv && OWNER_UID) {
+      const rawPhoneSrv = resumeMatchSrv[2].replace(/[\s\-]/g, '');
+      const phoneJidSrv = `${rawPhoneSrv}@s.whatsapp.net`;
+      console.log(`[HIM] 🔄 LOOP-RESUME: Owner ordena retomar con ${rawPhoneSrv}`);
+      const wasResetSrv = loopWatcher.resetLoop(OWNER_UID, phoneJidSrv);
+      if (wasResetSrv) {
+        await safeSendMessage(targetPhoneId, `✅ Listo, retomo con +${rawPhoneSrv}. Si vuelve a entrar en loop, te aviso de nuevo.`, { isSelfChat: true });
+      } else {
+        await safeSendMessage(targetPhoneId, `ℹ️ El contacto +${rawPhoneSrv} no estaba pausado. Todo normal.`, { isSelfChat: true });
+      }
+      return;
+    }
+
     // FIX: No contar mensajes replayed (timestamp anterior a conexión) como loop
     // Baileys re-envía mensajes viejos al reconectar, no es un loop real
     const msgTs = message.timestamp || 0;
@@ -9723,6 +9774,17 @@ async function handleIncomingMessage(message) {
     if (lastAiSentBody[effectiveTarget] && lastAiSentBody[effectiveTarget] === cleanBody) {
       console.log(`[HIM] 🔁 lastAiSentBody match — skipping echo for ${effectiveTarget}`);
       return;
+    }
+
+    // ═══ C-019+C-021: Registrar mensaje ENTRANTE en loop watcher (MIIA CENTER, autoResetDaily) ═══
+    // Solo contactos externos (no self-chat). Si pausado → ignorar.
+    // MIIA CENTER usa autoResetDaily=true (C-021): pausa hasta 00:00 COT, no indefinida.
+    if (!isSelfChatMsg && !fromMe && OWNER_UID) {
+      if (loopWatcher.isLoopPaused(OWNER_UID, effectiveTarget)) {
+        console.warn(`[HIM] 🚫 LOOP PAUSA ACTIVA (incoming MIIA CENTER): ${effectiveTarget} pausado hasta 00:00 COT. Mensaje entrante IGNORADO.`);
+        return;
+      }
+      loopWatcher.recordMessage(OWNER_UID, effectiveTarget, { autoResetDaily: true });
     }
 
     if (!fromMe || isSelfChatMIIA) {

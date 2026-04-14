@@ -344,28 +344,38 @@ function getCircuitStatus() {
 // PER-CONTACT RATE LIMIT — Max mensajes por contacto por minuto
 // ═══════════════════════════════════════════════════════════════
 
-const _contactLimits = {}; // { phone: [timestamp, ...] }
-const CONTACT_MAX_PER_MINUTE = 5;
+const _contactLimits = {}; // { "uid:phone": [timestamp, ...] }
+const CONTACT_WINDOW_MS = 30_000; // Ventana de 30 segundos (ajuste C-019)
+const CONTACT_MAX_FAMILY = 10;    // Familia/equipo: 10 msgs / 30s
+const CONTACT_MAX_DEFAULT = 5;    // Leads/clientes/unknown: 5 msgs / 30s
 
 /**
  * ¿Se puede enviar un mensaje más a este contacto?
- * @param {string} phone
+ * Per-tenant isolation: cada tenant tiene su propio contador.
+ * Límites diferenciados: familia/equipo=10, resto=5 (ajuste C-019).
+ * @param {string} uid - UID del tenant
+ * @param {string} phone - JID del contacto destino
+ * @param {string} [contactType] - Tipo de contacto (familia, equipo, lead, etc.)
  * @returns {boolean}
  */
-function contactAllows(phone) {
-  if (!_contactLimits[phone]) _contactLimits[phone] = [];
-  const cutoff = Date.now() - 60_000;
-  _contactLimits[phone] = _contactLimits[phone].filter(t => t >= cutoff);
-  return _contactLimits[phone].length < CONTACT_MAX_PER_MINUTE;
+function contactAllows(uid, phone, contactType) {
+  const key = `${uid}:${phone}`;
+  if (!_contactLimits[key]) _contactLimits[key] = [];
+  const cutoff = Date.now() - CONTACT_WINDOW_MS;
+  _contactLimits[key] = _contactLimits[key].filter(t => t >= cutoff);
+  const max = (contactType === 'familia' || contactType === 'equipo') ? CONTACT_MAX_FAMILY : CONTACT_MAX_DEFAULT;
+  return _contactLimits[key].length < max;
 }
 
 /**
  * Registrar envío a contacto.
- * @param {string} phone
+ * @param {string} uid - UID del tenant
+ * @param {string} phone - JID del contacto destino
  */
-function contactRecord(phone) {
-  if (!_contactLimits[phone]) _contactLimits[phone] = [];
-  _contactLimits[phone].push(Date.now());
+function contactRecord(uid, phone) {
+  const key = `${uid}:${phone}`;
+  if (!_contactLimits[key]) _contactLimits[key] = [];
+  _contactLimits[key].push(Date.now());
 }
 
 module.exports = {
@@ -385,8 +395,10 @@ module.exports = {
   getCircuitStatus,
   CB_FAILURE_THRESHOLD,
   CB_COOLDOWN_MS,
-  // Per-contact limit
+  // Per-contact limit (ajuste C-019: ventana 30s, familia=10, resto=5)
   contactAllows,
   contactRecord,
-  CONTACT_MAX_PER_MINUTE,
+  CONTACT_WINDOW_MS,
+  CONTACT_MAX_FAMILY,
+  CONTACT_MAX_DEFAULT,
 };
