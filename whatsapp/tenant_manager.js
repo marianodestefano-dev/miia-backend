@@ -706,6 +706,19 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
     const { version } = await fetchLatestBaileysVersion();
 
+    // ═══ FIX 3: syncFullHistory solo en primera conexión ═══
+    const syncStateRef = admin.firestore().collection('baileys_sessions').doc(`tenant-${uid}`).collection('data').doc('sync_state');
+    let initialSyncDone = false;
+    try {
+      const syncDoc = await syncStateRef.get();
+      if (syncDoc.exists && syncDoc.data()?.initialSyncDone) {
+        initialSyncDone = true;
+      }
+    } catch (e) {
+      console.warn(`[TM:${uid}] ⚠️ Error leyendo sync_state, asumiendo primera conexión:`, e.message);
+    }
+    console.log(`[TM:${uid}] 📚 History sync: ${initialSyncDone ? 'SKIP (ya minado)' : 'FULL (primera conexión)'}`);
+
     console.log(`[TM:${uid}] 📡 Connecting with Baileys v${version.join('.')} (session v${getCredsVersion()}, identity=${getIdentityHash()})...`);
 
     // ═══ DUAL-ENGINE F1: Seleccionar perfil de conexión ═══
@@ -723,7 +736,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       printQRInTerminal: false,
       browser: engineProfile.browser,
       generateHighQualityLinkPreview: false,
-      syncFullHistory: true,
+      syncFullHistory: !initialSyncDone,
       markOnlineOnConnect: engineProfile.markOnlineOnConnect,
       // ── Stability options (engine-specific) ──
       retryRequestDelayMs: engineProfile.retryRequestDelayMs,
@@ -1840,6 +1853,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           console.log(`[TM:${uid}] 🔄 NÚMERO NUEVO detectado: ${savedDB._lastConnectedNumber} → ${newNumber}. ADN será REEMPLAZADO.`);
           tenant.trainingData = ''; // Limpiar ADN anterior — cerebro fresco
           tenant._historyMined = false; // Forzar re-minado
+          // ═══ FIX 3: Reset sync flag para re-minar con número nuevo ═══
+          syncStateRef.set({ initialSyncDone: false, resetReason: 'number_change', resetAt: new Date().toISOString() }, { merge: true })
+            .catch(e => console.warn(`[TM:${uid}] ⚠️ Error reseteando sync_state:`, e.message));
         }
         // Guardar número actual
         saveTenantDB(uid, {
@@ -1984,6 +2000,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       if (isLatest) {
         tenant._historyMined = true;
         console.log(`[TM:${uid}] 🧬 ADN Mining COMPLETO: ${historyStats.leads} leads, ${historyStats.clients} clientes, ${historyStats.skipped} omitidos`);
+
+        // ═══ FIX 3: Marcar sync como completado para futuras reconexiones ═══
+        syncStateRef.set({ initialSyncDone: true, completedAt: new Date().toISOString() }, { merge: true })
+          .catch(e => console.warn(`[TM:${uid}] ⚠️ Error guardando sync_state:`, e.message));
 
         // Notificar al owner en self-chat
         const selfJid = tenant.sock?.user?.id;
