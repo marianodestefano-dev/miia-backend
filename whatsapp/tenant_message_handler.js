@@ -1797,6 +1797,17 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   } else if (isSelfChat) {
     // ── SELF-CHAT OWNER: Completo (personal + negocios + contactos) ──
     activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
+
+    // ═══ FIX SALUDO: Inyectar aviso si ya saludó en esta franja ═══
+    if (!ctx._greetingByPhone) ctx._greetingByPhone = {};
+    const now = new Date();
+    const hour = now.getHours();
+    const currentSlot = hour < 5 ? 'madrugada' : hour < 12 ? 'mañana' : hour < 19 ? 'tarde' : 'noche';
+    const lastG = ctx._greetingByPhone[phone];
+    if (lastG && lastG.slot === currentSlot && (Date.now() - lastG.time) < 60 * 60 * 1000) {
+      activeSystemPrompt += `\n\n[SISTEMA: Ya saludaste "${lastG.text}" hace ${Math.round((Date.now() - lastG.time) / 60000)} min en esta franja (${currentSlot}). NO repitas saludo. Respondé directo.]`;
+    }
+
     // Inyectar lista de negocios si tiene más de 1
     if (ctx.businesses && ctx.businesses.length > 1) {
       const bizList = ctx.businesses.map((b, i) => `${i + 1}. ${b.name}${b.description ? ' — ' + b.description.substring(0, 60) : ''}`).join('\n');
@@ -2471,6 +2482,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         };
         await cotizacionGenerator.enviarCotizacionWA(safeSend, phone, cotizData, isSelfChat);
         pdfOk = true;
+        _cotizTagProcessed = true;
         console.log(`${logPrefix} [COTIZ-TMH] ✅ PDF enviado a ${phone}`);
       } catch (e) {
         console.error(`${logPrefix} [COTIZ-TMH] ❌ Error PDF:`, e.message);
@@ -2811,6 +2823,9 @@ REGLAS:
   let _emailTagProcessed = false;
   let _agendaTagProcessed = false;
   let _tareaTagProcessed = false;
+  let _cancelTagProcessed = false;
+  let _moveTagProcessed = false;
+  let _cotizTagProcessed = false;
 
   // ═══════════════════════════════════════════════════════════════
   // 11d-EMAIL. Tags [ENVIAR_EMAIL:], [ENVIAR_CORREO:], [LEER_INBOX], [EMAIL_LEER:], [EMAIL_ELIMINAR:], [EMAIL_ELIMINAR_EXCEPTO:]
@@ -3663,6 +3678,7 @@ REGLAS:
           // ═══ PASO B: Actualizar Firestore (si encontró match) ═══
           if (found) {
             await found.doc.ref.update({ status: 'cancelled', cancelledAt: new Date().toISOString(), cancelMode: mode });
+            _cancelTagProcessed = true;
             console.log(`${logPrefix} [CANCELAR-TMH] ✅ Firestore: "${found.data.reason}" marcado cancelled`);
           }
 
@@ -3942,7 +3958,7 @@ REGLAS:
               console.warn(`${logPrefix} [MOVER-TMH] ⚠️ Error moviendo en Calendar: ${calMoveErr.message}`);
             }
 
-            _agendaTagProcessed = true;
+            _moveTagProcessed = true;
 
             if (!aiMessage.replace(/\[MOVER_EVENTO:[^\]]+\]/g, '').trim()) {
               if (calendarMoved) {
@@ -4217,6 +4233,9 @@ REGLAS:
         email: _emailTagProcessed,
         agenda: _agendaTagProcessed,
         tarea: _tareaTagProcessed,
+        cancel: _cancelTagProcessed,
+        move: _moveTagProcessed,
+        cotizacion: _cotizTagProcessed,
       },
       logPrefix,
     });
@@ -4229,7 +4248,7 @@ REGLAS:
   // ── PASO 12b: Emoji de estado MIIA ──
   // applyMiiaEmoji SIEMPRE quita el emoji que puso la IA y pone el oficial
   // Contar acciones ejecutadas para emoji 🤹‍��️ (multi-acción = MIIA trabajando a full)
-  const actionsExecuted = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed].filter(Boolean).length;
+  const actionsExecuted = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed, _cancelTagProcessed, _moveTagProcessed, _cotizTagProcessed].filter(Boolean).length;
   aiMessage = applyMiiaEmoji(aiMessage, {
     isSelfChat,
     contactType: contactType || 'lead',
@@ -4252,6 +4271,20 @@ REGLAS:
     await sendTenantMessage(tenantState, phone, maybeAddTypo(aiMessage));
   }
   _responseSentOk = true; // Respuesta enviada — si algo posterior falla, NO mandar error al contacto
+
+  // ═══ FIX SALUDO: Tracking de saludos enviados ═══
+  if (isSelfChat) {
+    const greetMatch = aiMessage.match(/\b(buen(?:as?|os)\s+(?:días?|tardes?|noches?)|buen\s+día)\b/i);
+    if (greetMatch) {
+      if (!ctx._greetingByPhone) ctx._greetingByPhone = {};
+      const _hour = new Date().getHours();
+      ctx._greetingByPhone[phone] = {
+        time: Date.now(),
+        slot: _hour < 5 ? 'madrugada' : _hour < 12 ? 'mañana' : _hour < 19 ? 'tarde' : 'noche',
+        text: greetMatch[1]
+      };
+    }
+  }
 
   // ── PASO 12b: Enterprise lead — post-respuesta: transferir a owner si la IA lo decidió ──
   if (contactType === 'enterprise_lead' && hasTransferTag) {
