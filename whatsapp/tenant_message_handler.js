@@ -63,6 +63,7 @@ const contactClassifier = require('../core/contact_classifier');
 const weekendMode = require('../core/weekend_mode');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('../core/miia_postprocess');
 const { validatePreSend } = require('../core/miia_validator');
+const { fetchOfficialTRM } = require('../core/financial_verify');
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
@@ -2146,6 +2147,19 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   if (detectedTopics.length > 0) {
     fullPrompt += `\n\n⚠️ [SISTEMA — BÚSQUEDA OBLIGATORIA]: El usuario preguntó sobre ${detectedTopics.join(', ')}. DEBÉS usar tu herramienta google_search para responder con datos reales. NO respondas sin buscar primero.`;
     console.log(`${logPrefix} 🔍 SEARCH-HINT inyectado: topics=[${detectedTopics.join(',')}] msg="${messageBody.substring(0, 60)}"`);
+  }
+
+  // ═══ FEAT-005: Verificación cruzada financiera — dato oficial antes de Gemini ═══
+  if (detectedTopics.includes('finanzas')) {
+    try {
+      const trm = await fetchOfficialTRM();
+      if (trm) {
+        fullPrompt += `\n\n📊 [DATO OFICIAL VERIFICADO — TRM Colombia]: La TRM vigente hoy (${trm.vigencia}) es $${trm.valor.toFixed(2)} COP por 1 USD. Fuente: ${trm.fuente}. IMPORTANTE: Si tu búsqueda Google trae un valor distinto, puede ser la TRM del día siguiente (ya publicada pero no vigente) o el precio spot de mercado. Aclará la diferencia al usuario.`;
+        console.log(`${logPrefix} 💰 TRM-VERIFY inyectado: $${trm.valor} vigencia=${trm.vigencia}`);
+      }
+    } catch (err) {
+      console.warn(`${logPrefix} ⚠️ TRM-VERIFY falló (no bloquea): ${err.message}`);
+    }
   }
 
   // ── PASO 10: Llamar a la IA via AI Gateway (P5.3 — failover cross-provider) ──
