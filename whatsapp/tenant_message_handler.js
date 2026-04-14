@@ -1107,11 +1107,10 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       const phoneJid = `${rawPhone}@s.whatsapp.net`;
       console.log(`${logPrefix} 🔄 LOOP-RESUME: Owner ordena retomar con ${rawPhone}`);
       const wasReset = loopWatcher.resetLoop(uid, phoneJid);
-      const { safeSendMessage: tmSend } = require('./tenant_manager');
       if (wasReset) {
-        await tmSend(uid, phone, `✅ Listo, retomo con +${rawPhone}. Si vuelve a entrar en loop, te aviso de nuevo.`);
+        await sendTenantMessage(tenantState, phone, `✅ Listo, retomo con +${rawPhone}. Si vuelve a entrar en loop, te aviso de nuevo.`);
       } else {
-        await tmSend(uid, phone, `ℹ️ El contacto +${rawPhone} no estaba pausado. Todo normal.`);
+        await sendTenantMessage(tenantState, phone, `ℹ️ El contacto +${rawPhone} no estaba pausado. Todo normal.`);
       }
       return;
     }
