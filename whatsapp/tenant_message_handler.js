@@ -1902,7 +1902,13 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   if (gateDecision.action === 'farewell') {
     delete ctx.miiaActive[phone];
     console.log(`${logPrefix} 🔴 MIIA desactivada para ${basePhone} (trigger "Chau MIIA")`);
-    const farewell = `¡Fue un gusto charlar! Cuando quieras hablar de nuevo, escribime *Hola MIIA* 😊`;
+    // FIX C-053 #4: Farewell sin "Hola MIIA" para familia/equipo/grupo
+    // Bug: farewell hardcodeado exponía "Hola MIIA" a todos los contactTypes.
+    // Familia/equipo/grupo ya saben cómo invocar a MIIA — no repetir el trigger.
+    const isPersonalContact = contactType === 'familia' || contactType === 'equipo' || contactType === 'group';
+    const farewell = isPersonalContact
+      ? `¡Fue un gusto charlar! Cuando me necesites, acá estoy 😊`
+      : `¡Fue un gusto charlar! Cuando quieras hablar de nuevo, escribime *Hola MIIA* 😊`;
     ctx.conversations[phone].push({ role: 'assistant', content: farewell, timestamp: Date.now() });
     await sendTenantMessage(tenantState, phone, farewell);
     return;
@@ -2389,9 +2395,6 @@ ${countryContext ? countryContext : ''}
     ? `\n\n[IDENTIDAD DEL MAESTRO]: Tu usuario principal es ${profile.fullName}. Bríndale trato preferencial absoluto.`
     : '';
 
-  // Fecha del sistema
-  const systemDateStr = `[FECHA DEL SISTEMA: ${new Date().toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}]`;
-
   // Cerebro de negocio + datos personales privados
   const cerebroStr = ctx.businessCerebro || '';
   const personalStr = (isSelfChat && role === 'owner' && ctx.personalBrain) ? `\n\n[DATOS PERSONALES PRIVADOS — SOLO TÚ VES ESTO]:\n${ctx.personalBrain}` : '';
@@ -2476,8 +2479,6 @@ Respondé "sí" para guardar todos, "no" para descartar, o indicá cuáles sí/n
   let fullPrompt = `${activeSystemPrompt}
 
 ${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${personalStr}${cerebroStr ? '\n\n[ADN VENTAS — CONOCIMIENTO DE NEGOCIO]:\n' + cerebroStr : ''}${pendingStr}${leadsSummaryStr}
-
-${systemDateStr}
 
 [HISTORIAL DE CONVERSACIÓN RECIENTE]:
 ${history}
@@ -4667,13 +4668,13 @@ REGLAS:
 
     // Generar resumen compacto de la conversación para el owner
     const convoHistory = ctx.conversations[phone] || [];
-    const recentMsgs = convoHistory.slice(-10).map(m => `${m.role === 'user' ? leadName : 'MIIA'}: ${m.content.substring(0, 150)}`).join('\n');
+    const recentMsgs = convoHistory.slice(-10).map(m => `${m.role === 'user' ? (ctx.leadNames[phone] || ctx.leadNames[basePhone] || '') : 'MIIA'}: ${m.content.substring(0, 150)}`).join('\n');
 
     const ownerJid = tenantState.sock?.user?.id;
     if (ownerJid) {
       const ownerSelf = ownerJid.includes(':') ? ownerJid.split(':')[0] + '@s.whatsapp.net' : ownerJid;
       const elData = classification || {};
-      const summaryMsg = `📞 *LEAD ENTERPRISE → LLAMAR AHORA*\n\n👤 *${leadName}* | 📱 +${basePhone}\n🌐 ${elData.website || 'N/A'} | 👥 Equipo: ${elData.team_size || 'N/A'}\n\n📋 *Resumen de la conversación:*\n${recentMsgs.substring(0, 1500)}\n\n⚡ El lead quiere hablar con una persona. Llámalo.`;
+      const summaryMsg = `📞 *LEAD ENTERPRISE → LLAMAR AHORA*\n\n👤 *${ctx.leadNames[phone] || ctx.leadNames[basePhone] || ''}* | 📱 +${basePhone}\n🌐 ${elData.website || 'N/A'} | 👥 Equipo: ${elData.team_size || 'N/A'}\n\n📋 *Resumen de la conversación:*\n${recentMsgs.substring(0, 1500)}\n\n⚡ El lead quiere hablar con una persona. Llámalo.`;
 
       try { await sendTenantMessage(tenantState, ownerSelf, summaryMsg); } catch (_) {}
     }
@@ -4700,7 +4701,7 @@ REGLAS:
     enrichContactIndex(ctx.ownerUid, phone, {
       messageBody,
       contactType: contactType || 'lead',
-      contactName: ctx.leadNames[phone] || leadName || '',
+      contactName: ctx.leadNames[phone] || ctx.leadNames[basePhone] || '',
       isFromContact: true
     });
   }
