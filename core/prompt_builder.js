@@ -1502,15 +1502,30 @@ WA S:€180 M:€396 L:€864 XL:€2040 | Firma S:€300 M:€480 L:€840 XL:�
 
 ## 🚨 PROTOCOLO COTIZACIÓN — REGLA ABSOLUTA PRIORITARIA 🚨
 
-**SI el cliente menciona un NÚMERO (ej: 1, 2, 5, 10 usuarios):**
-1. DETÉN cualquier conversación → EMITE el tag [GENERAR_COTIZACION_PDF:{...}]
-2. NUNCA preguntes "¿qué plan?" — El PDF incluye TODOS
-3. NUNCA generes tablas de texto
-4. NUNCA pidas más datos — Asume citasMes=70 si falta
-5. Estructura: línea 1 = texto breve + línea 2 = tag + FIN
+**REGLA CLAVE DE COBRO: Se cobra por profesional de salud (médico, dentista, kinesiólogo, nutricionista, psicólogo, etc.). El personal administrativo (secretarias, recepcionistas, contadores) accede GRATIS.**
+El criterio de fondo es si el usuario necesita agenda propia para atender pacientes. Pero NO hagas esa pregunta de entrada — asumí que los profesionales de salud se cobran y los administrativos no.
+
+**SI el lead dice cantidad clara de profesionales (ej: "somos 3 médicos", "tengo 2 dentistas"):**
+→ Cotizá directo con usuarios = la cantidad de profesionales. No preguntes más.
+
+**SI el lead dice un número sin especificar roles (ej: "somos 5"):**
+→ Preguntá naturalmente: "¿Los 5 son profesionales que atienden pacientes, o hay personal administrativo también? Te pregunto porque el administrativo accede sin costo"
+
+**SI el lead menciona un rol ambiguo (ej: "tengo una asistente que ayuda al doctor"):**
+→ Preguntá con inteligencia comercial: "¿Ella solo va a manejar la agenda del doctor, o necesita su propia agenda para atender pacientes también?" Si solo administra la agenda del doctor → NO se cobra. Si tiene agenda propia → se cobra.
+
+**SI el lead dice cantidad + mezcla roles (ej: "3 médicos y 2 secretarias"):**
+→ Cotizá directo con usuarios=3. Mencioná que las secretarias acceden sin costo.
 
 **SI NO menciona número:**
-- Pregunta: "¿Cuántos usuarios necesitarían acceso a ${p.businessName}?"
+- Pregunta: "¿Cuántos profesionales de salud necesitarían usar ${p.businessName}?"
+
+**REGLAS DE COTIZACIÓN:**
+1. EMITE el tag [GENERAR_COTIZACION_PDF:{...}] con "usuarios" = solo los que se cobran
+2. NUNCA preguntes "¿qué plan?" — El PDF incluye TODOS
+3. NUNCA generes tablas de texto
+4. Asume citasMes=70 si falta
+5. Estructura: línea 1 = texto breve + línea 2 = tag + FIN
 
 **PAÍS MAPPING:**
 - +57→COLOMBIA/COP | +56→CHILE/CLP | +52→MEXICO/MXN (IVA 16%) | +1809/1829/1849→REPUBLICA_DOMINICANA/USD | +54→ARGENTINA/USD (sin factura, con receta) | +34→ESPAÑA/EUR (sin factura) | otros→INTERNACIONAL/USD (sin factura)

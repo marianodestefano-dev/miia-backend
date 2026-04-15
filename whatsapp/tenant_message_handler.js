@@ -501,6 +501,47 @@ async function handleUnknownContactBlock(ctx, basePhone, phone, messageBody, pus
  * @param {string} basePhone - Teléfono a buscar (ya sin @s.whatsapp.net)
  * @returns {{ key: string, data: Object } | null}
  */
+
+/**
+ * Split automático por longitud para mensajes >300 chars.
+ * Divide por párrafos o por oraciones. Cada parte máx ~180 chars.
+ * Retorna null si no puede dividir razonablemente.
+ */
+function autoSplitByLength(text) {
+  if (!text || text.length <= 300) return null;
+  // Opción 1: Dividir por párrafos (saltos de línea dobles)
+  let chunks = text.split(/\n\n+/).map(s => s.trim()).filter(Boolean);
+  if (chunks.length >= 2 && chunks.every(c => c.length <= 200)) {
+    return chunks.slice(0, 4);
+  }
+  // Opción 2: Dividir por oraciones (punto/!/? + espacio)
+  const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+  if (sentences.length < 2) return null;
+  // Agrupar oraciones en partes de ~150-180 chars
+  const parts = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if (current && (current.length + sentence.length + 1) > 180) {
+      parts.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + ' ' + sentence : sentence;
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+  if (parts.length >= 2 && parts.length <= 4) return parts;
+  // Si quedaron más de 4, reagrupar en 3
+  if (parts.length > 4) {
+    const third = Math.ceil(parts.length / 3);
+    return [
+      parts.slice(0, third).join(' '),
+      parts.slice(third, third * 2).join(' '),
+      parts.slice(third * 2).join(' '),
+    ].filter(Boolean);
+  }
+  return null;
+}
+
 function fuzzyPhoneLookup(contacts, basePhone) {
   if (!contacts || !basePhone) return null;
 
@@ -2404,7 +2445,15 @@ ${countryContext ? countryContext : ''}
 
   // Cerebro de negocio + datos personales privados
   const cerebroStr = ctx.businessCerebro || '';
-  const personalStr = (isSelfChat && role === 'owner' && ctx.personalBrain) ? `\n\n[DATOS PERSONALES PRIVADOS — SOLO TÚ VES ESTO]:\n${ctx.personalBrain}` : '';
+  // personalBrain: en self-chat → datos completos privados. En leads → solo ADN de tono/personalidad
+  // para que MIIA simule al owner correctamente (sin exponer datos privados al lead).
+  let personalStr = '';
+  if (isSelfChat && role === 'owner' && ctx.personalBrain) {
+    personalStr = `\n\n[DATOS PERSONALES PRIVADOS — SOLO TÚ VES ESTO]:\n${ctx.personalBrain}`;
+  } else if (!isSelfChat && ctx.personalBrain && ctx.ownerProfile?.revealAsAI !== true) {
+    // Para leads cuando MIIA simula ser el owner: inyectar personalBrain como guía de tono
+    personalStr = `\n\n[ADN DEL OWNER — IMITÁ SU FORMA DE HABLAR]:\n${ctx.personalBrain}\nIMPORTANTE: Usá este estilo de comunicación para que tus mensajes suenen como los escribiría ${profile.shortName || 'el owner'}. NO expongas datos privados al lead.`;
+  }
 
   // Pendientes de aprendizaje dudoso (solo en self-chat del owner)
   let pendingStr = '';
@@ -4689,22 +4738,36 @@ REGLAS:
   }
 
   // ── PASO 12b: Emoji de estado MIIA ──
-  // applyMiiaEmoji SIEMPRE quita el emoji que puso la IA y pone el oficial
-  // Contar acciones ejecutadas para emoji 🤹‍��️ (multi-acción = MIIA trabajando a full)
-  const actionsExecuted = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed, _cancelTagProcessed, _moveTagProcessed, _cotizTagProcessed].filter(Boolean).length;
-  aiMessage = applyMiiaEmoji(aiMessage, {
-    isSelfChat,
-    contactType: contactType || 'lead',
-    messageBody,
-    isMultiAction: actionsExecuted >= 2,
-  });
+  // Si el owner simula ser persona (revealAsAI=false), NO aplicar emoji de estado
+  // — un humano no pone 🦎 al inicio de sus mensajes de WhatsApp.
+  if (ownerRevealsAsAI || isSelfChat) {
+    const actionsExecuted = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed, _cancelTagProcessed, _moveTagProcessed, _cotizTagProcessed].filter(Boolean).length;
+    aiMessage = applyMiiaEmoji(aiMessage, {
+      isSelfChat,
+      contactType: contactType || 'lead',
+      messageBody,
+      isMultiAction: actionsExecuted >= 2,
+    });
+  } else {
+    // Owner simula ser persona → solo limpiar emojis que Gemini puso, sin agregar el oficial
+    const emojiPrefixMatch = aiMessage.match(/^((?:[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*\s*)+):?\s*/u);
+    if (emojiPrefixMatch) {
+      aiMessage = aiMessage.substring(emojiPrefixMatch[0].length);
+    }
+  }
 
   // Guardar largo del mensaje entrante para human_delay contextual
   if (ctx) ctx._lastIncomingLength = (messageBody || '').length;
 
   // MSG_SPLIT: dividir en 2-4 mensajes humanos (burbujas cortas como humano)
-  // _responseSentOk se declara al inicio del try/catch global (línea ~831)
-  const parts = splitMessage(aiMessage);
+  // Primero: intentar split por tag [MSG_SPLIT] (si la IA lo puso)
+  // Segundo: split automático por longitud para leads (>300 chars)
+  let parts = splitMessage(aiMessage);
+  if (!parts && !isSelfChat && aiMessage.length > 300) {
+    // Split automático por oraciones para mensajes largos de leads
+    parts = autoSplitByLength(aiMessage);
+    if (parts) console.log(`${logPrefix} ✂️ Auto-split por longitud: ${parts.length} partes`);
+  }
   if (parts && parts.length >= 2) {
     const maxParts = Math.min(parts.length, 4); // Máximo 4 burbujas
     console.log(`${logPrefix} ✂️ Mensaje dividido en ${maxParts} partes`);
