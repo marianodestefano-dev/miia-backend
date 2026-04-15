@@ -1735,9 +1735,27 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     }
 
     // OWNER PRESENCE normal: marcar que el owner está activamente chateando
-    if (!ctx.ownerActiveChats) ctx.ownerActiveChats = {};
-    ctx.ownerActiveChats[phone] = Date.now();
-    console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} registrado (owner activo — MIIA callada por 90min).`);
+    // EXCEPCIÓN: Si el phone destino es de otro tenant MIIA activo, NO activar cooldown.
+    // Ejemplo: Mariano escribe desde MIIA CENTER al personal → TMH del personal ve fromMe=true
+    // hacia 573054169969, pero es otro número MIIA, no un lead real.
+    let isOtherMiiaPhone = false;
+    try {
+      const { getConnectedTenants } = require('./tenant_manager');
+      const connected = getConnectedTenants();
+      for (const t of connected) {
+        if (t.uid !== ctx.ownerUid) {
+          const tPhone = (t.sock?.user?.id || '').split(':')[0].split('@')[0];
+          if (tPhone === basePhone) { isOtherMiiaPhone = true; break; }
+        }
+      }
+    } catch (_) {}
+    if (isOtherMiiaPhone) {
+      console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} — es otro número MIIA, NO activa cooldown.`);
+    } else {
+      if (!ctx.ownerActiveChats) ctx.ownerActiveChats = {};
+      ctx.ownerActiveChats[phone] = Date.now();
+      console.log(`${logPrefix} 📝 Mensaje propio a ${basePhone} registrado (owner activo — MIIA callada por 90min).`);
+    }
 
     // ═══ AUTO-RECLASIFICACIÓN PROACTIVA: lead → client ═══
     // Si el owner dice palabras clave de cierre de venta a un lead → reclasificar a client
@@ -1776,7 +1794,25 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // ── PASO 6b: OWNER PRESENCE CHECK — Si el owner envió un mensaje reciente, MIIA se calla ──
   // EXCEPCIÓN 1: Si el contacto dice "Hola MIIA" o invoca a MIIA, la intención es EXPLÍCITA
   // EXCEPCIÓN 2: Si MIIA ya está activa para este contacto (trigger previo), NO bloquear
+  // EXCEPCIÓN 3: Si el phone es de otro tenant MIIA, limpiar cooldown inválido
   // → override del cooldown. El contacto QUIERE hablar con MIIA, no con el owner.
+  if (!isSelfChat && ctx.ownerActiveChats && ctx.ownerActiveChats[phone] && !ctx.miiaActive[phone]) {
+    // EXCEPCIÓN 3: Verificar si el phone es otro número MIIA (cooldown inválido del deploy anterior)
+    let isOtherMiia = false;
+    try {
+      const { getConnectedTenants } = require('./tenant_manager');
+      for (const t of getConnectedTenants()) {
+        if (t.uid !== ctx.ownerUid) {
+          const tPh = (t.sock?.user?.id || '').split(':')[0].split('@')[0];
+          if (tPh === basePhone) { isOtherMiia = true; break; }
+        }
+      }
+    } catch (_) {}
+    if (isOtherMiia) {
+      console.log(`${logPrefix} 📝 Cooldown para ${basePhone} eliminado — es otro número MIIA, no un lead.`);
+      delete ctx.ownerActiveChats[phone];
+    }
+  }
   if (!isSelfChat && ctx.ownerActiveChats && ctx.ownerActiveChats[phone] && !ctx.miiaActive[phone]) {
     const OWNER_PRESENCE_COOLDOWN_MS = 90 * 60 * 1000; // 90 minutos (como promete el FAQ)
     const elapsed = Date.now() - ctx.ownerActiveChats[phone];
