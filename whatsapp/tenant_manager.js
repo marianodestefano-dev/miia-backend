@@ -174,10 +174,13 @@ setInterval(() => {
   }
 }, DEDUP_CLEANUP_INTERVAL);
 
-function isDuplicate(msgId) {
+function isDuplicate(msgId, uid = '') {
   if (!msgId) return false;
-  if (processedMessages.has(msgId)) return true;
-  processedMessages.set(msgId, Date.now());
+  // FIX: Dedup per-tenant — el mismo msgId puede llegar a 2 tenants distintos
+  // (ej: Mariano escribe desde MIIA CENTER a personal → ambos reciben mismo msgId)
+  const key = uid ? `${uid}:${msgId}` : msgId;
+  if (processedMessages.has(key)) return true;
+  processedMessages.set(key, Date.now());
   return false;
 }
 
@@ -610,7 +613,7 @@ async function processTenantMessage(uid, phone, messageBody) {
     const em = error.message.toLowerCase();
     if (em.includes('credit') || em.includes('balance') || em.includes('billing') || em.includes('quota')) {
       const provider = t.aiProvider || 'gemini';
-      const alertMsg = `⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${provider}) no tiene créditos o saldo disponible.\n\nCargá saldo en la cuenta del proveedor o cambiá a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
+      const alertMsg = `👱‍♀️: ⚠️ *MIIA - Error de IA*\n\nTu proveedor de IA (${provider}) no tiene créditos o saldo disponible.\n\nCargá saldo en la cuenta del proveedor o cambiá a otra IA desde tu dashboard → Conexiones → Inteligencia Artificial.`;
       try {
         const selfJid = t.sock?.user?.id?.replace(/:.*@/, '@');
         if (t.sock && selfJid) await t.sock.sendMessage(selfJid, { text: alertMsg });
@@ -928,8 +931,13 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               // Notificar al owner que se recuperaron mensajes
               const selfJid = sock.user?.id;
               if (selfJid && tenant.sock) {
-                const noticeMsg = `🔄 *MIIA se reconectó* y recuperó ${recovered} mensaje(s) que quedaron sin responder durante la desconexión. Ya los procesé.`;
-                tenant.sock.sendMessage(selfJid, { text: noticeMsg }).catch(() => {});
+                const noticeMsg = `👱‍♀️: 🔄 *MIIA se reconectó* y recuperó ${recovered} mensaje(s) que quedaron sin responder durante la desconexión. Ya los procesé.`;
+                tenant.sock.sendMessage(selfJid, { text: noticeMsg }).then((sent) => {
+                  // Registrar msgId para evitar auto-respuesta (bug 6.13)
+                  if (sent?.key?.id && tenant._sentMsgIds) {
+                    tenant._sentMsgIds.add(sent.key.id);
+                  }
+                }).catch(() => {});
               }
             }
           } catch (e) {
@@ -1319,7 +1327,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               if (tenant.sock && selfJid) {
                 const contactId = ebFrom.split('@')[0];
                 const pushName = msg.pushName || contactId;
-                const alertText = `📱 *${pushName}* intentó escribirte pero no pudimos leer su mensaje (${ebTrack.count} intentos).\n\nEsto pasa cuando WhatsApp está actualizando la seguridad del contacto. Escribile vos primero y después va a funcionar normal.`;
+                const alertText = `👱‍♀️: 📱 *${pushName}* intentó escribirte pero no pudimos leer su mensaje (${ebTrack.count} intentos).\n\nEsto pasa cuando WhatsApp está actualizando la seguridad del contacto. Escribile vos primero y después va a funcionar normal.`;
                 tenant.sock.sendMessage(selfJid, { text: alertText }).catch(e =>
                   console.error(`[TM:${uid}] ❌ Error notificando body vacío al owner:`, e.message)
                 );
@@ -1336,7 +1344,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
         // ─── Deduplication: skip already-processed messages ───
         // DESPUÉS de verificar que tiene contenido real
-        if (isDuplicate(msg.key.id)) {
+        if (isDuplicate(msg.key.id, uid)) {
           _skipCounters.duplicate++;
           _flushSkipCounters(uid);
           continue;
@@ -2127,7 +2135,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const selfJid = tenant.sock?.user?.id;
         if (tenant.sock && selfJid) {
           tenant.sock.sendMessage(selfJid, {
-            text: `🧬 *Análisis de historial completo*\n\n✅ Conocí ${historyStats.leads} leads y ${historyStats.clients} clientes de tu historial.\n${historyStats.skipped} conversaciones sin relevancia fueron omitidas.\n\nYa sé quiénes son tus contactos y cómo te comunicas con ellos. Cuando escriban, sabré cómo tratarlos. 💪`
+            text: `👱‍♀️: 🧬 *Análisis de historial completo*\n\n✅ Conocí ${historyStats.leads} leads y ${historyStats.clients} clientes de tu historial.\n${historyStats.skipped} conversaciones sin relevancia fueron omitidas.\n\nYa sé quiénes son tus contactos y cómo te comunicas con ellos. Cuando escriban, sabré cómo tratarlos.`
           }).catch(() => {});
         }
 
@@ -2310,7 +2318,7 @@ async function destroyTenant(uid) {
       try {
         const selfJid = t.sock.user?.id?.replace(/:.*@/, '@') || null;
         if (selfJid) {
-          const farewellMsg = `${userName}, me voy a dormir! 😴🔌\nTu WhatsApp se desvinculó, necesitás reconectar.`;
+          const farewellMsg = `👱‍♀️: ${userName}, me voy a dormir! 😴🔌\nTu WhatsApp se desvinculó, necesitás reconectar.`;
           const sent = await t.sock.sendMessage(selfJid, { text: farewellMsg });
           console.log(`[TM:${uid}] 💤 Mensaje de despedida enviado a self-chat`);
           // Esperar brevemente para confirmar entrega
@@ -3122,7 +3130,7 @@ async function _resolvePendingLid(uid, tenant, lidBase, originalFrom, contactNam
       const typeLabel = classification.contactType ? typeLabels[classification.contactType] || classification.contactType : '';
       const bizSuffix = classification.businessName ? ` de ${classification.businessName}` : '';
       const bufferCount = pending.bufferedMsgs?.length || 0;
-      let confirmMsg = `Listo, *${contactName}*`;
+      let confirmMsg = `👱‍♀️: Listo, *${contactName}*`;
       if (typeLabel) confirmMsg += ` es ${typeLabel}${bizSuffix}`;
       confirmMsg += `. Lo tengo registrado.`;
       if (bufferCount > 0) {
