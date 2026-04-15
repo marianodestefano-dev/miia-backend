@@ -1598,6 +1598,63 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
         return; // Solo contexto, MIIA no responde a esto
       }
     }
+    // ═══ C-037: Detectar comandos de clasificación escritos directamente en el chat del lead ═══
+    // Si el owner escribe "lead", "cliente", "familia", etc. directamente en la conversación
+    // (en vez de en self-chat), NO activar cooldown — procesar como clasificación silenciosa.
+    const classifyDirectMatch = (messageBody || '').trim().match(/^\s*(?:es\s+|marcar?\s+(?:como\s+)?|poner\s+(?:como\s+)?)?(lead|cliente|familia|equipo|ignorar|bloquear)[!.\s]*$/i);
+    if (classifyDirectMatch) {
+      const directCmd = classifyDirectMatch[1].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      console.log(`${logPrefix} 🏷️ C-037: Owner escribió "${messageBody.trim()}" directo al lead — clasificando SIN activar cooldown`);
+      try {
+        let newType, newStatus;
+        switch (directCmd) {
+          case 'lead': newType = 'lead'; newStatus = 'classified'; break;
+          case 'cliente': newType = 'client'; newStatus = 'classified'; break;
+          case 'familia': newType = 'familia'; newStatus = 'classified'; break;
+          case 'equipo': newType = 'equipo'; newStatus = 'classified'; break;
+          case 'ignorar': newType = ctx.contactTypes[phone] || 'unknown'; newStatus = 'ignored'; break;
+          case 'bloquear': newType = ctx.contactTypes[phone] || 'unknown'; newStatus = 'blocked'; break;
+          default: break;
+        }
+        if (newType && newStatus) {
+          // Actualizar contactTypes en memoria
+          ctx.contactTypes[phone] = newType;
+          ctx.contactTypes[`${basePhone}@s.whatsapp.net`] = newType;
+          // Persistir en contact_index
+          await saveContactIndex(ownerUid, basePhone, {
+            type: newType,
+            status: newStatus,
+            awaitingClassification: false,
+            classifiedAt: new Date().toISOString(),
+            classifiedBy: 'owner_direct',
+            name: ctx.leadNames[phone] || message.pushName || '',
+            updatedAt: new Date().toISOString()
+          });
+          // Si familia/equipo → agregar a contact_groups
+          if (newType === 'familia' || newType === 'equipo') {
+            try {
+              await db().collection('users').doc(ownerUid)
+                .collection('contact_groups').doc(newType)
+                .collection('contacts').doc(basePhone)
+                .set({ name: ctx.leadNames[phone] || message.pushName || '', addedAt: new Date().toISOString() }, { merge: true });
+            } catch (grpErr) {
+              console.error(`${logPrefix} ⚠️ Error agregando a grupo ${newType}:`, grpErr.message);
+            }
+          }
+          // Confirmar al owner en self-chat
+          const ownerJid = tenantState.sock?.user?.id;
+          if (ownerJid) {
+            const contactName = ctx.leadNames[phone] || message.pushName || basePhone;
+            await sendTenantMessage(tenantState, ownerJid, `✅ ${contactName} clasificado como *${newType}* (detecté tu comando directo).`);
+          }
+          console.log(`${logPrefix} 🏷️ C-037: ${basePhone} clasificado como ${newType} — SIN cooldown activado`);
+        }
+      } catch (classErr) {
+        console.error(`${logPrefix} ❌ C-037 clasificación directa error:`, classErr.message);
+      }
+      return; // NO setear ownerActiveChats — NO activar cooldown
+    }
+
     // OWNER PRESENCE normal: marcar que el owner está activamente chateando
     if (!ctx.ownerActiveChats) ctx.ownerActiveChats = {};
     ctx.ownerActiveChats[phone] = Date.now();

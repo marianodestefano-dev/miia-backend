@@ -249,6 +249,23 @@ function applyMiiaEmoji(message, ctx = {}) {
     }
   }
 
+  // ═══ C-037: Strip expandido de emojis genéricos que Gemini/Claude abusan en el body ═══
+  // La regla ANTI-EMOJI del prompt previene la mayoría, pero estos se cuelan igual.
+  // Se quitan del BODY (no del prefijo, que ya se limpió arriba).
+  const GEMINI_ABUSED_EMOJIS = [
+    '😅', '😂', '🤣', '😆', // risas/vergüenza
+    '🙈', '😬', '🫣',       // disculpa/timidez
+    '😊', '🤗', '😉', '☺️', // cortesía exagerada
+    '🎉', '✨', '💫', '🌟', // exclamación
+    '💪', '👍', '✅', '👌', // afirmación
+    '❤️', '💕', '💗',       // corazones excesivos
+  ];
+  for (const abused of GEMINI_ABUSED_EMOJIS) {
+    if (message.includes(abused)) {
+      message = message.split(abused).join('').replace(/\s{2,}/g, ' ').trim();
+    }
+  }
+
   const emoji = getMiiaEmoji(message, ctx);
   if (!emoji) return message; // Sleep mode: sin prefijo
   return `${emoji}: ${message}`;

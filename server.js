@@ -2491,7 +2491,7 @@ async function safeSendMessage(target, content, options = {}) {
     typeof content === 'string' &&
     !options.skipSplit &&
     !tieneTagEspecial &&
-    content.length >= 60 && content.length <= 800
+    content.length >= 60 // C-037: eliminado upper limit 800 — msgs largos (briefings, respuestas complejas) son los que MÁS necesitan split
   ) {
     // ── Análisis contextual: ¿tiene sentido partir este mensaje? ──
     let splitParts = null;
