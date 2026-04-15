@@ -215,13 +215,17 @@ function auditLeadTriggers(aiMessage, chatType, opts = {}) {
 /**
  * MIIA TONO — ¿Tiene muletillas de bot?
  */
-function auditTono(aiMessage, contactName, chatType) {
+function auditTono(aiMessage, contactName, chatType, revealAsAI = false) {
   const issues = [];
 
-  // Detectar openers de bot
-  for (const pattern of BOT_OPENERS) {
-    if (pattern.test(aiMessage)) {
-      issues.push(`Opener de bot: "${aiMessage.match(pattern)?.[0]}"`);
+  // Detectar openers de bot — EXCEPCIÓN: si el owner simula ser persona (revealAsAI=false)
+  // con leads, openers como "¡Hola!" son naturales para un humano, no de bot.
+  const skipOpenerCheck = (chatType === 'lead' || chatType === 'client') && !revealAsAI;
+  if (!skipOpenerCheck) {
+    for (const pattern of BOT_OPENERS) {
+      if (pattern.test(aiMessage)) {
+        issues.push(`Opener de bot: "${aiMessage.match(pattern)?.[0]}"`);
+      }
     }
   }
 
@@ -494,7 +498,7 @@ function runPostprocess(aiMessage, opts = {}) {
     auditIdentidad(finalMessage, chatType, revealAsAI),
     auditMecanicaInterna(finalMessage, chatType),
     auditLeadTriggers(finalMessage, chatType, { allowedTriggerTypes }),
-    auditTono(finalMessage, contactName, chatType),
+    auditTono(finalMessage, contactName, chatType, revealAsAI),
     auditAprendizaje(finalMessage, chatType),
     auditVerdad(finalMessage, hasSearchData, chatType),
   ];
