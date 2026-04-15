@@ -3198,6 +3198,7 @@ REGLAS:
   // ═══════════════════════════════════════════════════════════════
   let _emailTagProcessed = false;
   let _agendaTagProcessed = false;
+  let _agendaLastResult = null; // FIX C-060 C: datos reales del último evento agendado
   let _tareaTagProcessed = false;
   let _cancelTagProcessed = false;
   let _moveTagProcessed = false;
@@ -3634,6 +3635,38 @@ REGLAS:
                   console.log(`${logPrefix} [AGENDA-TMH] ℹ️ Owner agenda con conflicto (respetando decisión): ${conflictNames}`);
                 }
 
+                // ═══ FIX C-060 B: DEDUP — verificar si ya existe evento igual reciente ═══
+                let dupFound = null;
+                try {
+                  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+                  const dupSnap = await db().collection('users').doc(ownerUid).collection('miia_agenda')
+                    .where('reason', '==', razon)
+                    .where('createdAt', '>=', fiveMinAgo)
+                    .where('status', '==', 'pending')
+                    .limit(3)
+                    .get();
+                  if (!dupSnap.empty) {
+                    // Verificar fecha ±30min
+                    const targetTime = new Date(fecha).getTime();
+                    for (const doc of dupSnap.docs) {
+                      const existingTime = new Date(doc.data().scheduledForLocal || doc.data().scheduledFor).getTime();
+                      if (Math.abs(targetTime - existingTime) < 30 * 60 * 1000) {
+                        dupFound = { id: doc.id, ...doc.data() };
+                        break;
+                      }
+                    }
+                  }
+                } catch (dupErr) {
+                  console.warn(`${logPrefix} [AGENDA-TMH] ⚠️ Dedup check falló (continuando): ${dupErr.message}`);
+                }
+
+                if (dupFound) {
+                  console.log(`${logPrefix} [AGENDA-TMH] 🛡️ DEDUP: Ya existe evento "${razon}" (${dupFound.id}) creado hace <5min — NO duplicar`);
+                  calendarOk = dupFound.calendarSynced || false;
+                  var calendarEventId = dupFound.calendarEventId || null;
+                  _agendaTagProcessed = true;
+                  _agendaLastResult = { razon, fecha, contactName, calendarOk, dedup: true };
+                } else {
                 const calResult = await createCalendarEvent({
                   summary: razon || 'Evento MIIA',
                   dateStr: fecha.split('T')[0],
@@ -3653,7 +3686,11 @@ REGLAS:
                 calendarOk = true;
                 meetLink = calResult.meetLink || null;
                 var calendarEventId = calResult.eventId || null;
+                // FIX C-060 A: Flag INMEDIATA después de Calendar OK — no esperar a Firestore
+                _agendaTagProcessed = true;
+                _agendaLastResult = { razon, fecha, contactName, calendarOk: true, dedup: false };
                 console.log(`${logPrefix} [AGENDA-TMH] 📅 Calendar: "${razon}" el ${fecha} para ${contactName} modo=${eventMode} agenda=${agendaType} calEventId=${calendarEventId}`);
+                } // cierre else dedup (FIX C-060 B)
               }
             } catch (calErr) {
               console.warn(`${logPrefix} [AGENDA-TMH] ⚠️ Calendar no disponible: ${calErr.message}. Guardando solo en Firestore.`);
@@ -3671,8 +3708,10 @@ REGLAS:
             const ownerCountry = getCountryFromPhone(ownerPhone);
             const effectiveTimezone = getTimezoneForCountry(ownerCountry);
 
-            // 3. Guardar en Firestore
-            try {
+            // 3. Guardar en Firestore (saltar si dedup encontró evento existente)
+            if (dupFound) {
+              console.log(`${logPrefix} [AGENDA-TMH] 🛡️ DEDUP: Saltando Firestore save — ya existe doc ${dupFound.id}`);
+            } else try {
               let scheduledForUTC = fecha;
               try {
                 const parsedLocal = new Date(fecha);
@@ -3713,7 +3752,8 @@ REGLAS:
                 createdAt: new Date().toISOString(),
                 source: isSelfChat ? 'owner_selfchat' : 'contact_request'
               });
-              _agendaTagProcessed = true;
+              _agendaTagProcessed = true; // FIX C-060 A: respaldo — ya se seteó en Calendar OK
+              if (!_agendaLastResult) _agendaLastResult = { razon, fecha, contactName, calendarOk, dedup: false };
               console.log(`${logPrefix} [AGENDA-TMH] ✅ Evento guardado en Firestore`);
             } catch (e) {
               console.error(`${logPrefix} [AGENDA-TMH] ❌ Error guardando en Firestore:`, e.message);
@@ -3731,6 +3771,20 @@ REGLAS:
           }
         }
         aiMessage = aiMessage.replace(/\[AGENDAR_EVENTO:[^\]]+\]/g, '').trim();
+
+        // ═══ FIX C-060 C: Texto basado en resultado REAL, no en lo que Gemini supuso ═══
+        // Elimina PROMESA-ROTA para agenda: el texto refleja lo que REALMENTE pasó
+        if (_agendaTagProcessed && _agendaLastResult) {
+          const r = _agendaLastResult;
+          const calIcon = r.calendarOk ? ' 📅' : '';
+          const dupNote = r.dedup ? ' (ya estaba agendado)' : '';
+          if (isSelfChat) {
+            aiMessage = `✅ Agendado: "${r.razon}" — ${r.fecha}${calIcon}${dupNote}`;
+          } else {
+            aiMessage = `✅ Le confirmé a *${r.contactName}* su ${r.razon} — ${r.fecha}${calIcon}${dupNote}`;
+          }
+          console.log(`${logPrefix} [AGENDA-TMH] 📝 FIX C-060 C: Texto reemplazado por template real (dedup=${r.dedup})`);
+        }
       }
 
       // ── TAG [SOLICITAR_TURNO:contacto|fecha|razón|hint|modo|ubicación] ──
