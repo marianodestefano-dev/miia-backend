@@ -5940,7 +5940,7 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
 
     const fullPrompt = `${activeSystemPrompt}
 
-${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${adnStr ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${contactMemoryStr}${enrichedContext}${feedbackContext}${leadsSummaryStr}
+${helpCenterData}${syntheticMemoryStr}${countryContext ? '\n\n' + countryContext : ''}${trustTone}${masterIdentityStr}${agendaStr}${(adnStr && (isAdmin || contactTypes[phone] === 'miia_client')) ? '\n\n[ADN VENTAS — LO QUE HE APRENDIDO DE CONVERSACIONES REALES]:\n' + adnStr : ''}${contactMemoryStr}${enrichedContext}${feedbackContext}${leadsSummaryStr}
 
 ${systemDateStr}
 
