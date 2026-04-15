@@ -204,9 +204,11 @@ async function loadOwnerProfile(ownerUid) {
         }
       } catch (_) {}
     }
+    const resolvedName = data.name || data.displayName || 'Owner';
     const profile = {
-      fullName: data.name || data.displayName || 'Owner',
-      shortName: (data.name || data.displayName || 'Owner').split(' ')[0],
+      name: resolvedName,
+      fullName: resolvedName,
+      shortName: resolvedName.split(' ')[0],
       businessName: businessName || 'Mi Negocio',
       role: data.businessRole || 'Director/a',
       country: data.country || 'Colombia',
@@ -4643,7 +4645,10 @@ REGLAS:
   aiMessage = aiMessage.replace(/\[ALERTA_HUMANO\]/g, '').trim();
 
   // 11f. Agregar MIIA_CIERRE para leads (no self-chat, no familia, no equipo)
-  if (contactType === 'lead' && !isSelfChat) {
+  // EXCEPCIÓN: Si el owner NO revela como IA (simula ser persona), MIIA_CIERRE
+  // expone "Hola MIIA"/"Chau MIIA" que rompe la simulación de identidad.
+  const ownerRevealsAsAI = ctx.ownerProfile?.revealAsAI === true;
+  if (contactType === 'lead' && !isSelfChat && ownerRevealsAsAI) {
     aiMessage = aiMessage.trimEnd() + MIIA_CIERRE;
   }
 
@@ -4697,14 +4702,16 @@ REGLAS:
   // Guardar largo del mensaje entrante para human_delay contextual
   if (ctx) ctx._lastIncomingLength = (messageBody || '').length;
 
-  // MSG_SPLIT: dividir en 2 mensajes humanos
+  // MSG_SPLIT: dividir en 2-4 mensajes humanos (burbujas cortas como humano)
   // _responseSentOk se declara al inicio del try/catch global (línea ~831)
   const parts = splitMessage(aiMessage);
   if (parts && parts.length >= 2) {
-    console.log(`${logPrefix} ✂️ Mensaje dividido en ${parts.length} partes`);
-    await sendTenantMessage(tenantState, phone, maybeAddTypo(parts[0]));
-    await delay(1500 + Math.floor(Math.random() * 1000));
-    await sendTenantMessage(tenantState, phone, maybeAddTypo(parts[1]));
+    const maxParts = Math.min(parts.length, 4); // Máximo 4 burbujas
+    console.log(`${logPrefix} ✂️ Mensaje dividido en ${maxParts} partes`);
+    for (let i = 0; i < maxParts; i++) {
+      if (i > 0) await delay(1200 + Math.floor(Math.random() * 800));
+      await sendTenantMessage(tenantState, phone, maybeAddTypo(parts[i]));
+    }
   } else {
     await sendTenantMessage(tenantState, phone, maybeAddTypo(aiMessage));
   }
