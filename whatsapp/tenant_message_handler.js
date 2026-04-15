@@ -188,14 +188,19 @@ async function loadOwnerProfile(ownerUid) {
       return { ...DEFAULT_OWNER_PROFILE };
     }
     const data = doc.data();
-    // Cargar businessName del defaultBusiness si no está en el perfil raíz
+    // Cargar businessName, demoLink y hasCustomPricing del defaultBusiness si no están en el perfil raíz
     let businessName = data.businessName || data.companyName || '';
-    if (!businessName && data.defaultBusinessId) {
+    let demoLink = data.demoLink || '';
+    let hasCustomPricing = data.hasCustomPricing || false;
+    if (data.defaultBusinessId) {
       try {
         const bizDoc = await db().collection('users').doc(ownerUid)
           .collection('businesses').doc(data.defaultBusinessId).get();
         if (bizDoc.exists) {
-          businessName = bizDoc.data().name || '';
+          const bizData = bizDoc.data();
+          if (!businessName) businessName = bizData.name || '';
+          if (!demoLink) demoLink = bizData.demoLink || bizData.meetingLink || '';
+          if (!hasCustomPricing && bizData.hasCustomPricing) hasCustomPricing = true;
         }
       } catch (_) {}
     }
@@ -205,8 +210,8 @@ async function loadOwnerProfile(ownerUid) {
       businessName: businessName || 'Mi Negocio',
       role: data.businessRole || 'Director/a',
       country: data.country || 'Colombia',
-      demoLink: data.demoLink || '',
-      hasCustomPricing: false, // Solo admin (Mariano) tiene pricing custom
+      demoLink: demoLink,
+      hasCustomPricing: hasCustomPricing,
       // aiProvider: null = dejar que AI Gateway use CONTEXT_CONFIG automáticamente
       // Si el owner NO configuró un provider específico, dejar en null
       // 'gemini' como valor guardado = legacy, tratarlo como null para que CONTEXT_CONFIG decida
