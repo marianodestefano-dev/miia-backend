@@ -1416,6 +1416,58 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
             const businessCount = (tenant._businesses || []).length;
             if (businessCount <= 1) {
+              // ═══ FIX C-047 #1b: Verificar familia/equipo ANTES del fastpath ═══
+              // Bug: LID-FASTPATH clasificó al papá de Mariano (5491131313325) como lead
+              // porque nunca consultó familyContacts/teamContacts. Si el phone resuelto
+              // del LID matchea un contacto conocido del owner, NO fastpath como lead.
+              try {
+                const { tenantContexts } = require('./tenant_message_handler');
+                const ctxCheck = tenantContexts.get(uid);
+                if (ctxCheck) {
+                  // Check familyContacts
+                  const _fuzzyCheck = (contacts, phone) => {
+                    if (!contacts || !phone) return null;
+                    if (contacts[phone]) return { key: phone, data: contacts[phone] };
+                    const digits = phone.replace(/[^0-9]/g, '');
+                    if (digits.length < 8) return null;
+                    const suffix = digits.slice(-10);
+                    for (const [key, data] of Object.entries(contacts)) {
+                      const kd = key.replace(/[^0-9]/g, '');
+                      if (kd.length >= 10 && kd.slice(-10) === suffix) return { key, data };
+                    }
+                    if (digits.startsWith('549') && digits.length >= 12) {
+                      const w9 = '54' + digits.substring(3);
+                      if (contacts[w9]) return { key: w9, data: contacts[w9] };
+                    } else if (digits.startsWith('54') && !digits.startsWith('549') && digits.length >= 11) {
+                      const wo9 = '549' + digits.substring(2);
+                      if (contacts[wo9]) return { key: wo9, data: contacts[wo9] };
+                    }
+                    return null;
+                  };
+                  const resolvedPhone = resolvedFrom?.split('@')[0]?.split(':')[0] || lidBase;
+                  const famMatch = _fuzzyCheck(ctxCheck.familyContacts, resolvedPhone) || _fuzzyCheck(ctxCheck.familyContacts, lidBase);
+                  if (famMatch) {
+                    console.log(`[TM:${uid}] 🛡️ FASTPATH-BLOCKED: ${lidBase} es FAMILIA (${famMatch.data.name || famMatch.key}). NO fastpath como lead.`);
+                    // No fastpath — continuar al flujo normal de TMH donde classifyContact lo maneja
+                  } else {
+                    const teamMatch = _fuzzyCheck(ctxCheck.teamContacts, resolvedPhone) || _fuzzyCheck(ctxCheck.teamContacts, lidBase);
+                    if (teamMatch) {
+                      console.log(`[TM:${uid}] 🛡️ FASTPATH-BLOCKED: ${lidBase} es EQUIPO (${teamMatch.data.name || teamMatch.key}). NO fastpath como lead.`);
+                      // No fastpath
+                    } else {
+                      // No es familia ni equipo — verificar contactGroups dinámicos
+                      let isKnownGroup = false;
+                      for (const [gid, group] of Object.entries(ctxCheck.contactGroups || {})) {
+                        if (group.contacts) {
+                          const gMatch = _fuzzyCheck(group.contacts, resolvedPhone) || _fuzzyCheck(group.contacts, lidBase);
+                          if (gMatch) {
+                            console.log(`[TM:${uid}] 🛡️ FASTPATH-BLOCKED: ${lidBase} está en grupo "${group.name}". NO fastpath como lead.`);
+                            isKnownGroup = true;
+                            break;
+                          }
+                        }
+                      }
+                      if (!isKnownGroup) {
               // ═══ FIX C-013 #1: Gates de seguridad ANTES del fastpath ═══
               // Post-incidente bot Coordinadora (2026-04-14): el fastpath
               // clasificaba TODO como lead sin validar. Ahora verificamos:
@@ -1519,6 +1571,13 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               continue; // Procesado — siguiente mensaje
                 } // cierre else keywordsMatch (Gate B pass)
               } // cierre else isPotentialBot (Gate A pass)
+                      } // cierre if !isKnownGroup
+                    } // cierre else teamMatch
+                  } // cierre else famMatch
+                }
+              } catch (familyCheckErr) {
+                console.warn(`[TM:${uid}] [FASTPATH-GATE] ⚠️ Error verificando familia/equipo: ${familyCheckErr.message} — fastpath permitido por safety`);
+              }
             }
 
             // ═══ PENDING_SILENT: Contacto ya en Pendientes — bufferear + re-intentar clasificación ═══

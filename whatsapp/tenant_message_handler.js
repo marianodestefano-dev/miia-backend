@@ -564,6 +564,37 @@ async function classifyContact(ctx, basePhone, messageBody, tenantState) {
       if (cached.type === 'group' && cached.groupId && ctx.contactGroups[cached.groupId]) {
         return { type: 'group', groupId: cached.groupId, groupData: ctx.contactGroups[cached.groupId], name: cached.name };
       }
+      // ═══ FIX C-047 #1a: PASO 0 verifica familia/equipo ANTES de retornar como lead ═══
+      // Bug: contact_index tenía type='lead' para papá de Mariano (5491131313325) porque
+      // LID-FASTPATH lo clasificó sin consultar familyContacts. PASO 0 retornaba 'lead'
+      // sin verificar contra los contactos conocidos del owner.
+      // Fix: Si el contact_index dice 'lead' pero el phone matchea familyContacts/teamContacts,
+      // CORREGIR el contact_index y retornar el tipo real.
+      if (cached.type === 'lead' || cached.type === 'client') {
+        const familyCheck = fuzzyPhoneLookup(ctx.familyContacts, basePhone);
+        if (familyCheck) {
+          console.log(`${logPrefix} 📇 PASO 0: ⚠️ contact_index dice "${cached.type}" pero ${basePhone} está en familyContacts como "${familyCheck.data.name}" — CORRIGIENDO`);
+          saveContactIndex(ownerUid, basePhone, { type: 'familia', groupId: 'familia', name: familyCheck.data.name }).catch(() => {});
+          return { type: 'familia', name: familyCheck.data.name };
+        }
+        const teamCheck = fuzzyPhoneLookup(ctx.teamContacts, basePhone);
+        if (teamCheck) {
+          console.log(`${logPrefix} 📇 PASO 0: ⚠️ contact_index dice "${cached.type}" pero ${basePhone} está en teamContacts como "${teamCheck.data.name}" — CORRIGIENDO`);
+          saveContactIndex(ownerUid, basePhone, { type: 'equipo', groupId: 'equipo', name: teamCheck.data.name }).catch(() => {});
+          return { type: 'equipo', name: teamCheck.data.name };
+        }
+        // Verificar contact_groups dinámicos también
+        for (const [gid, group] of Object.entries(ctx.contactGroups || {})) {
+          if (group.contacts) {
+            const groupMatch = fuzzyPhoneLookup(group.contacts, basePhone);
+            if (groupMatch) {
+              console.log(`${logPrefix} 📇 PASO 0: ⚠️ contact_index dice "${cached.type}" pero ${basePhone} está en grupo "${group.name}" — CORRIGIENDO`);
+              saveContactIndex(ownerUid, basePhone, { type: 'group', groupId: gid, groupName: group.name, name: groupMatch.data.name }).catch(() => {});
+              return { type: 'group', groupId: gid, groupData: group, name: groupMatch.data.name };
+            }
+          }
+        }
+      }
       if (cached.type === 'lead' && cached.businessId) {
         return { type: 'lead', businessId: cached.businessId, name: cached.name };
       }
