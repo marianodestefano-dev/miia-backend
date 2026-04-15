@@ -2738,6 +2738,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   }
 
   // 11b. Tag de agenda — con Google Calendar si el owner tiene Calendar conectado
+  let _agendaTagProcessed = false; // FIX C-065: movida aquí desde línea ~3200 para evitar TDZ
+  const _hadAgendaTag = /\[AGENDAR_EVENTO:/.test(aiMessage); // FIX C-065: detectar ANTES de que processAgendaTag() lo elimine
   aiMessage = await processAgendaTag(aiMessage, tagCtx, saveAgendaEvent, ctx.leadNames, {
     createCalendarEvent,
     getTimezone: async (uid) => {
@@ -2747,6 +2749,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       } catch { return 'America/Bogota'; }
     }
   });
+  if (_hadAgendaTag) _agendaTagProcessed = true; // FIX C-065: flag para PROMESA-ROTA — processAgendaTag() ya creó Calendar+Firestore
 
   // 11c. Tag de suscripción
   aiMessage = processSubscriptionTag(aiMessage, phone, ctx.subscriptionState);
@@ -3197,7 +3200,7 @@ REGLAS:
   // Estas flags se setean en true cuando un tag se procesa exitosamente
   // ═══════════════════════════════════════════════════════════════
   let _emailTagProcessed = false;
-  let _agendaTagProcessed = false;
+  // _agendaTagProcessed: movida a línea ~2741 (FIX C-065 — evitar TDZ)
   let _agendaLastResult = null; // FIX C-060 C: datos reales del último evento agendado
   let _tareaTagProcessed = false;
   let _cancelTagProcessed = false;
