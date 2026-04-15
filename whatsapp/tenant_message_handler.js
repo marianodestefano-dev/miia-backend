@@ -4887,8 +4887,20 @@ REGLAS:
  */
 async function sendTenantMessage(tenantState, phone, content) {
   if (!tenantState || !tenantState.sock || !tenantState.isReady) {
-    console.warn(`[TMH:${tenantState?.uid || '?'}] ⚠️ Socket no listo. Mensaje a ${phone} NO ENVIADO.`);
-    return null;
+    // Retry: esperar hasta 10s a que el socket se reconecte (post-crypto recovery)
+    const maxWait = 10000;
+    const interval = 1000;
+    let waited = 0;
+    while (waited < maxWait && (!tenantState?.sock || !tenantState?.isReady)) {
+      console.log(`[TMH:${tenantState?.uid || '?'}] ⏳ Socket no listo, reintentando en 1s... (${waited/1000}s/${maxWait/1000}s)`);
+      await delay(interval);
+      waited += interval;
+    }
+    if (!tenantState?.sock || !tenantState?.isReady) {
+      console.warn(`[TMH:${tenantState?.uid || '?'}] ⚠️ Socket no listo tras ${maxWait/1000}s de espera. Mensaje a ${phone} NO ENVIADO.`);
+      return null;
+    }
+    console.log(`[TMH:${tenantState.uid}] ✅ Socket recuperado tras ${waited/1000}s — enviando mensaje a ${phone}`);
   }
 
   // Bloqueo absoluto: grupos y status
