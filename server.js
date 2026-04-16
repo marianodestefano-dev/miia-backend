@@ -6900,6 +6900,30 @@ REGLAS:
           _execFlags.cotizacion = true;
           console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
           actionFeedback.recordActionResult(phone, 'cotizacion', true, `Cotización PDF generada y enviada`);
+
+          // ═══ LINK INTERACTIVO: generar propuesta web además del PDF ═══
+          if (!isSelfChat) {
+            try {
+              const linkUrl = await cotizacionGenerator.generarLinkCotizacion(
+                OWNER_UID,
+                { nombre: cotizData.nombre, phone: basePhone },
+                cotizData
+              );
+              if (linkUrl) {
+                // Enviar link como mensaje separado después del PDF
+                setTimeout(async () => {
+                  try {
+                    await safeSendMessage(phone, { text: `📋 *Tu propuesta personalizada:*\n${linkUrl}\n_Podés ajustar plan, usuarios y módulos cuando quieras_ 👆` });
+                    console.log(`[COTIZ] ✅ Link interactivo enviado: ${linkUrl}`);
+                  } catch (le) {
+                    console.warn(`[COTIZ] ⚠️ No se pudo enviar link interactivo: ${le.message}`);
+                  }
+                }, 2000); // 2s delay para que el PDF llegue primero
+              }
+            } catch (linkErr) {
+              console.warn(`[COTIZ] ⚠️ Link interactivo falló (no crítico): ${linkErr.message}`);
+            }
+          }
         } catch (e) {
           console.error('[COTIZ] Error PDF:', e.message);
           actionFeedback.recordActionResult(phone, 'cotizacion', false, `Error generando PDF: ${e.message}`);

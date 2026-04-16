@@ -920,4 +920,90 @@ async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-module.exports = { calcularCotizacion, generarPDF, enviarCotizacionWA, buildHTML, PRECIOS, fmt, getPromoVigencia };
+// GENERAR LINK DE COTIZACIÓN INTERACTIVA (propuesta web)
+// ─────────────────────────────────────────────────────────────────────
+
+function getBolsaTier(key) {
+  const map = { 'S': 0, 'M': 1, 'L': 2, 'XL': 3 };
+  return (key && map[key] !== undefined) ? map[key] : -1;
+}
+
+/**
+ * Genera un link de cotización interactiva vía el endpoint /api/cotizacion/generate.
+ * Retorna la URL o null si falla (silencioso — no romper el flujo de WhatsApp).
+ *
+ * @param {string} tenantUid - UID del tenant
+ * @param {{ nombre?: string, phone: string }} lead - Datos del lead
+ * @param {object} params - Parámetros de la cotización (del tag GENERAR_COTIZACION_PDF)
+ * @returns {Promise<string|null>} URL de la propuesta o null
+ */
+async function generarLinkCotizacion(tenantUid, lead, params) {
+  try {
+    const internalToken = process.env.MIIA_INTERNAL_TOKEN;
+    if (!internalToken) {
+      console.warn('[COTIZACION] ⚠️ MIIA_INTERNAL_TOKEN no configurado — link no generado');
+      return null;
+    }
+
+    const body = {
+      tenant_id:  tenantUid,
+      lead_name:  lead.nombre || null,
+      lead_phone: lead.phone,
+      params: {
+        plan:      (params.plan || 'esencial').toLowerCase(),
+        users:     params.usuariosPagos || params.usuarios || 1,
+        modalidad: params.modalidad || 'mensual',
+        country:   mapPaisToCountry(params.pais),
+        currency:  params.moneda || 'USD',
+        modulos: {
+          wa:      { on: !!params.incluirWA,      tier: getBolsaTier(params.bolsaWA) },
+          firma:   { on: !!params.incluirFirma,    tier: getBolsaTier(params.bolsaFirma) },
+          factura: { on: !!params.incluirFactura,   tier: getBolsaTier(params.bolsaFactura) },
+        },
+        citasMes:        params.citasMes || 70,
+        descuentoCustom: params.descuentoCustom || null,
+        usuariosBonus:   params.usuariosBonus || 0,
+      },
+    };
+
+    const railwayUrl = process.env.RAILWAY_INTERNAL_URL || 'http://localhost:3000';
+    const controller = new AbortController();
+    const timeout    = setTimeout(() => controller.abort(), 10000);
+
+    const res = await fetch(`${railwayUrl}/api/cotizacion/generate`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${internalToken}`,
+      },
+      body:   JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    const data = await res.json();
+    if (data.url) {
+      console.log(`[COTIZACION] ✅ Link generado: ${data.url} (lead: ${lead.nombre || lead.phone})`);
+      return data.url;
+    }
+
+    console.warn(`[COTIZACION] ⚠️ generate respondió sin URL: ${JSON.stringify(data)}`);
+    return null;
+  } catch (e) {
+    console.error(`[COTIZACION] ❌ generarLinkCotizacion: ${e.message}`);
+    return null; // silencioso — no romper el flujo de WhatsApp
+  }
+}
+
+function mapPaisToCountry(pais) {
+  const map = {
+    COLOMBIA: 'CO', CHILE: 'CL', MEXICO: 'MX',
+    REPUBLICA_DOMINICANA: 'DO', ARGENTINA: 'AR',
+    'ESPAÑA': 'ES', INTERNACIONAL: 'INTL',
+  };
+  return map[pais] || 'INTL';
+}
+
+// ─────────────────────────────────────────────────────────────────────
+module.exports = { calcularCotizacion, generarPDF, enviarCotizacionWA, buildHTML, PRECIOS, fmt, getPromoVigencia, generarLinkCotizacion };
