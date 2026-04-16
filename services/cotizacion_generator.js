@@ -783,7 +783,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
     <li><span class="ckn">&#10003;</span> Historias Clínicas 100% personalizables por especialidad.</li>
     <li><span class="ckn">&#10003;</span> Agenda Online + link de auto-agendamiento para pacientes.</li>
     <li><span class="ckn">&#10003;</span> ${usuariosStr} médico${usuarios > 1 ? 's' : ''} + usuarios administrativos ilimitados, sin costo adicional.</li>
-    <li><span class="ckn">&#10003;</span> Normativa: ${NORMATIVAS[pais] || NORMATIVAS['INTERNACIONAL']}</li>
+    <li><span class="ckn">&#10003;</span> Normativa: ${NORMATIVAS[pais.toUpperCase().replace(/ /g,'_')] || NORMATIVAS[pais.toUpperCase()] || NORMATIVAS['INTERNACIONAL']}</li>
     <li><span class="ckn">&#10003;</span> Contact Center IA: 2 meses gratis (requiere WhatsApp Business con tarjeta META).</li>
     <li><span class="ckn">&#10003;</span> Telemedicina: videoconsultas ilimitadas sin costo adicional.</li>
     <li><span class="ckn">&#10003;</span> Certificado de validez legal firmado por Ingeniero en Sistemas.</li>
