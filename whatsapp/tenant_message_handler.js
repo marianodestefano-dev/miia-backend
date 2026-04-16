@@ -2911,6 +2911,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     return;
   }
 
+  let _cotizTagProcessed = false; // FIX TDZ — mover antes de uso (igual que _agendaTagProcessed en C-065)
+
   // 11d-COTIZACION. Tag [GENERAR_COTIZACION_PDF:{json}] — Generar y enviar cotización PDF
   const cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
   if (cotizTagIdx !== -1) {
@@ -2979,6 +2981,12 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
       if (pdfOk) {
         ctx.conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada. No volver a enviarla a menos que lo pidan.]', timestamp: Date.now() });
+        // FIX COT-1b (C-113): si PDF se envió OK, no enviar texto con promesas redundantes
+        // El PDF habla solo — MIIA no anuncia lo que ya hizo
+        if (/te\s+confirm|en\s+un\s+momento|ya\s+te\s+env|en\s+breve|ahora\s+te|dame\s+un/i.test(textoAntes)) {
+          console.log(`${logPrefix} [COTIZ-TMH] 🧹 Texto promesa eliminado post-PDF: "${textoAntes.substring(0, 80)}..."`);
+          textoAntes = '';
+        }
         aiMessage = textoAntes;
       } else {
         aiMessage = textoAntes + (textoAntes ? '\n\n' : '') + 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
@@ -3315,7 +3323,7 @@ REGLAS:
   let _tareaTagProcessed = false;
   let _cancelTagProcessed = false;
   let _moveTagProcessed = false;
-  let _cotizTagProcessed = false;
+  // _cotizTagProcessed: movida a línea ~2914 (FIX C-113 — evitar TDZ, igual que _agendaTagProcessed)
 
   // ═══════════════════════════════════════════════════════════════
   // 11d-EMAIL. Tags [ENVIAR_EMAIL:], [ENVIAR_CORREO:], [LEER_INBOX], [EMAIL_LEER:], [EMAIL_ELIMINAR:], [EMAIL_ELIMINAR_EXCEPTO:]

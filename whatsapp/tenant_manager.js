@@ -1602,8 +1602,12 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               let fastpathType = 'lead';
               let existingName = contactName;
               try {
-                const existingDoc = await admin.firestore().collection('users').doc(ownerUidFast)
-                  .collection('contact_index').doc(lidBase).get();
+                // FIX C-113 GRUPO 6: timeout 3s para Firestore — evitar hang en FASTPATH
+                const existingDoc = await Promise.race([
+                  admin.firestore().collection('users').doc(ownerUidFast)
+                    .collection('contact_index').doc(lidBase).get(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('FASTPATH_TIMEOUT_3S')), 3000))
+                ]);
                 if (existingDoc.exists) {
                   const existing = existingDoc.data();
                   if (existing.type && existing.type !== 'lead') {
@@ -1612,7 +1616,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                     console.log(`[TM:${uid}] 🛡️ LID-FASTPATH: ${lidBase} ya existe como ${existing.type} (${existingName}) — respetando clasificación existente`);
                   }
                 }
-              } catch (_) {}
+              } catch (fpErr) {
+                console.warn(`[TM:${uid}] ⚠️ FASTPATH contact_index falló (${fpErr.message}) — usando default '${fastpathType}'`);
+              }
 
               console.log(`[TM:${uid}] 🚀 LID-FASTPATH: ${lidBase} (${existingName || 'sin nombre'}) → ${fastpathType} directo (${businessCount} negocio${businessCount === 1 ? '' : 's'}).`);
 

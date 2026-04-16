@@ -215,7 +215,7 @@ function calcularCotizacion(params) {
   const {
     moneda          = 'CLP',
     usuarios        = 1,
-    citasMes        = 100,
+    citasMes        = 70,   // FIX COT-4a (C-113): default 100→70, consistente con prompt
     incluirWA        = true,
     bolsaWA          = null,
     incluirFirma     = true,
@@ -260,7 +260,18 @@ function calcularCotizacion(params) {
   const planes  = {};
   const bolsas  = {};
 
-  for (const [key, label] of [['S','esencial'],['M','pro'],['L','titanium']]) {
+  // FIX COT-3 (C-113): si viene plan específico, calcular solo ese
+  const PLAN_MAP = [['S','esencial'],['M','pro'],['L','titanium']];
+  const planFilter = params.plan ? params.plan.toLowerCase() : null;
+  const planesToCalc = planFilter
+    ? PLAN_MAP.filter(([, label]) => label === planFilter)
+    : PLAN_MAP;
+  if (planFilter && planesToCalc.length === 0) {
+    console.warn(`[COTIZ-DEBUG] Plan "${params.plan}" no reconocido, calculando todos`);
+  }
+  const finalPlanList = planesToCalc.length > 0 ? planesToCalc : PLAN_MAP;
+
+  for (const [key, label] of finalPlanList) {
     const baseMensual     = PRECIOS[moneda].planes[key];
     const precAdicMensual = getPrecioAdic(key, usuarios, moneda);
     // Multiplicar por meses según modalidad
@@ -292,14 +303,16 @@ function calcularCotizacion(params) {
   const PRECIO_RECETA_AR = 3; // USD por usuario/mes
   const recetaTotal = incluirRecetaAR ? (PRECIO_RECETA_AR * usuarios * multiplicador) : 0;
   const bolsasTotal = Object.values(bolsas).reduce((s, b) => s + b.precio, 0) + recetaTotal;
-  for (const lbl of ['esencial','pro','titanium']) {
+  for (const lbl of Object.keys(planes)) {
     const ivaPromo    = planes[lbl].ivaPromo    || 0;
     const ivaSinPromo = planes[lbl].ivaSinPromo || 0;
     planes[lbl].totalPromo    = planes[lbl].neto     + bolsasTotal + ivaPromo;
     planes[lbl].totalSinPromo = planes[lbl].subtotal + bolsasTotal + ivaSinPromo;
   }
 
-  return { planes, bolsas, bolsasTotal, nAdic, totalUsuarios, usuariosBonus: usuariosBonus || 0, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR: recetaTotal, moneda, modalidad, multiplicador };
+  // FIX COT-3 (C-113): planLabels indica qué planes se calcularon
+  const planLabels = Object.keys(planes);
+  return { planes, bolsas, bolsasTotal, nAdic, totalUsuarios, usuariosBonus: usuariosBonus || 0, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR: recetaTotal, moneda, modalidad, multiplicador, planLabels };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -397,7 +410,7 @@ function buildHTML(params) {
     pais            = 'CHILE',
     moneda          = 'CLP',
     usuarios        = 1,
-    citasMes        = 100,
+    citasMes        = 70,   // FIX COT-4a (C-113): consistente con prompt y calcularCotizacion
     incluirWA        = true,
     incluirFirma     = true,
     incluirFactura   = true,
@@ -422,8 +435,14 @@ function buildHTML(params) {
   const calc  = calcularCotizacion(params);
   console.log(`[COTIZ-DEBUG] calcularCotizacion completado`);
   console.log(`[COTIZ-DEBUG] calc.bolsas =`, calc.bolsas ? Object.keys(calc.bolsas) : 'undefined');
-  const { planes, bolsas, nAdic, totalUsuarios, usuariosBonus, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR } = calc;
-  const { esencial: es, pro, titanium: ti } = planes;
+  const { planes, bolsas, nAdic, totalUsuarios, usuariosBonus, enviosWA, enviosFactura, enviosFirma, descuento, recetaAR, planLabels } = calc;
+
+  // FIX COT-3/GRUPO 5 (C-113): columnas dinámicas según planLabels
+  const PLAN_DISPLAY = { esencial: 'ESENCIAL', pro: 'PRO', titanium: 'TITANIUM' };
+  const PLAN_KEY     = { esencial: 'S', pro: 'M', titanium: 'L' };
+  const PLAN_TOKENS  = { esencial: 80, pro: 250, titanium: 400 };
+  const nPlanes      = planLabels.length;
+  const colWidth     = nPlanes === 1 ? '56%' : `${(56 / nPlanes).toFixed(1)}%`;
   const p     = PRECIOS[moneda];
   console.log(`[COTIZ-DEBUG] PRECIOS[${moneda}] =`, p ? 'OK' : 'UNDEFINED');
   console.log(`[COTIZ-DEBUG] Construyendo logoTag...`);
@@ -451,9 +470,7 @@ function buildHTML(params) {
       <tr class="row-even">
         <td class="td-desc">BOLSA WHATSAPP — RECORDATORIOS
           <span class="td-sub">Bolsa ${b.tier}: hasta ${limiteFormatted} envíos/mes</span></td>
-        <td class="td-price">${precioFormatted}</td>
-        <td class="td-price">${precioFormatted}</td>
-        <td class="td-price">${precioFormatted}</td>
+        ${planLabels.map(() => `<td class="td-price">${precioFormatted}</td>`).join('')}
       </tr>`;
       console.log(`[COTIZ-DEBUG] Sección WA bolsa completada exitosamente`);
     } catch(e) {
@@ -471,9 +488,7 @@ function buildHTML(params) {
       <tr class="row-odd">
         <td class="td-desc">BOLSA FIRMA ELECTRÓNICA
           <span class="td-sub">Bolsa ${b.tier}: hasta ${limiteFormatted} envíos/mes</span></td>
-        <td class="td-price">${precioFormatted}</td>
-        <td class="td-price">${precioFormatted}</td>
-        <td class="td-price">${precioFormatted}</td>
+        ${planLabels.map(() => `<td class="td-price">${precioFormatted}</td>`).join('')}
       </tr>`;
     } catch(e) {
       console.error(`[COTIZ-ERROR-FIRMA] Error en sección Firma: ${e.message}`);
@@ -490,9 +505,7 @@ function buildHTML(params) {
       <tr class="row-even">
         <td class="td-desc">FACTURADOR ELECTRÓNICO
           <span class="td-sub">Bolsa ${b.tier}: hasta ${limiteFormatted} envíos/mes</span></td>
-        <td class="td-price">${precioFormatted}</td>
-        <td class="td-price">${precioFormatted}</td>
-        <td class="td-price">${precioFormatted}</td>
+        ${planLabels.map(() => `<td class="td-price">${precioFormatted}</td>`).join('')}
       </tr>`;
     } catch(e) {
       console.error(`[COTIZ-ERROR-FACTURA] Error en sección Factura: ${e.message}`);
@@ -505,9 +518,7 @@ function buildHTML(params) {
       <tr class="row-odd">
         <td class="td-desc">RECETA DIGITAL AR
           <span class="td-sub">Módulo exclusivo Argentina — prescripción médica digital (${fmt(3, 'USD')}/usuario × ${usuarios})</span></td>
-        <td class="td-price">${fmt(recetaAR, moneda)}</td>
-        <td class="td-price">${fmt(recetaAR, moneda)}</td>
-        <td class="td-price">${fmt(recetaAR, moneda)}</td>
+        ${planLabels.map(() => `<td class="td-price">${fmt(recetaAR, moneda)}</td>`).join('')}
       </tr>`;
   }
 
@@ -533,9 +544,10 @@ function buildHTML(params) {
   }
 
   let bolsasAsignadas = '';
-  if (incluirWA && bolsas.wa)         bolsasAsignadas += `<tr><td>WhatsApp — Recordatorios</td><td>&#215;1.33/usuario</td><td>${usuarios}</td><td>${fmtNum(enviosWA)} envíos</td><td><b>${bolsas.wa.tier}: hasta ${fmtNum(bolsas.wa.limiteEnvios)} envíos</b></td></tr>`;
-  if (incluirFactura && bolsas.factura) bolsasAsignadas += `<tr><td>Facturación Electrónica</td><td>&#215;1/usuario</td><td>${usuarios}</td><td>${enviosFactura} envíos</td><td><b>${bolsas.factura.tier}: hasta ${fmtNum(bolsas.factura.limiteEnvios)} envíos</b></td></tr>`;
-  if (incluirFirma && bolsas.firma)   bolsasAsignadas += `<tr><td>Firma Electrónica</td><td>&#215;1/usuario</td><td>${usuarios}</td><td>${enviosFirma} envíos</td><td><b>${bolsas.firma.tier}: hasta ${fmtNum(bolsas.firma.limiteEnvios)} envíos</b></td></tr>`;
+  // FIX COT-4b (C-113): label ×1.33/usuario → ×1.33 (multiplicador es sobre citas totales, no por usuario)
+  if (incluirWA && bolsas.wa)         bolsasAsignadas += `<tr><td>WhatsApp — Recordatorios</td><td>&#215;1.33</td><td>${fmtNum(citasMes)}</td><td>${fmtNum(enviosWA)} envíos</td><td><b>${bolsas.wa.tier}: hasta ${fmtNum(bolsas.wa.limiteEnvios)} envíos</b></td></tr>`;
+  if (incluirFactura && bolsas.factura) bolsasAsignadas += `<tr><td>Facturación Electrónica</td><td>&#215;1</td><td>${fmtNum(citasMes)}</td><td>${enviosFactura} envíos</td><td><b>${bolsas.factura.tier}: hasta ${fmtNum(bolsas.factura.limiteEnvios)} envíos</b></td></tr>`;
+  if (incluirFirma && bolsas.firma)   bolsasAsignadas += `<tr><td>Firma Electrónica</td><td>&#215;1</td><td>${fmtNum(citasMes)}</td><td>${enviosFirma} envíos</td><td><b>${bolsas.firma.tier}: hasta ${fmtNum(bolsas.firma.limiteEnvios)} envíos</b></td></tr>`;
 
   // ── Comparativa ──────────────────────────────────────────────────
   // Build dynamic features: add Argentina-specific items if needed
@@ -558,11 +570,13 @@ function buildHTML(params) {
     return sec;
   });
 
+  // FIX COT-3/GRUPO 5 (C-113): comparativa dinámica según planLabels
   let featRows = '';
   featuresForPais.forEach((sec) => {
-    featRows += `<tr class="row-sec"><td colspan="4">${sec.section}</td></tr>`;
+    featRows += `<tr class="row-sec"><td colspan="${1 + nPlanes}">${sec.section}</td></tr>`;
     sec.items.forEach((it, i) => {
-      featRows += `<tr class="${i % 2 === 0 ? 'row-odd' : 'row-even'}"><td class="td-fn">${it.name}</td>${renderCell(it.S)}${renderCell(it.M)}${renderCell(it.L)}</tr>`;
+      const cells = planLabels.map(lbl => renderCell(it[PLAN_KEY[lbl]])).join('');
+      featRows += `<tr class="${i % 2 === 0 ? 'row-odd' : 'row-even'}"><td class="td-fn">${it.name}</td>${cells}</tr>`;
     });
   });
 
@@ -701,67 +715,49 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
     <thead>
       <tr>
         <th style="width:44%">DETALLES / PLANES (${modalidad.toUpperCase()})</th>
-        <th style="width:18.7%">ESENCIAL</th>
-        <th style="width:18.7%">PRO</th>
-        <th style="width:18.6%">TITANIUM</th>
+        ${planLabels.map(lbl => `<th style="width:${colWidth}">${PLAN_DISPLAY[lbl]}</th>`).join('\n        ')}
       </tr>
     </thead>
     <tbody>
       <tr class="row-odd">
         <td class="td-desc">SOFTWARE PLAN BASE (Licencia 1er Usuario)</td>
-        <td class="td-price">${fmt(es.base, moneda)}</td>
-        <td class="td-price">${fmt(pro.base, moneda)}</td>
-        <td class="td-price">${fmt(ti.base, moneda)}</td>
+        ${planLabels.map(lbl => `<td class="td-price">${fmt(planes[lbl].base, moneda)}</td>`).join('\n        ')}
       </tr>
       ${nAdic > 0 ? `
       <tr class="row-even">
         <td class="td-desc">USUARIOS ADICIONALES &#215; ${nAdic}</td>
-        <td class="td-price">${fmt(es.precAdic * nAdic, moneda)}</td>
-        <td class="td-price">${fmt(pro.precAdic * nAdic, moneda)}</td>
-        <td class="td-price">${fmt(ti.precAdic * nAdic, moneda)}</td>
+        ${planLabels.map(lbl => `<td class="td-price">${fmt(planes[lbl].precAdic * nAdic, moneda)}</td>`).join('\n        ')}
       </tr>` : ''}
       ${usuariosBonus > 0 ? `
       <tr class="row-even" style="background:#e8f5e9">
         <td class="td-desc">🎁 USUARIOS MÉDICOS EXTRAS &#215; ${usuariosBonus} <span class="bdg" style="background:#4caf50;color:#fff">GRATIS</span>
           <span class="td-sub">Total: ${totalUsuarios} usuarios médicos (${params.usuarios} pagos + ${usuariosBonus} extras)</span></td>
-        <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
-        <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
-        <td class="td-price" style="color:#4caf50;font-weight:700">$0</td>
+        ${planLabels.map(() => `<td class="td-price" style="color:#4caf50;font-weight:700">$0</td>`).join('\n        ')}
       </tr>` : ''}
       <tr class="row-disc">
         <td class="td-desc">DESCUENTO ${descuento < (({'mensual':30,'semestral':15,'anual':20})[modalidad]||30) ? 'ESPECIAL' : 'PROMO'} ${modalidad.toUpperCase()} (Ahorro del &#8722;${descuento}%) <span class="bdg">&#8722;${descuento}%</span></td>
-        <td class="td-price">&#8722; ${fmt(es.descuento, moneda)}</td>
-        <td class="td-price">&#8722; ${fmt(pro.descuento, moneda)}</td>
-        <td class="td-price">&#8722; ${fmt(ti.descuento, moneda)}</td>
+        ${planLabels.map(lbl => `<td class="td-price">&#8722; ${fmt(planes[lbl].descuento, moneda)}</td>`).join('\n        ')}
       </tr>
       ${moneda === 'MXN' ? `
       <tr class="row-odd">
         <td class="td-desc">IVA 16% (CON PROMO)
           <span class="td-sub">Sobre el neto del plan con descuento</span></td>
-        <td class="td-price">${fmt(es.ivaPromo, moneda)}</td>
-        <td class="td-price">${fmt(pro.ivaPromo, moneda)}</td>
-        <td class="td-price">${fmt(ti.ivaPromo, moneda)}</td>
+        ${planLabels.map(lbl => `<td class="td-price">${fmt(planes[lbl].ivaPromo, moneda)}</td>`).join('\n        ')}
       </tr>` : ''}
       ${bolsasRows}
       <tr class="row-tp">
         <td>TOTAL MES 1 AL 3 (CON PROMO)${moneda === 'MXN' ? ' <span style="font-size:8px;font-weight:400">IVA incluido</span>' : ''}</td>
-        <td style="text-align:right">${fmt(es.totalPromo, moneda)}</td>
-        <td style="text-align:right">${fmt(pro.totalPromo, moneda)}</td>
-        <td style="text-align:right">${fmt(ti.totalPromo, moneda)}</td>
+        ${planLabels.map(lbl => `<td style="text-align:right">${fmt(planes[lbl].totalPromo, moneda)}</td>`).join('\n        ')}
       </tr>
       ${moneda === 'MXN' ? `
       <tr class="row-odd">
         <td class="td-desc">IVA 16% (SIN PROMO)
           <span class="td-sub">Sobre el subtotal sin descuento — aplica desde mes 4</span></td>
-        <td class="td-price">${fmt(es.ivaSinPromo, moneda)}</td>
-        <td class="td-price">${fmt(pro.ivaSinPromo, moneda)}</td>
-        <td class="td-price">${fmt(ti.ivaSinPromo, moneda)}</td>
+        ${planLabels.map(lbl => `<td class="td-price">${fmt(planes[lbl].ivaSinPromo, moneda)}</td>`).join('\n        ')}
       </tr>` : ''}
       <tr class="row-tn">
         <td>TOTAL DESDE MES 4 (Sin Promo)${moneda === 'MXN' ? ' <span style="font-size:8px;font-weight:400">IVA incluido</span>' : ''}</td>
-        <td style="text-align:right">${fmt(es.totalSinPromo, moneda)}</td>
-        <td style="text-align:right">${fmt(pro.totalSinPromo, moneda)}</td>
-        <td style="text-align:right">${fmt(ti.totalSinPromo, moneda)}</td>
+        ${planLabels.map(lbl => `<td style="text-align:right">${fmt(planes[lbl].totalSinPromo, moneda)}</td>`).join('\n        ')}
       </tr>
     </tbody>
   </table>
@@ -782,7 +778,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 </div>
 
 <div class="sec" style="padding-top:4px">
-  <div class="sec-t">Qué incluye su plan</div>
+  <div class="sec-t">Qué incluye ${nPlanes === 1 ? `el plan ${PLAN_DISPLAY[planLabels[0]]}` : 'su plan'}</div>
   <ul class="inc-list">
     <li><span class="ckn">&#10003;</span> Historias Clínicas 100% personalizables por especialidad.</li>
     <li><span class="ckn">&#10003;</span> Agenda Online + link de auto-agendamiento para pacientes.</li>
@@ -797,14 +793,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 </div>
 
 <div class="sec" style="padding-top:4px">
-  <div class="sec-t">Tokens de IA incluidos por plan</div>
+  <div class="sec-t">Tokens de IA incluidos${nPlanes > 1 ? ' por plan' : ''}</div>
   <table class="tt">
-    <thead><tr><th style="width:44%">CAPACIDAD / FUNCIÓN</th><th>ESENCIAL</th><th>PRO</th><th>TITANIUM</th></tr></thead>
+    <thead><tr><th style="width:44%">CAPACIDAD / FUNCIÓN</th>${planLabels.map(lbl => `<th>${PLAN_DISPLAY[lbl]}</th>`).join('')}</tr></thead>
     <tbody>
-      <tr><td>Tokens Mensuales Incluidos</td><td><span class="pill">80</span></td><td><span class="pill">250</span></td><td><span class="pill">400</span></td></tr>
-      <tr><td>Dictado por Voz con IA</td><td><span class="inc-b">&#10003; Incluido</span></td><td><span class="inc-b">&#10003; Incluido</span></td><td><span class="inc-b">&#10003; Incluido</span></td></tr>
-      <tr><td>Resumen Clínico Automático</td><td><span class="inc-b">&#10003; Incluido</span></td><td><span class="inc-b">&#10003; Incluido</span></td><td><span class="inc-b">&#10003; Incluido</span></td></tr>
-      <tr><td>Contralor IA</td><td><span class="inc-b">&#10003; Incluido</span></td><td><span class="inc-b">&#10003; Incluido</span></td><td><span class="inc-b">&#10003; Incluido</span></td></tr>
+      <tr><td>Tokens Mensuales Incluidos</td>${planLabels.map(lbl => `<td><span class="pill">${PLAN_TOKENS[lbl]}</span></td>`).join('')}</tr>
+      <tr><td>Dictado por Voz con IA</td>${planLabels.map(() => `<td><span class="inc-b">&#10003; Incluido</span></td>`).join('')}</tr>
+      <tr><td>Resumen Clínico Automático</td>${planLabels.map(() => `<td><span class="inc-b">&#10003; Incluido</span></td>`).join('')}</tr>
+      <tr><td>Contralor IA</td>${planLabels.map(() => `<td><span class="inc-b">&#10003; Incluido</span></td>`).join('')}</tr>
     </tbody>
   </table>
   <p class="note">Nota: La diferencia entre planes es la cantidad de tokens disponibles para operar estas funciones. A mayor plan, más operaciones simultáneas y avanzadas.</p>
@@ -820,12 +816,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,Helvetica,san
 <!-- ═══════ PÁGINA 2 ═══════ -->
 <div class="pg2">
   <div class="cmp-hdr">
-    <div class="cmp-title">Compara las funcionalidades de todos los planes</div>
+    <div class="cmp-title">${nPlanes === 1 ? `Funcionalidades del plan ${PLAN_DISPLAY[planLabels[0]]}` : 'Compara las funcionalidades de todos los planes'}</div>
     <div class="cmp-sub">Todas las funcionalidades anteriores están incluidas en los tres planes. Los módulos marcados como "Adicional" tienen un costo extra (bolsa de envíos). Medilink se reserva el derecho de actualizar su catálogo de funcionalidades.</div>
   </div>
   <div style="padding:0 24px 10px">
     <table class="cmp">
-      <thead><tr><th>FUNCIONALIDAD</th><th>ESENCIAL</th><th>PRO</th><th>TITANIUM</th></tr></thead>
+      <thead><tr><th>FUNCIONALIDAD</th>${planLabels.map(lbl => `<th>${PLAN_DISPLAY[lbl]}</th>`).join('')}</tr></thead>
       <tbody>${featRows}</tbody>
     </table>
   </div>
@@ -906,7 +902,8 @@ async function enviarCotizacionWA(sendFn, phone, params, isSelfChat = false) {
 
   // Caption del documento — breve, sin texto hardcodeado de promo ni demo
   // MIIA ya se encarga de comunicar promos y demos con sentido común según el contexto
-  const caption = `Cotización personalizada — ${params.usuarios || 1} usuario(s), modalidad ${modalidad}.`;
+  // FIX COT-2 (C-113): caption vacío — no exponer metadata de sistema al lead
+  const caption = '';
 
   // Generar el PDF
   const buffer = await generarPDF(params);

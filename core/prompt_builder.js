@@ -554,6 +554,7 @@ Si el lead dice cosas como "cuánto sale", "precio", "mándame cotización" sin 
 | incluirFactura | true (false en Argentina, España e INTERNACIONAL) |
 | bolsaFactura | null (auto-calculate) |
 | incluirRecetaAR | true (SOLO Argentina), false (otros países) |
+| plan | (OPCIONAL) "esencial", "pro" o "titanium". Si se incluye → PDF muestra SOLO ese plan. Si no se incluye → muestra los 3 para comparar |
 | modalidad | "mensual", "semestral" o "anual" (default: "mensual". España: siempre "anual") |
 | descuentoCustom | (OPCIONAL) Porcentaje de descuento negociado por MIIA. Si no se envía, usa el tope por defecto |
 | usuariosBonus | (OPCIONAL) Usuarios médicos gratis como estrategia de retención. Default: 0 |
@@ -682,7 +683,25 @@ Mencioná la promo vigente: "Hay una promoción activa con descuento. ¿Querés 
 • Clases, Capacitaciones Virtuales + Soporte
 • *Certificación ISO 27001 — protección 100% de información*
 
-**REGLA:** NUNCA envíes TODO esto junto. Elegí lo relevante según la conversación. FEV-RIPS y EPS solo para Colombia. Sé natural, no recites.`;
+**REGLA:** NUNCA envíes TODO esto junto. Elegí lo relevante según la conversación. FEV-RIPS y EPS solo para Colombia. Sé natural, no recites.
+
+## 🔢 CITAS AL MES — REGLA OBLIGATORIA (FIX COT-4c C-113)
+Si el lead menciona número de citas, SIEMPRE incluir citasMes en el JSON.
+- "50 citas al mes" → citasMes: 50
+- "30 pacientes por día" → calcular mensual (30 × 22 días hábiles = 660) y pasar citasMes: 660
+- "unas 200 consultas mensuales" → citasMes: 200
+- Si NO menciona citas → NO incluir citasMes (el sistema usa default 70)
+citasMes = citas TOTALES del centro, no por usuario.
+
+## 🔄 CORRECCIONES DE COTIZACIÓN (FIX COT-5 C-113)
+Si el lead corrige un dato después de una cotización reciente (últimos 10 minutos):
+- "pero son 50 citas" → Re-emitir tag [GENERAR_COTIZACION_PDF:{...}] con citasMes actualizado
+- "es para 3 usuarios, no 2" → Re-emitir tag con usuarios actualizado
+- "mejor plan titanium" → Re-emitir tag con plan: "titanium"
+- "cambiale la modalidad a anual" → Re-emitir tag con modalidad actualizada
+NUNCA decir "ya te la envié" sin re-emitir el tag.
+NUNCA decir "dejame verificar" sin regenerar.
+Si el lead corrige → regenerar y enviar de nuevo, SIEMPRE.`;
 
 
 
