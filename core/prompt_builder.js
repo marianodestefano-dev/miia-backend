@@ -550,9 +550,9 @@ Si el lead dice cosas como "cuánto sale", "precio", "mándame cotización" sin 
 | usuarios | El número que mencionó el cliente |
 | citasMes | 70 (default) |
 | incluirWA | true |
-| bolsaWA | null (auto-calculate). Si el usuario pide cantidad específica de WhatsApp → forzar tier: "S"=150, "M"=350, "L"=800, "XL"=2000. "el mínimo"/"menos"/"pocas" → "S" |
+| bolsaWA | null (auto-calculate). Si el usuario pide cantidad específica de WhatsApp → forzar tier: "S"=150, "M"=350, "L"=800, "XL"=2000. "el mínimo"/"menos"/"pocas"/"bajar"/"reducir" → "S". **CRÍTICO: "bajar", "reducir", "menos" = bolsaWA:"S". NUNCA poner incluirWA:false a menos que el lead diga EXPLÍCITAMENTE: "sin WhatsApp", "no quiero WhatsApp", "saca los WhatsApp", "quita los WhatsApp".** |
 | incluirFirma | true |
-| bolsaFirma | null (auto-calculate). Si el usuario pide cantidad específica de firmas → forzar tier: "S"=50, "M"=200, "L"=500, "XL"=1000. "el mínimo"/"menos"/"pocas" → "S" |
+| bolsaFirma | null (auto-calculate). Si el usuario pide cantidad específica de firmas → forzar tier: "S"=50, "M"=200, "L"=500, "XL"=1000. "el mínimo"/"menos"/"pocas"/"bajar"/"reducir" → "S". **CRÍTICO: "bajar", "reducir", "menos" = bolsaFirma:"S". NUNCA poner incluirFirma:false a menos que el lead diga EXPLÍCITAMENTE: "sin firmas", "no quiero firma digital", "saca las firmas", "quita las firmas".** |
 | incluirFactura | true (false en Argentina, España e INTERNACIONAL) |
 | bolsaFactura | null (auto-calculate). Si el usuario pide cantidad específica de facturas → forzar tier: "S"=50, "M"=200, "L"=500, "XL"=1000. Expresiones que mapean a "S" (mínimo): "mínimo", "menos facturas", "pocas facturas", "lo mínimo", "la más pequeña", "la más chica", "poca facturación", "muy pocas", "volumen bajo", "menos", "bajar", "reducir", "el mínimo". **CRÍTICO: "bajar", "reducir", "menos", "el mínimo" = bolsaFactura:"S". NUNCA poner incluirFactura:false a menos que el lead diga EXPLÍCITAMENTE: "sin facturas", "no quiero facturación", "saca las facturas", "no incluyas facturas", "quita las facturas".** |
 | incluirRecetaAR | true (SOLO Argentina), false (otros países) |
