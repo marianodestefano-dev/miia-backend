@@ -988,14 +988,26 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
       // Connection closed
       if (connection === 'close') {
-        tenant.isReady = false;
-        tenant._initializing = false;
+        // ═══ FIX RACE CONDITION: Solo marcar offline si es el socket actual ═══
+        // Si ya hay un socket nuevo conectado, el close del viejo NO debe romper el estado.
+        const isCurrentSocket = (tenant.sock === sock || tenant.sock === null);
+        if (isCurrentSocket) {
+          tenant.isReady = false;
+          tenant._initializing = false;
+        } else {
+          console.log(`[TM:${uid}] 🛡️ Close de socket viejo — isReady=${tenant.isReady} preservado (socket nuevo ya activo)`);
+        }
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-        console.log(`[TM:${uid}] ❌ Disconnected (code: ${statusCode}). Reconnect: ${shouldReconnect}`);
+        console.log(`[TM:${uid}] ❌ Disconnected (code: ${statusCode}). Reconnect: ${shouldReconnect}. isCurrentSocket: ${isCurrentSocket}`);
 
         if (shouldReconnect) {
+          // ═══ FIX RACE CONDITION: No reconectar si ya hay socket nuevo activo ═══
+          if (!isCurrentSocket && tenant.isReady) {
+            console.log(`[TM:${uid}] 🛡️ Socket viejo cerrado pero nuevo ya CONNECTED — NO reconectar`);
+            return;
+          }
           // ═══ ANTI-CASCADA: Lock de reconexión ═══
           // Sin este lock, múltiples eventos 'close' simultáneos disparan
           // múltiples startBaileysConnection() → conexiones paralelas →
@@ -1007,8 +1019,15 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           tenant._reconnecting = true;
 
           // Destruir socket anterior COMPLETAMENTE antes de reconectar
+          // ═══ FIX RACE CONDITION: Solo nullificar si es el MISMO socket ═══
+          // Si otro startBaileysConnection() ya creó un socket nuevo, no destruirlo.
+          // Sin este guard, el close handler del socket viejo mata tenant.sock del nuevo.
           try { sock.end(undefined); } catch (_) {}
-          tenant.sock = null;
+          if (tenant.sock === sock || tenant.sock === null) {
+            tenant.sock = null;
+          } else {
+            console.log(`[TM:${uid}] 🛡️ Close handler de socket viejo — NO nullificar tenant.sock (ya hay socket nuevo)`);
+          }
 
           const attempts = (tenantReconnectAttempts.get(uid) || 0) + 1;
           tenantReconnectAttempts.set(uid, attempts);
