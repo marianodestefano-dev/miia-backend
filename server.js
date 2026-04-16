@@ -2970,8 +2970,23 @@ async function processMiiaResponse(phone, userMessage, isAlreadySavedParam = fal
     const ownerPhonePMR = ownerSockPMR?.user?.id?.split('@')[0]?.split(':')[0] || ownerConnectedPhone || OWNER_PHONE;
     const isSelfChat = basePhone === ownerPhonePMR || basePhone === OWNER_PHONE || basePhone === ownerConnectedPhone;
     let isAdmin = isSelfChat || ADMIN_PHONES.includes(basePhone);
-    // Si es admin pero NO self-chat → es Mariano escribiendo desde otro número → tratar como LEAD, no como admin
+    // Si es admin pero NO self-chat → verificar si es otro tenant MIIA conectado
     if (isAdmin && !isSelfChat) {
+      // FIX: Si el sender es otro tenant MIIA conectado (ej: 573163937365 = MIIA personal),
+      // NO responder. Ese phone ya tiene su propia MIIA que maneja la conversación.
+      // MIIA CENTER no debe responder como si fuera un lead.
+      let isOtherMiiaTenant = false;
+      try {
+        const connected = tenantManager.getConnectedTenants();
+        for (const t of connected) {
+          const tPhone = (t.sock?.user?.id || '').split(':')[0].split('@')[0];
+          if (tPhone === basePhone) { isOtherMiiaTenant = true; break; }
+        }
+      } catch (_) {}
+      if (isOtherMiiaTenant) {
+        console.log(`[ADMIN-LEAD] 🛡️ Admin ${basePhone} es otro tenant MIIA conectado — NO responder (su propia MIIA lo maneja)`);
+        return;
+      }
       console.log(`[ADMIN-LEAD] 📱 Admin ${basePhone} escribió pero NO es self-chat (owner: ${ownerPhonePMR}) → tratar como lead`);
       isAdmin = false;
     }
