@@ -681,6 +681,22 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}, options = {}) 
 
   tenants.set(uid, tenant);
 
+  // ═══ TAREA 2C C-100: Restaurar training_data de Firestore si no hay en db.json local ═══
+  if (!tenant.trainingData) {
+    admin.firestore()
+      .collection('users').doc(uid)
+      .collection('miia_persistent').doc('training_data').get()
+      .then(tdDoc => {
+        if (tdDoc.exists && tdDoc.data()?.content) {
+          tenant.trainingData = tdDoc.data().content;
+          console.log(`[TM:${uid}] 🔄 training_data restaurado de Firestore (${tenant.trainingData.length} chars, source: ${tdDoc.data()?.source || 'unknown'})`);
+        } else {
+          console.log(`[TM:${uid}] ℹ️ Sin training_data en Firestore ni db.json`);
+        }
+      })
+      .catch(e => console.warn(`[TM:${uid}] ⚠️ No se pudo restaurar training_data de Firestore:`, e.message));
+  }
+
   // Start Baileys connection asynchronously
   startBaileysConnection(uid, tenant, ioInstance);
 
@@ -1389,8 +1405,18 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           const lidBase = from.split('@')[0].split(':')[0];
           // Fuente 1: _lidMap (contactos de WhatsApp — más confiable)
           if (tenant._lidMap && tenant._lidMap[lidBase]) {
-            resolvedFrom = tenant._lidMap[lidBase];
-            console.log(`[TM:${uid}] 🔗 P6-LID: ${from} → ${resolvedFrom} (via _lidMap)`);
+            const mappedJid = tenant._lidMap[lidBase];
+            // Validar que la resolución sea un phone REAL (10-13 dígitos + @s.whatsapp.net)
+            // NO aceptar mappings a @lid (self-mapping contaminado) ni phones con >13 dígitos (LID disfrazado)
+            const mappedPhone = mappedJid?.split('@')[0]?.split(':')[0];
+            if (mappedJid?.includes('@s.whatsapp.net') && mappedPhone && /^\d{10,13}$/.test(mappedPhone)) {
+              resolvedFrom = mappedJid;
+              console.log(`[TM:${uid}] 🔗 P6-LID: ${from} → ${resolvedFrom} (via _lidMap)`);
+            } else {
+              console.warn(`[TM:${uid}] ⚠️ P6-LID: ${from} → mapping inválido "${mappedJid}" (no es phone real, ignorando)`);
+              // Limpiar mapping contaminado
+              delete tenant._lidMap[lidBase];
+            }
           }
           // Fuente 2: Comparar con ownerPhone guardado al conectar
           // Si el LID no se resolvió pero isFromMe=true, verificar si msg.key.remoteJid
@@ -1414,12 +1440,26 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           }
         }
 
-          // ═══ @LID DESCONOCIDO: Flujo de identificación progresiva ═══
+          // ��══ @LID DESCONOCIDO: Flujo de identificación progresiva ═══
           // Si el LID no se resolvió Y no es fromMe → contacto desconocido con LID
           if (resolvedFrom === from && !isFromMe) {
             if (!tenant._pendingLids) tenant._pendingLids = {};
             const lidBase = from.split('@')[0].split(':')[0];
             const pushName = msg.pushName || '';
+
+            // Si este LID ya fue visto y procesado antes → no re-procesar como desconocido
+            if (tenant._seenLids?.has(lidBase)) {
+              console.log(`[TM:${uid}] 🔄 LID ${lidBase} ya fue visto — procesando con clasificación existente`);
+              // Pasar al handler normal con el LID como JID (ya tiene contactType en cache)
+              const { handleTenantMessage: handleExisting } = require('./tenant_message_handler');
+              try {
+                await handleExisting(uid, tenant.ownerUid || uid, tenant.role || 'owner', from, body, false, false, tenant, messageContext || {});
+              } catch (e) {
+                console.error(`[TM:${uid}] ⚠️ Error procesando LID ya visto:`, e.message);
+              }
+              continue;
+            }
+
             const pending = tenant._pendingLids[lidBase];
 
             // ══════════════════════════════════════════════════════════════════
@@ -1553,24 +1593,47 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                   // (se manejará abajo como pending_silent o flujo normal de TMH)
                 } else {
               // FAST-PATH: Un solo negocio → todo desconocido es lead, procesar YA
-              const contactName = pushName || `Lead ${lidBase.substring(0, 6)}`;
-              console.log(`[TM:${uid}] 🚀 LID-FASTPATH: ${lidBase} (${contactName}) → lead directo (${businessCount} negocio${businessCount === 1 ? '' : 's'}). Sin clasificación.`);
-
-              // Registrar en contact_index como lead
+              // REGLA C-107: NUNCA usar número/tipo como nombre. pushName o vacío.
+              const contactName = pushName || '';
               const ownerUidFast = tenant.ownerUid || uid;
+
+              // ═══ C-107 FIX: Verificar contact_index ANTES de clasificar como lead ═══
+              // Si el contacto ya existe (ej: 'client'), respetar clasificación existente
+              let fastpathType = 'lead';
+              let existingName = contactName;
+              try {
+                const existingDoc = await admin.firestore().collection('users').doc(ownerUidFast)
+                  .collection('contact_index').doc(lidBase).get();
+                if (existingDoc.exists) {
+                  const existing = existingDoc.data();
+                  if (existing.type && existing.type !== 'lead') {
+                    fastpathType = existing.type;
+                    existingName = existing.name || contactName;
+                    console.log(`[TM:${uid}] 🛡️ LID-FASTPATH: ${lidBase} ya existe como ${existing.type} (${existingName}) — respetando clasificación existente`);
+                  }
+                }
+              } catch (_) {}
+
+              console.log(`[TM:${uid}] 🚀 LID-FASTPATH: ${lidBase} (${existingName || 'sin nombre'}) → ${fastpathType} directo (${businessCount} negocio${businessCount === 1 ? '' : 's'}).`);
+
+              // Registrar en contact_index (merge — NO sobreescribir type si ya existe como client)
               const bizId = tenant._businesses?.[0]?.id || null;
               const bizName = tenant._businesses?.[0]?.name || null;
               try {
+                const indexData = {
+                  ...(existingName && { name: existingName }),
+                  ...(bizId && { businessId: bizId }),
+                  ...(bizName && { businessName: bizName }),
+                  source: 'miia_fastpath',
+                  updatedAt: new Date().toISOString()
+                };
+                // Solo setear type si NO existe aún (no degradar client→lead)
+                if (fastpathType === 'lead') {
+                  indexData.type = 'lead';
+                }
                 await admin.firestore().collection('users').doc(ownerUidFast)
                   .collection('contact_index').doc(lidBase)
-                  .set({
-                    name: contactName,
-                    type: 'lead',
-                    ...(bizId && { businessId: bizId }),
-                    ...(bizName && { businessName: bizName }),
-                    source: 'miia_fastpath',
-                    updatedAt: new Date().toISOString()
-                  }, { merge: true });
+                  .set(indexData, { merge: true });
               } catch (e) {
                 console.error(`[TM:${uid}] ⚠️ Error guardando lead fastpath:`, e.message);
               }
@@ -1578,13 +1641,13 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               // Setear tipo en TMH
               try {
                 const { setContactType, setLeadName } = require('./tenant_message_handler');
-                if (setContactType) setContactType(uid, lidBase, 'lead');
-                if (setLeadName) setLeadName(uid, lidBase, contactName);
+                if (setContactType) setContactType(uid, lidBase, fastpathType);
+                if (setLeadName) setLeadName(uid, lidBase, existingName);
               } catch (_) {}
 
-              // Mapear LID
-              if (!tenant._lidMap) tenant._lidMap = {};
-              tenant._lidMap[lidBase] = from;
+              // Registrar LID como visto (NO mapear a sí mismo en _lidMap — contamina resolución)
+              if (!tenant._seenLids) tenant._seenLids = new Set();
+              tenant._seenLids.add(lidBase);
 
               // Procesar el mensaje INMEDIATAMENTE como lead
               const { handleTenantMessage: handleMsgFast } = require('./tenant_message_handler');
@@ -1734,10 +1797,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                 if (setLeadName && autoClassification.name) setLeadName(uid, resolvedPhone, autoClassification.name);
               } catch (_) {}
 
-              // Mapear LID para futuros mensajes
-              if (!tenant._lidMap) tenant._lidMap = {};
-              // No tenemos JID real, pero guardamos referencia para no volver a preguntar
-              tenant._lidMap[lidBase] = from; // mapea al LID mismo — lo importante es que quede registrado
+              // Registrar LID como visto (NO mapear a sí mismo en _lidMap — contamina resolución)
+              if (!tenant._seenLids) tenant._seenLids = new Set();
+              tenant._seenLids.add(lidBase);
 
               // Procesar el mensaje con el prompt correcto INMEDIATAMENTE
               const { handleTenantMessage: handleMsg } = require('./tenant_message_handler');
@@ -2125,6 +2187,19 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             _lastConnectedNumber: _connectedNumber
           });
           console.log(`[TM:${uid}] 🧬 ADN Mining progreso: ${historyStats.leads} leads + ${historyStats.clients} clientes (${historyStats.skipped} omitidos). ${adnBatch.length} chars`);
+
+          // ═══ TAREA 2A C-100: Persistir training_data a Firestore (sobrevive deploys) ═══
+          admin.firestore()
+            .collection('users').doc(uid)
+            .collection('miia_persistent').doc('training_data')
+            .set({
+              content: tenant.trainingData,
+              updatedAt: new Date().toISOString(),
+              source: 'history_sync',
+              chars: tenant.trainingData.length
+            })
+            .then(() => console.log(`[TM:${uid}] 🧬💾 training_data persistido en Firestore (${tenant.trainingData.length} chars)`))
+            .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data a Firestore:`, e.message));
 
           if (ioInstance) {
             ioInstance.to(`tenant:${uid}`).emit('adn_mining_progress', {
@@ -2530,6 +2605,12 @@ function appendTenantTraining(uid, newData) {
     leadNames: t.leadNames,
     trainingData: t.trainingData
   });
+  // TAREA 2D C-100: También persistir a Firestore
+  admin.firestore()
+    .collection('users').doc(uid)
+    .collection('miia_persistent').doc('training_data')
+    .set({ content: t.trainingData, updatedAt: new Date().toISOString(), source: 'append_training', chars: t.trainingData.length })
+    .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data (append):`, e.message));
   return true;
 }
 
@@ -2572,6 +2653,12 @@ function classifyContact(uid, phone, contactRules) {
   return 'otro';
 }
 
+function getTenantTrainingData(uid) {
+  const t = tenants.get(uid);
+  if (!t) return null;
+  return t.trainingData || null;
+}
+
 function setTenantTrainingData(uid, trainingData) {
   const t = tenants.get(uid);
   if (!t) return false;
@@ -2581,6 +2668,12 @@ function setTenantTrainingData(uid, trainingData) {
     leadNames: t.leadNames,
     trainingData: t.trainingData
   });
+  // TAREA 2D C-100: También persistir a Firestore
+  admin.firestore()
+    .collection('users').doc(uid)
+    .collection('miia_persistent').doc('training_data')
+    .set({ content: t.trainingData, updatedAt: new Date().toISOString(), source: 'set_training', chars: t.trainingData.length })
+    .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data (set):`, e.message));
   return true;
 }
 
@@ -2619,8 +2712,34 @@ async function gracefulShutdown(signal) {
     console.log(`[TM:${uid}] ✅ Socket cerrado limpiamente`);
   }
   await Promise.allSettled(promises);
-  console.log(`[TM] ✅ Todas las conexiones cerradas. Proceso puede terminar.`);
-  // Dar 2s para que los writes a Firestore terminen
+
+  // ═══ TAREA 2B C-100: Persistir training_data de TODOS los tenants a Firestore antes de morir ═══
+  const tdPromises = [];
+  for (const [uid, tenant] of tenants) {
+    if (tenant.trainingData && tenant.trainingData.length > 0) {
+      tdPromises.push(
+        admin.firestore()
+          .collection('users').doc(uid)
+          .collection('miia_persistent').doc('training_data')
+          .set({
+            content: tenant.trainingData,
+            updatedAt: new Date().toISOString(),
+            source: 'sigterm_shutdown',
+            chars: tenant.trainingData.length
+          })
+          .then(() => console.log(`[TM:${uid}] 💾 training_data persistido en SIGTERM (${tenant.trainingData.length} chars)`))
+          .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data en SIGTERM:`, e.message))
+      );
+    }
+  }
+  // Esperar máximo 5s para training_data + creds
+  await Promise.race([
+    Promise.allSettled([...tdPromises, saveAllTenantCreds()]),
+    new Promise(resolve => setTimeout(resolve, 5000))
+  ]);
+
+  console.log(`[TM] ✅ Todas las conexiones cerradas + datos persistidos. Proceso puede terminar.`);
+  // Dar 2s para que los writes restantes a Firestore terminen
   setTimeout(() => process.exit(0), 2000);
 }
 
@@ -3514,5 +3633,6 @@ module.exports = {
   flushUnrespondedMessages,
   recoverUnrespondedMessages,
   registerSentMsgId,
-  saveAllTenantCreds
+  saveAllTenantCreds,
+  getTenantTrainingData
 };

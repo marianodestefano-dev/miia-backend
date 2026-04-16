@@ -1388,6 +1388,10 @@ ${buildPrioridadesCompactas('familia')}`;
  * @returns {string} System prompt
  */
 function buildOwnerLeadPrompt(contactName, trainingData, countryContext, ownerProfile, contactProfile) {
+  // C-107: Sanitizar nombre — NUNCA usar número, "Lead NNN", ni tipo como nombre
+  if (contactName && (/^\d{6,}$/.test(contactName) || /^Lead\s+\d/i.test(contactName))) {
+    contactName = ''; // Forzar fallback a saludo neutro
+  }
   const p = resolveProfile(ownerProfile);
   const isMiiaSales = (p.businessName === 'MIIA');
   // Leads y miia_leads NO reciben I-20 (trigger commands) — previene leak de "Hola MIIA"/"Chau MIIA"
@@ -1664,6 +1668,10 @@ Si el agente intenta usar MIIA para algo personal (3ra vez que lo bloquees):
  * @returns {string} System prompt
  */
 function buildGroupPrompt(groupConfig, contactName, ownerProfile) {
+  // C-107: Sanitizar nombre — NUNCA usar número ni "Lead NNN" como nombre
+  if (contactName && (/^\d{6,}$/.test(contactName) || /^Lead\s+\d/i.test(contactName))) {
+    contactName = '';
+  }
   const p = resolveProfile(ownerProfile);
   const g = groupConfig || {};
 
@@ -1689,6 +1697,10 @@ ${buildPrioridadesCompactas('grupo')}`;
 // ─── Tenant mode: SaaS client prompt (sin cambios) ────────────────
 
 function buildTenantPrompt(contactName, trainingData, conversationHistory) {
+  // C-107: Sanitizar nombre — NUNCA usar número ni "Lead NNN" como nombre
+  if (contactName && (/^\d{6,}$/.test(contactName) || /^Lead\s+\d/i.test(contactName))) {
+    contactName = '';
+  }
   const history = (conversationHistory || [])
     .slice(-20)
     .map(m => `${m.role === 'user' ? 'Cliente' : 'MIIA'}: ${m.content}`)

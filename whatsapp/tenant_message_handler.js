@@ -2598,7 +2598,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   // ═══ SEARCH-HINT: Refuerzo de búsqueda para temas de tiempo real ═══
   const REALTIME_PATTERNS = [
     { rx: /\b(clima|tiempo meteorol|temperatura|pronóstico|pron[oó]stico|lluvia|llover|soleado|nublado|tormenta)\b/i, topic: 'clima' },
-    { rx: /\b(d[oó]lar|euro|bitcoin|btc|eth|cotizaci[oó]n|trm|tasa.*cambio|precio.*oro|acciones?|bolsa|nasdaq|cripto|crypto)\b/i, topic: 'finanzas' },
+    { rx: /\b(d[oó]lar|euro|bitcoin|btc|eth|trm|tasa.*cambio|precio.*oro|acciones?|bolsa|nasdaq|cripto|crypto)\b/i, topic: 'finanzas' },
     { rx: /\b(partido|juega|jugó|resultado|gol|posiciones|torneo|carrera|f1|formula|champions|libertadores|mundial)\b/i, topic: 'deportes' },
     { rx: /\b(noticias?|pas[oó].*hoy|qu[eé].*pas[oó]|muri[oó]|falleci[oó]|elecciones?|[uú]ltim[ao].*hora)\b/i, topic: 'noticias' },
   ];

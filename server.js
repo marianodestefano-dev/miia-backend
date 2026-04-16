@@ -14109,6 +14109,108 @@ app.get('/api/admin/tenant-health/:uid', verifyAdminToken, async (req, res) => {
   }
 });
 
+// ── TAREA 1 C-100: Dump training data desde tenant en memoria → Firestore backup ──
+app.get('/api/admin/tenant/:uid/dump-training-data', verifyAdminToken, async (req, res) => {
+  const { uid } = req.params;
+  console.log(`[ADMIN] dump-training-data solicitado para uid=${uid}`);
+  try {
+    // Intentar obtener del tenant en memoria (Railway vivo)
+    const tenantManager = require('./whatsapp/tenant_manager');
+    const status = tenantManager.getTenantStatus(uid);
+    let trainingData = '';
+    let source = 'none';
+
+    if (status.exists) {
+      // Tenant está en memoria — acceder a su trainingData directamente
+      const memoryData = tenantManager.getTenantTrainingData(uid);
+      if (memoryData) {
+        trainingData = memoryData;
+        source = 'memory';
+      }
+    }
+
+    // Si no hay en memoria, intentar leer db.json local
+    if (!trainingData) {
+      const fs = require('fs');
+      const path = require('path');
+      const dbPath = path.join(__dirname, 'data', `tenant-${uid}`, 'db.json');
+      if (fs.existsSync(dbPath)) {
+        try {
+          const dbData = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+          if (dbData.trainingData) {
+            trainingData = dbData.trainingData;
+            source = 'db.json';
+          }
+        } catch (e) {
+          console.error(`[ADMIN] Error leyendo db.json para ${uid}:`, e.message);
+        }
+      }
+    }
+
+    // Si no hay en db.json, intentar Firestore existente
+    if (!trainingData) {
+      const existingDoc = await admin.firestore()
+        .collection('users').doc(uid)
+        .collection('miia_persistent').doc('training_data').get();
+      if (existingDoc.exists && existingDoc.data()?.content) {
+        trainingData = existingDoc.data().content;
+        source = 'firestore_existing';
+      }
+    }
+
+    if (!trainingData) {
+      return res.json({
+        uid,
+        chars: 0,
+        source: 'none',
+        message: 'No training_data encontrado en ninguna fuente',
+        backedUp: false
+      });
+    }
+
+    // Guardar backup en Firestore
+    const backupDocId = `training_data_backup_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
+    await admin.firestore()
+      .collection('users').doc(uid)
+      .collection('miia_persistent').doc(backupDocId)
+      .set({
+        content: trainingData,
+        source,
+        backedUpAt: new Date().toISOString(),
+        chars: trainingData.length
+      });
+
+    // También actualizar el doc principal training_data si estaba vacío
+    const mainDoc = await admin.firestore()
+      .collection('users').doc(uid)
+      .collection('miia_persistent').doc('training_data').get();
+    if (!mainDoc.exists || !mainDoc.data()?.content) {
+      await admin.firestore()
+        .collection('users').doc(uid)
+        .collection('miia_persistent').doc('training_data')
+        .set({
+          content: trainingData,
+          updatedAt: new Date().toISOString(),
+          restoredFrom: source
+        });
+      console.log(`[ADMIN] training_data principal restaurado desde ${source} (${trainingData.length} chars)`);
+    }
+
+    console.log(`[ADMIN] ✅ training_data backup guardado: ${backupDocId} (${trainingData.length} chars, fuente: ${source})`);
+    res.json({
+      uid,
+      chars: trainingData.length,
+      source,
+      backupDocId,
+      backedUp: true,
+      preview: trainingData.substring(0, 200)
+    });
+  } catch (e) {
+    console.error(`[ADMIN] ❌ Error en dump-training-data:`, e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Railway Logs Proxy (admin only) ──────────────────────────────────────
 // Usa Railway GraphQL API para obtener logs de deploy/build/http sin exponer el token
 app.get('/api/admin/railway-logs', verifyAdminToken, async (req, res) => {
