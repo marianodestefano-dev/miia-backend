@@ -2608,7 +2608,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   // ═══ SEARCH-HINT: Refuerzo de búsqueda para temas de tiempo real ═══
   const REALTIME_PATTERNS = [
     { rx: /\b(clima|tiempo meteorol|temperatura|pronóstico|pron[oó]stico|lluvia|llover|soleado|nublado|tormenta)\b/i, topic: 'clima' },
-    { rx: /\b(d[oó]lar|euro|bitcoin|btc|eth|trm|tasa.*cambio|precio.*oro|acciones?|bolsa|nasdaq|cripto|crypto)\b/i, topic: 'finanzas' },
+    { rx: /\b(d[oó]lar|euro|bitcoin|btc|eth|trm|tasa.*cambio|precio.*oro|acciones?|bolsa de valores|nasdaq|cripto|crypto)\b/i, topic: 'finanzas' },
     { rx: /\b(partido|juega|jugó|resultado|gol|posiciones|torneo|carrera|f1|formula|champions|libertadores|mundial)\b/i, topic: 'deportes' },
     { rx: /\b(noticias?|pas[oó].*hoy|qu[eé].*pas[oó]|muri[oó]|falleci[oó]|elecciones?|[uú]ltim[ao].*hora)\b/i, topic: 'noticias' },
   ];
@@ -4644,8 +4644,14 @@ REGLAS:
       if (alertaOwnerMatch) {
         const alertMsg = alertaOwnerMatch[1].trim();
         aiMessage = aiMessage.replace(/\[ALERTA_OWNER:[^\]]+\]/g, '').trim();
-        console.log(`${logPrefix} [ALERTA-TMH] 📢 Lead ${phone}: ${alertMsg}`);
-        await sendToOwnerSelfChat(`📢 *Acción requerida* — Lead ${basePhone}:\n${alertMsg}`);
+        if (isSelfChat) {
+          // En self-chat, el owner ya está leyendo — no enviar alerta redundante
+          console.log(`${logPrefix} [ALERTA-TMH] 🔇 ALERTA_OWNER en self-chat ignorada (owner ya presente): "${alertMsg}"`);
+        } else {
+          const contactLabel = contactName || basePhone;
+          console.log(`${logPrefix} [ALERTA-TMH] 📢 ${contactLabel} (${basePhone}): ${alertMsg}`);
+          await sendToOwnerSelfChat(`📢 *Acción requerida* — ${contactLabel} (${basePhone}):\n${alertMsg}`);
+        }
       }
 
       // ── TAG [MENSAJE_PARA_OWNER:mensaje] — Contacto dice "dile al owner que..." ──

@@ -498,7 +498,7 @@ Bolsas: mismos precios USD de arriba (WA y Firma solamente)
 | Módulo | S | M | L | XL |
 |--------|---|---|---|-----|
 | WA (150/350/800/2000) | €180 | €396 | €864 | €2.040 |
-| Firma (50/100/200/500) | €300 | €480 | €840 | €2.040 |
+| Firma (50/100/200/500) | €300 | €540 | €960 | €2.400 |
 
 ### 🌎 OTROS / INTERNACIONAL (USD $)
 - **SIN factura electrónica** (incluirFactura=false)
@@ -548,11 +548,11 @@ Si el lead dice cosas como "cuánto sale", "precio", "mándame cotización" sin 
 | usuarios | El número que mencionó el cliente |
 | citasMes | 70 (default) |
 | incluirWA | true |
-| bolsaWA | null (auto-calculate) |
+| bolsaWA | null (auto-calculate). Si el usuario pide cantidad específica de WhatsApp → forzar tier: "S"=150, "M"=350, "L"=800, "XL"=2000 |
 | incluirFirma | true |
-| bolsaFirma | null (auto-calculate) |
+| bolsaFirma | null (auto-calculate). Si el usuario pide cantidad específica de firmas → forzar tier: "S"=50, "M"=200, "L"=500, "XL"=1000 |
 | incluirFactura | true (false en Argentina, España e INTERNACIONAL) |
-| bolsaFactura | null (auto-calculate) |
+| bolsaFactura | null (auto-calculate). Si el usuario pide cantidad específica de facturas → forzar tier: "S"=50, "M"=200, "L"=500, "XL"=1000. Ej: "quiero 50 facturas" → "S" |
 | incluirRecetaAR | true (SOLO Argentina), false (otros países) |
 | plan | (OPCIONAL) "esencial", "pro" o "titanium". Si se incluye → PDF muestra SOLO ese plan. Si no se incluye → muestra los 3 para comparar |
 | modalidad | "mensual", "semestral" o "anual" (default: "mensual". España: siempre "anual") |
@@ -1514,7 +1514,7 @@ WA S:$15 M:$35 L:$70 XL:$170 | Firma S:$25 M:$40 L:$70 XL:$170
 
 ### ESPAÑA (EUR) — SOLO ANUAL (precios ×12 meses)
 ES €840/€120 adic | PRO €1200/€192 | TI €1440/€240
-WA S:€180 M:€396 L:€864 XL:€2040 | Firma S:€300 M:€480 L:€840 XL:€2040
+WA S:€180 M:€396 L:€864 XL:€2040 | Firma S:€300 M:€540 L:€960 XL:€2400
 
 ### DIFERENCIADORES POR PLAN
 - **Tokens IA mensuales**: ESENCIAL 80 | PRO 250 | TITANIUM 400
