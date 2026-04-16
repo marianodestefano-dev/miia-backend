@@ -550,13 +550,13 @@ Si el lead dice cosas como "cuánto sale", "precio", "mándame cotización" sin 
 | nombre | Del cliente si se mencionó, sino "Cotización Especial" |
 | pais | Según +57=COLOMBIA, +56=CHILE, +52=MEXICO, +1809/1829/1849=REPUBLICA_DOMINICANA, +54=ARGENTINA, +34=ESPAÑA, otros=INTERNACIONAL |
 | moneda | Según país (COP, CLP, MXN, EUR para España, USD para el resto) |
-| usuarios | El número que mencionó el cliente |
+| usuarios | **SOLO profesionales de salud (médicos, dentistas, psicólogos, etc.). NUNCA contar: secretaria, recepcionista, contador, contadora, administrador, administradora, cajero, asistente administrativo. Esos son GRATIS y NO van en este número. Ejemplo: "1 médico, 1 admin, 1 contador" → usuarios=1.** Si hay rol AMBIGUO (ayudante, enfermero, auxiliar, terapeuta) → PREGUNTAR "¿[rol] necesita agenda propia?" ANTES de emitir el tag. |
 | citasMes | 70 (default) |
 | incluirWA | true |
 | bolsaWA | null (auto-calculate). Si el usuario pide cantidad específica de WhatsApp → forzar tier: "S"=150, "M"=350, "L"=800, "XL"=2000. "el mínimo"/"menos"/"pocas"/"bajar"/"reducir" → "S". **CRÍTICO: "bajar", "reducir", "menos" = bolsaWA:"S". NUNCA poner incluirWA:false a menos que el lead diga EXPLÍCITAMENTE: "sin WhatsApp", "no quiero WhatsApp", "saca los WhatsApp", "quita los WhatsApp".** |
 | incluirFirma | true |
 | bolsaFirma | null (auto-calculate). Si el usuario pide cantidad específica de firmas → forzar tier: "S"=50, "M"=200, "L"=500, "XL"=1000. "el mínimo"/"menos"/"pocas"/"bajar"/"reducir" → "S". **CRÍTICO: "bajar", "reducir", "menos" = bolsaFirma:"S". NUNCA poner incluirFirma:false a menos que el lead diga EXPLÍCITAMENTE: "sin firmas", "no quiero firma digital", "saca las firmas", "quita las firmas".** |
-| incluirFactura | true (false en Argentina, España e INTERNACIONAL) |
+| incluirFactura | true (false en Argentina, España e INTERNACIONAL). **Si el lead menciona Siigo/BOLD → SIEMPRE incluirFactura:true (Siigo cubre la facturación, sale $0 con Titanium).** |
 | bolsaFactura | null (auto-calculate). Si el usuario pide cantidad específica de facturas → forzar tier: "S"=50, "M"=200, "L"=500, "XL"=1000. Expresiones que mapean a "S" (mínimo): "mínimo", "menos facturas", "pocas facturas", "lo mínimo", "la más pequeña", "la más chica", "poca facturación", "muy pocas", "volumen bajo", "menos", "bajar", "reducir", "el mínimo". **CRÍTICO: "bajar", "reducir", "menos", "el mínimo" = bolsaFactura:"S". NUNCA poner incluirFactura:false a menos que el lead diga EXPLÍCITAMENTE: "sin facturas", "no quiero facturación", "saca las facturas", "no incluyas facturas", "quita las facturas".** |
 | incluirRecetaAR | true (SOLO Argentina), false (otros países) |
 | plan | (OPCIONAL) "esencial", "pro" o "titanium". Si se incluye → PDF muestra SOLO ese plan. Si no se incluye → muestra los 3 para comparar |
