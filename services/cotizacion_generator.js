@@ -393,11 +393,12 @@ function getLogoBase64() {
 
 // Normativas legales por país para el PDF
 const NORMATIVAS = {
-  COLOMBIA:            'Res. 1995/1999 (HC), Res. 2654/2019 (Telemedicina), Ley 23/1981 (ética médica), Ley 1581/2012 (habeas data)',
+  COLOMBIA:            'Res. 256/2016 (calidad: eventos adversos, oportunidad, satisfacción), Res. 2275/2023 (HC electrónica interoperable, RIPS), Res. 3100/2019 (habilitación servicios de salud), Res. 1888/2024 (interoperabilidad), Ley 1581/2012 (habeas data)',
   CHILE:               'Ley 20.584 (derechos del paciente), Ley 19.628 (protección datos), DS 41/2012 (HC digitales), Ley 20.285 (transparencia)',
   MEXICO:              'NOM-024-SSA3-2012 (HC electrónicas), NOM-035-SSA3-2012 (Telemedicina), Ley Federal de Protección de Datos Personales',
   ARGENTINA:           'Ley 26.529 (derechos del paciente/HC), Ley 25.326 (protección datos), Res. 1-E/2017 (HC digital)',
   REPUBLICA_DOMINICANA:'Ley 42-01 (Salud), Ley 172-13 (protección datos), Res. DGH-00014/2021 (HC electrónicas)',
+  ESPAÑA:              'Reglamento (UE) 2016/679 (RGPD), Ley Orgánica 3/2018 (LOPD-GDD), Ley 41/2002 (autonomía del paciente), RD 1277/2003 (centros sanitarios)',
   INTERNACIONAL:       'Normativa local vigente en privacidad de datos clínicos y Telemedicina'
 };
 
