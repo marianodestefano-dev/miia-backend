@@ -1637,12 +1637,10 @@ async function saveToFirestore() {
     // Railway es efímero: db.json se borra en cada deploy.
     // SIEMPRE guardar — incluso vacío — para que el doc EXISTA y loadFromFirestore funcione.
     // BUG ANTERIOR: `if (currentTrainingData)` → string vacía es falsy → doc NUNCA se creaba → falla circular.
+    // FIX C-122: Usa chunking para soportar datos >1MB
     const currentTrainingData = cerebroAbsoluto.getTrainingData() || '';
-    await ref.doc('training_data').set({
-      content: currentTrainingData,
-      length: currentTrainingData.length,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    const { persistTrainingDataChunked: _persistTDChunked } = require('./whatsapp/tenant_manager');
+    await _persistTDChunked(OWNER_UID, currentTrainingData, 'periodic_save');
 
     console.log(`[FIRESTORE] ✅ Datos persistidos correctamente (convos: ${sortedConvos.length}, training: ${currentTrainingData?.length || 0} chars)`);
   } catch (e) {
@@ -1696,9 +1694,11 @@ async function loadFromFirestore() {
     // ═══ FIX GAP 1: Cargar trainingData desde Firestore ═══
     // Si db.json se perdió en el deploy, Firestore tiene la verdad.
     // Merge: si db.json tiene datos más recientes, combinar ambos.
-    const trainingDoc = await ref.doc('training_data').get();
-    if (trainingDoc.exists) {
-      const fsTraining = trainingDoc.data().content || '';
+    // FIX C-122: Usa loadTrainingDataChunked para soportar datos >1MB
+    const { loadTrainingDataChunked: _loadTDMain } = require('./whatsapp/tenant_manager');
+    const tdResult = await _loadTDMain(OWNER_UID);
+    if (tdResult && tdResult.content) {
+      const fsTraining = tdResult.content;
       const localTraining = cerebroAbsoluto.getTrainingData() || '';
       if (fsTraining.length > localTraining.length) {
         cerebroAbsoluto.setTrainingData(fsTraining);
@@ -14147,13 +14147,12 @@ app.get('/api/admin/tenant/:uid/dump-training-data', verifyAdminToken, async (re
       }
     }
 
-    // Si no hay en db.json, intentar Firestore existente
+    // Si no hay en db.json, intentar Firestore existente (con chunking C-122)
     if (!trainingData) {
-      const existingDoc = await admin.firestore()
-        .collection('users').doc(uid)
-        .collection('miia_persistent').doc('training_data').get();
-      if (existingDoc.exists && existingDoc.data()?.content) {
-        trainingData = existingDoc.data().content;
+      const { loadTrainingDataChunked: _loadTDChunked } = require('./whatsapp/tenant_manager');
+      const result = await _loadTDChunked(uid);
+      if (result && result.content) {
+        trainingData = result.content;
         source = 'firestore_existing';
       }
     }
@@ -14168,31 +14167,28 @@ app.get('/api/admin/tenant/:uid/dump-training-data', verifyAdminToken, async (re
       });
     }
 
-    // Guardar backup en Firestore
+    // Guardar backup en Firestore (con chunking C-122)
+    const { persistTrainingDataChunked: _persistTDBackup } = require('./whatsapp/tenant_manager');
     const backupDocId = `training_data_backup_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
+    // Backup va en doc separado — puede necesitar chunking propio pero por ahora
+    // los backups son snapshots puntuales, no se leen con loadChunked
     await admin.firestore()
       .collection('users').doc(uid)
       .collection('miia_persistent').doc(backupDocId)
       .set({
-        content: trainingData,
+        content: trainingData.slice(0, 1_000_000), // Truncar a 1MB para backup
         source,
         backedUpAt: new Date().toISOString(),
-        chars: trainingData.length
+        chars: trainingData.length,
+        truncated: trainingData.length > 1_000_000
       });
 
-    // También actualizar el doc principal training_data si estaba vacío
+    // También actualizar el doc principal training_data si estaba vacío (con chunking)
     const mainDoc = await admin.firestore()
       .collection('users').doc(uid)
       .collection('miia_persistent').doc('training_data').get();
     if (!mainDoc.exists || !mainDoc.data()?.content) {
-      await admin.firestore()
-        .collection('users').doc(uid)
-        .collection('miia_persistent').doc('training_data')
-        .set({
-          content: trainingData,
-          updatedAt: new Date().toISOString(),
-          restoredFrom: source
-        });
+      await _persistTDBackup(uid, trainingData, `restored_from_${source}`);
       console.log(`[ADMIN] training_data principal restaurado desde ${source} (${trainingData.length} chars)`);
     }
 

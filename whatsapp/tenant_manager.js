@@ -34,6 +34,155 @@ const tenantReconnectAttempts = new Map(); // { uid: attemptCount }
 const tenantCryptoErrors = new Map(); // { uid: { count, windowStart } }
 
 // ═══════════════════════════════════════════════════════════════════
+// TRAINING DATA CHUNKING — Supera límite 1MB por campo de Firestore
+// ═══════════════════════════════════════════════════════════════════
+// Firestore limita cada campo a 1,048,487 bytes (~1MB).
+// training_data de owners con muchos contactos supera ese límite.
+// Solución: partir en chunks de max 900KB y guardar como docs separados.
+// ═══════════════════════════════════════════════════════════════════
+
+const TD_CHUNK_MAX_BYTES = 900_000; // 900KB por chunk (margen vs 1MB limit)
+
+/**
+ * Persiste training_data en chunks si excede el límite de Firestore.
+ * Guarda en: users/{uid}/miia_persistent/training_data_0, _1, _2...
+ * También mantiene el doc legacy training_data (truncado) para backward compat.
+ * @returns {Promise<void>}
+ */
+async function persistTrainingDataChunked(uid, trainingData, source) {
+  if (!trainingData || trainingData.length === 0) return;
+
+  const baseRef = admin.firestore()
+    .collection('users').doc(uid)
+    .collection('miia_persistent');
+
+  const now = new Date().toISOString();
+  const totalChars = trainingData.length;
+
+  // Si cabe en un solo doc, guardar como siempre (fast path)
+  if (Buffer.byteLength(trainingData, 'utf8') <= TD_CHUNK_MAX_BYTES) {
+    await baseRef.doc('training_data').set({
+      content: trainingData,
+      updatedAt: now,
+      source,
+      chars: totalChars,
+      chunks: 1
+    });
+    // Limpiar chunks viejos si existían
+    const oldChunks = await baseRef.where('__isChunk', '==', true).get();
+    const delBatch = admin.firestore().batch();
+    oldChunks.forEach(doc => delBatch.delete(doc.ref));
+    if (!oldChunks.empty) await delBatch.commit();
+    console.log(`[TM:${uid}] 🧬💾 training_data persistido en Firestore (${totalChars} chars, 1 chunk, source: ${source})`);
+    return;
+  }
+
+  // Partir en chunks por bytes (no por chars, porque UTF-8 puede variar)
+  const chunks = [];
+  let start = 0;
+  while (start < trainingData.length) {
+    // Buscar el punto de corte que no exceda TD_CHUNK_MAX_BYTES
+    let end = start + TD_CHUNK_MAX_BYTES; // Aproximación inicial en chars
+    if (end >= trainingData.length) {
+      chunks.push(trainingData.slice(start));
+      break;
+    }
+    // Ajustar hacia abajo hasta que el chunk en bytes quepa
+    while (Buffer.byteLength(trainingData.slice(start, end), 'utf8') > TD_CHUNK_MAX_BYTES && end > start + 1) {
+      end -= Math.max(1, Math.floor((end - start) * 0.05)); // Reducir 5%
+    }
+    chunks.push(trainingData.slice(start, end));
+    start = end;
+  }
+
+  // Guardar chunks en batch
+  const batch = admin.firestore().batch();
+
+  // Doc principal (metadata + primer chunk para backward compat)
+  batch.set(baseRef.doc('training_data'), {
+    content: chunks[0],
+    updatedAt: now,
+    source,
+    chars: totalChars,
+    chunks: chunks.length
+  });
+
+  // Chunks adicionales
+  for (let i = 0; i < chunks.length; i++) {
+    batch.set(baseRef.doc(`training_data_chunk_${i}`), {
+      content: chunks[i],
+      index: i,
+      updatedAt: now,
+      __isChunk: true
+    });
+  }
+
+  await batch.commit();
+
+  // Limpiar chunks sobrantes de persists anteriores con más chunks
+  const allChunkDocs = await baseRef.where('__isChunk', '==', true).get();
+  const staleChunks = [];
+  allChunkDocs.forEach(doc => {
+    const idx = doc.data()?.index;
+    if (typeof idx === 'number' && idx >= chunks.length) {
+      staleChunks.push(doc.ref);
+    }
+  });
+  if (staleChunks.length > 0) {
+    const delBatch = admin.firestore().batch();
+    staleChunks.forEach(ref => delBatch.delete(ref));
+    await delBatch.commit();
+  }
+
+  console.log(`[TM:${uid}] 🧬💾 training_data persistido en Firestore (${totalChars} chars, ${chunks.length} chunks, source: ${source})`);
+}
+
+/**
+ * Carga training_data desde Firestore, reuniendo chunks si existen.
+ * @returns {Promise<{content: string, source: string}|null>}
+ */
+async function loadTrainingDataChunked(uid) {
+  const baseRef = admin.firestore()
+    .collection('users').doc(uid)
+    .collection('miia_persistent');
+
+  const mainDoc = await baseRef.doc('training_data').get();
+  if (!mainDoc.exists || !mainDoc.data()?.content) return null;
+
+  const data = mainDoc.data();
+  const numChunks = data.chunks || 1;
+
+  // Si es un solo chunk, devolver directo
+  if (numChunks <= 1) {
+    return { content: data.content, source: data.source || 'unknown' };
+  }
+
+  // Cargar todos los chunks
+  const chunkDocs = await baseRef.where('__isChunk', '==', true).get();
+  const chunkMap = new Map();
+  chunkDocs.forEach(doc => {
+    const d = doc.data();
+    if (typeof d?.index === 'number' && d?.content) {
+      chunkMap.set(d.index, d.content);
+    }
+  });
+
+  // Reunir en orden
+  const parts = [];
+  for (let i = 0; i < numChunks; i++) {
+    if (chunkMap.has(i)) {
+      parts.push(chunkMap.get(i));
+    } else {
+      console.warn(`[TM:${uid}] ⚠️ Chunk training_data_chunk_${i} no encontrado — usando contenido parcial`);
+    }
+  }
+
+  const fullContent = parts.join('');
+  console.log(`[TM:${uid}] 🔄 training_data cargado de ${numChunks} chunks (${fullContent.length} chars)`);
+  return { content: fullContent, source: data.source || 'unknown' };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // DUAL-ENGINE F1 — Motor Combustión + Motor Eléctrico
 // ═══════════════════════════════════════════════════════════════════
 // Dos perfiles de conexión independientes. Cuando uno entra en loop
@@ -682,14 +831,13 @@ function initTenant(uid, geminiApiKey, ioInstance, aiConfig = {}, options = {}) 
   tenants.set(uid, tenant);
 
   // ═══ TAREA 2C C-100: Restaurar training_data de Firestore si no hay en db.json local ═══
+  // FIX C-122: Usa loadTrainingDataChunked para soportar datos >1MB
   if (!tenant.trainingData) {
-    admin.firestore()
-      .collection('users').doc(uid)
-      .collection('miia_persistent').doc('training_data').get()
-      .then(tdDoc => {
-        if (tdDoc.exists && tdDoc.data()?.content) {
-          tenant.trainingData = tdDoc.data().content;
-          console.log(`[TM:${uid}] 🔄 training_data restaurado de Firestore (${tenant.trainingData.length} chars, source: ${tdDoc.data()?.source || 'unknown'})`);
+    loadTrainingDataChunked(uid)
+      .then(result => {
+        if (result && result.content) {
+          tenant.trainingData = result.content;
+          console.log(`[TM:${uid}] 🔄 training_data restaurado de Firestore (${tenant.trainingData.length} chars, source: ${result.source})`);
         } else {
           console.log(`[TM:${uid}] ℹ️ Sin training_data en Firestore ni db.json`);
         }
@@ -2195,16 +2343,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           console.log(`[TM:${uid}] 🧬 ADN Mining progreso: ${historyStats.leads} leads + ${historyStats.clients} clientes (${historyStats.skipped} omitidos). ${adnBatch.length} chars`);
 
           // ═══ TAREA 2A C-100: Persistir training_data a Firestore (sobrevive deploys) ═══
-          admin.firestore()
-            .collection('users').doc(uid)
-            .collection('miia_persistent').doc('training_data')
-            .set({
-              content: tenant.trainingData,
-              updatedAt: new Date().toISOString(),
-              source: 'history_sync',
-              chars: tenant.trainingData.length
-            })
-            .then(() => console.log(`[TM:${uid}] 🧬💾 training_data persistido en Firestore (${tenant.trainingData.length} chars)`))
+          // FIX C-122: Usa chunking para soportar datos >1MB
+          persistTrainingDataChunked(uid, tenant.trainingData, 'history_sync')
             .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data a Firestore:`, e.message));
 
           if (ioInstance) {
@@ -2612,10 +2752,8 @@ function appendTenantTraining(uid, newData) {
     trainingData: t.trainingData
   });
   // TAREA 2D C-100: También persistir a Firestore
-  admin.firestore()
-    .collection('users').doc(uid)
-    .collection('miia_persistent').doc('training_data')
-    .set({ content: t.trainingData, updatedAt: new Date().toISOString(), source: 'append_training', chars: t.trainingData.length })
+  // FIX C-122: Usa chunking para soportar datos >1MB
+  persistTrainingDataChunked(uid, t.trainingData, 'append_training')
     .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data (append):`, e.message));
   return true;
 }
@@ -2675,10 +2813,8 @@ function setTenantTrainingData(uid, trainingData) {
     trainingData: t.trainingData
   });
   // TAREA 2D C-100: También persistir a Firestore
-  admin.firestore()
-    .collection('users').doc(uid)
-    .collection('miia_persistent').doc('training_data')
-    .set({ content: t.trainingData, updatedAt: new Date().toISOString(), source: 'set_training', chars: t.trainingData.length })
+  // FIX C-122: Usa chunking para soportar datos >1MB
+  persistTrainingDataChunked(uid, t.trainingData, 'set_training')
     .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data (set):`, e.message));
   return true;
 }
@@ -2720,19 +2856,12 @@ async function gracefulShutdown(signal) {
   await Promise.allSettled(promises);
 
   // ═══ TAREA 2B C-100: Persistir training_data de TODOS los tenants a Firestore antes de morir ═══
+  // FIX C-122: Usa chunking para soportar datos >1MB
   const tdPromises = [];
   for (const [uid, tenant] of tenants) {
     if (tenant.trainingData && tenant.trainingData.length > 0) {
       tdPromises.push(
-        admin.firestore()
-          .collection('users').doc(uid)
-          .collection('miia_persistent').doc('training_data')
-          .set({
-            content: tenant.trainingData,
-            updatedAt: new Date().toISOString(),
-            source: 'sigterm_shutdown',
-            chars: tenant.trainingData.length
-          })
+        persistTrainingDataChunked(uid, tenant.trainingData, 'sigterm_shutdown')
           .then(() => console.log(`[TM:${uid}] 💾 training_data persistido en SIGTERM (${tenant.trainingData.length} chars)`))
           .catch(e => console.error(`[TM:${uid}] ❌ Error persistiendo training_data en SIGTERM:`, e.message))
       );
@@ -3640,5 +3769,7 @@ module.exports = {
   recoverUnrespondedMessages,
   registerSentMsgId,
   saveAllTenantCreds,
-  getTenantTrainingData
+  getTenantTrainingData,
+  persistTrainingDataChunked,
+  loadTrainingDataChunked
 };
