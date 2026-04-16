@@ -16181,7 +16181,7 @@ biweeklyReport.setReportDependencies({
 // ═══ ROUTES MODULARES — /api/health y futuras rutas ═══
 try {
   const mountRoutes = require('./routes');
-  mountRoutes(app, { requireRole });
+  mountRoutes(app, { requireRole, db: admin.firestore(), verifyToken: verifyFirebaseToken });
 } catch (routeErr) {
   console.error(`[ROUTES] ❌ Error montando rutas modulares: ${routeErr.message}`);
 }

@@ -40,12 +40,18 @@ function mountRoutes(app, deps = {}) {
     failed.push('health');
   }
 
-  // ═══ FUTURAS RUTAS (agregar aquí) ═══
-  // try {
-  //   const createCalendarRoutes = require('./calendar');
-  //   app.use('/api', createCalendarRoutes({ ... }));
-  //   mounted.push('calendar');
-  // } catch (e) { ... }
+  // ═══ COTIZACIONES ═══
+  try {
+    const createCotizacionRoutes = require('./cotizaciones');
+    app.use('/api/cotizacion', createCotizacionRoutes({
+      db:          deps.db,
+      verifyToken: deps.verifyToken,
+    }));
+    mounted.push('cotizaciones');
+  } catch (e) {
+    console.error(`[ROUTES] ❌ Error montando cotizaciones routes: ${e.message}`);
+    failed.push('cotizaciones');
+  }
 
   // Resumen
   console.log(`[ROUTES] ✅ Rutas montadas: [${mounted.join(', ')}]${failed.length ? ` ❌ Fallaron: [${failed.join(', ')}]` : ''}`);
