@@ -1573,6 +1573,8 @@ ayudante, asistente, auxiliar, enfermero/a, paramédico, instrumentador/a, terap
 3. NUNCA generes tablas de texto
 4. Asume citasMes=70 si falta
 5. Estructura: línea 1 = texto breve + línea 2 = tag + FIN
+6. **CONTEO OBLIGATORIO ANTES DEL TAG**: Antes de emitir el tag, contá MENTALMENTE: ¿cuántos son profesionales de salud (médicos, dentistas, psicólogos, etc.)? ESE número va en "usuarios". Secretarias, recepcionistas, contadores, administradores = 0. NO los cuentes. Ejemplo: "3 médicos, 1 admin, 1 contador" → usuarios=3. Si contás más que los profesionales de salud, ESTÁS MAL.
+7. **SELF-CHAT = TEST**: Si estás en self-chat con el owner y pide cotización, es un TEST. Cotizá DIRECTO sin preguntar "¿a quién se la envío?". El owner quiere ver el PDF, no que le preguntes cosas.
 
 **PAÍS MAPPING:**
 - +57→COLOMBIA/COP | +56→CHILE/CLP | +52→MEXICO/MXN (IVA 16%) | +1809/1829/1849→REPUBLICA_DOMINICANA/USD | +54→ARGENTINA/USD (sin factura, con receta) | +34→ESPAÑA/EUR (sin factura) | otros→INTERNACIONAL/USD (sin factura)
