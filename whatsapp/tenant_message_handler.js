@@ -2684,7 +2684,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
   // Notificar al owner si MIIA usó sus keys de backup (el owner tiene su propia key pero falló)
   if (aiResult.usedMiiaBackup && isSelfChat) {
-    const backupNotice = `⚡ Tu IA (${aiProvider}) no respondió, usé mi respaldo (${aiResult.provider}). Revisá tu cuota en tu proveedor.`;
+    const providerName = aiProvider || aiResult.originalProvider || 'gemini';
+    const backupNotice = `⚡ Tu IA (${providerName}) no respondió, usé mi respaldo (${aiResult.provider}). Revisá tu cuota en tu proveedor.`;
     console.log(`${logPrefix} 📢 Notificando al owner: usamos backup MIIA`);
     // Se enviará después de la respuesta principal (no bloquea)
     setTimeout(async () => {
@@ -2976,7 +2977,19 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         if (!cotizData.nombre || cotizData.nombre === 'Cliente' || cotizData.nombre === 'Lead') {
           cotizData.nombre = basePhone || cotizData.nombre;
         }
-        // Enviar PDF — usa sendTenantMessage como safeSendMessage
+        // Extraer texto ANTES del tag para enviarlo PRIMERO (orden: texto → PDF)
+        let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
+        // FIX COT-1b (C-113): si hay texto con promesas redundantes, eliminar
+        if (/te\s+confirm|en\s+un\s+momento|ya\s+te\s+env|en\s+breve|ahora\s+te|dame\s+un/i.test(textoAntes)) {
+          console.log(`${logPrefix} [COTIZ-TMH] 🧹 Texto promesa eliminado pre-PDF: "${textoAntes.substring(0, 80)}..."`);
+          textoAntes = '';
+        }
+        // Enviar texto introductorio ANTES del PDF (orden natural: mensaje → documento)
+        if (textoAntes) {
+          await sendTenantMessage(tenantState, phone, textoAntes);
+          console.log(`${logPrefix} [COTIZ-TMH] 💬 Texto enviado ANTES del PDF (${textoAntes.length} chars)`);
+        }
+        // Enviar PDF
         const safeSend = async (to, content) => {
           if (typeof content === 'string') await sendTenantMessage(tenantState, to, content);
           else if (tenantState.sock) await tenantState.sock.sendMessage(to, content);
@@ -2988,17 +3001,12 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       } catch (e) {
         console.error(`${logPrefix} [COTIZ-TMH] ❌ Error PDF:`, e.message);
       }
-      let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
       if (pdfOk) {
         ctx.conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada. No volver a enviarla a menos que lo pidan.]', timestamp: Date.now() });
-        // FIX COT-1b (C-113): si PDF se envió OK, no enviar texto con promesas redundantes
-        // El PDF habla solo — MIIA no anuncia lo que ya hizo
-        if (/te\s+confirm|en\s+un\s+momento|ya\s+te\s+env|en\s+breve|ahora\s+te|dame\s+un/i.test(textoAntes)) {
-          console.log(`${logPrefix} [COTIZ-TMH] 🧹 Texto promesa eliminado post-PDF: "${textoAntes.substring(0, 80)}..."`);
-          textoAntes = '';
-        }
-        aiMessage = textoAntes;
+        // Texto ya se envió antes del PDF — limpiar aiMessage para no duplicar
+        aiMessage = '';
       } else {
+        const textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
         aiMessage = textoAntes + (textoAntes ? '\n\n' : '') + 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
       }
     }
