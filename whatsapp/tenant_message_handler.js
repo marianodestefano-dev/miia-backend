@@ -1839,8 +1839,11 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       const earlyTrigger = detectMiiaTrigger(messageBody, !!messageContext?.isTranscribedAudio);
       const earlyChau = detectChauMiiaTrigger(messageBody);
       const earlyInvocation = miiaInvocation.isInvocation(messageBody);
-      if (earlyTrigger.trigger || earlyChau.trigger || earlyInvocation) {
-        const triggerType = earlyTrigger.trigger ? `"${earlyTrigger.match}"` : earlyChau.trigger ? '"Chau MIIA"' : 'invocación';
+      // FIX C-124: "Chau MIIA" solo overridea cooldown si MIIA estaba activa.
+      // Si MIIA no estaba activa, "Chau MIIA" no tiene sentido → no override.
+      const chauWithSession = earlyChau.trigger && !!ctx.miiaActive[phone];
+      if (earlyTrigger.trigger || chauWithSession || earlyInvocation) {
+        const triggerType = earlyTrigger.trigger ? `"${earlyTrigger.match}"` : chauWithSession ? '"Chau MIIA"' : 'invocación';
         console.log(`${logPrefix} 🎯 OWNER ACTIVO pero contacto dijo ${triggerType} — TRIGGER OVERRIDE (MIIA responde)`);
         delete ctx.ownerActiveChats[phone]; // Limpiar cooldown — el contacto eligió MIIA
       } else {
@@ -1916,14 +1919,21 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // Auto-timeout: MIIA se desactiva si pasaron 30 minutos sin mensajes de NINGÚN humano
   // (ni owner ni contacto — 30min de silencio total = MIIA se retira)
   const MIIA_ACTIVE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
+  // FIX C-124: "Chau MIIA" NO debe renovar miiaActive — debe borrarla directamente
   if (ctx.miiaActive[phone] && !isHolaMiia) {
-    const elapsed = Date.now() - ctx.miiaActive[phone];
-    if (elapsed > MIIA_ACTIVE_TIMEOUT_MS) {
+    if (isChauMiia) {
+      // "Chau MIIA" con sesión activa → borrar inmediatamente (NO renovar)
       delete ctx.miiaActive[phone];
-      console.log(`${logPrefix} ⏰ MIIA auto-desactivada para ${basePhone} (${Math.round(elapsed / 60000)}min sin actividad)`);
+      console.log(`${logPrefix} 🔴 MIIA desactivada para ${basePhone} (trigger "Chau MIIA" — pre-gate)`);
     } else {
-      // Renovar timestamp en cada mensaje de CUALQUIER humano (owner o contacto)
-      ctx.miiaActive[phone] = Date.now();
+      const elapsed = Date.now() - ctx.miiaActive[phone];
+      if (elapsed > MIIA_ACTIVE_TIMEOUT_MS) {
+        delete ctx.miiaActive[phone];
+        console.log(`${logPrefix} ⏰ MIIA auto-desactivada para ${basePhone} (${Math.round(elapsed / 60000)}min sin actividad)`);
+      } else {
+        // Renovar timestamp en cada mensaje de CUALQUIER humano (owner o contacto)
+        ctx.miiaActive[phone] = Date.now();
+      }
     }
   }
   if (isHolaMiia) {

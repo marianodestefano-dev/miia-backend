@@ -176,8 +176,16 @@ function shouldMiiaRespond(opts) {
   }
 
   // ═══ PASO 3c: "Chau MIIA" → despedirse y desactivar ═══
+  // FIX C-124: SOLO responder farewell si MIIA estaba activa (miiaActive=true).
+  // Sin esto, cada "Chau MIIA" repetido generaba una despedida nueva
+  // incluso con MIIA ya desactivada (bug reportado por Mariano con Pablo).
   if (isChauMiia) {
-    return { respond: true, reason: 'farewell', action: 'farewell' };
+    if (miiaActive || isMiiaInvoked) {
+      return { respond: true, reason: 'farewell', action: 'farewell' };
+    }
+    // MIIA no estaba activa → "Chau MIIA" sin sesión → silencio total
+    console.log(`[CONTACT-GATE] 👻 "Chau MIIA" de ${basePhone} pero MIIA no estaba activa — ignorado`);
+    return { respond: false, reason: 'farewell_no_session', action: 'none' };
   }
 
   // ═══ PASO 4: Familia/equipo → SOLO con trigger ═══

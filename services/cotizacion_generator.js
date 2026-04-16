@@ -108,7 +108,7 @@ const PRECIOS = {
     bolsas: {
       WA:      { S: 180, M:  396, L:  864, XL: 2040 },
       factura: { S: 120, M:  204, L:  420, XL:  720 },
-      firma:   { S: 300, M:  480, L:  840, XL: 2040 }
+      firma:   { S: 300, M:  540, L:  960, XL: 2400 }
     },
     rangos: {
       WA:      { S: 150, M: 350, L: 800, XL: 2000 },
