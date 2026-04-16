@@ -2245,7 +2245,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       const ownerUid = tenant.ownerUid || uid;
       if (unclassifiedContacts.length > 0) {
         const contactClassifier = require('../core/contact_classifier');
-        const apiKey = tenant.aiApiKey || process.env.GEMINI_API_KEY;
+        // Clasificador SIEMPRE usa Gemini Flash — priorizar env var del servidor (key válida para Gemini)
+        // tenant.aiApiKey puede ser de otro proveedor (Claude/OpenAI) → no sirve para Gemini Flash
+        const apiKey = process.env.GEMINI_API_KEY || tenant.aiApiKey;
 
         if (apiKey) {
           try {
