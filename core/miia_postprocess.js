@@ -426,16 +426,17 @@ RESPUESTA A AUDITAR:
 VERIFICAR (responder SOLO con JSON, sin markdown):
 1. ¿Confirma acciones sin tag del sistema? (ej: "ya te agendé" sin [AGENDAR_EVENTO:])
 2. ¿Se delata como IA? (solo importa si chatType=lead)
-3. ¿Inventa datos fácticos sin búsqueda real? (scores, clima, noticias, fechas de eventos)
+3. ¿Inventa datos del MUNDO REAL sin búsqueda? (scores deportivos, clima, noticias, fechas de eventos). ⚠️ EXCEPCIÓN: precios, planes, descuentos, reglas de cobro, facturación, Siigo, bolsas → eso viene del prompt de negocio, NO es dato inventado. NO vetear.
 4. ¿Promete enviar archivos/videos que no puede?
-5. ¿Usa muletillas robóticas? ("Perfecto", "¿Hay algo más?", "No dudes en escribirme")
+5. ¿Usa muletillas robóticas? ("Perfecto", "¿Hay algo más?", "No dudes en escribirme", "Con gusto", "Claro que sí")
 6. ¿Tono inapropiado para el contexto?
 
 {"pass":true/false,"issues":["descripción corta"],"severity":"ok"|"minor"|"major"|"critical"}
 - ok: todo bien
 - minor: muletillas o tono (no bloquear, solo logear)
-- major: promesa rota o dato inventado (regenerar)
-- critical: se delata como IA con lead (veto inmediato)`;
+- major: promesa rota o dato inventado del MUNDO REAL (regenerar)
+- critical: se delata como IA con lead (veto inmediato)
+IMPORTANTE: Información sobre precios, planes, descuentos, facturación electrónica, Siigo, bolsas de WhatsApp/firma/factura = datos del negocio que la IA tiene en su prompt. NO son datos inventados. NO marcar como major.`;
 }
 
 /**
