@@ -251,11 +251,146 @@ function cleanupStale() {
 // Auto-cleanup cada hora
 setInterval(cleanupStale, 60 * 60 * 1000);
 
+// ════════════════════════════════════════════════════════════════════════════
+// DÍA 0 — Clasificación masiva con Gemini Flash
+// ════════════════════════════════════════════════════════════════════════════
+
+const GEMINI_FLASH_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const BATCH_SIZE = 15;
+const BATCH_DELAY_MS = 4000; // 4s entre batches para no pegar el rate limit (15 RPM)
+
+/**
+ * Construye el prompt para un batch de contactos.
+ * @param {Array<{phone, pushName, messages: Array<{body, fromMe}>}>} batch
+ * @returns {string}
+ */
+function buildBatchClassificationPrompt(batch) {
+  let lines = '';
+  for (let i = 0; i < batch.length; i++) {
+    const c = batch[i];
+    const preview = c.messages
+      .slice(0, 8)
+      .map(m => `${m.fromMe ? 'OWNER' : 'CONTACTO'}: ${m.body.substring(0, 80)}`)
+      .join(' | ');
+    lines += `${i + 1}. [${c.pushName || 'Sin nombre'}] ${preview.substring(0, 250)}\n`;
+  }
+
+  return `Clasificá estas ${batch.length} conversaciones de WhatsApp. Para cada una devolvé SOLO el número de línea y el tipo.
+
+Tipos válidos: familia | amigo | equipo | lead | cliente | ignorar
+
+Reglas:
+- familia: relación personal íntima (mamá, hermano, primo, esposa, etc.), tono familiar
+- amigo: tono informal personal, temas no relacionados al negocio, amigos/conocidos
+- equipo: colega de trabajo, menciona la empresa, temas internos laborales
+- lead: pregunta por software médico, precios, funcionalidades, interesado en comprar
+- cliente: ya usa el producto, menciona facturas, soporte técnico, problemas con funcionalidades
+- ignorar: bot automatizado, banco, courier, delivery, spam, mensajes genéricos sin conversación real, números sin contexto
+
+Conversaciones:
+${lines}
+Respondé SOLO en JSON válido, sin explicaciones:
+[{"line":1,"type":"familia"},{"line":2,"type":"lead"}]`;
+}
+
+/**
+ * Clasifica contactos en batches usando Gemini Flash.
+ * @param {Array<{phone, pushName, messages: Array<{body, fromMe}>}>} contacts
+ * @param {string} geminiApiKey
+ * @returns {Promise<Object<string, string>>} phone → tipo
+ */
+async function classifyContactsWithGemini(contacts, geminiApiKey) {
+  if (!contacts || contacts.length === 0) return {};
+  if (!geminiApiKey) {
+    console.error('[CLASSIFIER-GEMINI] ❌ No API key — saltando clasificación');
+    return {};
+  }
+
+  const results = {};
+  const totalBatches = Math.ceil(contacts.length / BATCH_SIZE);
+  console.log(`[CLASSIFIER-GEMINI] 🧬 Clasificando ${contacts.length} contactos en ${totalBatches} batches`);
+
+  for (let i = 0; i < contacts.length; i += BATCH_SIZE) {
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const batch = contacts.slice(i, i + BATCH_SIZE);
+    const prompt = buildBatchClassificationPrompt(batch);
+
+    try {
+      const resp = await fetch(`${GEMINI_FLASH_URL}?key=${geminiApiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
+        }),
+        signal: AbortSignal.timeout(30000)
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        console.error(`[CLASSIFIER-GEMINI] ❌ Batch ${batchNum}/${totalBatches}: HTTP ${resp.status} — ${errText.substring(0, 200)}`);
+        batch.forEach(c => { results[c.phone] = 'ignorar'; });
+        continue;
+      }
+
+      const data = await resp.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      // Parsear JSON de la respuesta — buscar array en el texto
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        console.warn(`[CLASSIFIER-GEMINI] ⚠️ Batch ${batchNum}: no JSON encontrado en respuesta: "${text.substring(0, 100)}"`);
+        batch.forEach(c => { results[c.phone] = 'ignorar'; });
+        continue;
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      const VALID_TYPES = ['familia', 'amigo', 'equipo', 'lead', 'cliente', 'ignorar'];
+      let classified = 0;
+
+      for (const item of parsed) {
+        if (typeof item.line !== 'number' || item.line < 1 || item.line > batch.length) continue;
+        const contact = batch[item.line - 1];
+        const tipo = VALID_TYPES.includes(item.type) ? item.type : 'ignorar';
+        results[contact.phone] = tipo;
+        classified++;
+      }
+
+      // Contactos del batch que no aparecieron en la respuesta → ignorar
+      for (const c of batch) {
+        if (!results[c.phone]) results[c.phone] = 'ignorar';
+      }
+
+      console.log(`[CLASSIFIER-GEMINI] ✅ Batch ${batchNum}/${totalBatches}: ${classified}/${batch.length} clasificados`);
+
+    } catch (e) {
+      console.error(`[CLASSIFIER-GEMINI] ❌ Batch ${batchNum}/${totalBatches}: ${e.message}`);
+      batch.forEach(c => { results[c.phone] = 'ignorar'; });
+    }
+
+    // Rate limit pacing: esperar entre batches (excepto el último)
+    if (i + BATCH_SIZE < contacts.length) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
+    }
+  }
+
+  // Stats
+  const stats = {};
+  for (const tipo of Object.values(results)) {
+    stats[tipo] = (stats[tipo] || 0) + 1;
+  }
+  console.log(`[CLASSIFIER-GEMINI] 🧬 Resultado final:`, stats);
+
+  return results;
+}
+
 module.exports = {
   addPendingClassification,
   getPendingClassifications,
   tryClassifyFromOwnerMessage,
+  classifyContact,
   reclassifyContact,
+  classifyContactsWithGemini,
   removePending,
   cleanupStale
 };

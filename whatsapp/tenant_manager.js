@@ -2160,6 +2160,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     let historyStats = { leads: 0, clients: 0, skipped: 0, total: 0 };
     let adnAccumulatorLeads = '';
     let adnAccumulatorClients = '';
+    let unclassifiedContacts = []; // Contactos para Gemini (no matchearon keywords)
+    let geminiStats = {}; // Resultado de clasificación Gemini
+    let _miningTimeoutId = null;
+    const MINING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos sin batch nuevo → cerrar
 
     // Keywords para clasificación rápida (primeros 7 mensajes del contacto)
     const LEAD_SIGNALS = ['precio', 'costo', 'cotización', 'cotizacion', 'información', 'informacion',
@@ -2230,6 +2234,92 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       if (_origOnReady) _origOnReady(sock);
     };
 
+    // ═══ DÍA 0: finalizeMining — cierra mining, clasifica con Gemini, notifica al owner ═══
+    async function finalizeMining() {
+      if (tenant._historyMined) return; // Ya se finalizó (guard contra doble ejecución)
+      tenant._historyMined = true;
+
+      console.log(`[TM:${uid}] 🧬 ADN Mining COMPLETO: ${historyStats.leads} leads, ${historyStats.clients} clientes, ${historyStats.skipped} omitidos, ${unclassifiedContacts.length} pendientes Gemini`);
+
+      // ═══ TAREA 2: Clasificar contactos ambiguos con Gemini Flash ═══
+      const ownerUid = tenant.ownerUid || uid;
+      if (unclassifiedContacts.length > 0) {
+        const contactClassifier = require('../core/contact_classifier');
+        const apiKey = tenant.aiApiKey || process.env.GEMINI_API_KEY;
+
+        if (apiKey) {
+          try {
+            const geminiResults = await contactClassifier.classifyContactsWithGemini(unclassifiedContacts, apiKey);
+
+            for (const [phone, tipo] of Object.entries(geminiResults)) {
+              if (tipo === 'ignorar') {
+                geminiStats[tipo] = (geminiStats[tipo] || 0) + 1;
+                continue;
+              }
+
+              // Indexar en Firestore contact_index
+              const contactData = unclassifiedContacts.find(c => c.phone === phone);
+              const typeMap = { familia: 'family', amigo: 'friend', equipo: 'team', lead: 'lead', cliente: 'client' };
+              await admin.firestore().collection('users').doc(ownerUid)
+                .collection('contact_index').doc(phone)
+                .set({
+                  name: contactData?.pushName || '',
+                  type: typeMap[tipo] || tipo,
+                  source: 'gemini_classification',
+                  minedAt: new Date().toISOString()
+                }, { merge: true })
+                .catch(e => console.error(`[TM:${uid}] ⚠️ Error indexando Gemini contacto ${phone}:`, e.message));
+
+              geminiStats[tipo] = (geminiStats[tipo] || 0) + 1;
+            }
+
+            console.log(`[TM:${uid}] 🧬 Gemini clasificó ${Object.keys(geminiResults).length} contactos:`, geminiStats);
+          } catch (e) {
+            console.error(`[TM:${uid}] ❌ Error en clasificación Gemini:`, e.message);
+          }
+        } else {
+          console.warn(`[TM:${uid}] ⚠️ Sin API key Gemini — ${unclassifiedContacts.length} contactos quedan sin clasificar`);
+        }
+      }
+
+      // ═══ FIX 3: Marcar sync como completado para futuras reconexiones ═══
+      syncStateRef.set({ initialSyncDone: true, completedAt: new Date().toISOString() }, { merge: true })
+        .catch(e => console.warn(`[TM:${uid}] ⚠️ Error guardando sync_state:`, e.message));
+
+      // ═══ TAREA 3: Notificar al owner en self-chat con resumen enriquecido ═══
+      const selfJid = tenant.sock?.user?.id;
+      if (tenant.sock && selfJid) {
+        let geminiLine = '';
+        if (Object.keys(geminiStats).length > 0) {
+          const parts = [];
+          if (geminiStats.familia) parts.push(`${geminiStats.familia} familia`);
+          if (geminiStats.amigo) parts.push(`${geminiStats.amigo} amigos`);
+          if (geminiStats.equipo) parts.push(`${geminiStats.equipo} equipo`);
+          if (geminiStats.lead) parts.push(`${geminiStats.lead} leads`);
+          if (geminiStats.cliente) parts.push(`${geminiStats.cliente} clientes`);
+          if (geminiStats.ignorar) parts.push(`${geminiStats.ignorar} ignorados`);
+          geminiLine = `\n🤖 Clasificación inteligente: ${parts.join(', ')}`;
+        }
+
+        tenant.sock.sendMessage(selfJid, {
+          text: `👱‍♀️: 🧬 *Análisis de historial completo*\n\n📊 Por keywords: ${historyStats.leads} leads, ${historyStats.clients} clientes\n⏭️ ${historyStats.skipped} conversaciones omitidas${geminiLine}\n\nYa sé quiénes son tus contactos y cómo tratarlos. 💪`
+        }).catch(() => {});
+      }
+
+      if (ioInstance) {
+        ioInstance.to(`tenant:${uid}`).emit('adn_mining_complete', {
+          ...historyStats,
+          geminiStats,
+          phase: 'complete'
+        });
+      }
+
+      // Liberar acumuladores y memoria
+      adnAccumulatorLeads = '';
+      adnAccumulatorClients = '';
+      unclassifiedContacts = [];
+    }
+
     sock.ev.on('messaging-history.set', async ({ chats, messages: histMsgs, isLatest }) => {
       if (tenant._historyMined) return;
 
@@ -2252,10 +2342,27 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           const hasOwnerMsgs = allMsgs.some(m => m.key?.fromMe);
           if (!hasOwnerMsgs) { historyStats.skipped++; continue; }
 
+          // Filtro pre-Gemini: bots y servicios automatizados por pushName
+          const firstPushName = allMsgs.find(m => m.pushName)?.pushName || '';
+          const BOT_NAMES = /^(bot|courier|bancolombia|servientrega|coordinadora|rappi|uber|didi|nequi|daviplata|movistar|claro|tigo|whatsapp|meta|instagram|facebook)/i;
+          if (BOT_NAMES.test(firstPushName)) { historyStats.skipped++; continue; }
+
           // PASO 1: Clasificar con los primeros 7 mensajes del contacto
           const classification = classifyFromPreview(allMsgs);
 
           if (classification === 'otro' || classification === 'skip') {
+            // Guardar para clasificación Gemini posterior (solo 'otro' con msgs suficientes)
+            if (classification === 'otro' && allMsgs.length >= 3) {
+              const contactPhone = jid.split('@')[0];
+              unclassifiedContacts.push({
+                phone: contactPhone,
+                pushName: firstPushName,
+                messages: allMsgs.slice(0, 10).map(m => ({
+                  body: m.message?.conversation || m.message?.extendedTextMessage?.text || '',
+                  fromMe: !!m.key?.fromMe
+                })).filter(m => m.body)
+              });
+            }
             historyStats.skipped++;
             continue;
           }
@@ -2364,30 +2471,17 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
       // Cuando isLatest = true, ya se sincronizó todo el historial
       if (isLatest) {
-        tenant._historyMined = true;
-        console.log(`[TM:${uid}] 🧬 ADN Mining COMPLETO: ${historyStats.leads} leads, ${historyStats.clients} clientes, ${historyStats.skipped} omitidos`);
-
-        // ═══ FIX 3: Marcar sync como completado para futuras reconexiones ═══
-        syncStateRef.set({ initialSyncDone: true, completedAt: new Date().toISOString() }, { merge: true })
-          .catch(e => console.warn(`[TM:${uid}] ⚠️ Error guardando sync_state:`, e.message));
-
-        // Notificar al owner en self-chat
-        const selfJid = tenant.sock?.user?.id;
-        if (tenant.sock && selfJid) {
-          tenant.sock.sendMessage(selfJid, {
-            text: `👱‍♀️: 🧬 *Análisis de historial completo*\n\n✅ Conocí ${historyStats.leads} leads y ${historyStats.clients} clientes de tu historial.\n${historyStats.skipped} conversaciones sin relevancia fueron omitidas.\n\nYa sé quiénes son tus contactos y cómo te comunicas con ellos. Cuando escriban, sabré cómo tratarlos.`
-          }).catch(() => {});
-        }
-
-        if (ioInstance) {
-          ioInstance.to(`tenant:${uid}`).emit('adn_mining_complete', {
-            ...historyStats,
-            phase: 'complete'
-          });
-        }
-        // Liberar acumuladores
-        adnAccumulatorLeads = '';
-        adnAccumulatorClients = '';
+        if (_miningTimeoutId) { clearTimeout(_miningTimeoutId); _miningTimeoutId = null; }
+        await finalizeMining();
+      } else {
+        // ═══ TAREA 4: Timeout — si no llega otro batch en 5 min, cerrar mining ═══
+        if (_miningTimeoutId) clearTimeout(_miningTimeoutId);
+        _miningTimeoutId = setTimeout(async () => {
+          if (!tenant._historyMined) {
+            console.log(`[TM:${uid}] ⏰ Mining timeout (${MINING_TIMEOUT_MS / 1000}s sin batches nuevos) — finalizando`);
+            await finalizeMining();
+          }
+        }, MINING_TIMEOUT_MS);
       }
     });
 
