@@ -18,6 +18,18 @@ const express = require('express');
 const crypto  = require('crypto');
 
 // ═══════════════════════════════════════════════════════════════
+// SLUGIFY — nombre de negocio → slug para URL
+// ═══════════════════════════════════════════════════════════════
+function slugify(text) {
+  return text
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quitar acentos
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')  // no-alfanuméricos → guión
+    .replace(/^-+|-+$/g, '')      // trim guiones
+    || 'p';                        // fallback si queda vacío
+}
+
+// ═══════════════════════════════════════════════════════════════
 // RATE LIMIT EN MEMORIA (sin dependencia externa)
 // ═══════════════════════════════════════════════════════════════
 const rateLimits = new Map();
@@ -152,6 +164,18 @@ module.exports = function createCotizacionRoutes({ db, verifyToken }) {
     }
 
     try {
+      // Buscar nombre del negocio para slug en URL
+      let bizSlug = 'p'; // fallback
+      try {
+        const bizSnap = await db.collection('users').doc(tenant_id).collection('businesses').get();
+        if (!bizSnap.empty) {
+          const bizName = bizSnap.docs[0].data().name;
+          if (bizName) bizSlug = slugify(bizName);
+        }
+      } catch (slugErr) {
+        console.warn(`[COTIZACION] ⚠️ No se pudo obtener nombre de negocio: ${slugErr.message}`);
+      }
+
       // Generar hash único con verificación de colisión
       let hash, exists = true, attempts = 0;
       while (exists && attempts < 5) {
@@ -170,6 +194,7 @@ module.exports = function createCotizacionRoutes({ db, verifyToken }) {
         lead_name:  lead_name || null,
         lead_phone,
         hash,
+        biz_slug:   bizSlug,
         params,
         created_at: now.toISOString(),
         expires_at: expiresAt.toISOString(),
@@ -179,7 +204,7 @@ module.exports = function createCotizacionRoutes({ db, verifyToken }) {
       });
 
       const base = process.env.COTIZACION_BASE_URL || 'https://miia-app.com';
-      const url  = `${base}/p/${hash}`;
+      const url  = `${base}/${bizSlug}/${hash}`;
 
       console.log(`[COTIZACION] ✅ Generada: ${hash} para ${lead_name || lead_phone} (tenant: ${tenant_id}) → ${url}`);
 
