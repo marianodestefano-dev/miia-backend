@@ -396,6 +396,16 @@ async function lookupContactIndex(ownerUid, phone) {
  */
 async function saveContactIndex(ownerUid, phone, data) {
   try {
+    // Auto-detectar país por teléfono si no viene en data
+    if (!data.country && phone) {
+      try {
+        const { getCountryByPhone } = require('../countries');
+        const countryConfig = getCountryByPhone(phone);
+        if (countryConfig && countryConfig.code && countryConfig.code !== 'INTL') {
+          data.country = countryConfig.code;
+        }
+      } catch (e2) { /* countries loader no disponible, ok */ }
+    }
     await db().collection('users').doc(ownerUid).collection('contact_index').doc(phone).set({
       ...data,
       updatedAt: new Date().toISOString()
