@@ -92,6 +92,7 @@ function getMiiaEmoji(message, ctx = {}) {
 
   if (ctx.ownerMood === 'bully') {
     // offendedUntil ya seteado por detectOwnerMood()
+    console.log(`[EMOJI-DIAG-3] return por PRIORIDAD 2 (bully): 🙎‍♀️`);
     return '🙎‍♀️';
   }
 
@@ -104,7 +105,9 @@ function getMiiaEmoji(message, ctx = {}) {
   if (ctx.ownerMood === 'happy' || ctx.ownerMood === 'excited') {
     emojiState.happyMessages = Math.floor(Math.random() * 4) + 3; // 3-6 mensajes
     const happyEmojis = ['🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️'];
-    return happyEmojis[Math.floor(Math.random() * happyEmojis.length)];
+    const picked = happyEmojis[Math.floor(Math.random() * happyEmojis.length)];
+    console.log(`[EMOJI-DIAG-3] return por PRIORIDAD 2 (happy): ${picked}`);
+    return picked;
   }
 
   if (ctx.ownerMood === 'flirt') return '👰‍♀️';
@@ -137,7 +140,10 @@ function getMiiaEmoji(message, ctx = {}) {
 
   // Triggers específicos
   if (ctx.trigger === 'reminder') return '💁‍♀️';
-  if (ctx.trigger === 'greeting' || ctx.trigger === 'farewell') return '🙋‍♀️';
+  if (ctx.trigger === 'greeting' || ctx.trigger === 'farewell') {
+    console.log(`[EMOJI-DIAG-3] return por PRIORIDAD 4 (${ctx.trigger}): 🙋‍♀️`);
+    return '🙋‍♀️';
+  }
   if (ctx.trigger === 'learning') return '👩‍🎓';
   if (ctx.trigger === 'teaching') return '👩‍🏫';
   if (ctx.trigger === 'error') return '🤦‍♀️';
@@ -153,7 +159,9 @@ function getMiiaEmoji(message, ctx = {}) {
   // Work Office → variación de emojis de trabajo (rotación para no repetir siempre el mismo)
   if (ctx.trigger === 'general_work' || ctx.topic === 'office') {
     const workEmojis = ['👩‍💻', '👩‍💼', '🙋‍♀️', '💁‍♀️'];
-    return workEmojis[Math.floor(Math.random() * workEmojis.length)];
+    const picked = workEmojis[Math.floor(Math.random() * workEmojis.length)];
+    console.log(`[EMOJI-DIAG-3] return por PRIORIDAD 5 (general_work/office): ${picked} | trigger=${ctx.trigger} topic=${ctx.topic}`);
+    return picked;
   }
 
   // Work Street → 👩‍💼 (price tracker, travel, noticias, clima, delivery, transporte)
@@ -202,6 +210,7 @@ function getMiiaEmoji(message, ctx = {}) {
   if (ctx.topic === 'alcohol') return '🍷';
 
   // ═══ DEFAULT ═══
+  console.log(`[EMOJI-DIAG-3] return por DEFAULT: ${DEFAULT_EMOJI} | trigger=${ctx.trigger} topic=${ctx.topic} mood=${ctx.ownerMood}`);
   return DEFAULT_EMOJI;
 }
 

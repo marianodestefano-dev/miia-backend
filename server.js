@@ -2436,6 +2436,7 @@ async function safeSendMessage(target, content, options = {}) {
       emojiCtx.topic = detected.topic;
       if (detected.cinemaSub) emojiCtx.cinemaSub = detected.cinemaSub;
     }
+    console.log(`[EMOJI-DIAG-2] entrando a apply: ${JSON.stringify({ content_head: content?.slice(0, 30), ctx: emojiCtx, hasTrigger: !!emojiCtx?.trigger, hasTopic: !!emojiCtx?.topic })}`);
     content = applyMiiaEmoji(content, emojiCtx);
   }
 
@@ -8593,6 +8594,7 @@ REGLAS:
       trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
       chatType: postChatType, // Para emojis diferenciados (👩‍🔧 soporte, 👩‍💻 ventas MIIA)
     };
+    console.log(`[EMOJI-DIAG-1] ctx construido: ${JSON.stringify({ userMessage: userMessage?.slice(0, 30), ownerMood, trigger: emojiCtx.trigger, chatType: postChatType, isSelfChat })}`);
 
     // ═══ TTS: Responder con audio SOLO cuando el owner manda audio ═══
     let sentAsAudio = false;
