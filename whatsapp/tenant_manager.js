@@ -1092,17 +1092,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           try {
             const recovered = await recoverUnrespondedMessages(uid, tenant);
             if (recovered > 0) {
-              // Notificar al owner que se recuperaron mensajes
-              const selfJid = sock.user?.id;
-              if (selfJid && tenant.sock) {
-                const noticeMsg = `👱‍♀️: 🔄 *MIIA se reconectó* y recuperó ${recovered} mensaje(s) que quedaron sin responder durante la desconexión. Ya los procesé.`;
-                tenant.sock.sendMessage(selfJid, { text: noticeMsg }).then((sent) => {
-                  // Registrar msgId para evitar auto-respuesta (bug 6.13)
-                  if (sent?.key?.id && tenant._sentMsgIds) {
-                    tenant._sentMsgIds.add(sent.key.id);
-                  }
-                }).catch(() => {});
-              }
+              // Log interno — NO notificar al owner en self-chat (decisión Mariano 17-abr C-144)
+              console.log(`[TM:${uid}] ✅ RECOVERY: ${recovered} mensaje(s) recuperados post-reconexión`);
             }
           } catch (e) {
             console.error(`[TM:${uid}] ❌ RECOVERY post-connect error:`, e.message);
