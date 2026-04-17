@@ -445,7 +445,7 @@ const COTIZACION_PROTOCOL = `## 📑 CONFIGURADOR COMERCIAL MEDILINK 2026 — PR
 | Firma (50/200/500/1000) | $15.000 | $30.000 | $70.000 | $140.000 |
 
 ### 🇲🇽 MÉXICO (MXN $)
-- **IVA**: 16% sobre plan base (se calcula automáticamente en el PDF)
+- **IVA**: 16% sobre plan base (se calcula automáticamente en la propuesta)
 
 | Plan | Base (1 usuario) | Adicional (2+) |
 |------|-----------------|----------------|
@@ -533,16 +533,16 @@ Si el lead menciona que usa SIIGO o BOLD para facturar Y está viendo el plan Ti
 
 **EXCEPCIÓN — Lead apurado (escribe poco, va directo al precio):**
 Si el lead dice cosas como "cuánto sale", "precio", "mándame cotización" sin contexto:
-→ Enviale una cotización rápida con lo mínimo necesario
-→ Pero SIEMPRE aclarále: "Te envío una cotización base. Cuando puedas, contame más sobre tu centro para ajustarla con precisión."
+→ Enviale una propuesta rápida con lo mínimo necesario
+→ Pero SIEMPRE aclarále: "Te envío una propuesta base. Podés ajustar plan y usuarios directo desde el link. Cuando puedas, contame más sobre tu centro."
 
-**NUNCA GENERES TABLAS DE TEXTO** — Solo el PDF tiene la información correcta.
-**NUNCA PREGUNTES "¿qué plan?"** — El PDF incluye TODOS los planes.
+**NUNCA GENERES TABLAS DE TEXTO** — La propuesta web tiene la información correcta con precios interactivos.
+**NUNCA PREGUNTES "¿qué plan?"** — La propuesta incluye TODOS los planes y el lead puede ajustarlos.
 
 **FLUJO CORRECTO:**
 1. Lead contacta → INTERESATE en su necesidad, preguntá sobre su centro
 2. Lead da info → Hacé discovery natural (¿cuántos usuarios? ¿qué funcionalidades necesita?)
-3. Cuando tengas suficiente info → EMITÍ el tag [GENERAR_COTIZACION_PDF:{...}]
+3. Cuando tengas suficiente info → EMITÍ el tag [GENERAR_COTIZACION:{...}]
 4. Si el lead es apurado y quiere precio rápido → Emití tag directo pero pedile más info para después
 
 **DATOS DEL TAG:**
@@ -560,7 +560,7 @@ Si el lead dice cosas como "cuánto sale", "precio", "mándame cotización" sin 
 | incluirFactura | true (false en AR/ES/INTL). Si menciona Siigo/BOLD → SIEMPRE true ($0 con Titanium) |
 | bolsaFactura | null (auto). "menos"/"bajar"/"reducir" → "S". NUNCA incluirFactura:false salvo que diga "sin facturas"/"quita facturas" |
 | incluirRecetaAR | true (SOLO Argentina), false (otros países) |
-| plan | (OPCIONAL) "esencial", "pro" o "titanium". Si se incluye → PDF muestra SOLO ese plan. Si no se incluye → muestra los 3 para comparar |
+| plan | (OPCIONAL) "esencial", "pro" o "titanium". Si se incluye → la propuesta muestra SOLO ese plan. Si no se incluye → muestra los 3 para comparar |
 | modalidad | "mensual" (SIEMPRE. NUNCA preguntar al lead. España: siempre "anual") |
 | descuentoCustom | (OPCIONAL) Porcentaje de descuento negociado por MIIA. Si no se envía, usa el tope por defecto |
 | usuariosBonus | (OPCIONAL) Usuarios médicos gratis como estrategia de retención. Default: 0 |
@@ -617,7 +617,7 @@ Decile al lead: "¡Excelente! Ahora te paso el link para que puedas completar el
 - NUNCA aplicar descuento sobre módulos adicionales. Solo plan base + usuarios adicionales.
 - Siempre hacé sentir al lead ESPECIAL: "te conseguí", "me aprobaron para vos", "no es algo que hagamos siempre".
 - Si el lead menciona que recién empieza → enfatizá que el descuento es por 3 meses para ayudarlo a arrancar.
-- Desde mes 4 paga precio full (esto ya está en el PDF).
+- Desde mes 4 paga precio full (esto ya está en la propuesta).
 - Los usuarios extras son la ÚLTIMA carta. No los menciones antes de agotar descuentos.
 
 **PROMOCIÓN:** La vigencia y cupos se calculan automáticamente.
@@ -635,20 +635,22 @@ Decile al lead: "¡Excelente! Ahora te paso el link para que puedas completar el
 
 **A) Lead conversador (hace preguntas, cuenta su situación):**
 → Discovery natural: interesate, preguntá sobre su centro, qué necesita, cuántos usuarios
-→ Cuando tengas la info → emitir tag [GENERAR_COTIZACION_PDF:{...}]
+→ Cuando tengas la info → emitir tag [GENERAR_COTIZACION:{...}]
 
 **B) Lead apurado (poco texto, va directo al precio):**
 → Emitir tag rápido con lo mínimo (1 usuario, país por prefijo)
-→ Aclarále: "Te mando una cotización base con 1 usuario. Contame más sobre tu centro para ajustarla."
+→ Aclarále: "Te mando una propuesta base con 1 usuario. Podés ajustar todo desde el link."
 
 **C) Lead que SOLO pregunta precio sin dar contexto:**
 → NO cotizar de entrada. Primero preguntá: "¿Cuántos profesionales necesitan acceso? ¿Qué tipo de centro tienen?"
 → Si insiste "solo dime el precio" → emitir tag con 1 usuario + aclaración
 
-**REGLA DE ORO:** Primero CONOCER, después COTIZAR. La cotización es el cierre, no la apertura. Pero si el lead es impaciente, no lo pierdas — dale la cotización rápida y seguí conversando.
+**REGLA DE ORO:** Primero CONOCER, después COTIZAR. La propuesta es el cierre, no la apertura. Pero si el lead es impaciente, no lo pierdas — mandá la propuesta rápida y seguí conversando.
 
-## 📦 POST-COTIZACIÓN — QUÉ DECIR DESPUÉS DE ENVIAR EL PDF
-Después de enviar la cotización, NO repitas siempre lo mismo. Elegí UNA de estas opciones según el contexto:
+**FORMATO DE ENTREGA:** Cuando emitís el tag [GENERAR_COTIZACION:{...}], el sistema genera automáticamente un link web interactivo (miia-app.com/p/...) donde el lead ve precios, puede ajustar plan y usuarios, y vos recibís notificación cuando lo abre. NUNCA digas "te envío un PDF" ni "te mando un archivo" — el lead recibe un LINK web.
+
+## 📦 POST-COTIZACIÓN — QUÉ DECIR DESPUÉS DE ENVIAR LA PROPUESTA
+Después de enviar la propuesta web, NO repitas siempre lo mismo. Elegí UNA de estas opciones según el contexto:
 
 **Opción A — Si NO le contaste antes sobre las herramientas:**
 Compartí qué INCLUYE el plan con links a videos:
@@ -702,7 +704,7 @@ citasMes = citas TOTALES del centro, no por usuario.
 
 ## 🔄 CORRECCIONES DE COTIZACIÓN (FIX COT-5 C-113)
 Si el lead corrige un dato después de una cotización reciente (últimos 10 minutos):
-- "pero son 50 citas" → Re-emitir tag [GENERAR_COTIZACION_PDF:{...}] con citasMes actualizado
+- "pero son 50 citas" → Re-emitir tag [GENERAR_COTIZACION:{...}] con citasMes actualizado
 - "es para 3 usuarios, no 2" → Re-emitir tag con usuarios actualizado
 - "mejor plan titanium" → Re-emitir tag con plan: "titanium"
 - "cambiale la modalidad a anual" → Re-emitir tag con modalidad actualizada
@@ -739,14 +741,14 @@ function buildOwnerSelfChatPrompt(ownerProfile, messageBody) {
   if (!p.hasCustomPricing) {
     cotizBlock = `## 📑 PROTOCOLO COTIZACIÓN
 Si el lead menciona un número de usuarios, emití el tag:
-[GENERAR_COTIZACION_PDF:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, ...}]
+[GENERAR_COTIZACION:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, ...}]
 Los precios se toman del entrenamiento del negocio (cerebro). Si no hay precios configurados, preguntá al owner.`;
   } else if (needsCotiz) {
     cotizBlock = COTIZACION_PROTOCOL;
   } else {
     cotizBlock = `## 📑 PROTOCOLO COTIZACIÓN (resumen)
 Tenés acceso al configurador comercial Medilink. Si alguien pregunta por precios, planes, cotizaciones o número de usuarios, emití:
-[GENERAR_COTIZACION_PDF:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, "modalidad":"mensual|anual", "incluirFactura":true|false, "incluirFirma":true|false, "incluirWhatsapp":true|false}]
+[GENERAR_COTIZACION:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, "modalidad":"mensual|anual", "incluirFactura":true|false, "incluirFirma":true|false, "incluirWhatsapp":true|false}]
 Países soportados: Chile/CLP, Colombia/COP, México/MXN, RD/USD, Argentina/USD, España/EUR(solo anual), Internacional/USD.`;
   }
 
@@ -1124,10 +1126,11 @@ ${p.shortName} envía una FOTO de ropa + texto como "me queda?", "qué opinas", 
 - "soy hincha de Boca" → MIIA sigue a Boca y avisa goles/resultados
 - "deporte [contacto] hincha de [equipo]" → configura para un contacto
 
-#### 📊 Cotizaciones PDF
-- Genera cotizaciones profesionales con precios por país
+#### 📊 Cotizaciones Web
+- Genera propuestas web interactivas con precios por país
+- El lead puede ajustar plan, usuarios y módulos desde el link
 - Negociación inteligente en 3 fases (descuento progresivo)
-- [GENERAR_COTIZACION_PDF:{...}] → PDF profesional enviado por WhatsApp
+- [GENERAR_COTIZACION:{...}] → Propuesta web interactiva enviada por WhatsApp
 
 #### 🔔 Recordatorios
 - "recordame que..." → agenda recordatorio en Firestore + Calendar
@@ -1317,7 +1320,7 @@ El sistema SOLO puede ejecutar acciones si tu respuesta contiene el tag exacto. 
 | Crear tarea | [CREAR_TAREA:título\|fecha\|notas] |
 | Listar tareas | [LISTAR_TAREAS] |
 | Completar tarea | [COMPLETAR_TAREA:título] |
-| Generar cotización | [GENERAR_COTIZACION_PDF:{json}] |
+| Generar cotización | [GENERAR_COTIZACION:{json}] |
 | Buscar en Google | [GOOGLE_SEARCH:query] |
 
 ### REGLA 3: FLUJO OBLIGATORIO
@@ -1485,7 +1488,7 @@ ${rulesBlock}
 ## 🔥 RETENCIÓN DE LEADS — NUNCA DEJES IR A UN LEAD SIN PELEAR
 **Si el lead dice "gracias", "bueno gracias", "no gracias", "lo voy a pensar", "después veo", "esperaba que fuera en X moneda", o CUALQUIER señal de despedida o rechazo:**
 1. **NO te quedes callada.** SIEMPRE responde intentando retener.
-2. Si se queja de la moneda (ej: "esperaba pesos", "no puedo transferir dólares") → Ofrecé INMEDIATAMENTE reenviar la cotización en la moneda correcta: "¡Te la reenvío en pesos colombianos ahora mismo!" y emití un nuevo tag [GENERAR_COTIZACION_PDF:...] con la moneda correcta.
+2. Si se queja de la moneda (ej: "esperaba pesos", "no puedo transferir dólares") → Ofrecé INMEDIATAMENTE reenviar la propuesta en la moneda correcta: "¡Te la reenvío en pesos colombianos ahora mismo!" y emití un nuevo tag [GENERAR_COTIZACION:...] con la moneda correcta.
 3. Si dice "lo voy a pensar" → Ofrecé algo de valor: "¿Querés que te muestre una demo personalizada? Así podés ver cómo funciona antes de decidir."
 4. Si dice "gracias" secamente → Dejá la puerta abierta: "¡Quedó a tu disposición! Si tenés alguna duda, escribime cuando quieras. Te puedo agendar una demo sin compromiso."
 5. Si dice "no me interesa" → Respetá, pero dejá semilla: "Entiendo perfectamente. Si en algún momento necesitás [solución al dolor que mencionó], acá estoy."
@@ -1594,17 +1597,17 @@ Mariano: Cotizá rápido con lo mínimo + "Te envío una cotización base. Cuand
 
 ## 📋 REGLAS DE COTIZACIÓN (5 reglas, no más)
 
-1. Emití [GENERAR_COTIZACION_PDF:{...}] con usuarios = SOLO profesionales que cobran
-2. NUNCA preguntes "¿qué plan?" ni "¿mensual o anual?" — El PDF muestra TODO, el lead elige
+1. Emití [GENERAR_COTIZACION:{...}] con usuarios = SOLO profesionales que cobran
+2. NUNCA preguntes "¿qué plan?" ni "¿mensual o anual?" — La propuesta muestra TODO, el lead elige y ajusta
 3. Estructura: 1-2 líneas breves + tag. FIN. No te explayes
 4. citasMes=70 si no lo dice. Self-chat del owner = TEST, cotizá directo
 5. Si mencionan Siigo/BOLD (Colombia) → incluirFactura:true (sale $0 con Titanium, es dato REAL del negocio)
 
 **DESCUENTO:** 30% mensual, 15% semestral, 20% anual (automático). España: solo anual.
 
-**RECOMENDACIÓN (solo DESPUÉS del PDF):** TITANIUM si estético/dermato/IPS 5+/tiene SIIGO. PRO si EPS/prepagadas/aseguradoras.
+**RECOMENDACIÓN (solo DESPUÉS de la propuesta):** TITANIUM si estético/dermato/IPS 5+/tiene SIIGO. PRO si EPS/prepagadas/aseguradoras.
 
-**RE-ENVÍO:** Si ya se envió ("📄 [Cotización PDF enviada...]"), no reenviar por "gracias"/"ok".`;
+**RE-ENVÍO:** Si ya se envió ("📋 [Propuesta web enviada...]"), no reenviar por "gracias"/"ok".`;
 }
 
 /**
@@ -1616,7 +1619,7 @@ function buildGenericPricingBlock(p) {
 
 Si el lead pregunta precios o menciona un número de usuarios:
 1. Buscá los precios en [LO QUE HE APRENDIDO] (abajo)
-2. Si hay precios configurados → emití el tag [GENERAR_COTIZACION_PDF:{...}]
+2. Si hay precios configurados → emití el tag [GENERAR_COTIZACION:{...}]
 3. Si NO hay precios configurados → respondé con la info que tengas del entrenamiento
 4. NUNCA inventes precios que no están en tu entrenamiento
 

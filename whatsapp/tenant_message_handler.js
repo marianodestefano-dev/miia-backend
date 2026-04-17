@@ -2924,10 +2924,16 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
 
   let _cotizTagProcessed = false; // FIX TDZ — mover antes de uso (igual que _agendaTagProcessed en C-065)
 
-  // 11d-COTIZACION. Tag [GENERAR_COTIZACION_PDF:{json}] — Generar y enviar cotización PDF
-  const cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
+  // 11d-COTIZACION. Tag [GENERAR_COTIZACION:{json}] — Generar propuesta web interactiva
+  // Acepta también el tag viejo [GENERAR_COTIZACION_PDF:{json}] por compatibilidad con cache de Gemini
+  let cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION:');
+  let cotizTagPrefix = '[GENERAR_COTIZACION:';
+  if (cotizTagIdx === -1) {
+    cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
+    cotizTagPrefix = '[GENERAR_COTIZACION_PDF:';
+  }
   if (cotizTagIdx !== -1) {
-    const jsonStart = cotizTagIdx + '[GENERAR_COTIZACION_PDF:'.length;
+    const jsonStart = cotizTagIdx + cotizTagPrefix.length;
     let jsonEnd = -1;
     let depth = 0;
     for (let i = jsonStart; i < aiMessage.length; i++) {
@@ -3024,7 +3030,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       }
     }
   } else {
-    aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '').trim();
+    aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION(?:_PDF)?(?::[^\]]*)?\]/g, '').trim();
   }
 
   // 11d-RESPONDELE. Tag [RESPONDELE:destinatario|instrucción] — Owner pide enviar mensaje a contacto

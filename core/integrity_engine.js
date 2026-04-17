@@ -39,7 +39,7 @@ const PROMISE_PATTERNS = [
   // Recordatorio al owner (self-reminder)
   { pattern: /(?:te|lo)\s+(?:recuerdo|aviso)|anotado.*recuer|listo.*recordatorio/i, action: 'recordar', tag: 'RECORDAR' },
   // Cotización
-  { pattern: /(?:te|le)\s+(?:mand[oé]|envi[oé]).*cotizaci[oó]n|listo.*cotizaci[oó]n/i, action: 'cotizacion', tag: 'GENERAR_COTIZACION_PDF' },
+  { pattern: /(?:te|le)\s+(?:mand[oé]|envi[oé]).*cotizaci[oó]n|listo.*cotizaci[oó]n/i, action: 'cotizacion', tag: 'GENERAR_COTIZACION' },
   // Cancelar/borrar/eliminar evento
   { pattern: /ya.*cancel[oé]|listo.*cancelad|queda.*cancelad|(?:lo|la|el)\s+(?:borro|elimino|borr[eé]|elimin[eé])|listo.*(?:borr|elimin)|ya.*(?:borr|elimin)/i, action: 'cancelar', tag: 'CANCELAR_EVENTO' },
   // Mover evento

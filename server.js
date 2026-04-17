@@ -2486,7 +2486,7 @@ async function safeSendMessage(target, content, options = {}) {
   // ═══ SPLIT INTELIGENTE: Decide contextualmente si partir la respuesta en múltiples mensajes ═══
   // Analiza estructura del contenido: listas, múltiples temas, secciones con emojis
   // Aplica a leads Y self-chat — MIIA puede enviar varios mensajes cuando tiene sentido
-  const tieneTagEspecial = typeof content === 'string' && /\[(GENERAR_COTIZACION_PDF|GUARDAR_APRENDIZAJE|GUARDAR_NOTA|APRENDIZAJE_NEGOCIO|APRENDIZAJE_PERSONAL|APRENDIZAJE_DUDOSO):/.test(content);
+  const tieneTagEspecial = typeof content === 'string' && /\[(GENERAR_COTIZACION(?:_PDF)?|GUARDAR_APRENDIZAJE|GUARDAR_NOTA|APRENDIZAJE_NEGOCIO|APRENDIZAJE_PERSONAL|APRENDIZAJE_DUDOSO):/.test(content);
   if (
     typeof content === 'string' &&
     !options.skipSplit &&
@@ -6833,11 +6833,17 @@ REGLAS:
       conversationMetadata[phone].pendingLearningQuestions = allPending;
       conversationMetadata[phone].pendingLearningAskedAt = Date.now();
     }
-    // Detectar y procesar tag de cotización PDF
-    const cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
+    // Detectar y procesar tag de cotización (propuesta web interactiva)
+    // Acepta tag nuevo [GENERAR_COTIZACION:] y viejo [GENERAR_COTIZACION_PDF:] por compatibilidad
+    let cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION:');
+    let cotizTagPrefix = '[GENERAR_COTIZACION:';
+    if (cotizTagIdx === -1) {
+      cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
+      cotizTagPrefix = '[GENERAR_COTIZACION_PDF:';
+    }
     if (cotizTagIdx !== -1) {
       // Extraer JSON robusto: buscar el primer '}]' para evitar falsos cortes
-      const jsonStart = cotizTagIdx + '[GENERAR_COTIZACION_PDF:'.length;
+      const jsonStart = cotizTagIdx + cotizTagPrefix.length;
       let jsonEnd = -1;
       let depth = 0;
       for (let i = jsonStart; i < aiMessage.length; i++) {
@@ -6938,7 +6944,7 @@ REGLAS:
         aiMessage = textoExtra;
       }
     } else {
-      aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION_PDF(?::[^\]]*)?\]/g, '').trim();
+      aiMessage = aiMessage.replace(/\[GENERAR_COTIZACION(?:_PDF)?(?::[^\]]*)?\]/g, '').trim();
     }
     aiMessage = aiMessage.replace(/\[ENVIAR_CORREO_A_MAESTRO:[^\]]*\]/g, '').trim(); // Legacy tag — limpiar si aparece
 
@@ -6958,7 +6964,7 @@ REGLAS:
           console.log(`[NEGOCIACION] 🔔 Enviando respuesta post-delay a ${basePhone}: "${mensajeAlVolver.substring(0, 80)}..."`);
           await safeSendMessage(phone, mensajeAlVolver, { isSelfChat });
           // Si el mensaje contiene un tag de cotización, procesarlo
-          if (mensajeAlVolver.includes('[GENERAR_COTIZACION_PDF:')) {
+          if (mensajeAlVolver.includes('[GENERAR_COTIZACION:') || mensajeAlVolver.includes('[GENERAR_COTIZACION_PDF:')) {
             // Re-procesar como si fuera una nueva respuesta de MIIA
             await processMiiaResponse(phone, null, true);
           }
