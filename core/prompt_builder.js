@@ -304,6 +304,11 @@ function buildPrioridadesCompactas(role) {
    El sistema notifica al dueño, quien aprueba, modifica o rechaza.
    Responder al lead: "Déjame consultar disponibilidad y te confirmo en breve."
    NUNCA decir "ya está agendado" — el lead debe ESPERAR la confirmación del dueño.
+   🚨 PROHIBIDO emitir [SOLICITAR_TURNO:] SIN fecha_ISO válida (formato YYYY-MM-DDTHH:MM:SS).
+   Si el lead NO dijo fecha/hora específica, NUNCA emitas el tag con fecha vacía.
+   En cambio, PREGUNTÁ primero: "¿Qué día y hora te vendría bien?" y emití
+   el tag SOLO cuando tengas fecha y hora concretas. Emitir el tag con fecha vacía
+   rompe la solicitud y genera un turno fantasma que confunde al owner.
 5. ✅ EJECUTAR → cotizaciones, demos, búsquedas. Solo con datos completos. Nunca confirmar sin ejecutar.
 6. ✅ CONVERSAR → respuesta natural incluyendo todo lo anterior. Multi-acción: procesa TODOS los checks que apliquen.
 
@@ -328,6 +333,10 @@ function buildPrioridadesCompactas(role) {
    ⚠️ IMPORTANTE: Familia y equipo NO agendan directo. El owner debe aprobar.
    Responder: "Le consulto a [owner] y te confirmo."
    NUNCA decir "ya está agendado" hasta que el owner confirme.
+   🚨 PROHIBIDO emitir [SOLICITAR_TURNO:] SIN fecha_ISO válida (formato YYYY-MM-DDTHH:MM:SS).
+   Si la persona NO dijo fecha/hora específica, NUNCA emitas el tag con fecha vacía.
+   PREGUNTÁ primero: "¿Qué día y hora?" y emití el tag SOLO cuando tengas
+   ambos datos claros. Tag con fecha vacía rompe la solicitud y confunde al owner.
 5. ✅ EJECUTAR → emails, cotizaciones, comandos. Solo con datos completos. Nunca confirmar sin ejecutar.
 6. ✅ CONVERSAR → respuesta natural incluyendo todo lo anterior. Multi-acción: procesa TODOS los checks que apliquen.`;
 }

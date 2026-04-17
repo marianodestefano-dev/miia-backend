@@ -4077,6 +4077,18 @@ REGLAS:
           const parts = inner.split('|').map(p => p.trim());
           if (parts.length >= 3) {
             const [contacto, fecha, razon, hint, modo, ubicacion] = parts;
+
+            // ═══ GUARD: Validar fecha ISO (C-165 / BUG-SOLICITAR-TURNO) ═══
+            // Si la IA emite el tag con fecha vacía o sin formato ISO válido,
+            // NO crear pending_appointment — responder pidiendo fecha al contacto.
+            if (!fecha || !/^\d{4}-\d{2}-\d{2}/.test(fecha)) {
+              console.warn(`${logPrefix} [SOLICITAR_TURNO-TMH] ⚠️ Fecha inválida o vacía: "${fecha}" — tag removido, pidiendo fecha al contacto`);
+              aiMessage = aiMessage.replace(tag, '').trim();
+              if (!aiMessage.trim()) {
+                aiMessage = '¿Qué día y hora te vendría bien? Así te confirmo el turno.';
+              }
+              continue;
+            }
             const contactName = contacto;
             const eventMode = (modo || 'presencial').toLowerCase();
             const modeEmoji = eventMode === 'virtual' ? '📹' : (eventMode === 'telefono' || eventMode === 'telefónico') ? '📞' : '📍';
