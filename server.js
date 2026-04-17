@@ -12740,7 +12740,8 @@ app.get('/api/tenant/:uid/contact-groups', async (req, res) => {
       console.log(`[GROUPS] 🔧 Auto-creando grupos predeterminados para ${uid}`);
       const defaults = [
         { id: 'familia', name: 'Familia', icon: '👨‍👩‍👧‍👦', tone: 'Habla con cariño y confianza, como un amigo cercano de la familia.', autoRespond: false, proactiveEnabled: false },
-        { id: 'equipo', name: 'Equipo', icon: '👥', tone: 'Habla profesional pero amigable, como un compañero de trabajo.', autoRespond: false, proactiveEnabled: false }
+        { id: 'equipo', name: 'Equipo', icon: '👥', tone: 'Habla profesional pero amigable, como un compañero de trabajo.', autoRespond: false, proactiveEnabled: false },
+        { id: 'amigos', name: 'Amigos', icon: '🤝', tone: 'Informal, cercano, como un amigo más. Tono relajado y divertido.', autoRespond: false, proactiveEnabled: false }
       ];
       for (const g of defaults) {
         await groupsRef.doc(g.id).set({ name: g.name, icon: g.icon, tone: g.tone, autoRespond: g.autoRespond, proactiveEnabled: g.proactiveEnabled, createdAt: admin.firestore.FieldValue.serverTimestamp() });

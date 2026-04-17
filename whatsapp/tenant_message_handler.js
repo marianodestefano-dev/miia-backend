@@ -392,6 +392,72 @@ async function lookupContactIndex(ownerUid, phone) {
 }
 
 /**
+ * Clasificación inteligente con IA — lee TODO el historial del contacto.
+ * Retorna { type, name, relation, confidence } o null si no pudo clasificar.
+ */
+async function classifyContactWithAI(ctx, basePhone, phone, pushName, currentMessage, logPrefix) {
+  // Construir historial completo
+  const convo = ctx.conversations[phone] || [];
+  if (convo.length === 0 && !currentMessage) return null;
+
+  const messages = convo
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+    .map(m => {
+      const role = m.role === 'assistant' ? 'MIIA' : 'CONTACTO';
+      return `[${role}]: ${(m.content || '').substring(0, 300)}`;
+    });
+  if (currentMessage) {
+    messages.push(`[CONTACTO]: ${currentMessage.substring(0, 300)}`);
+  }
+  const chatHistory = messages.join('\n');
+
+  // Detectar país
+  let countryCode = 'INTL';
+  try {
+    const { getCountryByPhone } = require('../countries');
+    const c = getCountryByPhone(basePhone);
+    if (c && c.code) countryCode = c.code;
+  } catch (e) { /* ok */ }
+
+  const prompt = `Eres un clasificador de contactos. Lee este chat de WhatsApp y clasifica al contacto.
+
+TELÉFONO: +${basePhone}
+PAÍS: ${countryCode}
+NOMBRE WhatsApp: ${pushName || 'desconocido'}
+
+CHAT COMPLETO:
+${chatHistory}
+
+Clasifica al contacto. Responde SOLO JSON (sin markdown):
+{"type":"familia|amigo|equipo|cliente|lead|desconocido","name":"nombre real","relation":"relación con el owner","confidence":"alta|media|baja"}
+
+REGLAS:
+- Tono cercano/familiar/personal → familia o amigo
+- Temas de trabajo internos → equipo
+- Preguntas sobre producto/precios → lead
+- Ya usa el producto/soporte → cliente
+- Sin suficiente info → desconocido
+- NUNCA inventes. Si no estás seguro → desconocido`;
+
+  try {
+    const aiConfig = ctx.aiConfig || {};
+    const result = await aiGateway.smartCall(
+      aiGateway.CONTEXTS.CLASSIFICATION,
+      prompt,
+      aiConfig,
+      { maxTokens: 200 }
+    );
+    if (!result || !result.text) return null;
+
+    const cleaned = result.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.warn(`${logPrefix} ⚠️ classifyContactWithAI error: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Guarda clasificación en contact_index.
  */
 async function saveContactIndex(ownerUid, phone, data) {
@@ -2118,21 +2184,68 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
           }
         }
 
-        // 3. Buscar en conversaciones pasadas (¿MIIA habló con este número antes?)
-        // NOTA: NO contar mensajes de la sesión actual (acumulados durante bloqueo precautorio)
-        // Solo contar si HAY respuestas de assistant → evidencia de que MIIA ya habló con este contacto antes
+        // 3. Buscar en conversaciones pasadas CON clasificación inteligente por IA
+        // Si hay historial, MIIA lee TODO el chat y clasifica con IA en vez de asumir "lead"
         if (!smartClassified && ctx.conversations[phone]) {
           const hasAssistantReplies = ctx.conversations[phone].some(m => m.role === 'assistant');
           if (hasAssistantReplies) {
-            console.log(`${logPrefix} 🔍 SMART-CLASS: ${basePhone} tiene ${ctx.conversations[phone].length} mensajes previos CON respuestas → clasificar como lead`);
-            contactType = 'lead';
-            ctx.contactTypes[phone] = 'lead';
-            const bizId = ctx.businesses?.[0]?.id || null;
-            await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: pushName || '', status: 'classified', classifiedBy: 'auto', classifiedAt: new Date().toISOString() });
-            gateDecision.respond = true;
-            gateDecision.reason = 'smart_classified_history';
-            gateDecision.action = 'none';
-            smartClassified = true;
+            console.log(`${logPrefix} 🔍 SMART-CLASS: ${basePhone} tiene ${ctx.conversations[phone].length} mensajes previos CON respuestas → clasificación IA`);
+
+            // Intentar clasificación inteligente con IA
+            let aiClassified = false;
+            try {
+              const aiClassResult = await classifyContactWithAI(ctx, basePhone, phone, pushName, messageBody, logPrefix);
+              if (aiClassResult && aiClassResult.type) {
+                const aiType = aiClassResult.type;
+                console.log(`${logPrefix} 🧠 IA-CLASS: ${basePhone} → ${aiType} (${aiClassResult.name || '?'}, ${aiClassResult.confidence})`);
+
+                if (['familia', 'amigo', 'equipo'].includes(aiType)) {
+                  const groupId = aiType === 'amigo' ? 'amigos' : aiType;
+                  contactType = aiType === 'amigo' ? 'group' : aiType;
+                  ctx.contactTypes[phone] = contactType;
+                  await saveContactIndex(ctx.ownerUid, basePhone, {
+                    type: aiType, groupId, name: aiClassResult.name || pushName || '',
+                    relation: aiClassResult.relation || '', classifiedBy: 'ai_auto', classifiedAt: new Date().toISOString()
+                  });
+                  // Guardar en contact_group
+                  try {
+                    await require('firebase-admin').firestore()
+                      .collection('users').doc(ctx.ownerUid)
+                      .collection('contact_groups').doc(groupId).collection('contacts').doc(basePhone)
+                      .set({ name: aiClassResult.name || pushName || basePhone, relation: aiClassResult.relation || '', addedAt: new Date().toISOString(), source: 'ai_auto' }, { merge: true });
+                  } catch (grpErr) { console.warn(`${logPrefix} ⚠️ Error guardando en grupo ${groupId}: ${grpErr.message}`); }
+                  gateDecision.respond = false; // Grupos requieren "Hola MIIA"
+                  gateDecision.reason = 'ai_classified_' + aiType;
+                  gateDecision.action = 'none';
+                  smartClassified = true;
+                  aiClassified = true;
+                } else if (aiType === 'cliente') {
+                  contactType = 'client';
+                  ctx.contactTypes[phone] = 'client';
+                  const bizId = ctx.businesses?.[0]?.id || null;
+                  await saveContactIndex(ctx.ownerUid, basePhone, { type: 'client', businessId: bizId, name: aiClassResult.name || pushName || '', classifiedBy: 'ai_auto', classifiedAt: new Date().toISOString() });
+                  gateDecision.respond = true;
+                  gateDecision.reason = 'ai_classified_client';
+                  gateDecision.action = 'none';
+                  smartClassified = true;
+                  aiClassified = true;
+                }
+              }
+            } catch (aiErr) {
+              console.warn(`${logPrefix} ⚠️ IA-CLASS error: ${aiErr.message} — fallback a clasificación directa`);
+            }
+
+            // Fallback: si IA no pudo o clasificó como lead → comportamiento original
+            if (!aiClassified) {
+              contactType = 'lead';
+              ctx.contactTypes[phone] = 'lead';
+              const bizId = ctx.businesses?.[0]?.id || null;
+              await saveContactIndex(ctx.ownerUid, basePhone, { type: 'lead', businessId: bizId, name: pushName || '', status: 'classified', classifiedBy: 'auto', classifiedAt: new Date().toISOString() });
+              gateDecision.respond = true;
+              gateDecision.reason = 'smart_classified_history';
+              gateDecision.action = 'none';
+              smartClassified = true;
+            }
           }
         }
 
