@@ -333,6 +333,94 @@ function isDuplicate(msgId, uid = '') {
   return false;
 }
 
+// ═══ F1 (Bug P): Dedup persistente en Firestore ═══
+// Persiste msgIds procesados para que sobrevivan deploys.
+// Pre-puebla processedMessages al startup desde Firestore.
+const DEDUP_PERSIST_MAX = 500;
+const DEDUP_PERSIST_TTL_MS = 48 * 60 * 60 * 1000; // 48h
+const DEDUP_FLUSH_INTERVAL_MS = 10000; // 10s
+
+async function loadDedupFromFirestore(uid) {
+  try {
+    const doc = await admin.firestore()
+      .collection('users').doc(uid)
+      .collection('miia_persistent')
+      .doc('dedup').get();
+    if (!doc.exists) {
+      console.log(`[TM:${uid}] 🛡️ Dedup Firestore: sin datos previos (primer boot o TTL expirado)`);
+      return 0;
+    }
+    const data = doc.data();
+    const cutoffMs = Date.now() - DEDUP_PERSIST_TTL_MS;
+    let loaded = 0;
+    for (const entry of (data.msgIds || [])) {
+      const entryMs = (entry.ts || 0) * 1000; // ts en segundos (formato Baileys)
+      if (entryMs > cutoffMs && entry.id) {
+        processedMessages.set(`${uid}:${entry.id}`, entryMs);
+        loaded++;
+      }
+    }
+    console.log(`[TM:${uid}] 🛡️ Dedup cargado de Firestore: ${loaded} msgIds (TTL 48h)`);
+    return loaded;
+  } catch (e) {
+    console.warn(`[TM:${uid}] ⚠️ Dedup load error:`, e.message);
+    return 0;
+  }
+}
+
+// Buffer para no hacer 1 write Firestore por mensaje
+const _dedupWriteBuffer = new Map(); // { uid: [{ id, ts }, ...] }
+let _dedupFlushTimer = null;
+
+function schedulePersistDedup(uid, msgId, ts) {
+  if (!msgId || !uid) return;
+  if (!_dedupWriteBuffer.has(uid)) {
+    _dedupWriteBuffer.set(uid, []);
+  }
+  _dedupWriteBuffer.get(uid).push({
+    id: msgId,
+    ts: ts || Math.floor(Date.now() / 1000)
+  });
+  if (!_dedupFlushTimer) {
+    _dedupFlushTimer = setTimeout(flushDedupBuffer, DEDUP_FLUSH_INTERVAL_MS);
+  }
+}
+
+async function flushDedupBuffer() {
+  _dedupFlushTimer = null;
+  const snapshot = new Map(_dedupWriteBuffer);
+  _dedupWriteBuffer.clear();
+  for (const [uid, pending] of snapshot) {
+    if (pending.length === 0) continue;
+    try {
+      const ref = admin.firestore()
+        .collection('users').doc(uid)
+        .collection('miia_persistent').doc('dedup');
+      const doc = await ref.get();
+      const existing = doc.exists ? (doc.data()?.msgIds || []) : [];
+      const cutoffS = Math.floor((Date.now() - DEDUP_PERSIST_TTL_MS) / 1000);
+      // Merge: existentes + nuevos, dedup por id, filtrar por TTL, FIFO a MAX
+      const combined = [...existing, ...pending].filter(e => e?.id && e?.ts > cutoffS);
+      const seen = new Set();
+      const deduped = [];
+      for (const e of combined) {
+        if (!seen.has(e.id)) {
+          seen.add(e.id);
+          deduped.push(e);
+        }
+      }
+      const final = deduped.slice(-DEDUP_PERSIST_MAX);
+      await ref.set({
+        msgIds: final,
+        updatedAt: new Date().toISOString(),
+        version: 1
+      });
+    } catch (e) {
+      console.error(`[TM:${uid}] ❌ Dedup flush error:`, e.message);
+    }
+  }
+}
+
 // ─── Global error monitor for libsignal MessageCounterError ───
 // UNIFIED: Single monitor that routes to smartSessionRecovery instead of nuclear cleanup
 const SERVER_START_TIME = Date.now();
@@ -1083,6 +1171,12 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           console.error(`[TM:${uid}] ❌ Error extrayendo número:`, e.message);
         }
 
+        // ═══ F1 (Bug P): cargar dedup persistido de Firestore ═══
+        // Pre-puebla processedMessages con msgIds de vidas anteriores.
+        // Evita re-procesar fantasmas post-deploy.
+        loadDedupFromFirestore(uid).catch(e =>
+          console.warn(`[TM:${uid}] ⚠️ Dedup load fallback:`, e.message));
+
         if (ioInstance) {
           ioInstance.to(`tenant:${uid}`).emit('whatsapp_ready', { uid, status: 'connected' });
           ioInstance.emit(`tenant_ready_${uid}`, { status: 'connected' });
@@ -1536,6 +1630,20 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           continue;
         }
 
+        // ═══ F2 (Bug P): canario timestamp durante boot ═══
+        // Alerta cuando llegan mensajes viejos en los primeros 120s post-boot.
+        // NO descarta — solo loguea. F1 (dedup persistido) es el descarte real.
+        const _msgTsRaw = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
+          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
+        if (tenant.connectedAt && _msgTsRaw > 0) {
+          const nowS = Math.floor(Date.now() / 1000);
+          const bootAge = nowS - tenant.connectedAt;
+          const msgAge = tenant.connectedAt - _msgTsRaw;
+          if (bootAge < 120 && msgAge > 300) {
+            console.warn(`[TM:${uid}] ⚠️ [DEDUP-CANARY] msg antiguo en grace period: msgId=${msg.key.id} ts=${_msgTsRaw} (${Math.round(msgAge / 60)}min antes de boot). Si F1 cargó bien, se descarta en isDuplicate() siguiente.`);
+          }
+        }
+
         // ─── Deduplication: skip already-processed messages ───
         // DESPUÉS de verificar que tiene contenido real
         if (isDuplicate(msg.key.id, uid)) {
@@ -1544,9 +1652,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           continue;
         }
 
+        // ═══ F1 (Bug P): persistir msgId procesado ═══
+        schedulePersistDedup(uid, msg.key.id, _msgTsRaw);
+
         // Detectar si es mensaje offline (anterior a la conexión)
-        const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
-          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
+        const msgTs = _msgTsRaw;
         const isOffline = tenant.connectedAt && msgTs > 0 && msgTs < tenant.connectedAt - 5;
 
         // ═══ BUG2-FIX: Usar ownerPhone (persistente) como fuente primaria ═══
@@ -2983,9 +3093,15 @@ async function gracefulShutdown(signal) {
       );
     }
   }
-  // Esperar máximo 5s para training_data + creds
+  // ═══ F1 (Bug P): flush dedup buffer antes de morir ═══
+  const dedupFlushPromise = _dedupWriteBuffer.size > 0
+    ? flushDedupBuffer().then(() => console.log(`[TM] 🛡️ Dedup buffer persistido en ${signal}`))
+      .catch(e => console.error(`[TM] ❌ Dedup flush error en ${signal}:`, e.message))
+    : Promise.resolve();
+
+  // Esperar máximo 5s para training_data + creds + dedup
   await Promise.race([
-    Promise.allSettled([...tdPromises, saveAllTenantCreds()]),
+    Promise.allSettled([...tdPromises, saveAllTenantCreds(), dedupFlushPromise]),
     new Promise(resolve => setTimeout(resolve, 5000))
   ]);
 
