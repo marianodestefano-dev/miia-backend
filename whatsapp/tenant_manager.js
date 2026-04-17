@@ -691,7 +691,13 @@ async function processOfflineBuffer(uid, jid, bufferedMsgs, tenant, isOwner) {
   // Para tenants: procesar solo el último mensaje con contexto de delay
   const ownerUid = tenant.ownerUid || uid;
   const role = tenant.role || 'owner';
-  const realSelfChat = false; // offline de lead, no self-chat
+  // Bug 1 fix (C-173): determinar si el jid resuelto es del owner
+  // del tenant. Aplica a tenants SaaS con isOwnerAccount=true que
+  // escribieron en self-chat durante Bad MAC → offline buffer.
+  // El comentario original "offline de lead" era incorrecto — offline
+  // también puede ser del owner.
+  const resolvedJidBase = jid.split('@')[0].split(':')[0];
+  const realSelfChat = !!tenant.ownerPhone && resolvedJidBase === tenant.ownerPhone;
 
   // Inyectar contexto offline en el body para que el prompt lo considere
   const contextPrefix = totalMsgs > 1
@@ -2038,14 +2044,17 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
             console.log(`[TM:${uid}] ⚠️ Mensaje offline reciente de tercero (diff=${tsDiff}s <= 120s) — procesando igualmente: "${body.substring(0,30)}"`);
           }
-          console.log(`[TM:${uid}] 📦 Mensaje offline de ${from} (hace ${ageSec}s): "${body.substring(0,40)}" → buffer`);
-          if (!offlineBuffer[from]) offlineBuffer[from] = { msgs: [], timer: null };
-          offlineBuffer[from].msgs.push({ msg, from, body, hasMedia, ageSec });
-          // Debounce: esperar 5s sin nuevos mensajes del mismo contacto
-          if (offlineBuffer[from].timer) clearTimeout(offlineBuffer[from].timer);
-          offlineBuffer[from].timer = setTimeout(() => {
-            processOfflineBuffer(uid, from, offlineBuffer[from].msgs, tenant, isOwner);
-            delete offlineBuffer[from];
+          // Bug 1 fix (C-173): buffer keyed por resolvedFrom (no raw from)
+          // para que processOfflineBuffer reciba el JID real cuando
+          // el owner escribió post-Bad MAC con LID sin resolver.
+          const bufferKey = resolvedFrom || from;
+          console.log(`[TM:${uid}] 📦 Mensaje offline de ${bufferKey} (hace ${ageSec}s): "${body.substring(0,40)}" → buffer`);
+          if (!offlineBuffer[bufferKey]) offlineBuffer[bufferKey] = { msgs: [], timer: null };
+          offlineBuffer[bufferKey].msgs.push({ msg, from: bufferKey, body, hasMedia, ageSec });
+          if (offlineBuffer[bufferKey].timer) clearTimeout(offlineBuffer[bufferKey].timer);
+          offlineBuffer[bufferKey].timer = setTimeout(() => {
+            processOfflineBuffer(uid, bufferKey, offlineBuffer[bufferKey].msgs, tenant, isOwner);
+            delete offlineBuffer[bufferKey];
           }, 5000);
           continue;
         }
@@ -2065,8 +2074,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           // Owner path: trackear mensajes de leads (no fromMe, no self-chat)
           const ownerMsgTrackId = msg.key.id || `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
           if (!isFromMe && !isSelfChat && body.trim()) {
+            // Bug 1 fix (C-173): persistir el JID resuelto (no el raw @lid)
+            // para que el recovery post-reconexión use el phone real.
+            const ownerPendingPhone = resolvedFrom || from;
             const ownerPendingData = {
-              phone: from, body, timestamp: Date.now(), from, ownerUid: uid, role: 'owner', isOwnerPath: true
+              phone: ownerPendingPhone, body, timestamp: Date.now(), from: ownerPendingPhone, ownerUid: uid, role: 'owner', isOwnerPath: true
             };
             tenant._unrespondedMessages.set(ownerMsgTrackId, ownerPendingData);
             // Fire-and-forget write a Firestore — infalible
@@ -2082,7 +2094,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                 .delete().catch(() => {});
             }, 60000);
           }
-          try { tenant.onMessage(msg, from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
+          // Bug 1 fix (C-173): pasar JID resuelto al callback
+          // (defensivo: elimina dependencia del mapa dual
+          // lidToPhone-global vs tenant._lidMap).
+          try { tenant.onMessage(msg, resolvedFrom || from, body); } catch (e) { console.error(`[TM:${uid}] onMessage error:`, e.message); }
         } else {
           // ═══ P6 FIX + BUG2-FIX: Self-chat detection robusto ═══
           // Usar myNumber (ya incluye ownerPhone como fuente primaria)
@@ -3782,17 +3797,34 @@ async function recoverUnrespondedMessages(uid, tenant) {
     let recovered = 0;
     for (const msg of recent) {
       try {
+        // Bug 1 fix (C-173): recovery puede haber persistido un @lid
+        // si el write ocurrió antes del fix de Gap C. Intentamos
+        // resolver antes de reprocesar, y computamos realSelfChat
+        // comparando con ownerPhone (en vez de hardcodear false).
+        let recoveredPhone = msg.phone;
+        if (typeof recoveredPhone === 'string' && recoveredPhone.includes('@lid')) {
+          const recLidBase = recoveredPhone.split('@')[0].split(':')[0];
+          if (tenant._lidMap?.[recLidBase]) {
+            recoveredPhone = tenant._lidMap[recLidBase];
+            console.log(`[TM:${uid}] 🔗 RECOVERY-LID: ${msg.phone} → ${recoveredPhone}`);
+          }
+        }
+        const recPhoneBase = typeof recoveredPhone === 'string'
+          ? recoveredPhone.split('@')[0].split(':')[0]
+          : '';
+        const recRealSelfChat = !!tenant.ownerPhone && recPhoneBase === tenant.ownerPhone;
+
         if (msg.isOwnerPath && tenant.onMessage) {
           const fakeMsg = {
-            key: { remoteJid: msg.from, fromMe: false, id: `recovery_${Date.now()}` },
+            key: { remoteJid: recoveredPhone, fromMe: false, id: `recovery_${Date.now()}` },
             message: { conversation: msg.body },
             pushName: 'Recovery'
           };
-          tenant.onMessage(fakeMsg, msg.from, msg.body);
+          tenant.onMessage(fakeMsg, recoveredPhone, msg.body);
         } else {
           await handleTenantMessage(
             uid, msg.ownerUid || uid, msg.role || 'owner',
-            msg.phone, msg.body, false, false, tenant, { isRecovery: true }
+            recoveredPhone, msg.body, recRealSelfChat, false, tenant, { isRecovery: true }
           );
         }
         // Borrar de Firestore después de reprocesar exitosamente
