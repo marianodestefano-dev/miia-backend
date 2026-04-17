@@ -300,16 +300,17 @@ const baileysLogger = pino({ level: 'silent' });
 // ─── Message deduplication (prevents zombie processing) ───
 const processedMessages = new Map(); // { msgId: timestamp }
 // ─── Noise reduction: count skipped messages instead of logging each one ───
-const _skipCounters = { duplicate: 0, offlineOld: 0, offlineProcessed: 0, _lastFlush: Date.now() };
+const _skipCounters = { duplicate: 0, offlineOld: 0, offlineProcessed: 0, postBootStale: 0, _lastFlush: Date.now() };
 function _flushSkipCounters(uid) {
   const now = Date.now();
   if (now - _skipCounters._lastFlush < 10000) return; // Flush every 10s max
-  const { duplicate, offlineOld, offlineProcessed } = _skipCounters;
-  if (duplicate + offlineOld + offlineProcessed > 0) {
-    console.log(`[TM:${uid}] 📊 Mensajes omitidos (últimos 10s): ${duplicate} duplicados, ${offlineOld} offline viejos, ${offlineProcessed} offline ya procesados`);
+  const { duplicate, offlineOld, offlineProcessed, postBootStale } = _skipCounters;
+  if (duplicate + offlineOld + offlineProcessed + postBootStale > 0) {
+    console.log(`[TM:${uid}] 📊 Mensajes omitidos (últimos 10s): ${duplicate} duplicados, ${offlineOld} offline viejos, ${offlineProcessed} offline ya procesados, ${postBootStale} post-boot stale`);
     _skipCounters.duplicate = 0;
     _skipCounters.offlineOld = 0;
     _skipCounters.offlineProcessed = 0;
+    _skipCounters.postBootStale = 0;
   }
   _skipCounters._lastFlush = now;
 }
@@ -1652,11 +1653,21 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           }
         }
 
+        // ═══ WATERMARK POST-BOOT (C-193 PASO 4b): descartar mensajes anteriores al boot ═══
+        // Mensajes con timestamp anterior a SERVER_START_TIME - 60s son fantasmas
+        // re-entregados por Baileys en cada reconexión (BUG-022). Se descartan sin procesar.
+        const _msgTsRaw = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
+          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
+        const _watermarkS = Math.floor(SERVER_START_TIME / 1000) - 60;
+        if (_msgTsRaw > 0 && _msgTsRaw < _watermarkS) {
+          _skipCounters.postBootStale++;
+          _flushSkipCounters(uid);
+          continue;
+        }
+
         // ═══ F2 (Bug P): canario timestamp durante boot ═══
         // Alerta cuando llegan mensajes viejos en los primeros 120s post-boot.
         // NO descarta — solo loguea. F1 (dedup persistido) es el descarte real.
-        const _msgTsRaw = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
-          : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
         if (tenant.connectedAt && _msgTsRaw > 0) {
           const nowS = Math.floor(Date.now() / 1000);
           const bootAge = nowS - tenant.connectedAt;
