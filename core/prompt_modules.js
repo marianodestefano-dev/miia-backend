@@ -382,7 +382,7 @@ function mod_cotizacion(p) {
   }
   return `## PROTOCOLO COTIZACIÓN
 Si el lead menciona un número de usuarios, emití:
-[GENERAR_COTIZACION_PDF:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, ...}]
+[GENERAR_COTIZACION:{"nombre":"...", "pais":"...", "moneda":"...", "usuarios":N, ...}]
 Los precios se toman del entrenamiento del negocio. Si no hay precios, preguntá al owner.`;
 }
 

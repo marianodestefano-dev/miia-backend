@@ -187,7 +187,7 @@ Genera una respuesta breve, natural y profesional como Mariano/MIIA:`;
         let generatePdf = false;
         let pdfParams = { country: null, doctors: 1, appointments: 150, name: null, periodic: 'MENSUAL' };
 
-        const pdfTagMatch = aiMessage.match(/\[GENERAR_COTIZACION_PDF(?::([A-Z]+):(\d+):(\d+)(?::([^:\]]+))?(?::(ANUAL|MENSUAL))?)?\]/);
+        const pdfTagMatch = aiMessage.match(/\[GENERAR_COTIZACION(?:_PDF)?(?::([A-Z]+):(\d+):(\d+)(?::([^:\]]+))?(?::(ANUAL|MENSUAL))?)?\]/);
         if (pdfTagMatch) {
             generatePdf = true;
             if (pdfTagMatch[1]) {

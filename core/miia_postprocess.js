@@ -40,7 +40,7 @@ const ACTION_CONFIRMATIONS = [
   { phrases: [/ya.{0,20}te.{0,15}(?:lo )?(?:voy a )?recordar(?:é|lo)?/i, /anotado.{0,20}te.{0,15}(?:recuerdo|aviso)/i, /listo.{0,30}recordatorio/i, /te.{0,15}(?:recuerdo|aviso).{0,20}(?:mañana|después|luego|a las)/i],
     requiredTag: /\[RECORDAR_(?:CONTACTO|OWNER):|\[AGENDAR_EVENTO:/ },
   { phrases: [/ya.*te.*(?:mandé|envié).*cotizaci[oó]n/i, /listo.{0,30}cotizaci[oó]n/i],
-    requiredTag: /\[GENERAR_COTIZACION_PDF:/ },
+    requiredTag: /\[GENERAR_COTIZACION(?:_PDF)?:/ },
   // EMAIL: "ya leí tu inbox / ya eliminé los correos" sin tag
   { phrases: [/ya (?:le[ií]|revis[eé]).*(?:inbox|bandeja|correos?)/i, /listo.{0,30}(?:inbox|bandeja|correos?.*le[ií]d)/i],
     requiredTag: /\[LEER_INBOX\]|\[EMAIL_LEER:/ },
