@@ -197,9 +197,14 @@ module.exports = function createCotizacionRoutes({ db, verifyToken }) {
   router.get('/:hash([a-f0-9]{8})',
     rateLimit(60, 60 * 1000),
     async (req, res) => {
-      // CORS: permitir desde miia-app.com
-      const allowedOrigin = process.env.COTIZACION_BASE_URL || 'https://miia-app.com';
-      res.header('Access-Control-Allow-Origin', allowedOrigin);
+      // CORS: permitir desde miia-app.com (con y sin www)
+      const origin = req.headers.origin || '';
+      const allowed = ['https://miia-app.com', 'https://www.miia-app.com'];
+      if (allowed.includes(origin)) {
+        res.header('Access-Control-Allow-Origin', origin);
+      } else {
+        res.header('Access-Control-Allow-Origin', allowed[0]);
+      }
 
       const { hash } = req.params;
       try {
