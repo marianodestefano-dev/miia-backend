@@ -945,9 +945,16 @@ async function generarLinkCotizacion(tenantUid, lead, params) {
       return null;
     }
 
+    // Si lead_name es un número de teléfono, no pasarlo como nombre
+    function sanitizeName(n) {
+      if (!n) return null;
+      if (/^\+?[\d\s\-]{7,}$/.test(String(n).trim())) return null;
+      return String(n).trim();
+    }
+
     const body = {
       tenant_id:  tenantUid,
-      lead_name:  lead.nombre || null,
+      lead_name:  sanitizeName(lead.nombre),
       lead_phone: lead.phone,
       params: {
         plan:      (params.plan || 'esencial').toLowerCase(),
