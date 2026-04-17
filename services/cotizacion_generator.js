@@ -966,7 +966,7 @@ async function generarLinkCotizacion(tenantUid, lead, params) {
       },
     };
 
-    const railwayUrl = process.env.RAILWAY_INTERNAL_URL || 'http://localhost:3000';
+    const railwayUrl = process.env.RAILWAY_INTERNAL_URL || `http://localhost:${process.env.PORT || 8080}`;
     const controller = new AbortController();
     const timeout    = setTimeout(() => controller.abort(), 10000);
 
