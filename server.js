@@ -443,20 +443,9 @@ let keywordsSet = [];
 // MIGRACIÓN Sesión 34: Eliminados 14 contactos hardcodeados → fuente única = Firestore.
 let familyContacts = {};
 // EQUIPO MEDILINK — compañeros de trabajo de Mariano
-const equipoMedilink = {
-  '56971251474': { name: null, presented: false },
-  '56964490945': { name: null, presented: false },
-  '56971561322': { name: null, presented: false },
-  '56974919305': { name: null, presented: false },
-  '56978516275': { name: null, presented: false },
-  '56989558306': { name: null, presented: false },
-  '56994128069': { name: 'Vivi', presented: false },   // también JEFA en familyContacts
-  '56974777648': { name: null, presented: false },
-  '573125027604': { name: null, presented: false },
-  '573108447586': { name: null, presented: false },
-  '573175058386': { name: null, presented: false },
-  '573014259700': { name: null, presented: false }
-};
+// Desde sesión 42M: dinámico, cargado de Firestore (miia_persistent/contacts + contact_groups/equipo)
+// Migración: migrations/migrate_equipo_to_firestore.js
+let equipoMedilink = {};
 
 // ═══ SPORT COMMAND HELPERS ═══
 const KNOWN_FUTBOL_TEAMS = {
@@ -1750,6 +1739,33 @@ async function loadFromFirestore() {
       console.warn('[FIRESTORE] ⚠️ No se pudo cargar contact_groups/familia:', e.message);
     }
 
+    // ═══ UNIFICACIÓN: contact_groups/equipo → equipoMedilink ═══
+    // equipoMedilink se carga de miia_persistent/contacts (legacy) Y contact_groups/equipo (actual)
+    // Así miembros añadidos desde dashboard también se detectan en server.js
+    try {
+      const equipoGroupSnap = await admin.firestore().collection('users').doc(OWNER_UID)
+        .collection('contact_groups').doc('equipo').collection('contacts').get();
+      let mergedEquipo = 0;
+      equipoGroupSnap.forEach(doc => {
+        const basePhone = doc.id;
+        if (!equipoMedilink[basePhone]) {
+          const d = doc.data();
+          equipoMedilink[basePhone] = {
+            name: d.name || null,
+            presented: d.presented || false,
+          };
+          // También registrar en contactTypes
+          contactTypes[`${basePhone}@s.whatsapp.net`] = 'equipo';
+          mergedEquipo++;
+        }
+      });
+      if (mergedEquipo > 0) {
+        console.log(`[FIRESTORE] 🔗 Unificación: ${mergedEquipo} contactos de contact_groups/equipo → equipoMedilink`);
+      }
+    } catch (e) {
+      console.warn('[FIRESTORE] ⚠️ No se pudo cargar contact_groups/equipo:', e.message);
+    }
+
     // ═══ ALERTA: familyContacts vacío post-load ═══
     // Desde sesión 34, familyContacts NO tiene defaults hardcodeados.
     // Si está vacío después de cargar = Firestore no tiene los datos = PROBLEMA.
@@ -1764,6 +1780,21 @@ async function loadFromFirestore() {
       }
     } else {
       console.log(`[FIRESTORE] 👨‍👩‍👧‍👦 familyContacts cargados: ${fcCount} contactos (legacy + contact_groups)`);
+    }
+
+    // ═══ ALERTA: equipoMedilink vacío post-load ═══
+    // Desde sesión 42M, equipoMedilink NO tiene defaults hardcodeados.
+    // Si está vacío después de cargar = Firestore no tiene los datos = ejecutar migración.
+    const emCount = Object.keys(equipoMedilink).length;
+    if (emCount === 0) {
+      const isMiiaCenter = OWNER_UID === 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
+      if (isMiiaCenter) {
+        // MIIA CENTER no tiene equipo — es esperado.
+      } else {
+        console.error('[FIRESTORE] 🚨🚨🚨 equipoMedilink VACÍO después de cargar! El equipo será tratado como desconocidos. Ejecutar: node migrations/migrate_equipo_to_firestore.js');
+      }
+    } else {
+      console.log(`[FIRESTORE] 👥 equipoMedilink cargados: ${emCount} contactos (legacy + contact_groups)`);
     }
 
     console.log('[FIRESTORE] ✅ Datos cargados desde Firestore (sobrevivió deploy)');
