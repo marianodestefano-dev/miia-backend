@@ -1088,17 +1088,31 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
         // ═══ PENDING RECOVERY: Reprocesar mensajes que quedaron sin responder ═══
         // Esperar 10s para que todo esté inicializado antes de reprocesar
-        setTimeout(async () => {
-          try {
-            const recovered = await recoverUnrespondedMessages(uid, tenant);
-            if (recovered > 0) {
-              // Log interno — NO notificar al owner en self-chat (decisión Mariano 17-abr C-144)
-              console.log(`[TM:${uid}] ✅ RECOVERY: ${recovered} mensaje(s) recuperados post-reconexión`);
+        // BUG-022 fix (C-158): Once-per-session cooldown 30min.
+        // Crypto recovery cycles causan 10+ reconexiones en ~10min → sin
+        // este guard, recovery ejecuta 10+ veces → mensajes duplicados.
+        // El cooldown coincide con el cutoff de pending_responses (30min,
+        // línea ~3747) para consistencia.
+        if (tenant._lastRecoveryAt && (Date.now() - tenant._lastRecoveryAt < 1800000)) {
+          console.log(`[TM:${uid}] ⏭️ RECOVERY skip — ya ejecutó hace ${Math.round((Date.now() - tenant._lastRecoveryAt) / 1000)}s (< 30min, cooldown activo)`);
+        } else {
+          // Marcador ANTES del async para prevenir race entre reconexiones rápidas
+          tenant._lastRecoveryAt = Date.now();
+          setTimeout(async () => {
+            try {
+              const recovered = await recoverUnrespondedMessages(uid, tenant);
+              if (recovered > 0) {
+                // Log interno — NO notificar al owner en self-chat (decisión Mariano 17-abr C-144)
+                console.log(`[TM:${uid}] ✅ RECOVERY: ${recovered} mensaje(s) recuperados post-reconexión`);
+              }
+            } catch (e) {
+              // Si recovery falla (ej: Firestore caída), resetear flag para
+              // permitir reintento inmediato. Mejora propuesta por Vi en C-152.
+              tenant._lastRecoveryAt = 0;
+              console.error(`[TM:${uid}] ❌ RECOVERY post-connect error:`, e.message);
             }
-          } catch (e) {
-            console.error(`[TM:${uid}] ❌ RECOVERY post-connect error:`, e.message);
-          }
-        }, 10000);
+          }, 10000);
+        }
       }
 
       // Connection opened successfully → reset counters + start preventive systems
