@@ -2998,6 +2998,30 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         pdfOk = true;
         _cotizTagProcessed = true;
         console.log(`${logPrefix} [COTIZ-TMH] ✅ PDF enviado a ${phone}`);
+
+        // ═══ LINK INTERACTIVO: generar propuesta web además del PDF ═══
+        if (!isSelfChat) {
+          try {
+            const linkUrl = await cotizacionGenerator.generarLinkCotizacion(
+              ownerUid,
+              { nombre: cotizData.nombre, phone: basePhone },
+              cotizData
+            );
+            if (linkUrl) {
+              setTimeout(async () => {
+                try {
+                  await sendTenantMessage(tenantState, phone,
+                    `📋 *Tu propuesta personalizada:*\n${linkUrl}\n_Podés ajustar plan, usuarios y módulos cuando quieras_ 👆`);
+                  console.log(`${logPrefix} [COTIZ-TMH] ✅ Link interactivo enviado: ${linkUrl}`);
+                } catch (le) {
+                  console.warn(`${logPrefix} [COTIZ-TMH] ⚠️ No se pudo enviar link: ${le.message}`);
+                }
+              }, 2000);
+            }
+          } catch (linkErr) {
+            console.warn(`${logPrefix} [COTIZ-TMH] ⚠️ Link interactivo falló (no crítico): ${linkErr.message}`);
+          }
+        }
       } catch (e) {
         console.error(`${logPrefix} [COTIZ-TMH] ❌ Error PDF:`, e.message);
       }
