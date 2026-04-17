@@ -247,7 +247,10 @@ function shouldMiiaRespond(opts) {
  * @returns {string} Mensaje para el self-chat del owner
  */
 function buildUnknownContactAlert(basePhone, messageBody, pushName, opts = {}) {
-  const preview = (messageBody || '').substring(0, 200);
+  // Filtrar prefijos de CONTEXTO INTERNO inyectados por processOfflineBuffer
+  // antes de mostrar al owner — son instrucciones para la IA, no para humanos
+  const cleanBody = (messageBody || '').replace(/\[CONTEXTO INTERNO[\s\S]*?\.\]\n?/g, '').trim();
+  const preview = (cleanBody || messageBody || '').substring(0, 200);
   // Detección robusta de LID: flag explícito, contiene "lid", empieza con 8829,
   // O tiene más de 13 dígitos (ningún número de teléfono real tiene 14+ dígitos)
   const digitsOnly = (basePhone || '').replace(/[^0-9]/g, '');
