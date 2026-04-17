@@ -6895,48 +6895,37 @@ REGLAS:
             cotizData.nombre = basePhone || cotizData.nombre;
           }
           console.log(`[COTIZ] isSelfChat=${isSelfChat}, phone=${phone}`);
-          await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChat);
-          pdfOk = true;
-          _execFlags.cotizacion = true;
-          console.log(`[COTIZ] PDF enviado exitosamente a ${phone}`);
-          actionFeedback.recordActionResult(phone, 'cotizacion', true, `Cotización PDF generada y enviada`);
+          // PDF-DISABLED: PDF reemplazado por link dinámico interactivo (C-148)
+          // await cotizacionGenerator.enviarCotizacionWA(safeSendMessage, phone, cotizData, isSelfChat);
 
-          // ═══ LINK INTERACTIVO: generar propuesta web además del PDF ═══
-          if (!isSelfChat) {
-            try {
-              const linkUrl = await cotizacionGenerator.generarLinkCotizacion(
-                OWNER_UID,
-                { nombre: cotizData.nombre, phone: basePhone },
-                cotizData
-              );
-              if (linkUrl) {
-                // Enviar link como mensaje separado después del PDF
-                setTimeout(async () => {
-                  try {
-                    await safeSendMessage(phone, { text: `📋 *Tu propuesta personalizada:*\n${linkUrl}\n_Podés ajustar plan, usuarios y módulos cuando quieras_ 👆` });
-                    console.log(`[COTIZ] ✅ Link interactivo enviado: ${linkUrl}`);
-                  } catch (le) {
-                    console.warn(`[COTIZ] ⚠️ No se pudo enviar link interactivo: ${le.message}`);
-                  }
-                }, 2000); // 2s delay para que el PDF llegue primero
-              }
-            } catch (linkErr) {
-              console.warn(`[COTIZ] ⚠️ Link interactivo falló (no crítico): ${linkErr.message}`);
-            }
+          // ═══ LINK INTERACTIVO: propuesta web dinámica (reemplaza PDF) ═══
+          const linkUrl = await cotizacionGenerator.generarLinkCotizacion(
+            OWNER_UID,
+            { nombre: cotizData.nombre, phone: basePhone },
+            cotizData
+          );
+          if (linkUrl) {
+            await safeSendMessage(phone, { text: `📋 *Tu propuesta personalizada:*\n${linkUrl}\n_Podés ajustar plan, usuarios y módulos a tu medida_ 👆` });
+            pdfOk = true;
+            _execFlags.cotizacion = true;
+            console.log(`[COTIZ] ✅ Link interactivo enviado: ${linkUrl}`);
+            actionFeedback.recordActionResult(phone, 'cotizacion', true, `Propuesta web generada y enviada`);
+          } else {
+            throw new Error('No se pudo generar el link de propuesta');
           }
         } catch (e) {
-          console.error('[COTIZ] Error PDF:', e.message);
-          actionFeedback.recordActionResult(phone, 'cotizacion', false, `Error generando PDF: ${e.message}`);
+          console.error('[COTIZ] Error generando link:', e.message);
+          actionFeedback.recordActionResult(phone, 'cotizacion', false, `Error generando propuesta: ${e.message}`);
         }
         // Extraer texto que Gemini escribió ANTES del tag (ej: "Te envío la cotización...")
         let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
         let textoExtra = '';
         if (!pdfOk) {
-          textoExtra = 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
+          textoExtra = 'Hubo un problema generando la propuesta. Intenta de nuevo en un momento.';
         }
         if (pdfOk) {
-          // Solo registrar en historial si el PDF se envió realmente
-          conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada a este lead. No volver a enviarla a menos que el lead lo pida explícitamente.]', timestamp: Date.now() });
+          // Solo registrar en historial si la propuesta se envió realmente
+          conversations[phone].push({ role: 'assistant', content: '📋 [Propuesta web enviada con link interactivo. No volver a enviarla a menos que el lead lo pida explícitamente.]', timestamp: Date.now() });
           if (conversations[phone].length > 40) conversations[phone] = conversations[phone].slice(-40);
           // Activar seguimiento automático a 3 días
           if (!conversationMetadata[phone]) conversationMetadata[phone] = {};

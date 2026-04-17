@@ -2984,54 +2984,43 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
           console.log(`${logPrefix} [COTIZ-TMH] 🧹 Texto promesa eliminado pre-PDF: "${textoAntes.substring(0, 80)}..."`);
           textoAntes = '';
         }
-        // Enviar texto introductorio ANTES del PDF (orden natural: mensaje → documento)
+        // Enviar texto introductorio ANTES del link
         if (textoAntes) {
           await sendTenantMessage(tenantState, phone, textoAntes);
-          console.log(`${logPrefix} [COTIZ-TMH] 💬 Texto enviado ANTES del PDF (${textoAntes.length} chars)`);
+          console.log(`${logPrefix} [COTIZ-TMH] 💬 Texto enviado ANTES del link (${textoAntes.length} chars)`);
         }
-        // Enviar PDF
-        const safeSend = async (to, content) => {
-          if (typeof content === 'string') await sendTenantMessage(tenantState, to, content);
-          else if (tenantState.sock) await tenantState.sock.sendMessage(to, content);
-        };
-        await cotizacionGenerator.enviarCotizacionWA(safeSend, phone, cotizData, isSelfChat);
-        pdfOk = true;
-        _cotizTagProcessed = true;
-        console.log(`${logPrefix} [COTIZ-TMH] ✅ PDF enviado a ${phone}`);
+        // PDF-DISABLED: PDF reemplazado por link dinámico interactivo (C-148)
+        // const safeSend = async (to, content) => {
+        //   if (typeof content === 'string') await sendTenantMessage(tenantState, to, content);
+        //   else if (tenantState.sock) await tenantState.sock.sendMessage(to, content);
+        // };
+        // await cotizacionGenerator.enviarCotizacionWA(safeSend, phone, cotizData, isSelfChat);
 
-        // ═══ LINK INTERACTIVO: generar propuesta web además del PDF ═══
-        if (!isSelfChat) {
-          try {
-            const linkUrl = await cotizacionGenerator.generarLinkCotizacion(
-              ownerUid,
-              { nombre: cotizData.nombre, phone: basePhone },
-              cotizData
-            );
-            if (linkUrl) {
-              setTimeout(async () => {
-                try {
-                  await sendTenantMessage(tenantState, phone,
-                    `📋 *Tu propuesta personalizada:*\n${linkUrl}\n_Podés ajustar plan, usuarios y módulos cuando quieras_ 👆`);
-                  console.log(`${logPrefix} [COTIZ-TMH] ✅ Link interactivo enviado: ${linkUrl}`);
-                } catch (le) {
-                  console.warn(`${logPrefix} [COTIZ-TMH] ⚠️ No se pudo enviar link: ${le.message}`);
-                }
-              }, 2000);
-            }
-          } catch (linkErr) {
-            console.warn(`${logPrefix} [COTIZ-TMH] ⚠️ Link interactivo falló (no crítico): ${linkErr.message}`);
-          }
+        // ═══ LINK INTERACTIVO: propuesta web dinámica (reemplaza PDF) ═══
+        const linkUrl = await cotizacionGenerator.generarLinkCotizacion(
+          ownerUid,
+          { nombre: cotizData.nombre, phone: basePhone },
+          cotizData
+        );
+        if (linkUrl) {
+          await sendTenantMessage(tenantState, phone,
+            `📋 *Tu propuesta personalizada:*\n${linkUrl}\n_Podés ajustar plan, usuarios y módulos a tu medida_ 👆`);
+          pdfOk = true;
+          _cotizTagProcessed = true;
+          console.log(`${logPrefix} [COTIZ-TMH] ✅ Link interactivo enviado: ${linkUrl}`);
+        } else {
+          throw new Error('No se pudo generar el link de propuesta');
         }
       } catch (e) {
-        console.error(`${logPrefix} [COTIZ-TMH] ❌ Error PDF:`, e.message);
+        console.error(`${logPrefix} [COTIZ-TMH] ❌ Error generando propuesta:`, e.message);
       }
       if (pdfOk) {
-        ctx.conversations[phone].push({ role: 'assistant', content: '📄 [Cotización PDF enviada. No volver a enviarla a menos que lo pidan.]', timestamp: Date.now() });
+        ctx.conversations[phone].push({ role: 'assistant', content: '📋 [Propuesta web enviada con link interactivo. No volver a enviarla a menos que lo pidan.]', timestamp: Date.now() });
         // Texto ya se envió antes del PDF — limpiar aiMessage para no duplicar
         aiMessage = '';
       } else {
         const textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
-        aiMessage = textoAntes + (textoAntes ? '\n\n' : '') + 'Hubo un problema generando el PDF de cotización. Intenta de nuevo en un momento.';
+        aiMessage = textoAntes + (textoAntes ? '\n\n' : '') + 'Hubo un problema generando la propuesta. Intenta de nuevo en un momento.';
       }
     }
   } else {
