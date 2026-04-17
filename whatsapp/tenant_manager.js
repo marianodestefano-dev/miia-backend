@@ -1174,8 +1174,15 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         // ═══ F1 (Bug P): cargar dedup persistido de Firestore ═══
         // Pre-puebla processedMessages con msgIds de vidas anteriores.
         // Evita re-procesar fantasmas post-deploy.
-        loadDedupFromFirestore(uid).catch(e =>
-          console.warn(`[TM:${uid}] ⚠️ Dedup load fallback:`, e.message));
+        // CRÍTICO: flag _dedupReady bloquea mensajes hasta que la carga termine.
+        // Sin esto, hay race condition: mensajes llegan antes del load.
+        tenant._dedupReady = false;
+        loadDedupFromFirestore(uid).then(() => {
+          tenant._dedupReady = true;
+        }).catch(e => {
+          console.warn(`[TM:${uid}] ⚠️ Dedup load fallback:`, e.message);
+          tenant._dedupReady = true; // Liberar aunque falle — no bloquear forever
+        });
 
         if (ioInstance) {
           ioInstance.to(`tenant:${uid}`).emit('whatsapp_ready', { uid, status: 'connected' });
@@ -1628,6 +1635,21 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
             }
           }
           continue;
+        }
+
+        // ═══ F1 (Bug P): gate — esperar a que dedup esté cargado de Firestore ═══
+        // Sin esto, mensajes llegan antes del load y pasan como nuevos (race condition).
+        if (!tenant._dedupReady) {
+          // Esperar máximo 3s para que Firestore cargue
+          const dedupWaitStart = Date.now();
+          while (!tenant._dedupReady && (Date.now() - dedupWaitStart) < 3000) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+          if (!tenant._dedupReady) {
+            console.warn(`[TM:${uid}] ⚠️ [DEDUP-GATE] Timeout 3s esperando dedup load — procesando sin protección Firestore`);
+          } else {
+            console.log(`[TM:${uid}] 🛡️ [DEDUP-GATE] Dedup listo tras ${Date.now() - dedupWaitStart}ms de espera`);
+          }
         }
 
         // ═══ F2 (Bug P): canario timestamp durante boot ═══
