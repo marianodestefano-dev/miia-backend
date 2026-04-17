@@ -6742,6 +6742,81 @@ REGLAS:
       }
     }
 
+    // ── TAG [CLASIFICAR_CONTACTO:phone|tipo] — Owner clasifica desde self-chat (C-167 / BUG-B3) ──
+    // Paridad con TMH. Solo aplica en self-chat del owner MIIA CENTER.
+    // Tipos normalizados: lead | client | familia | equipo | ignore | block
+    if (isSelfChat && OWNER_UID) {
+      const clasificarMatches = aiMessage.match(/\[CLASIFICAR_CONTACTO:([^\]]+)\]/g);
+      if (clasificarMatches) {
+        for (const tag of clasificarMatches) {
+          try {
+            const inner = tag.replace('[CLASIFICAR_CONTACTO:', '').replace(']', '');
+            const parts = inner.split('|').map(p => p.trim());
+            if (parts.length < 2) {
+              console.warn(`[CLASIFICAR] ⚠️ Tag inválido (partes<2): ${tag}`);
+              continue;
+            }
+            const [rawPhone, rawType] = parts;
+            const targetPhone = String(rawPhone || '').replace(/[^0-9]/g, '');
+            if (!targetPhone || targetPhone.length < 8) {
+              console.warn(`[CLASIFICAR] ⚠️ Número inválido: "${rawPhone}" → "${targetPhone}"`);
+              continue;
+            }
+            const typeMap = {
+              'lead':     { type: 'lead',                                    status: 'classified' },
+              'client':   { type: 'client',                                  status: 'classified' },
+              'cliente':  { type: 'client',                                  status: 'classified' },
+              'family':   { type: 'familia',                                 status: 'classified' },
+              'familia':  { type: 'familia',                                 status: 'classified' },
+              'team':     { type: 'equipo',                                  status: 'classified' },
+              'equipo':   { type: 'equipo',                                  status: 'classified' },
+              'ignore':   { type: contactTypes[targetPhone] || 'unknown',    status: 'ignored' },
+              'ignorar':  { type: contactTypes[targetPhone] || 'unknown',    status: 'ignored' },
+              'block':    { type: contactTypes[targetPhone] || 'unknown',    status: 'blocked' },
+              'bloquear': { type: contactTypes[targetPhone] || 'unknown',    status: 'blocked' },
+            };
+            const mapped = typeMap[String(rawType || '').toLowerCase().trim()];
+            if (!mapped) {
+              console.warn(`[CLASIFICAR] ⚠️ Tipo inválido: "${rawType}"`);
+              continue;
+            }
+            const existingName = leadNames[targetPhone] ||
+                                 leadNames[`${targetPhone}@s.whatsapp.net`] || '';
+            // Persistir en Firestore contact_index
+            await admin.firestore().collection('users').doc(OWNER_UID)
+              .collection('contact_index').doc(targetPhone)
+              .set({
+                type: mapped.type,
+                status: mapped.status,
+                name: existingName,
+                awaitingClassification: false,
+                classifiedAt: new Date().toISOString(),
+                classifiedBy: 'owner_selfchat_tag',
+                updatedAt: new Date().toISOString(),
+              }, { merge: true });
+            // Sincronizar memoria
+            contactTypes[targetPhone] = mapped.type;
+            contactTypes[`${targetPhone}@s.whatsapp.net`] = mapped.type;
+            // Si familia/equipo → agregar a contact_groups
+            if (mapped.type === 'familia' || mapped.type === 'equipo') {
+              try {
+                await admin.firestore().collection('users').doc(OWNER_UID)
+                  .collection('contact_groups').doc(mapped.type)
+                  .collection('contacts').doc(targetPhone)
+                  .set({ name: existingName, addedAt: new Date().toISOString() }, { merge: true });
+              } catch (grpErr) {
+                console.error(`[CLASIFICAR] ⚠️ Error contact_groups ${mapped.type}: ${grpErr.message}`);
+              }
+            }
+            console.log(`[CLASIFICAR] ✅ ${targetPhone} clasificado como ${mapped.type} (status: ${mapped.status})`);
+          } catch (clasErr) {
+            console.error(`[CLASIFICAR] ❌ Error procesando tag ${tag}: ${clasErr.message}`);
+          }
+        }
+        aiMessage = aiMessage.replace(/\[CLASIFICAR_CONTACTO:[^\]]+\]/g, '').trim();
+      }
+    }
+
     // ── TAG [RECORDAR_OWNER:fecha|mensaje] — Contacto dice "recuérdale a Mariano que..." ──
     const recordOwnerMatch = aiMessage.match(/\[RECORDAR_OWNER:([^|]+)\|([^\]]+)\]/);
     if (recordOwnerMatch) {

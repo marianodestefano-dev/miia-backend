@@ -4826,6 +4826,82 @@ REGLAS:
         await sendToOwnerSelfChat(`📩 *${basePhone}* te dice:\n"${msgForOwner}"`);
       }
 
+      // ── TAG [CLASIFICAR_CONTACTO:phone|tipo] — Owner clasifica desde self-chat (C-167 / BUG-B3) ──
+      // Solo aplica en self-chat. Espeja el patrón de C-037 (TMH:1775-1830) pero detectando
+      // el tag emitido por la IA cuando el owner pasa "Lead = +número", "Cliente = +...", etc.
+      // Tipos normalizados: lead | client | familia | equipo | ignore | block
+      if (isSelfChat) {
+        const clasificarMatches = aiMessage.match(/\[CLASIFICAR_CONTACTO:([^\]]+)\]/g);
+        if (clasificarMatches) {
+          for (const tag of clasificarMatches) {
+            try {
+              const inner = tag.replace('[CLASIFICAR_CONTACTO:', '').replace(']', '');
+              const parts = inner.split('|').map(p => p.trim());
+              if (parts.length < 2) {
+                console.warn(`${logPrefix} [CLASIFICAR-TMH] ⚠️ Tag inválido (partes<2): ${tag}`);
+                continue;
+              }
+              const [rawPhone, rawType] = parts;
+              const targetPhone = String(rawPhone || '').replace(/[^0-9]/g, '');
+              if (!targetPhone || targetPhone.length < 8) {
+                console.warn(`${logPrefix} [CLASIFICAR-TMH] ⚠️ Número inválido: "${rawPhone}" → "${targetPhone}"`);
+                continue;
+              }
+              // Normalizar tipo — paridad con C-037 (familia/equipo, no family/team en Firestore)
+              const typeMap = {
+                'lead':     { type: 'lead',                                         status: 'classified' },
+                'client':   { type: 'client',                                       status: 'classified' },
+                'cliente':  { type: 'client',                                       status: 'classified' },
+                'family':   { type: 'familia',                                      status: 'classified' },
+                'familia':  { type: 'familia',                                      status: 'classified' },
+                'team':     { type: 'equipo',                                       status: 'classified' },
+                'equipo':   { type: 'equipo',                                       status: 'classified' },
+                'ignore':   { type: ctx.contactTypes[targetPhone] || 'unknown',     status: 'ignored' },
+                'ignorar':  { type: ctx.contactTypes[targetPhone] || 'unknown',     status: 'ignored' },
+                'block':    { type: ctx.contactTypes[targetPhone] || 'unknown',     status: 'blocked' },
+                'bloquear': { type: ctx.contactTypes[targetPhone] || 'unknown',     status: 'blocked' },
+              };
+              const mapped = typeMap[String(rawType || '').toLowerCase().trim()];
+              if (!mapped) {
+                console.warn(`${logPrefix} [CLASIFICAR-TMH] ⚠️ Tipo inválido: "${rawType}"`);
+                continue;
+              }
+              // Nombre ya conocido (si existe)
+              const existingName = ctx.leadNames[targetPhone] ||
+                                   ctx.leadNames[`${targetPhone}@s.whatsapp.net`] || '';
+              // Persistir en Firestore (helper existente)
+              await saveContactIndex(ownerUid, targetPhone, {
+                type: mapped.type,
+                status: mapped.status,
+                name: existingName,
+                awaitingClassification: false,
+                classifiedAt: new Date().toISOString(),
+                classifiedBy: 'owner_selfchat_tag',
+                updatedAt: new Date().toISOString(),
+              });
+              // Sincronizar memoria (evita desincronización que C-037 tiene)
+              ctx.contactTypes[targetPhone] = mapped.type;
+              ctx.contactTypes[`${targetPhone}@s.whatsapp.net`] = mapped.type;
+              // Si familia/equipo → agregar a contact_groups (paridad con C-037:1808-1816)
+              if (mapped.type === 'familia' || mapped.type === 'equipo') {
+                try {
+                  await db().collection('users').doc(ownerUid)
+                    .collection('contact_groups').doc(mapped.type)
+                    .collection('contacts').doc(targetPhone)
+                    .set({ name: existingName, addedAt: new Date().toISOString() }, { merge: true });
+                } catch (grpErr) {
+                  console.error(`${logPrefix} [CLASIFICAR-TMH] ⚠️ Error contact_groups ${mapped.type}: ${grpErr.message}`);
+                }
+              }
+              console.log(`${logPrefix} [CLASIFICAR-TMH] ✅ ${targetPhone} clasificado como ${mapped.type} (status: ${mapped.status})`);
+            } catch (clasErr) {
+              console.error(`${logPrefix} [CLASIFICAR-TMH] ❌ Error procesando tag ${tag}: ${clasErr.message}`);
+            }
+          }
+          aiMessage = aiMessage.replace(/\[CLASIFICAR_CONTACTO:[^\]]+\]/g, '').trim();
+        }
+      }
+
       // ── TAG [CREAR_TAREA:título|fecha|notas] — Google Tasks ──
       try {
         const googleTasks = require('../integrations/google_tasks_integration');
