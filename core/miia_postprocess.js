@@ -634,27 +634,40 @@ async function runAIAudit(aiMessage, opts = {}) {
  * @returns {string}
  */
 function getFallbackMessage(vetoReason, chatType) {
+  // Op B aplicada (C-146 del changelog de decisiones, ejecutada
+  // en C-162): fallbacks pelados sin emoji, diferenciados por
+  // chatType. En selfchat el owner sabe que habla con MIIA — podemos
+  // ser directos y honestos. En leads se mantiene tono genérico
+  // y cálido para no romper la ilusión de persona real.
+  const isSelfChat = chatType === 'selfchat' || chatType === 'self';
+
   if (/IDENTIDAD/.test(vetoReason)) {
-    // MIIA se delató como IA — responder con humor
-    return '😄 Recién salgo de una reunión larguísima, ¿en qué te puedo ayudar?';
+    return isSelfChat
+      ? 'Perdón, no puedo procesar esto como estaba.'
+      : '¡Hola! ¿En qué te puedo ayudar?';
   }
   if (/PROMESA/.test(vetoReason)) {
-    // MIIA confirmó acción no ejecutada — ser honesta
-    return 'Dejame verificar eso y te confirmo en un momento.';
+    return isSelfChat
+      ? 'No pude verificar esto, revisalo vos.'
+      : 'Dejame confirmar y te respondo.';
   }
   if (/VERDAD/.test(vetoReason)) {
-    // MIIA alucinó datos
-    return '🤷‍♀️ No tengo esa info confirmada ahora, dejame averiguar.';
+    return isSelfChat
+      ? 'No tengo esto confirmado.'
+      : 'No tengo esa info ahora, dejame averiguar.';
   }
   if (/MECÁNICA/.test(vetoReason)) {
-    // MIIA expuso mecánica interna — regenerar con tono humano
-    return 'Dejame verificar eso y te cuento.';
+    return isSelfChat
+      ? 'Algo falló acá.'
+      : 'Dejame revisar eso y te cuento.';
   }
   if (/LEAD_TRIGGERS/.test(vetoReason)) {
-    // MIIA usó triggers de familia/grupo con un lead
-    return '¡Hola! Contame, ¿en qué te puedo ayudar? 😊';
+    return '¡Hola! Contame, ¿en qué te puedo ayudar?';
   }
-  return '¡Hola! ¿En qué te puedo ayudar? 😊';
+  // DEFAULT
+  return isSelfChat
+    ? 'No pude procesar este mensaje.'
+    : '¡Hola! ¿En qué te puedo ayudar?';
 }
 
 module.exports = {
