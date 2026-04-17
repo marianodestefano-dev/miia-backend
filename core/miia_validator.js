@@ -95,9 +95,9 @@ function validatePreSend(message, ctx = {}) {
           console.error(`${logPrefix} 🚨 [VALIDATOR:PROMESA-ROTA] MIIA dice que hizo ${action} pero flag=${flags[action]} — CORRIGIENDO`);
           // Reemplazar confirmación falsa por respuesta honesta
           const replacements = {
-            email: 'Lo intenté pero hubo un problema técnico con el correo. Voy a reintentarlo.',
+            email: 'No pude enviar el correo. Si querés reintentarlo, pedímelo de nuevo.',
             agenda: 'No pude agendar el evento por un problema técnico. ¿Querés que lo intente de nuevo?',
-            tarea: 'No pude crear la tarea por un problema técnico. Reintentando...',
+            tarea: 'No pude crear la tarea. Si querés reintentarlo, pedímelo de nuevo.',
             cancel: 'No pude eliminar el evento. Puede que necesite que lo hagas manualmente desde el calendario.',
             move: 'No pude mover el evento por un problema técnico. ¿Querés que lo intente de nuevo?',
             cotizacion: 'Hubo un problema generando la cotización. Intenta de nuevo en un momento.',
