@@ -675,10 +675,11 @@ async function classifyContact(ctx, basePhone, messageBody, tenantState) {
   // PASO 0: contact_index
   const cached = await lookupContactIndex(ownerUid, basePhone);
   if (cached) {
-    // BLOQUEO PRECAUTORIO: Si el contacto está en awaitingClassification, NO retornar como clasificado.
-    // Dejarlo caer al PASO 7 donde handleUnknownContactBlock lo maneja con anti-spam.
-    if (cached.awaitingClassification || cached.status === 'unknown') {
-      console.log(`${logPrefix} 📇 PASO 0: contact_index hit → status=${cached.status}, awaitingClassification=true — skip (bloqueo precautorio activo)`);
+    // BLOQUEO PRECAUTORIO + RE-EVALUACIÓN: Si el contacto está sin clasificar o pendiente,
+    // NO retornar — dejarlo caer a la cascada para que se re-evalúe con IA.
+    // Esto permite que "desconocido" → "amigo" conforme MIIA acumula más contexto.
+    if (cached.awaitingClassification || cached.status === 'unknown' || cached.type === 'pending' || cached.type === 'desconocido') {
+      console.log(`${logPrefix} 📇 PASO 0: contact_index hit → type=${cached.type}, status=${cached.status} — RE-EVALUACIÓN (no clasificado aún)`);
       // NO retornar — seguir la cascada de clasificación
     } else if (cached.status === 'ignored' || cached.status === 'blocked') {
       console.log(`${logPrefix} 📇 PASO 0: contact_index hit → status=${cached.status} — silencio total`);
