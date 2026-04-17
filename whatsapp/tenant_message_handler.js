@@ -49,7 +49,7 @@ const featureAnnouncer = require('../core/feature_announcer');
 const securityContacts = require('../services/security_contacts');
 const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig, checkCalendarAvailability, checkSlotAvailability, detectEventCategory } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
-const { applyMiiaEmoji } = require('../core/miia_emoji');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic } = require('../core/miia_emoji');
 
 const aiGateway = require('../ai/ai_gateway');
 const promptCache = require('../ai/prompt_cache');
@@ -5059,11 +5059,20 @@ REGLAS:
   // — un humano no pone 🦎 al inicio de sus mensajes de WhatsApp.
   if (ownerRevealsAsAI || isSelfChat) {
     const actionsExecuted = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed, _cancelTagProcessed, _moveTagProcessed, _cotizTagProcessed].filter(Boolean).length;
+    // ── Construir emojiCtx con paridad server.js (C-189 Bug TMH-EMOJI) ──
+    const ownerMood = detectOwnerMood(messageBody || '');
+    const topicDetected = detectMessageTopic(messageBody || '');
+    const isGreeting = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(messageBody || '');
+    const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(messageBody || '');
     aiMessage = applyMiiaEmoji(aiMessage, {
       isSelfChat,
       contactType: contactType || 'lead',
       messageBody,
       isMultiAction: actionsExecuted >= 2,
+      ownerMood,
+      topic: topicDetected.topic,
+      cinemaSub: topicDetected.cinemaSub,
+      trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
     });
   } else {
     // Owner simula ser persona → solo limpiar emojis que Gemini puso, sin agregar el oficial
