@@ -2460,7 +2460,7 @@ async function safeSendMessage(target, content, options = {}) {
     // ═══ BIG MOOD EMOJI: Enviar emoji SOLO (grande en WhatsApp) la primera vez del día ═══
     // Cada emoji tiene su propio flag diario — pueden activarse varios en un día.
     // shouldBigEmoji() retorna true solo la primera vez hoy para ese emoji.
-    const bigEmojiMatch = content.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*):\s*/u);
+    const bigEmojiMatch = content.match(/^((?:[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)+):\s*/u);
     if (bigEmojiMatch && shouldBigEmoji(bigEmojiMatch[1])) {
       const bigEmoji = bigEmojiMatch[1];
       const textWithoutEmoji = content.substring(bigEmojiMatch[0].length);
@@ -9246,7 +9246,7 @@ async function handleIncomingMessage(message) {
   // Esto cubre TODOS los casos: SPLIT-SMART, MULTI-MSG, mensajes normales, etc.
   // MIIA siempre prefija sus mensajes con emoji en self-chat, así que si vuelve con emoji → ignorar
   if (fromMe && body) {
-    const emojiLoopMatch = body.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)\s*:\s*/u);
+    const emojiLoopMatch = body.match(/^((?:[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)+)\s*:\s*/u);
     if (emojiLoopMatch && MIIA_OFFICIAL_EMOJIS.has(emojiLoopMatch[1])) {
       console.log(`[ANTI-LOOP] 🛡️ Eco de MIIA detectado (emoji ${emojiLoopMatch[1]}) — ignorando. body="${body.substring(0,60)}"`);
       return;

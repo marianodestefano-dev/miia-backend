@@ -5090,7 +5090,7 @@ REGLAS:
   }
 
   // ═══ BIG MOOD EMOJI: Enviar emoji SOLO (grande en WhatsApp) la primera vez del día ═══
-  const bigEmojiMatchTMH = aiMessage.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*):\s*/u);
+  const bigEmojiMatchTMH = aiMessage.match(/^((?:[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*)+):\s*/u);
   if (bigEmojiMatchTMH && shouldBigEmoji(bigEmojiMatchTMH[1])) {
     const bigEmoji = bigEmojiMatchTMH[1];
     try {
