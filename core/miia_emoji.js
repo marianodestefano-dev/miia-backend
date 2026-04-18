@@ -17,6 +17,7 @@ const emojiState = {
   offenseCycleCount: 0,  // Ciclos insulto→disculpa en el día
   offenseCycleDate: '',  // Fecha del conteo (YYYY-MM-DD)
   sleepUntil: null,      // Date ISO — MIIA dormida, solo envía recordatorios sin emoji
+  postApologyCooldown: 0, // Msgs restantes de enfriamiento post-perdón. Flirt bloqueado hasta 0.
 };
 
 /**
@@ -53,6 +54,11 @@ function getMiiaEmoji(message, ctx = {}) {
       emojiState.sleepUntil = null; // Expiró
       emojiState.offenseCycleCount = 0;
     }
+  }
+
+  // Decrementar cooldown post-perdón (cada mensaje acerca a MIIA a aceptar flirt de nuevo)
+  if (emojiState.postApologyCooldown > 0) {
+    emojiState.postApologyCooldown--;
   }
 
   const month = localNow.getMonth() + 1; // 1-12
@@ -299,19 +305,9 @@ function detectOwnerMood(text) {
   // Enojo (sin insulto directo)
   if (/\b(hiciste mal|error tuyo|la cagaste|te equivocaste|eso esta mal|por que hiciste eso|no era asi|arruinaste)\b/.test(lower)) return 'angry';
 
-  // Flirt
-  if (/\b(novia|casate conmigo|te quiero miia|mi novia|sali conmigo|enamorad[ao])\b/.test(lower)) return 'flirt';
-
-  // Estrés
-  if (/\b(estresad[ao]|agotad[ao]|no puedo mas|quemad[ao]|burn.?out|colapsad[ao]|exhausto|no doy mas)\b/.test(lower)) return 'stressed';
-
-  // Triste
-  if (/\b(triste|deprimid[ao]|mal dia|llorando|angustiad[ao]|decaid[ao])\b/.test(lower)) return 'sad';
-
-  // Feliz/entusiasmado
-  if (/\b(feliz|content[ao]|genial dia|increible dia|vamos|siii+|dale que|buenisim[ao])\b/.test(lower)) return 'happy';
-
   // Disculpa (resetea offended + cuenta ciclo)
+  // ANTES de flirt: si MIIA está ofendida, "te quiero perdoname" es disculpa, no coqueteo.
+  // El traje de novia viene de contexto limpio, no como escape de una pelea.
   if (/\b(perdon|disculpa|lo siento|perdoname|fue mi culpa|me pase)\b/.test(lower)) {
     if (emojiState.offendedUntil) {
       // Contar ciclo insulto→disculpa
@@ -333,8 +329,25 @@ function detectOwnerMood(text) {
       }
     }
     emojiState.offendedUntil = null; // Reset offended
+    emojiState.postApologyCooldown = 10; // 10 msgs de enfriamiento antes de aceptar flirt
     return 'apologized'; // Señal para que MIIA agradezca
   }
+
+  // Flirt — solo en contexto limpio: no viene de una ofensa reciente
+  // Si hay cooldown post-perdón activo, "te quiero" es cariño post-pelea, no coqueteo
+  if (/\b(novia|casate conmigo|te quiero miia|mi novia|sali conmigo|enamorad[ao])\b/.test(lower)) {
+    if (emojiState.postApologyCooldown > 0) return 'normal'; // Todavía enfriando — no flirt
+    return 'flirt';
+  }
+
+  // Estrés
+  if (/\b(estresad[ao]|agotad[ao]|no puedo mas|quemad[ao]|burn.?out|colapsad[ao]|exhausto|no doy mas)\b/.test(lower)) return 'stressed';
+
+  // Triste
+  if (/\b(triste|deprimid[ao]|mal dia|llorando|angustiad[ao]|decaid[ao])\b/.test(lower)) return 'sad';
+
+  // Feliz/entusiasmado
+  if (/\b(feliz|content[ao]|genial dia|increible dia|vamos|siii+|dale que|buenisim[ao])\b/.test(lower)) return 'happy';
 
   return 'normal';
 }
