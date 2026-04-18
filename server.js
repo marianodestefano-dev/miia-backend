@@ -8639,6 +8639,16 @@ REGLAS:
       chatType: postChatType, // Para emojis diferenciados (👩‍🔧 soporte, 👩‍💻 ventas MIIA)
     };
 
+    // ═══ C-224/F4: Detectar topic del INPUT del owner (no solo de la respuesta de MIIA) ═══
+    if (effectiveMsg) {
+      const ownerTopicDetected = detectMessageTopic(effectiveMsg);
+      if (ownerTopicDetected.topic !== 'general') {
+        emojiCtx.topic = ownerTopicDetected.topic;
+        if (ownerTopicDetected.cinemaSub) emojiCtx.cinemaSub = ownerTopicDetected.cinemaSub;
+        console.log(`[EMOJI-F4] 🎯 Topic detectado del input owner: ${ownerTopicDetected.topic} (msg: "${effectiveMsg.substring(0, 40)}...")`);
+      }
+    }
+
     // ═══ TTS: Responder con audio SOLO cuando el owner manda audio ═══
     let sentAsAudio = false;
     // mediaContext only exists in messages.upsert handler, not here
