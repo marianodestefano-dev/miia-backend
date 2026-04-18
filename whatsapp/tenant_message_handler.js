@@ -49,7 +49,7 @@ const featureAnnouncer = require('../core/feature_announcer');
 const securityContacts = require('../services/security_contacts');
 const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig, checkCalendarAvailability, checkSlotAvailability, detectEventCategory } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
-const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic } = require('../core/miia_emoji');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, getCurrentMiiaMood } = require('../core/miia_emoji');
 
 const aiGateway = require('../ai/ai_gateway');
 const promptCache = require('../ai/prompt_cache');
@@ -2387,6 +2387,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     console.log(`[TMH:${uid}] 📋 AGENT SELF-CHAT: ${agentName} → prompt negocio-only (${businessName})`);
   } else if (isSelfChat) {
     // ── SELF-CHAT OWNER: Completo (personal + negocios + contactos) ──
+    ctx.ownerProfile.currentMood = getCurrentMiiaMood(); // C-214: conectar cable suelto PASO 6
     activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
 
     // ═══ FIX SALUDO: Inyectar aviso si ya saludó en esta franja ═══
