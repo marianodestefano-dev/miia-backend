@@ -6180,8 +6180,14 @@ REGLAS:
         }
       }
 
-      // PASO 2: Auditoría IA con Gemini Flash (100% de los mensajes, ~1-2s)
-      // Se ejecuta SIEMPRE, incluso si regex aprobó — atrapa lo que regex no puede
+      // PASO 2: Auditoría IA con Gemini Flash
+      // ═══ C-230/F5: Niveles auditor — A (leads/clients) vs C (selfchat/familia) ═══
+      // Nivel A: runAIAudit SIEMPRE → leads, miia_lead, miia_client, client
+      // Nivel C: skip runAIAudit → selfchat, family, equipo (solo regex, 2ms vs 1-2s)
+      const auditLevel = ['selfchat', 'self', 'family', 'equipo'].includes(postChatType) ? 'C' : 'A';
+      if (auditLevel === 'C') {
+        console.log(`[POSTPROCESS:AI] ℹ️ Nivel ${auditLevel} — skip auditor IA (${postChatType})`);
+      } else {
       const aiAuditResult = await runAIAudit(aiMessage, {
         chatType: postChatType,
         contactName: postContactName,
@@ -6242,6 +6248,7 @@ REGLAS:
         }
         // minor → solo logear, no bloquear (ya se logeó arriba)
       }
+      } // end auditLevel === 'A'
 
     } catch (postErr) {
       console.error(`[POSTPROCESS] ⚠️ Error en auditoría (no bloquea): ${postErr.message}`);
