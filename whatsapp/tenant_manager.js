@@ -314,7 +314,7 @@ function _flushSkipCounters(uid) {
   }
   _skipCounters._lastFlush = now;
 }
-const DEDUP_TTL = 1800000; // 30 minutes — sobrevivir ciclos de reconexión Bad MAC
+const DEDUP_TTL = 7200000; // 2 horas (C-210) — H5: entries viejas morían en 30min cleanup, re-delivery con ts fresco pasaba isDuplicate
 const DEDUP_CLEANUP_INTERVAL = 60000; // cleanup every 60s
 
 setInterval(() => {
