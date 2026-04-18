@@ -363,7 +363,13 @@ async function loadDedupFromFirestore(uid) {
         // Preserva Date.now() fresco de isDuplicate() contra
         // re-cargas post-Bad-MAC que traerían ts viejo de Firestore.
         if (!processedMessages.has(dedupKey)) {
-          processedMessages.set(dedupKey, entryMs);
+          // C-205: Usar Date.now() (no entryMs) para que
+          // la entry sobreviva al cleanup TTL 30min in-memory.
+          // Sin esto, entries de Firestore con ts antiguos
+          // se borran en el primer cleanup post-boot y
+          // quedan desprotegidas contra re-entregas de
+          // Baileys con ts fresco (bug visto en C-204).
+          processedMessages.set(dedupKey, Date.now());
           loaded++;
         } else {
           skipped++;
