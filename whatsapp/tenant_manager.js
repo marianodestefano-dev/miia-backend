@@ -1660,6 +1660,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
         const _watermarkS = Math.floor(SERVER_START_TIME / 1000) - 60;
         if (_msgTsRaw > 0 && _msgTsRaw < _watermarkS) {
+          // Registrar msgId en dedup para bloquear re-entregas con ts actualizado
+          isDuplicate(msg.key.id, uid);
+          schedulePersistDedup(uid, msg.key.id, _msgTsRaw);
           _skipCounters.postBootStale++;
           _flushSkipCounters(uid);
           continue;
