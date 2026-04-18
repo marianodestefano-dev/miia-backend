@@ -354,14 +354,23 @@ async function loadDedupFromFirestore(uid) {
     const data = doc.data();
     const cutoffMs = Date.now() - DEDUP_PERSIST_TTL_MS;
     let loaded = 0;
+    let skipped = 0;
     for (const entry of (data.msgIds || [])) {
       const entryMs = (entry.ts || 0) * 1000; // ts en segundos (formato Baileys)
       if (entryMs > cutoffMs && entry.id) {
-        processedMessages.set(`${uid}:${entry.id}`, entryMs);
-        loaded++;
+        const dedupKey = `${uid}:${entry.id}`;
+        // C-203: NO sobrescribir si ya existe in-memory.
+        // Preserva Date.now() fresco de isDuplicate() contra
+        // re-cargas post-Bad-MAC que traerían ts viejo de Firestore.
+        if (!processedMessages.has(dedupKey)) {
+          processedMessages.set(dedupKey, entryMs);
+          loaded++;
+        } else {
+          skipped++;
+        }
       }
     }
-    console.log(`[TM:${uid}] 🛡️ Dedup cargado de Firestore: ${loaded} msgIds (TTL 48h)`);
+    console.log(`[TM:${uid}] 🛡️ Dedup cargado de Firestore: ${loaded} msgIds (${skipped} ya en memoria, TTL 7d)`);
     return loaded;
   } catch (e) {
     console.warn(`[TM:${uid}] ⚠️ Dedup load error:`, e.message);
