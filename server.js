@@ -3893,7 +3893,7 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
 
       // ═══ OUTFIT MODE — Asesor de moda personal con Vision ═══
       const outfitCmd = miiaOutfit.detectOutfitCommand(effectiveMsg, hasImage);
-      if (outfitCmd.isOutfit) {
+      if (false && outfitCmd.isOutfit) { // C-232/F6: desactivado, Mariano prefiere que pase por IA con personalidad. Feature outfit v2 va a IDEAS_HORIZONTE_3 #5.
         console.log(`[OUTFIT] 👗 Comando detectado: ${outfitCmd.type}`);
         try {
           const wardrobeRef = db.collection('users').doc(OWNER_UID).collection('miia_wardrobe');
