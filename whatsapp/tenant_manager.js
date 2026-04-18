@@ -566,14 +566,31 @@ function handleCryptoError(uid, tenant, errorStr = '') {
 
     if (contactJid && !tracker.contactPurges.has(contactJid)) {
       tracker.contactPurges.add(contactJid);
-      // Purge con @s.whatsapp.net Y @lid (LIDs usan ambos sufijos)
-      const purgeJid = contactJid.length > 15 ? contactJid + '@lid' : contactJid + '@s.whatsapp.net';
-      tenant._sessionApis.purgeSessionKeysForContact(purgeJid)
-        .then(purged => {
-          if (purged > 0) console.log(`[TM:${uid}] 🎯 Per-contact purge: ${purged} keys for ${contactJid}`);
-          else console.log(`[TM:${uid}] 🔍 Per-contact purge: 0 keys found for ${contactJid} (may use different key format)`);
-        })
-        .catch(e => console.error(`[TM:${uid}] Per-contact purge error:`, e.message));
+      // Fix C-220A: Probar AMBOS sufijos (@lid y @s.whatsapp.net)
+      // LIDs de exactamente 15 dígitos (ej: 136417472712832) fallaban con > 15
+      // porque 15 > 15 = false → usaba @s.whatsapp.net → 0 keys encontradas → per-contact purge inútil
+      const isLikelyLid = contactJid.length >= 15;
+      const suffixes = isLikelyLid
+        ? ['@lid', '@s.whatsapp.net']  // LIDs: probar @lid primero, fallback @s.whatsapp.net
+        : ['@s.whatsapp.net'];          // Phones: solo @s.whatsapp.net
+      (async () => {
+        let totalPurged = 0;
+        for (const suffix of suffixes) {
+          try {
+            const purged = await tenant._sessionApis.purgeSessionKeysForContact(contactJid + suffix);
+            totalPurged += purged;
+            if (purged > 0) {
+              console.log(`[TM:${uid}] 🎯 Per-contact purge: ${purged} keys for ${contactJid}${suffix}`);
+              break; // Encontró keys con este sufijo, no probar el otro
+            }
+          } catch (e) {
+            console.error(`[TM:${uid}] Per-contact purge error (${suffix}):`, e.message);
+          }
+        }
+        if (totalPurged === 0) {
+          console.log(`[TM:${uid}] 🔍 Per-contact purge: 0 keys for ${contactJid} (tried ${suffixes.join(', ')})`);
+        }
+      })();
     }
   }
 

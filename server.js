@@ -64,6 +64,25 @@ const shield = require('./core/resilience_shield');
 process.on('unhandledRejection', (err) => {
   console.error('[UNHANDLED REJECTION]', err);
   shield.recordNodeError('unhandledRejection', err);
+
+  // Fix C-220B: Baileys "Timed Out" puede dejar socket zombie (conectado pero inbound muerto)
+  // Forzar que _lastRealEvent sea viejo para que Watchdog V2 haga probe activo en su próximo ciclo
+  const errMsg = err?.message || '';
+  if (errMsg === 'Timed Out' || errMsg.includes('Timed Out')) {
+    console.warn('[UNHANDLED REJECTION] ⚠️ Baileys Timed Out — forzando probe en próximo watchdog');
+    try {
+      const { getConnectedTenants } = require('./whatsapp/tenant_manager');
+      const connected = getConnectedTenants();
+      for (const t of connected) {
+        if (t.tenant._lastRealEvent) {
+          t.tenant._lastRealEvent = Date.now() - 11 * 60000; // 11 min atrás → Watchdog hará probe
+          console.log(`[UNHANDLED REJECTION] 🔍 Probe forzado para tenant ${t.uid.substring(0, 12)}...`);
+        }
+      }
+    } catch (e) {
+      console.error('[UNHANDLED REJECTION] Error forzando probes:', e.message);
+    }
+  }
 });
 
 // Catch uncaught exceptions — registrar en Shield (NO terminar proceso)
