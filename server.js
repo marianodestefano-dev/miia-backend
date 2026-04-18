@@ -6184,7 +6184,15 @@ REGLAS:
       // ═══ C-230/F5: Niveles auditor — A (leads/clients) vs C (selfchat/familia) ═══
       // Nivel A: runAIAudit SIEMPRE → leads, miia_lead, miia_client, client
       // Nivel C: skip runAIAudit → selfchat, family, equipo (solo regex, 2ms vs 1-2s)
-      const auditLevel = ['selfchat', 'self', 'family', 'equipo'].includes(postChatType) ? 'C' : 'A';
+      let auditLevel = ['selfchat', 'self', 'family', 'equipo'].includes(postChatType) ? 'C' : 'A';
+      // F5b-fix: escape hatch — patrón de riesgo factual alto en la respuesta
+      // fuerza audit IA aunque F5 Nivel C dicte skip. Atrapa alucinaciones
+      // deportivas tipo Superclásico (C-243/C-248, 2026-04-18).
+      const FACTUAL_RISK_PATTERN = /(ganó|perdió|empat[óo]|le ganó|goles? de).*?\d{1,2}\s*[-–a]\s*\d{1,2}/i;
+      if (auditLevel === 'C' && FACTUAL_RISK_PATTERN.test(aiMessage)) {
+        console.log('[F5b-escape] ⚠️ Patrón factual de riesgo alto detectado — forzando auditLevel=A');
+        auditLevel = 'A';
+      }
       if (auditLevel === 'C') {
         console.log(`[POSTPROCESS:AI] ℹ️ Nivel ${auditLevel} — skip auditor IA (${postChatType})`);
       } else {
