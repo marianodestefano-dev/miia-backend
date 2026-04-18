@@ -1,0 +1,69 @@
+{
+  "code": "VE",
+  "name": "Venezuela",
+  "flag": "\ud83c\uddfb\ud83c\uddea",
+  "phonePrefix": ["58"],
+  "pais_tag": "INTERNACIONAL",
+  "timezone": "America/Caracas",
+  "normalizedPricing": "OP",
+
+  "currency": { "code": "USD", "symbol": "$", "display": "USD $", "thousandSep": ",", "decimals": 2 },
+
+  "pricing": {
+    "plans": {
+      "esencial": { "base": 45, "adic": 12 },
+      "pro":      { "base": 65, "adic": 13 },
+      "titanium": { "base": 85, "adic": 14 }
+    },
+    "adicEscalonado": false
+  },
+
+  "bolsas": {
+    "wa": { "ranges": [150, 350, 800, 2000], "prices": [15, 35, 70, 170] },
+    "firma": { "ranges": [50, 100, 200, 500], "prices": [25, 40, 70, 170] }
+  },
+
+  "modules": {
+    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
+    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
+    "factura": { "available": false },
+    "receta":  { "available": false }
+  },
+
+  "rules": {
+    "iva": { "rate": 0, "appliesTo": null, "note": "Precios en USD, sin IVA" },
+    "anualOnly": false,
+    "modalidades": ["mensual", "semestral", "anual"],
+    "descuentos": { "mensual": 0.30, "semestral": 0.15, "anual": 0.20 },
+    "promoMensual": "3 meses con descuento 30%, desde mes 4 precio regular",
+    "siigo": null
+  },
+
+  "norms": [
+    { "title": "Ley de Protecci\u00f3n de Datos Personales", "countryOnly": false },
+    { "title": "ISO 27001 \u2014 Seguridad certificada", "countryOnly": false },
+    { "title": "Est\u00e1ndares internacionales telemedicina", "countryOnly": false }
+  ],
+
+  "includedFeatures": [],
+  "videos": { "countrySpecific": [] },
+
+  "dialect": {
+    "style": "tuteo_venezolano",
+    "pronouns": "t\u00fa",
+    "expressions": ["ch\u00e9vere", "fino", "vale", "pana", "de pana", "burda"],
+    "avoid": ["vos", "contame", "decime", "\u00f3rale", "plat\u00edcame", "cach\u00e1i"],
+    "toneNote": "C\u00e1lido y cercano. Venezuela usa tuteo con mucha calidez. 'Ch\u00e9vere' y 'fino' son naturales."
+  },
+
+  "salesDna": {
+    "approach": "Los venezolanos son c\u00e1lidos y conversadores. Tono amigable, empat\u00eda con la situaci\u00f3n econ\u00f3mica del pa\u00eds.",
+    "objections": {
+      "caro": "Muchos profesionales venezolanos est\u00e1n en el exterior o cobran en USD. El precio es competitivo.",
+      "ya_tengo_sistema": "Destacar todo-en-uno con IA.",
+      "lo_pienso": "Fase 2: descuento. Ser emp\u00e1tico con la situaci\u00f3n."
+    },
+    "closingTips": "Muchos m\u00e9dicos venezolanos est\u00e1n en LatAm (Colombia, Chile, Per\u00fa). La herramienta funciona desde cualquier pa\u00eds.",
+    "culturalNotes": "Comunidad m\u00e9dica venezolana muy activa en redes. Si un m\u00e9dico lo recomienda, genera efecto bola de nieve."
+  }
+}

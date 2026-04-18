@@ -1,0 +1,70 @@
+{
+  "code": "US",
+  "name": "Estados Unidos",
+  "flag": "\ud83c\uddfa\ud83c\uddf8",
+  "phonePrefix": ["1"],
+  "pais_tag": "INTERNACIONAL",
+  "timezone": "America/New_York",
+  "normalizedPricing": "OP",
+  "note": "Prefijo +1 se comparte con Canad\u00e1 y Rep. Dominicana. Para +1809/1829/1849 se clasifica como DO. Para el resto de +1 se asume US.",
+
+  "currency": { "code": "USD", "symbol": "$", "display": "USD $", "thousandSep": ",", "decimals": 2 },
+
+  "pricing": {
+    "plans": {
+      "esencial": { "base": 45, "adic": 12 },
+      "pro":      { "base": 65, "adic": 13 },
+      "titanium": { "base": 85, "adic": 14 }
+    },
+    "adicEscalonado": false
+  },
+
+  "bolsas": {
+    "wa": { "ranges": [150, 350, 800, 2000], "prices": [15, 35, 70, 170] },
+    "firma": { "ranges": [50, 100, 200, 500], "prices": [25, 40, 70, 170] }
+  },
+
+  "modules": {
+    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
+    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
+    "factura": { "available": false },
+    "receta":  { "available": false }
+  },
+
+  "rules": {
+    "iva": { "rate": 0, "appliesTo": null, "note": "Precios en USD, sin sales tax (impuesto estatal lo gestiona el cliente)" },
+    "anualOnly": false,
+    "modalidades": ["mensual", "semestral", "anual"],
+    "descuentos": { "mensual": 0.30, "semestral": 0.15, "anual": 0.20 },
+    "promoMensual": "3 meses con descuento 30%, desde mes 4 precio regular",
+    "siigo": null
+  },
+
+  "norms": [
+    { "title": "HIPAA \u2014 Protecci\u00f3n de informaci\u00f3n de salud", "countryOnly": false },
+    { "title": "ISO 27001 \u2014 Seguridad certificada", "countryOnly": false },
+    { "title": "Est\u00e1ndares HL7 FHIR", "countryOnly": false }
+  ],
+
+  "includedFeatures": [],
+  "videos": { "countrySpecific": [] },
+
+  "dialect": {
+    "style": "espanol_neutro",
+    "pronouns": "t\u00fa/usted",
+    "expressions": ["perfecto", "claro", "excelente", "genial"],
+    "avoid": ["vos", "contame", "decime", "\u00f3rale", "plat\u00edcame", "cach\u00e1i", "bacán"],
+    "toneNote": "Espa\u00f1ol neutro profesional. Muchos leads hispanos en EEUU son de diversos pa\u00edses. Usar espa\u00f1ol est\u00e1ndar sin regionalismos. Pueden hablar ingl\u00e9s mezclado \u2014 adaptarse."
+  },
+
+  "salesDna": {
+    "approach": "Profesional y directo. Los hispanos en EEUU valoran eficiencia y herramientas en espa\u00f1ol. Destacar que la plataforma ES en espa\u00f1ol.",
+    "objections": {
+      "caro": "Precios competitivos vs soluciones americanas (que son 5-10x m\u00e1s caras). $45-85 USD/mes es una ganga comparado con Athenahealth o Practice Fusion.",
+      "ya_tengo_sistema": "Preguntar cu\u00e1l. Si es en ingl\u00e9s \u2192 Medilink est\u00e1 100% en espa\u00f1ol, enorme ventaja para pr\u00e1cticas hispanas.",
+      "lo_pienso": "Fase 2: mejorar descuento."
+    },
+    "closingTips": "HIPAA compliance es CR\u00cdTICO en EEUU. Mencionarlo siempre. El precio es imbatible vs competencia americana.",
+    "culturalNotes": "Mercado hispano en EEUU enorme y mal servido. Muchas pr\u00e1cticas usan herramientas en ingl\u00e9s por falta de opciones. Medilink en espa\u00f1ol es diferenciador enorme."
+  }
+}
