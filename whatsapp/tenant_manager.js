@@ -1308,6 +1308,21 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           try { tenant.onReady(sock); } catch (e) { console.error(`[TM:${uid}] onReady error:`, e.message); }
         }
 
+        // ═══ C-240/F3: Escribir sync_state en connection:'open' (opción 3a) ═══
+        // finalizeMining() solo corre si messaging-history.set dispara, que NO pasa
+        // en reconexiones normales. Sin esto, syncFullHistory queda true → Baileys
+        // descarga historial completo en cada boot innecesariamente.
+        // Guard: solo re-persistir si ya estaba marcado como done (reconexión).
+        // Primera conexión (owner nuevo) sigue el flujo normal de finalizeMining.
+        if (initialSyncDone) {
+          syncStateRef.set(
+            { initialSyncDone: true, source: 'connection_open', updatedAt: new Date().toISOString() },
+            { merge: true }
+          )
+            .then(() => console.log(`[TM:${uid}] ✅ F3: sync_state re-persistido (connection:open)`))
+            .catch(e => console.warn(`[TM:${uid}] ⚠️ F3: Error guardando sync_state:`, e.message));
+        }
+
         // ═══ PENDING RECOVERY: Reprocesar mensajes que quedaron sin responder ═══
         // Esperar 10s para que todo esté inicializado antes de reprocesar
         // BUG-022 fix (C-158): Once-per-session cooldown 30min.
