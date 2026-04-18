@@ -17,6 +17,7 @@
  */
 
 const admin = require('firebase-admin');
+const { getUpsertStats } = require('../whatsapp/tenant_manager');
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO GLOBAL
@@ -206,12 +207,27 @@ async function runFullCheck({ tenants = {}, aiGateway = null } = {}) {
 
   _health.lastFullCheck = results.timestamp;
 
-  // Log resumen
+  // Log resumen — C-228/F2: incluye upsert stats
   const baileysDown = Object.entries(results.baileys).filter(([, v]) => !v).map(([k]) => k);
-  if (!results.firestore || baileysDown.length > 0) {
-    console.error(`[HEALTH] 🚨 DEGRADED — Firestore: ${results.firestore ? '✅' : '❌'}, Baileys down: [${baileysDown.join(', ')}], AI: ${results.aiGateway ? '✅' : '⚠️'}`);
+  const upsert = getUpsertStats(null);
+  const uptimeSec = Math.floor((Date.now() - new Date(_health.startedAt).getTime()) / 1000);
+  const hasConnected = Object.values(results.baileys).some(v => v);
+  let upsertTag = `upserts(10m): ${upsert.count10min}, (20m): ${upsert.count20min}`;
+  let upsertWarn = false;
+  if (uptimeSec >= 900 && hasConnected) {
+    if (upsert.count10min === 0 && upsert.count20min === 0) {
+      upsertTag = `❌ upserts(10m): 0, (20m): 0 — ZOMBIE?`;
+      upsertWarn = true;
+    } else if (upsert.count10min === 0) {
+      upsertTag = `⚠️ upserts(10m): 0, (20m): ${upsert.count20min}`;
+      upsertWarn = true;
+    }
+  }
+  if (!results.firestore || baileysDown.length > 0 || upsertWarn) {
+    const icon = (!results.firestore || (upsert.count10min === 0 && upsert.count20min === 0 && uptimeSec >= 900 && hasConnected)) ? '🚨 CRITICAL' : '⚠️ WARN';
+    console.error(`[HEALTH] ${icon} — Firestore: ${results.firestore ? '✅' : '❌'}, Baileys down: [${baileysDown.join(', ')}], AI: ${results.aiGateway ? '✅' : '⚠️'} | ${upsertTag}`);
   } else {
-    console.log(`[HEALTH] ✅ ALL HEALTHY — Firestore: ✅, Baileys: ${Object.keys(results.baileys).length} tenants ✅, AI: ${results.aiGateway ? '✅' : '⚠️'}`);
+    console.log(`[HEALTH] ✅ ALL HEALTHY — Firestore: ✅, Baileys: ${Object.keys(results.baileys).length} tenants ✅, AI: ${results.aiGateway ? '✅' : '⚠️'} | ${upsertTag}`);
   }
 
   return results;
@@ -266,6 +282,19 @@ function getHealthStatus() {
     failures: state.consecutiveFailures
   }));
 
+  // ═══ C-228/F2: Métrica messages.upsert deslizante ═══
+  const uptimeSeconds = Math.floor((Date.now() - new Date(_health.startedAt).getTime()) / 1000);
+  const upsertStats = getUpsertStats(null); // todos los tenants
+  const hasConnectedTenants = baileysStatuses.some(b => b.status === 'healthy');
+  let upsertStatus = 'healthy';
+  if (uptimeSeconds >= 900 && hasConnectedTenants) { // 15 min boot grace
+    if (upsertStats.count10min === 0 && upsertStats.count20min === 0) {
+      upsertStatus = 'critical';
+    } else if (upsertStats.count10min === 0) {
+      upsertStatus = 'warn';
+    }
+  }
+
   const overallStatus =
     _health.firestore.status === 'critical' ? 'critical' :
     baileysStatuses.some(b => b.status === 'disconnected') ? 'degraded' :
@@ -273,7 +302,7 @@ function getHealthStatus() {
 
   return {
     status: overallStatus,
-    uptime: Math.floor((Date.now() - new Date(_health.startedAt).getTime()) / 1000),
+    uptime: uptimeSeconds,
     startedAt: _health.startedAt,
     lastFullCheck: _health.lastFullCheck,
     components: {
@@ -289,6 +318,12 @@ function getHealthStatus() {
         latencyMs: _health.aiGateway.latencyMs,
         lastCheck: _health.aiGateway.lastCheck,
         failures: _health.aiGateway.consecutiveFailures
+      },
+      messagesUpsert: {
+        count10min: upsertStats.count10min,
+        count20min: upsertStats.count20min,
+        lastUpsertAt: upsertStats.lastUpsertAt ? new Date(upsertStats.lastUpsertAt).toISOString() : null,
+        status: upsertStatus,
       }
     }
   };

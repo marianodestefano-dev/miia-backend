@@ -442,6 +442,52 @@ async function flushDedupBuffer() {
 const SERVER_START_TIME = Date.now();
 const STARTUP_GRACE_PERIOD = 90000; // 90s — ignorar errores de mensajes encolados al inicio
 
+// ═══ C-228/F2: Contador messages.upsert con ventana deslizante ═══
+// Registra timestamps de cada mensaje REAL procesado (post-filtros).
+// Usado por HEALTH para detectar zombie sockets (connected pero sin inbound).
+const _messagesUpsertLog = {}; // { uid: [timestamp, ...] }
+
+/**
+ * Registrar un message.upsert procesado exitosamente.
+ */
+function recordUpsert(uid) {
+  if (!_messagesUpsertLog[uid]) _messagesUpsertLog[uid] = [];
+  _messagesUpsertLog[uid].push(Date.now());
+}
+
+/**
+ * Obtener stats de upserts para un uid (o todos si uid es null).
+ * @param {string|null} uid - UID del tenant, o null para todos
+ * @returns {{ count10min: number, count20min: number, lastUpsertAt: number|null }}
+ */
+function getUpsertStats(uid) {
+  const now = Date.now();
+  const cutoff10 = now - 10 * 60 * 1000;
+  const cutoff20 = now - 20 * 60 * 1000;
+  const cutoffCleanup = now - 60 * 60 * 1000; // cleanup entries >1h
+
+  if (uid) {
+    const log = _messagesUpsertLog[uid] || [];
+    _messagesUpsertLog[uid] = log.filter(ts => ts > cutoffCleanup);
+    return {
+      count10min: log.filter(ts => ts > cutoff10).length,
+      count20min: log.filter(ts => ts > cutoff20).length,
+      lastUpsertAt: log.length > 0 ? log[log.length - 1] : null,
+    };
+  }
+
+  // Agregar todos los tenants
+  let total10 = 0, total20 = 0, lastTs = null;
+  for (const [u, log] of Object.entries(_messagesUpsertLog)) {
+    _messagesUpsertLog[u] = log.filter(ts => ts > cutoffCleanup);
+    total10 += log.filter(ts => ts > cutoff10).length;
+    total20 += log.filter(ts => ts > cutoff20).length;
+    const last = log.length > 0 ? log[log.length - 1] : null;
+    if (last && (!lastTs || last > lastTs)) lastTs = last;
+  }
+  return { count10min: total10, count20min: total20, lastUpsertAt: lastTs };
+}
+
 // ═══ C-199: Burst detector post-boot para fantasmas de Baileys ═══
 // Detecta ráfaga de duplicados en primeros 2 min post-boot.
 // Si ≥5 duplicados en 15s → activa watermark EXTENDIDO por 60s
@@ -1749,6 +1795,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
         // ═══ F1 (Bug P): persistir msgId procesado ═══
         schedulePersistDedup(uid, msg.key.id, _msgTsRaw);
+
+        // ═══ C-228/F2: Registrar upsert real para HEALTH ═══
+        recordUpsert(uid);
 
         // Detectar si es mensaje offline (anterior a la conexión)
         const msgTs = _msgTsRaw;
@@ -4127,5 +4176,6 @@ module.exports = {
   saveAllTenantCreds,
   getTenantTrainingData,
   persistTrainingDataChunked,
-  loadTrainingDataChunked
+  loadTrainingDataChunked,
+  getUpsertStats,
 };
