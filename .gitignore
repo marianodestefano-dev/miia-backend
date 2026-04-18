@@ -42,3 +42,9 @@ Páginas*
 
 # Runtime database (contains user configs and potential credentials)
 data/db.json
+
+# ADN extraction outputs (one-shot dumps)
+scripts/adn_output/
+
+# Incident log dumps
+logs_incidente_*.txt
