@@ -1078,6 +1078,10 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // ═══ TRY/CATCH GLOBAL — Protección contra crash silencioso ═══
   // Sin esto, un error no capturado en cualquier tag handler = MIIA se calla y el owner no sabe por qué
   let _responseSentOk = false; // Declarado fuera del try para que catch lo vea
+  // C-216: ownerMood declarado a nivel de función para compartir entre
+  // prompt construction (L2390) y emoji block (L5064). Una sola llamada
+  // a detectOwnerMood, sin duplicar side effects.
+  let ownerMood = 'normal';
   try {
 
   const basePhone = getBasePhone(phone);
@@ -2387,6 +2391,8 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     console.log(`[TMH:${uid}] 📋 AGENT SELF-CHAT: ${agentName} → prompt negocio-only (${businessName})`);
   } else if (isSelfChat) {
     // ── SELF-CHAT OWNER: Completo (personal + negocios + contactos) ──
+    // C-216: Detectar mood ANTES de leer estado, igual que server.js
+    ownerMood = detectOwnerMood(messageBody || '');
     ctx.ownerProfile.currentMood = getCurrentMiiaMood(); // C-214: conectar cable suelto PASO 6
     activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
 
@@ -5061,7 +5067,7 @@ REGLAS:
   if (ownerRevealsAsAI || isSelfChat) {
     const actionsExecuted = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed, _cancelTagProcessed, _moveTagProcessed, _cotizTagProcessed].filter(Boolean).length;
     // ── Construir emojiCtx con paridad server.js (C-189 Bug TMH-EMOJI) ──
-    const ownerMood = detectOwnerMood(messageBody || '');
+    // C-216: ownerMood ya detectado en L2394 (antes del prompt). Reutilizar.
     const topicDetected = detectMessageTopic(messageBody || '');
     const isGreeting = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(messageBody || '');
     const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(messageBody || '');
