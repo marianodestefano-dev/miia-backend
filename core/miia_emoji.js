@@ -489,6 +489,19 @@ function getSleepInfo() {
   };
 }
 
+// Emojis de mood especial que se envían SOLOS como mensaje separado (se ven más grandes en WhatsApp)
+// Son cambios de estado emocional importantes — el emoji grande le da peso visual.
+const BIG_MOOD_EMOJIS = new Set([
+  '🙎‍♀️',  // Ofendida
+  '🙇‍♀️',  // Triste
+  '👰‍♀️',  // Flirt
+  '🤰',    // Embarazo (fecha especial)
+  '👩‍🏫',  // Enseñando
+  '👩‍⚖️',  // Ley/regla firme
+  '🧛‍♀️',  // Halloween
+  '🎅',    // Navidad
+]);
+
 module.exports = {
   getMiiaEmoji,
   applyMiiaEmoji,
@@ -500,4 +513,5 @@ module.exports = {
   getSleepInfo,
   DEFAULT_EMOJI,
   MIIA_OFFICIAL_EMOJIS,
+  BIG_MOOD_EMOJIS,
 };

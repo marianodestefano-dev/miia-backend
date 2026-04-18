@@ -123,7 +123,7 @@ const crypto = require('crypto');
 const cerebroAbsoluto = require('./data/cerebro_absoluto');
 const confidenceEngine = require('./core/confidence_engine');
 const messageLogic = require('./core/message_logic');
-const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping, MIIA_OFFICIAL_EMOJIS } = require('./core/miia_emoji');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping, MIIA_OFFICIAL_EMOJIS, BIG_MOOD_EMOJIS } = require('./core/miia_emoji');
 const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
@@ -2437,6 +2437,25 @@ async function safeSendMessage(target, content, options = {}) {
       if (detected.cinemaSub) emojiCtx.cinemaSub = detected.cinemaSub;
     }
     content = applyMiiaEmoji(content, emojiCtx);
+
+    // ═══ BIG MOOD EMOJI: Enviar emoji solo como mensaje separado (se ve grande en WhatsApp) ═══
+    // Emojis de cambio de estado emocional merecen peso visual — emoji gigante + texto aparte.
+    const bigEmojiMatch = content.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*):\s*/u);
+    if (bigEmojiMatch && BIG_MOOD_EMOJIS.has(bigEmojiMatch[1])) {
+      const bigEmoji = bigEmojiMatch[1];
+      const textWithoutEmoji = content.substring(bigEmojiMatch[0].length);
+      try {
+        let ownerSockForBigEmoji = getOwnerSock();
+        if (ownerSockForBigEmoji) {
+          await ownerSockForBigEmoji.sendMessage(target, { text: bigEmoji });
+          console.log(`[EMOJI-BIG] 🎭 Emoji grande enviado: ${bigEmoji} → ${target}`);
+          await new Promise(r => setTimeout(r, 800 + Math.floor(Math.random() * 400)));
+        }
+      } catch (e) {
+        console.warn(`[EMOJI-BIG] ⚠️ Error enviando emoji grande: ${e.message}`);
+      }
+      content = textWithoutEmoji; // El texto se envía sin emoji prefix (ya se envió el emoji solo)
+    }
   }
 
   // ═══ ZERO-WIDTH MARKER: Agregar a mensajes a leads (sin emoji) para que otra MIIA los detecte ═══
@@ -11722,7 +11741,7 @@ async function processMorningBriefing() {
       try {
         const dayOfWeek = bogotaNow.toLocaleDateString('es-ES', { weekday: 'long' });
         const noNewsPrompt = `Eres MIIA, asistente personal de ${briefingName || 'tu owner'}. Es ${dayOfWeek} por la mañana. No hay novedades, ni leads pendientes, ni recordatorios urgentes. Genera un saludo matutino breve y cálido (máximo 2 líneas) mencionando que no hay pendientes y deseándole buen día. Sé natural, no robótica. NO uses asteriscos ni formato Markdown.`;
-        const aiResponse = await aiGateway.generateContent(noNewsPrompt, null, { maxTokens: 100 });
+        const aiResponse = await aiGateway.smartCall(aiGateway.CONTEXTS.GENERAL, noNewsPrompt, {}, { enableSearch: false });
         const greeting = (aiResponse?.text || `Buenos días${briefingName ? `, ${briefingName}` : ''}. Todo tranquilo por acá, no hay pendientes. ¡Que tengas un excelente día!`).trim();
         await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, `🌅 ${greeting}`, { isSelfChat: true });
         console.log(`[BRIEFING] ✅ Saludo matutino sin novedades enviado`);

@@ -49,7 +49,7 @@ const featureAnnouncer = require('../core/feature_announcer');
 const securityContacts = require('../services/security_contacts');
 const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig, checkCalendarAvailability, checkSlotAvailability, detectEventCategory } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
-const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, getCurrentMiiaMood } = require('../core/miia_emoji');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, getCurrentMiiaMood, BIG_MOOD_EMOJIS } = require('../core/miia_emoji');
 
 const aiGateway = require('../ai/ai_gateway');
 const promptCache = require('../ai/prompt_cache');
@@ -5087,6 +5087,20 @@ REGLAS:
     if (emojiPrefixMatch) {
       aiMessage = aiMessage.substring(emojiPrefixMatch[0].length);
     }
+  }
+
+  // ═══ BIG MOOD EMOJI: Enviar emoji solo como mensaje separado (se ve grande en WhatsApp) ═══
+  const bigEmojiMatchTMH = aiMessage.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*):\s*/u);
+  if (bigEmojiMatchTMH && BIG_MOOD_EMOJIS.has(bigEmojiMatchTMH[1])) {
+    const bigEmoji = bigEmojiMatchTMH[1];
+    try {
+      await sendTenantMessage(tenantState, phone, bigEmoji);
+      console.log(`${logPrefix} [EMOJI-BIG] 🎭 Emoji grande enviado: ${bigEmoji}`);
+      await delay(800 + Math.floor(Math.random() * 400));
+    } catch (e) {
+      console.warn(`${logPrefix} [EMOJI-BIG] ⚠️ Error: ${e.message}`);
+    }
+    aiMessage = aiMessage.substring(bigEmojiMatchTMH[0].length);
   }
 
   // Guardar largo del mensaje entrante para human_delay contextual
