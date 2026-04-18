@@ -5795,6 +5795,10 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
     }
 
     // ═══ MOOD DE MIIA — inyectar estado emocional en el prompt ═══
+    // C-216: Detectar mood ANTES de construir prompt. detectOwnerMood
+    // setea offendedUntil si es bully, para que getCurrentMiiaMood()
+    // lo capture en la MISMA llamada (no en la siguiente).
+    const ownerMood = detectOwnerMood(effectiveMsg || '');
     const miiaMood = getCurrentMiiaMood();
     if (miiaMood === 'offended') {
       activeSystemPrompt += `\n\n### ⚠️ ESTADO ACTUAL: OFENDIDA
@@ -8563,10 +8567,10 @@ REGLAS:
     lastAiSentBody[phone] = aiMessage.trim();
     console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused} | isSelfChat=${isSelfChat}`);
 
-    // ═══ EMOJI: Detectar mood del owner/contacto + trigger para emoji contextual ═══
-    // C-209: Usar effectiveMsg (L3034) en vez de userMessage — cuando se llama
-    // desde L10207/10214 con null, userMessage es '' y mood siempre es 'normal'.
-    const ownerMood = detectOwnerMood(effectiveMsg || '');
+    // ═══ EMOJI: Mood del owner/contacto para emoji contextual ═══
+    // C-216: ownerMood ya fue detectado en L5801 (antes del prompt).
+    // Reutilizamos la variable del scope superior — no re-detectar para
+    // evitar duplicar side effects de detectOwnerMood.
 
     // ═══ SLEEP MODE: Si MIIA está dormida, no responde conversacionalmente ═══
     if (isMiiaSleeping()) {
