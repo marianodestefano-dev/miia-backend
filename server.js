@@ -123,7 +123,7 @@ const crypto = require('crypto');
 const cerebroAbsoluto = require('./data/cerebro_absoluto');
 const confidenceEngine = require('./core/confidence_engine');
 const messageLogic = require('./core/message_logic');
-const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping, MIIA_OFFICIAL_EMOJIS, BIG_MOOD_EMOJIS } = require('./core/miia_emoji');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping, shouldBigEmoji, MIIA_OFFICIAL_EMOJIS, BIG_MOOD_EMOJIS } = require('./core/miia_emoji');
 const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
@@ -2438,23 +2438,24 @@ async function safeSendMessage(target, content, options = {}) {
     }
     content = applyMiiaEmoji(content, emojiCtx);
 
-    // ═══ BIG MOOD EMOJI: Enviar emoji solo como mensaje separado (se ve grande en WhatsApp) ═══
-    // Emojis de cambio de estado emocional merecen peso visual — emoji gigante + texto aparte.
+    // ═══ BIG MOOD EMOJI: Enviar emoji SOLO (grande en WhatsApp) la primera vez del día ═══
+    // Cada emoji tiene su propio flag diario — pueden activarse varios en un día.
+    // shouldBigEmoji() retorna true solo la primera vez hoy para ese emoji.
     const bigEmojiMatch = content.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*):\s*/u);
-    if (bigEmojiMatch && BIG_MOOD_EMOJIS.has(bigEmojiMatch[1])) {
+    if (bigEmojiMatch && shouldBigEmoji(bigEmojiMatch[1])) {
       const bigEmoji = bigEmojiMatch[1];
       const textWithoutEmoji = content.substring(bigEmojiMatch[0].length);
       try {
         let ownerSockForBigEmoji = getOwnerSock();
         if (ownerSockForBigEmoji) {
           await ownerSockForBigEmoji.sendMessage(target, { text: bigEmoji });
-          console.log(`[EMOJI-BIG] 🎭 Emoji grande enviado: ${bigEmoji} → ${target}`);
+          console.log(`[EMOJI-BIG] 🎭 Modo ${bigEmoji} ACTIVADO (primera vez hoy) → ${target}`);
           await new Promise(r => setTimeout(r, 800 + Math.floor(Math.random() * 400)));
         }
       } catch (e) {
         console.warn(`[EMOJI-BIG] ⚠️ Error enviando emoji grande: ${e.message}`);
       }
-      content = textWithoutEmoji; // El texto se envía sin emoji prefix (ya se envió el emoji solo)
+      content = `${bigEmoji}: ${textWithoutEmoji}`; // Continúa con emoji: texto
     }
   }
 
@@ -8615,7 +8616,7 @@ REGLAS:
     const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(effectiveMsg || '');
     const emojiCtx = {
       ownerMood,
-      trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
+      trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : 'general',
       chatType: postChatType, // Para emojis diferenciados (👩‍🔧 soporte, 👩‍💻 ventas MIIA)
     };
 

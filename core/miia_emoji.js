@@ -1,8 +1,11 @@
 /**
- * MIIA Emoji Prefix System
- * Determina qué emoji usa MIIA antes de cada mensaje según contexto, fecha y contenido.
+ * MIIA Emoji Prefix System v2.0
+ * Rediseño completo — cada emoji tiene UN significado, no decoración random.
  *
  * Formato de salida: "👱‍♀️: texto del mensaje"
+ *
+ * SISTEMA BIG EMOJI: Emojis de cambio de estado se envían SOLOS (grandes en WhatsApp)
+ * la primera vez en el día. Luego continúan como "emoji: texto".
  *
  * REGLA: El emoji se evalúa ANTES de enviar. Prioridad de arriba a abajo (primera coincidencia gana).
  */
@@ -20,20 +23,59 @@ const emojiState = {
   postApologyCooldown: 0, // Msgs restantes de enfriamiento post-perdón. Flirt bloqueado hasta 0.
 };
 
+// ═══ BIG EMOJI SYSTEM ═══
+// Tracking de emojis grandes ya usados hoy (1 big por emoji por día)
+const bigEmojiUsedToday = {};
+
+/**
+ * Verificar si un emoji puede lanzarse como BIG (grande solo).
+ * Retorna true si es la primera vez hoy para ese emoji.
+ * Si retorna true, MARCA el emoji como usado hoy.
+ */
+function shouldBigEmoji(emoji) {
+  if (!BIG_MOOD_EMOJIS.has(emoji)) return false;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const key = emoji;
+  if (bigEmojiUsedToday[key] === todayStr) return false; // Ya se usó hoy
+  bigEmojiUsedToday[key] = todayStr;
+  return true;
+}
+
+/**
+ * TABLA DE EMOJIS DE MIIA — Referencia rápida
+ *
+ * 👱‍♀️  DEFAULT — conversación normal, sin contexto especial
+ * 🙋‍♀️  Saluda o se despide (a quien sea)
+ * 👩‍💻  Trabajo de secretaria: agenda, email, recordatorio, gestión de lead
+ * 👩‍💼  Integración externa (clima, maps, delivery) o ideas/negocios
+ * 💁‍♀️  Entrega algo: resultado, PDF, cotización, info pedida
+ * 🙎‍♀️  Ofendida (insulto/bully) — BIG
+ * 🙍‍♀️  Triste (owner triste, mala noticia) — BIG
+ * 👰‍♀️  Le dicen que la quieren — BIG
+ * 🙇‍♀️  La regañan (owner enojado con ella) — BIG
+ * 🤦‍♀️  Ella reconoce equivocarse sola — BIG
+ * 🙅‍♀️  Duda / momento / necesita aclaración — BIG
+ * 👩‍🏫  Enseña algo al owner — BIG
+ * 👩‍🎓  El owner le enseña y ella aprende — BIG
+ * 👩‍🍳  Hablan de comida — BIG
+ * 👸    Ropa, moda o dinero — BIG
+ * 👩‍⚖️  Respuesta justa, regla firme — BIG
+ * 👩‍🎤  Música — BIG
+ * 👩‍⚕️  Owner enfermo — BIG
+ * 🤵‍♀️  Algo especial (evento, fecha, celebración) — BIG
+ * 🧛‍♀️  Halloween — BIG
+ * 🎅    Navidad — BIG
+ * 🤱    Día de la madre — BIG
+ * 🦸‍♀️  Praise momentáneo (algo grandioso) — solo 1 mensaje, luego vuelve a lo que corresponda
+ * 🤷‍♀️  No sabe la respuesta
+ * 👩‍🔧  Reparando/soporte técnico — BIG
+ * 🤹‍♀️  Multi-acción (ejecutando varias cosas a la vez)
+ */
+
 /**
  * Determinar el emoji correcto para el mensaje de MIIA.
  * @param {string} message - El texto que MIIA va a enviar
  * @param {Object} ctx - Contexto del mensaje
- * @param {string} ctx.trigger - Qué disparó el mensaje: 'reminder', 'greeting', 'farewell', 'learning', 'teaching', 'support', 'sport', 'business', 'general', 'proactive'
- * @param {string} ctx.ownerMood - Detectado del mensaje del owner: 'angry', 'stressed', 'happy', 'sad', 'normal', 'praise', 'bully', 'flirt'
- * @param {string} ctx.ownerCountry - Código país: 'CO', 'AR', 'MX', etc.
- * @param {string} ctx.timezone - Timezone del owner
- * @param {string} ctx.topic - Tema detectado: 'music', 'food', 'cinema', 'work', 'personal', 'error', 'unknown'
- * @param {string} ctx.cinemaSub - Subgénero si topic='cinema': 'scifi', 'terror', 'thriller', 'suspense', 'action', 'romance'
- * @param {boolean} ctx.isRepairing - MIIA está en modo soporte/reparación
- * @param {boolean} ctx.dontKnow - MIIA no sabe la respuesta
- * @param {boolean} ctx.stageUp - MIIA acaba de subir de stage
- * @param {boolean} ctx.isLaw - Lo que dice es LEY (regla firme)
  * @returns {string} Emoji a usar como prefijo
  */
 function getMiiaEmoji(message, ctx = {}) {
@@ -77,19 +119,6 @@ function getMiiaEmoji(message, ctx = {}) {
     }
   }
 
-  // Stage up — solo en el mensaje inmediato
-  if (ctx.stageUp) {
-    emojiState.lastStageUp = now.toISOString();
-    return '👸';
-  }
-
-  // Alegre/entusiasmada — varios mensajes con emojis aleatorios
-  if (emojiState.happyMessages > 0) {
-    emojiState.happyMessages--;
-    const happyEmojis = ['🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️'];
-    return happyEmojis[Math.floor(Math.random() * happyEmojis.length)];
-  }
-
   // ═══ PRIORIDAD 1.5: MIIA CENTER — emojis específicos por tipo de contacto ═══
   if (ctx.chatType === 'miia_client') return '👩‍🔧'; // Soporte técnico
   if (ctx.chatType === 'miia_lead') return '👩‍💻';   // Ventas MIIA
@@ -97,27 +126,18 @@ function getMiiaEmoji(message, ctx = {}) {
   // ═══ PRIORIDAD 2: Reacciones al owner (mood) ═══
 
   if (ctx.ownerMood === 'bully') {
-    // offendedUntil ya seteado por detectOwnerMood()
-    return '🙎‍♀️';
+    return '🙎‍♀️'; // offendedUntil ya seteado por detectOwnerMood()
   }
 
   if (ctx.ownerMood === 'praise') {
-    // Solo en el SIGUIENTE mensaje — activar happy mode
-    emojiState.happyMessages = 0; // No multi, solo 1 mensaje
-    return '🦸‍♀️';
-  }
-
-  if (ctx.ownerMood === 'happy' || ctx.ownerMood === 'excited') {
-    emojiState.happyMessages = Math.floor(Math.random() * 4) + 3; // 3-6 mensajes
-    const happyEmojis = ['🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️'];
-    const picked = happyEmojis[Math.floor(Math.random() * happyEmojis.length)];
-    return picked;
+    return '🦸‍♀️'; // Momentáneo — solo ESTE mensaje, luego vuelve a lo que corresponda
   }
 
   if (ctx.ownerMood === 'flirt') return '👰‍♀️';
-  if (ctx.ownerMood === 'angry') return '🤦‍♀️';
+  if (ctx.ownerMood === 'angry') return '🙇‍♀️';   // La regañan → agacha la cabeza
   if (ctx.ownerMood === 'stressed') return '💆‍♀️';
-  if (ctx.ownerMood === 'sad') return '🙇‍♀️';
+  if (ctx.ownerMood === 'sad') return '🙍‍♀️';      // Triste (diferente de regaño)
+  if (ctx.ownerMood === 'sick') return '👩‍⚕️';     // Owner enfermo
 
   // ═══ PRIORIDAD 3: Fechas especiales ═══
 
@@ -136,68 +156,67 @@ function getMiiaEmoji(message, ctx = {}) {
     return '🤱';
   }
 
-  // ═══ PRIORIDAD 4: Contexto del mensaje ═══
+  // ═══ PRIORIDAD 4: Contexto funcional del mensaje ═══
 
-  if (ctx.isLaw) return '👩‍⚖️';
-  if (ctx.isRepairing) return '👩‍🔧';
-  if (ctx.dontKnow) return '🤷‍♀️';
+  if (ctx.isLaw) return '👩‍⚖️';      // Respuesta justa / regla firme
+  if (ctx.isRepairing) return '👩‍🔧';  // Reparando/soporte
+  if (ctx.dontKnow) return '🙅‍♀️';    // Duda / necesita aclaración
+  if (ctx.isMultiAction) return '🤹‍♀️'; // Multi-acción
 
-  // Triggers específicos
-  if (ctx.trigger === 'reminder') return '💁‍♀️';
-  if (ctx.trigger === 'greeting' || ctx.trigger === 'farewell') {
-    return '🙋‍♀️';
-  }
-  if (ctx.trigger === 'learning') return '👩‍🎓';
+  // ═══ PRIORIDAD 5: Triggers específicos ═══
+
+  // Saludar o despedirse — levanta la mano
+  if (ctx.trigger === 'greeting' || ctx.trigger === 'farewell') return '🙋‍♀️';
+
+  // Entrega algo (resultado, PDF, cotización, info pedida)
+  if (ctx.trigger === 'delivery' || ctx.trigger === 'reminder') return '💁‍♀️';
+
+  // Enseña al owner algo
   if (ctx.trigger === 'teaching') return '👩‍🏫';
+
+  // El owner le enseña
+  if (ctx.trigger === 'learning') return '👩‍🎓';
+
+  // Error propio — reconoce equivocarse
   if (ctx.trigger === 'error') return '🤦‍♀️';
 
-  // ═══ PRIORIDAD 5: Trigger de contexto específico ═══
+  // Algo especial (evento, fecha, celebración)
+  if (ctx.trigger === 'special' || ctx.trigger === 'sport') return '🤵‍♀️';
 
-  // Proactive / Background / Heavy work → 🤹‍♀️ (MIIA haciendo malabares, trabajando a full)
-  if (ctx.trigger === 'proactive' || ctx.trigger === 'background' || ctx.trigger === 'heavy_work' || ctx.isMultiAction) return '🤹‍♀️';
+  // ═══ PRIORIDAD 6: Tema del mensaje — cada emoji = un significado ═══
 
-  // Sport → 🤵‍♀️ (MIIA relatora elegante)
-  if (ctx.trigger === 'sport') return '🤵‍♀️';
+  // Temas de PERSONA-EMOJI (MIIA adopta rol)
+  if (ctx.topic === 'music') return '👩‍🎤';
+  if (ctx.topic === 'food') return '👩‍🍳';
+  if (ctx.topic === 'fashion' || ctx.topic === 'finance') return '👸'; // Ropa/moda o dinero
 
-  // Work Office → variación de emojis de trabajo (rotación para no repetir siempre el mismo)
-  if (ctx.trigger === 'general_work' || ctx.topic === 'office') {
-    const workEmojis = ['👩‍💻', '👩‍💼', '🙋‍♀️', '💁‍♀️'];
-    const picked = workEmojis[Math.floor(Math.random() * workEmojis.length)];
-    return picked;
-  }
+  // Trabajo de secretaria: agenda, mail, recordatorio, gestión
+  if (ctx.topic === 'office') return '👩‍💻';
 
-  // Work Street → 👩‍💼 (price tracker, travel, noticias, clima, delivery, transporte)
-  if (ctx.trigger === 'street' || ctx.topic === 'street') return '👩‍💼';
+  // Integración externa: clima, maps, delivery, noticias, transporte, precios
+  if (ctx.topic === 'price' || ctx.topic === 'travel' || ctx.topic === 'weather' ||
+      ctx.topic === 'news' || ctx.topic === 'delivery' || ctx.topic === 'transport') return '👩‍💼';
 
-  // ═══ PRIORIDAD 6: Tema del mensaje — PERSONA-EMOJIS como PREFIX ═══
+  // Ideas/negocios
+  if (ctx.topic === 'business') return '👩‍💼';
 
-  // Estos van DELANTE del mensaje como emoji de estado de MIIA (persona-emoji)
-  if (ctx.topic === 'music') return '👩‍🎤';        // MIIA cantante
-  if (ctx.topic === 'food') return '👩‍🍳';          // MIIA cocinera
-  if (ctx.topic === 'health' || ctx.topic === 'gym') return '🧘‍♀️'; // MIIA yoga/salud
+  // Salud/enfermo
+  if (ctx.topic === 'health' || ctx.topic === 'gym') return '👩‍⚕️';
 
   // Cine — MIIA adopta el personaje del género
   if (ctx.topic === 'cinema') {
     switch (ctx.cinemaSub) {
-      case 'scifi': case 'superhero': return '🦹‍♀️';  // MIIA superheroína
-      case 'terror': case 'horror': return '🧟‍♀️';    // MIIA zombie
-      case 'thriller': case 'police': return '👮‍♀️';   // MIIA policía
-      case 'suspense': return '🕵️‍♀️';                 // MIIA detective
-      case 'action': return '🥷';                      // MIIA ninja
-      case 'romance': return '🧖‍♀️';                   // MIIA relajada
+      case 'scifi': case 'superhero': return '🦹‍♀️';
+      case 'terror': case 'horror': return '🧟‍♀️';
+      case 'thriller': case 'police': return '👮‍♀️';
+      case 'suspense': return '🕵️‍♀️';
+      case 'action': return '🥷';
+      case 'romance': return '🧖‍♀️';
       default: return '🦹‍♀️';
     }
   }
 
-  // ═══ PRIORIDAD 7: Temas con EMOJI-OBJETO (NO persona) ═══
-  // Estos van como prefix pero son emojis temáticos (objetos/actividades)
-  if (ctx.topic === 'travel') return '🧳';
-  if (ctx.topic === 'weather') return '🌦️';
-  if (ctx.topic === 'news') return '📰';
-  if (ctx.topic === 'price') return '🛒';
-  if (ctx.topic === 'delivery') return '🛵';
-  if (ctx.topic === 'transport') return '🚗';
-  if (ctx.topic === 'finance') return '📊';
+  // ═══ PRIORIDAD 7: Temas con EMOJI-OBJETO ═══
   if (ctx.topic === 'study') return '📚';
   if (ctx.topic === 'gaming') return '🎮';
   if (ctx.topic === 'photo') return '📸';
@@ -206,12 +225,12 @@ function getMiiaEmoji(message, ctx = {}) {
   if (ctx.topic === 'pet') return '🐾';
   if (ctx.topic === 'baby') return '👶';
   if (ctx.topic === 'party') return '🎉';
-  if (ctx.topic === 'love') return '💕';
+  if (ctx.topic === 'love') return '👰‍♀️'; // Le dicen que la quieren
   if (ctx.topic === 'sleep') return '😴';
   if (ctx.topic === 'coffee') return '☕';
   if (ctx.topic === 'alcohol') return '🍷';
 
-  // ═══ DEFAULT ═══
+  // ═══ DEFAULT — MIIA normal, relajada ═══
   return DEFAULT_EMOJI;
 }
 
@@ -224,10 +243,10 @@ function getMiiaEmoji(message, ctx = {}) {
 // Emojis oficiales de MIIA — solo estos cuentan como "ya tiene prefix"
 const MIIA_OFFICIAL_EMOJIS = new Set([
   '👱‍♀️', '🙎‍♀️', '👸', '🙆‍♀️', '🙅‍♀️', '👩‍🚀', '🧙‍♀️',
-  '🦸‍♀️', '👰‍♀️', '🤦‍♀️', '💆‍♀️', '🙇‍♀️', '🤹‍♀️',
+  '🦸‍♀️', '👰‍♀️', '🤦‍♀️', '💆‍♀️', '🙇‍♀️', '🙍‍♀️', '🤹‍♀️',
   '🧛‍♀️', '🎅', '🤱',
   '👩‍⚖️', '👩‍🔧', '🤷‍♀️', '💁‍♀️', '🙋‍♀️', '👩‍🎓', '👩‍🏫',
-  '🤵‍♀️', '👩‍💻', '👩‍💼',
+  '🤵‍♀️', '👩‍💻', '👩‍💼', '👩‍⚕️',
   '👩‍🎤', '👩‍🍳', '🧘‍♀️', '🧳', '🌦️', '📰', '🛒', '🛵', '🚗',
   '📊', '📚', '🎮', '📸', '🎨', '⚙️', '🐾', '👶', '🎉', '💕',
   '😴', '☕', '🍷', '🦹‍♀️', '🧟‍♀️', '👮‍♀️', '🕵️‍♀️', '🥷', '🧖‍♀️',
@@ -290,7 +309,7 @@ function detectOwnerMood(text) {
   if (!text || typeof text !== 'string') return 'normal';
   const lower = text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-  // Praise
+  // Praise — algo grandioso
   if (/\b(genia|genial|increible|crack|capo|grosa|espectacular|impresionante|super|sos (la )?mejor|te amo miia|sos una crack)\b/.test(lower)) return 'praise';
 
   // Bullying/insultos — setear offendedUntil inmediatamente para que el conteo funcione
@@ -302,7 +321,7 @@ function detectOwnerMood(text) {
     return 'bully';
   }
 
-  // Enojo (sin insulto directo)
+  // Enojo/regaño (sin insulto directo) — la están retando
   if (/\b(hiciste mal|error tuyo|la cagaste|te equivocaste|eso esta mal|por que hiciste eso|no era asi|arruinaste)\b/.test(lower)) return 'angry';
 
   // Disculpa (resetea offended + cuenta ciclo)
@@ -340,6 +359,9 @@ function detectOwnerMood(text) {
     return 'flirt';
   }
 
+  // Enfermo — owner dice que está mal de salud
+  if (/\b(enferm[ao]|resfri[ao]|gripe|fiebre|me siento mal|me duele|dolor de|nauseas|vomit|medico|doctor|hospital|clinica|me enferm)\b/.test(lower)) return 'sick';
+
   // Estrés
   if (/\b(estresad[ao]|agotad[ao]|no puedo mas|quemad[ao]|burn.?out|colapsad[ao]|exhausto|no doy mas)\b/.test(lower)) return 'stressed';
 
@@ -362,22 +384,29 @@ function detectMessageTopic(message, extraCtx = {}) {
   if (!message || typeof message !== 'string') return { topic: 'general' };
   const lower = message.toLowerCase();
 
-  // ─── STREET (👩‍💼): precio, vuelo, clima, noticias, delivery, transporte ───
+  // ─── INTEGRACIÓN EXTERNA (👩‍💼): precio, vuelo, clima, noticias, delivery, transporte ───
   if (/precio|oferta|descuento|\bpromo\b|stock|tienda|comprar|producto|mercado/i.test(lower)) return { topic: 'price' };
   if (/vuelo|avion|aeropuerto|pasaje|boarding|escala|reserva.*hotel/i.test(lower)) return { topic: 'travel' };
   if (/clima|lluvia|tormenta|\bsol\b|nublado|temperatura|calor|fr[ií]o|pron[oó]stico/i.test(lower)) return { topic: 'weather' };
   if (/noticia|titular|periódico|periodico|\bdiario\b|actualidad|prensa/i.test(lower)) return { topic: 'news' };
   if (/rappi|pedidosya|pedidos\s*ya|delivery|domicilio|pedir\s+comida/i.test(lower)) return { topic: 'delivery' };
   if (/uber|didi|taxi|cabify|transporte|viaje.*auto|llegada|conductor/i.test(lower)) return { topic: 'transport' };
-  if (/\bacci[oó]n\b|bolsa|cripto|bitcoin|inversi[oó]n|dolar|divisa|mercado.*valor/i.test(lower)) return { topic: 'finance' };
 
-  // ─── OFFICE (👩‍💻): agenda, mail, recordatorio ───
+  // ─── SECRETARIA (👩‍💻): agenda, mail, recordatorio, gestión ───
   if (/agenda|reuni[oó]n|\bcita\b|\bmail\b|correo|email|recordatorio|tarea|pendiente|deadline/i.test(lower)) return { topic: 'office' };
+
+  // ─── ROPA/MODA/DINERO (👸) ───
+  if (/ropa|vestido|zapato|camisa|pantalon|falda|moda|outfit|estilo|look|compras|shopping/i.test(lower)) return { topic: 'fashion' };
+  if (/\bacci[oó]n\b|bolsa|cripto|bitcoin|inversi[oó]n|dolar|divisa|mercado.*valor|plata|dinero|presupuesto|gastos?|ahorro/i.test(lower)) return { topic: 'finance' };
+
+  // ─── IDEAS/NEGOCIOS (👩‍💼) ───
+  if (/negocio|emprendimiento|startup|empresa|sociedad|inversor|plan de negocio|modelo de negocio|idea.*negocio/i.test(lower)) return { topic: 'business' };
 
   // ─── Temas de vida ───
   if (/spotify|playlist|cancion|album|\bdisco\b|musica|lanzamiento.*(single|ep)|artista/i.test(lower)) return { topic: 'music' };
   if (/receta|cocinar?|ingrediente|almuerzo|\bcena\b|comida|\bplato\b/i.test(lower)) return { topic: 'food' };
   if (/ejercicio|entrena|gym|gimnasio|correr|running|yoga|cardio|dieta|nutri/i.test(lower)) return { topic: 'health' };
+  if (/enferm|resfri|gripe|fiebre|dolor|medico|doctor|hospital|clinica|pastilla|remedio/i.test(lower)) return { topic: 'health' };
   if (/estudiar|examen|parcial|tarea.*escuela|universidad|materia|clase/i.test(lower)) return { topic: 'study' };
   if (/juego|gaming|ps[45]|xbox|nintendo|gamer|fortnite|minecraft/i.test(lower)) return { topic: 'gaming' };
   if (/foto|selfie|c[aá]mara|instagram|filtro/i.test(lower)) return { topic: 'photo' };
@@ -458,7 +487,7 @@ function resetOffended() {
 
 /**
  * Obtener el mood actual de MIIA para inyectar en el prompt.
- * @returns {string} 'normal' | 'offended' | 'happy'
+ * @returns {string} 'normal' | 'offended' | 'happy' | 'sleeping'
  */
 function getCurrentMiiaMood() {
   if (emojiState.sleepUntil && new Date() < new Date(emojiState.sleepUntil)) {
@@ -489,17 +518,27 @@ function getSleepInfo() {
   };
 }
 
-// Emojis de mood especial que se envían SOLOS como mensaje separado (se ven más grandes en WhatsApp)
-// Son cambios de estado emocional importantes — el emoji grande le da peso visual.
+// Emojis que se envían SOLOS como mensaje grande la primera vez en el día.
+// Cada emoji tiene su propio flag diario — pueden activarse varios en un día.
 const BIG_MOOD_EMOJIS = new Set([
   '🙎‍♀️',  // Ofendida
-  '🙇‍♀️',  // Triste
-  '👰‍♀️',  // Flirt
-  '🤰',    // Embarazo (fecha especial)
+  '🙍‍♀️',  // Triste
+  '👰‍♀️',  // Le dicen que la quieren
+  '🙇‍♀️',  // La regañan
+  '🤦‍♀️',  // Reconoce error propio
+  '🙅‍♀️',  // Duda / momento
   '👩‍🏫',  // Enseñando
-  '👩‍⚖️',  // Ley/regla firme
+  '👩‍🎓',  // Aprendiendo
+  '👩‍🍳',  // Comida
+  '👸',    // Ropa/dinero
+  '👩‍⚖️',  // Justicia/ley
+  '👩‍🎤',  // Música
+  '👩‍⚕️',  // Owner enfermo
+  '🤵‍♀️',  // Algo especial
   '🧛‍♀️',  // Halloween
   '🎅',    // Navidad
+  '🤱',    // Día de la madre
+  '👩‍🔧',  // Reparando/soporte
 ]);
 
 module.exports = {
@@ -511,6 +550,7 @@ module.exports = {
   getCurrentMiiaMood,
   isMiiaSleeping,
   getSleepInfo,
+  shouldBigEmoji,
   DEFAULT_EMOJI,
   MIIA_OFFICIAL_EMOJIS,
   BIG_MOOD_EMOJIS,
