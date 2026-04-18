@@ -450,6 +450,7 @@ const ZERO_WIDTH_MARKER = '\u200B';
 // trainingData vive SOLO en cerebroAbsoluto (fuente única de verdad) — NO duplicar aquí
 let leadSummaries = {};
 let conversationMetadata = {};
+const _stickyTopic = {}; // { phone: { topic, cinemaSub?, ts } } — topic persiste 10min entre mensajes
 let isProcessing = {};
 let pendingResponses = {};  // re-trigger cuando llegan mensajes mientras se procesa
 let messageTimers = {};     // debounce 3s por contacto — acumula mensajes antes de responder
@@ -8640,12 +8641,18 @@ REGLAS:
     };
 
     // ═══ C-224/F4: Detectar topic del INPUT del owner (no solo de la respuesta de MIIA) ═══
+    // + Sticky topic: si el owner habló de comida hace <10min, mantener el topic
     if (effectiveMsg) {
       const ownerTopicDetected = detectMessageTopic(effectiveMsg);
       if (ownerTopicDetected.topic !== 'general') {
         emojiCtx.topic = ownerTopicDetected.topic;
         if (ownerTopicDetected.cinemaSub) emojiCtx.cinemaSub = ownerTopicDetected.cinemaSub;
+        _stickyTopic[phone] = { topic: ownerTopicDetected.topic, cinemaSub: ownerTopicDetected.cinemaSub, ts: Date.now() };
         console.log(`[EMOJI-F4] 🎯 Topic detectado del input owner: ${ownerTopicDetected.topic} (msg: "${effectiveMsg.substring(0, 40)}...")`);
+      } else if (_stickyTopic[phone] && (Date.now() - _stickyTopic[phone].ts) < 10 * 60 * 1000) {
+        emojiCtx.topic = _stickyTopic[phone].topic;
+        if (_stickyTopic[phone].cinemaSub) emojiCtx.cinemaSub = _stickyTopic[phone].cinemaSub;
+        console.log(`[EMOJI-F4] 📌 Topic sticky: ${_stickyTopic[phone].topic} (${Math.round((Date.now() - _stickyTopic[phone].ts) / 1000)}s ago)`);
       }
     }
 
