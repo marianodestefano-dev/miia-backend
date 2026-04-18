@@ -337,8 +337,8 @@ function isDuplicate(msgId, uid = '') {
 // ═══ F1 (Bug P): Dedup persistente en Firestore ═══
 // Persiste msgIds procesados para que sobrevivan deploys.
 // Pre-puebla processedMessages al startup desde Firestore.
-const DEDUP_PERSIST_MAX = 500;
-const DEDUP_PERSIST_TTL_MS = 48 * 60 * 60 * 1000; // 48h
+const DEDUP_PERSIST_MAX = 2000;
+const DEDUP_PERSIST_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días (C-199: expandido de 48h para cubrir fantasmas de Baileys más antiguos)
 const DEDUP_FLUSH_INTERVAL_MS = 10000; // 10s
 
 async function loadDedupFromFirestore(uid) {
@@ -426,6 +426,13 @@ async function flushDedupBuffer() {
 // UNIFIED: Single monitor that routes to smartSessionRecovery instead of nuclear cleanup
 const SERVER_START_TIME = Date.now();
 const STARTUP_GRACE_PERIOD = 90000; // 90s — ignorar errores de mensajes encolados al inicio
+
+// ═══ C-199: Burst detector post-boot para fantasmas de Baileys ═══
+// Detecta ráfaga de duplicados en primeros 2 min post-boot.
+// Si ≥5 duplicados en 15s → activa watermark EXTENDIDO por 60s
+// (descarta casi todo lo pre-ahora, no solo pre-boot).
+const _postBootDuplicates = []; // timestamps ms de duplicates post-boot recientes
+let _watermarkExtendedUntil = 0; // 0 = inactivo; N = timestamp ms hasta que expira
 
 // Acumulador de errores crypto durante startup — log limpio
 const _startupCryptoErrors = { badMAC: 0, counterError: 0, failedDecrypt: 0, total: 0 };
@@ -1658,7 +1665,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         // re-entregados por Baileys en cada reconexión (BUG-022). Se descartan sin procesar.
         const _msgTsRaw = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
           : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
-        const _watermarkS = Math.floor(SERVER_START_TIME / 1000) - 60;
+        // C-199: si burst activo, extiende watermark a "ahora - 5s" (descarta casi todo pre-ahora)
+        const _burstActive = Date.now() < _watermarkExtendedUntil;
+        const _watermarkS = _burstActive
+          ? Math.floor(Date.now() / 1000) - 5
+          : Math.floor(SERVER_START_TIME / 1000) - 60;
         if (_msgTsRaw > 0 && _msgTsRaw < _watermarkS) {
           // Registrar msgId en dedup para bloquear re-entregas con ts actualizado
           isDuplicate(msg.key.id, uid);
@@ -1685,6 +1696,22 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         if (isDuplicate(msg.key.id, uid)) {
           _skipCounters.duplicate++;
           _flushSkipCounters(uid);
+          // ═══ C-199: Burst detector ═══
+          // Si muchos duplicados post-boot = Baileys re-entregando fantasmas
+          const _nowMs = Date.now();
+          const _bootAgeMs = _nowMs - SERVER_START_TIME;
+          if (_bootAgeMs < 120000) { // primeros 2 min post-boot
+            _postBootDuplicates.push(_nowMs);
+            // mantener solo los últimos 15s en el array
+            while (_postBootDuplicates.length > 0 && _nowMs - _postBootDuplicates[0] > 15000) {
+              _postBootDuplicates.shift();
+            }
+            // si ≥5 duplicados en 15s → activar watermark extendido por 60s
+            if (_postBootDuplicates.length >= 5 && _nowMs > _watermarkExtendedUntil) {
+              _watermarkExtendedUntil = _nowMs + 60000;
+              console.warn(`[TM:${uid}] 🛡️ [BURST] ${_postBootDuplicates.length} duplicados en 15s — watermark extendido por 60s (C-199)`);
+            }
+          }
           continue;
         }
 
@@ -2316,6 +2343,18 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               // NO eliminar — si falló, queremos reintentarlo al reconectar
             });
         }
+      }
+      // ═══ C-199: Flush post-batch inmediato si buffer grande ═══
+      // Después de procesar el batch, si el buffer de dedup tiene ≥5 msgIds
+      // pendientes, flushear inmediato sin esperar el timer de 10s.
+      // Previene pérdida si el proceso muere entre timer ticks.
+      const _pendingForUid = _dedupWriteBuffer.get(uid);
+      if (_pendingForUid && _pendingForUid.length >= 5 && _dedupFlushTimer) {
+        clearTimeout(_dedupFlushTimer);
+        _dedupFlushTimer = null;
+        flushDedupBuffer().catch(e =>
+          console.warn(`[TM:${uid}] ⚠️ Flush post-batch error:`, e.message)
+        );
       }
     });
 
