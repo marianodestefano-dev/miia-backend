@@ -8564,7 +8564,9 @@ REGLAS:
     console.log(`[MIIA] Enviando mensaje a ${phone} | isReady=${isReady} | isSystemPaused=${isSystemPaused} | isSelfChat=${isSelfChat}`);
 
     // ═══ EMOJI: Detectar mood del owner/contacto + trigger para emoji contextual ═══
-    const ownerMood = detectOwnerMood(userMessage || '');
+    // C-209: Usar effectiveMsg (L3034) en vez de userMessage — cuando se llama
+    // desde L10207/10214 con null, userMessage es '' y mood siempre es 'normal'.
+    const ownerMood = detectOwnerMood(effectiveMsg || '');
 
     // ═══ SLEEP MODE: Si MIIA está dormida, no responde conversacionalmente ═══
     if (isMiiaSleeping()) {
@@ -8586,8 +8588,8 @@ REGLAS:
       aiMessage = aiMessage + '\n\n_Gracias por las disculpas. Ya estamos bien._';
     }
 
-    const isGreeting = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(userMessage || '');
-    const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(userMessage || '');
+    const isGreeting = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(effectiveMsg || '');
+    const isFarewell = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(effectiveMsg || '');
     const emojiCtx = {
       ownerMood,
       trigger: isGreeting ? 'greeting' : isFarewell ? 'farewell' : isSelfChat ? 'general_work' : 'general',
