@@ -509,6 +509,35 @@ function _logStartupCryptoSummary() {
 // Programar resumen al final del grace period
 setTimeout(_logStartupCryptoSummary, STARTUP_GRACE_PERIOD + 1000);
 
+// ═══ C-236/F1a: Detector keys corruptas post-boot (solo alerta) ═══
+// Si muchos Bad MAC + 0 mensajes reales → CRITICAL (keys probablemente corruptas)
+// One-shot: dispara UNA vez a los 5min post-boot. F1b agregará acción correctiva.
+// Fuente de verdad: log CRITICAL en Railway. Notificación WhatsApp es best-effort.
+setTimeout(() => {
+  const e = _startupCryptoErrors;
+  if (e.badMAC < 50) return; // <50 Bad MAC = rango normal (observado 3-30 en boots sanos 18-abril)
+
+  const upsert = getUpsertStats(null);
+  if (upsert.count10min > 0) return; // Hay upserts = keys se re-negociaron OK
+
+  console.error(`[TM] 🚨 CRITICAL F1a — ${e.badMAC} Bad MAC + 0 upserts en 5min post-boot. Keys probablemente corruptas. Sesión WhatsApp puede estar zombie.`);
+
+  // Intentar alertar al owner por self-chat (best-effort)
+  for (const [uid, tenant] of tenants) {
+    if (!tenant.sock || !tenant.isReady || !tenant.phone) continue;
+    const ownerJid = `${tenant.phone}@s.whatsapp.net`;
+    const alertText = `⚠️ *ALERTA SISTEMA MIIA*: Detecté ${e.badMAC} errores de cifrado y 0 mensajes procesados en 5 minutos. La sesión WhatsApp puede estar zombie. Acción recomendada: abrí Railway desde tu teléfono y hacé redeploy manual. Si persiste, re-escaneá el QR desde el dashboard admin. (Alerta generada automáticamente por F1a)`;
+
+    tenant.sock.sendMessage(ownerJid, { text: alertText })
+      .then(() => {
+        console.log(`[TM:${uid}] 📢 F1a: Alerta enviada al owner por self-chat`);
+      })
+      .catch(() => {
+        console.log(`[TM:${uid}] ⚠️ F1a: No se pudo enviar alerta por self-chat (socket probablemente muerto) — queda log CRITICAL`);
+      });
+  }
+}, 5 * 60 * 1000);
+
 const originalConsoleError = console.error;
 console.error = function(...args) {
   const errorStr = args.map(a => String(a)).join(' ');
