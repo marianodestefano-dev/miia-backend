@@ -31,6 +31,13 @@ function extractText(data) {
   if (grounding?.webSearchQueries?.length) {
     console.log(`[GEMINI-SEARCH] 🔍 Búsquedas: ${grounding.webSearchQueries.join(' | ')}`);
   }
+  if (grounding?.groundingChunks?.length) {
+    const sources = grounding.groundingChunks
+      .map(c => c.web?.title || c.web?.uri || 'unknown')
+      .slice(0, 5)
+      .join(' | ');
+    console.log(`[GEMINI-SEARCH] 📄 Fuentes (${grounding.groundingChunks.length}): ${sources}`);
+  }
   return text || null;
 }
 
