@@ -154,7 +154,7 @@ const { callGemini, callGeminiChat } = require('./ai/gemini_client');
 const { PROVIDER_LABELS } = require('./ai/ai_client');
 
 // ═══ SERVICES — Servicios externos ═══
-const cotizacionGenerator = require('./services/cotizacion_generator');
+const cotizacionGenerator = require('./services/cotizacion_link'); // C-342 B.5: cotizacion_generator.js retirado (zombi PDF). Path vivo = link interactivo.
 const webScraper = require('./services/web_scraper');
 const estadisticas = require('./services/estadisticas');
 const mailService = require('./services/mail_service');
@@ -11649,10 +11649,37 @@ const HOLIDAYS_BY_COUNTRY = {
   ],
   ES: [ // España
     '01-01','01-06','03-28','03-29','05-01','08-15','10-12','11-01','12-06','12-08','12-25'
+  ],
+  // C-342 B.2: 8 países adicionales con feriados fijos mínimos (los flotantes se omiten).
+  DO: [ // República Dominicana
+    '01-01','01-06','01-21','01-26','02-27','05-01','08-16','09-24','11-06','12-25'
+  ],
+  VE: [ // Venezuela
+    '01-01','03-28','03-29','04-19','05-01','06-24','07-05','07-24','10-12','12-24','12-25','12-31'
+  ],
+  UY: [ // Uruguay
+    '01-01','01-06','05-01','05-18','06-19','07-18','08-25','10-12','11-02','12-25'
+  ],
+  BO: [ // Bolivia
+    '01-01','01-22','05-01','06-21','08-06','11-01','11-02','12-25'
+  ],
+  PY: [ // Paraguay
+    '01-01','03-01','03-28','03-29','05-01','05-14','05-15','06-12','08-15','09-29','12-08','12-25'
+  ],
+  GT: [ // Guatemala
+    '01-01','03-28','03-29','03-30','05-01','06-30','09-15','10-20','11-01','12-24','12-25','12-31'
+  ],
+  CR: [ // Costa Rica
+    '01-01','03-28','03-29','04-11','05-01','07-25','08-02','08-15','09-15','12-25'
+  ],
+  PA: [ // Panamá
+    '01-01','01-09','03-28','03-29','05-01','11-03','11-05','11-10','11-28','12-08','12-25'
   ]
 };
 
 // Detectar país por prefijo telefónico
+// C-342 B.2: DO (1809/1829/1849) se chequea ANTES del genérico "1" para no mis-clasificar como US.
+// Orden: prefijos más específicos primero (3-4 dígitos), luego más genéricos.
 function getCountryFromPhone(phone) {
   const num = phone.replace(/[^0-9]/g, '');
   if (num.startsWith('57')) return 'CO';
@@ -11661,6 +11688,14 @@ function getCountryFromPhone(phone) {
   if (num.startsWith('56')) return 'CL';
   if (num.startsWith('51')) return 'PE';
   if (num.startsWith('593')) return 'EC';
+  if (num.startsWith('595')) return 'PY';
+  if (num.startsWith('598')) return 'UY';
+  if (num.startsWith('591')) return 'BO';
+  if (num.startsWith('502')) return 'GT';
+  if (num.startsWith('506')) return 'CR';
+  if (num.startsWith('507')) return 'PA';
+  if (num.startsWith('58'))  return 'VE';
+  if (/^1(809|829|849)/.test(num)) return 'DO'; // C-342 B.2: DO antes de US
   if (num.startsWith('1')) return 'US';
   if (num.startsWith('34')) return 'ES';
   return 'CO'; // default Colombia
@@ -11671,7 +11706,11 @@ function getTimezoneForCountry(country) {
   const tzMap = {
     CO: 'America/Bogota', AR: 'America/Argentina/Buenos_Aires', MX: 'America/Mexico_City',
     CL: 'America/Santiago', PE: 'America/Lima', EC: 'America/Guayaquil',
-    US: 'America/New_York', ES: 'Europe/Madrid'
+    US: 'America/New_York', ES: 'Europe/Madrid',
+    // C-342 B.2: 8 países adicionales
+    DO: 'America/Santo_Domingo', VE: 'America/Caracas', UY: 'America/Montevideo',
+    BO: 'America/La_Paz', PY: 'America/Asuncion', GT: 'America/Guatemala',
+    CR: 'America/Costa_Rica', PA: 'America/Panama'
   };
   return tzMap[country] || 'America/Bogota';
 }
@@ -11689,6 +11728,15 @@ function getDialectForPhone(contactPhone) {
     case 'EC': return 'DIALECTO: Usá TÚ (tuteo ecuatoriano). "cuéntame", "dime". Expresiones: "claro", "dale", "ya mismo".';
     case 'ES': return 'DIALECTO: Usá TÚ (tuteo español). "cuéntame", "dime". NUNCA "vos". Expresiones: "vale", "genial", "estupendo".';
     case 'US': return 'DIALECTO: Usá TÚ (español neutro formal). "cuéntame", "dime". Tono profesional, sin regionalismos.';
+    // C-342 B.2: 8 países adicionales
+    case 'DO': return 'DIALECTO: Usá TÚ (tuteo caribeño dominicano). "cuéntame", "dime". Expresiones: "dale", "tranqui", "qué lo qué", "ok".';
+    case 'VE': return 'DIALECTO: Usá TÚ (tuteo venezolano). "cuéntame", "dime". Expresiones: "dale", "chévere", "pendiente".';
+    case 'UY': return 'DIALECTO: Usá VOS (voseo rioplatense uruguayo). "contame", "decime", "mirá". Expresiones: "dale", "ta", "bárbaro".';
+    case 'BO': return 'DIALECTO: Usá TÚ (tuteo boliviano). "cuéntame", "dime". Expresiones: "claro", "ya", "pues".';
+    case 'PY': return 'DIALECTO: Usá VOS (voseo paraguayo). "contame", "decime", "mirá". Expresiones: "dale", "ta", "hina" con moderación.';
+    case 'GT': return 'DIALECTO: Usá VOS (voseo chapín) o TÚ según contexto. "cuéntame", "dime". Expresiones: "dale", "vaya", "claro".';
+    case 'CR': return 'DIALECTO: Usá TÚ (tuteo tico). "cuéntame", "dime". Expresiones: "pura vida", "dale", "claro".';
+    case 'PA': return 'DIALECTO: Usá TÚ (tuteo panameño). "cuéntame", "dime". Expresiones: "dale", "listo", "claro".';
     default:   return 'DIALECTO: Usá TÚ (español neutro). "cuéntame", "dime". NUNCA "contame" ni "decime" (argentino). Tono profesional neutro.';
   }
 }
@@ -11898,6 +11946,15 @@ async function processLeadFollowUps() {
 
     const elapsed = now - meta.lastCotizacionSent;
     if (elapsed < THREE_DAYS_MS) continue;
+
+    // C-342 B.8: POLICY — no atendemos leads USA. Decisión de Mariano: mercado excluido.
+    // Si el prefijo resuelve a 'US', saltamos el follow-up silenciosamente (el lead ya
+    // recibió la cotización manualmente o por error; no insistimos con seguimientos).
+    const country = getCountryFromPhone(phone);
+    if (country === 'US') {
+      console.log(`[FOLLOW-UP] Skipping US lead ${phone} — policy: no attendance for US market (C-342 B.8)`);
+      continue;
+    }
 
     // BLINDAJE: No enviar follow-ups en fin de semana ni festivos del país del lead
     const blocked = isFollowUpBlocked(phone);

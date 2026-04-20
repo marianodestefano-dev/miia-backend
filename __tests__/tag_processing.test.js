@@ -133,6 +133,43 @@ describe('cleanResidualTags', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// TEST SUITE 1b: Tag legacy [GENERAR_COTIZACION_PDF:] DESCONECTADO (C-342 B.1, firma P7 de C-329)
+// ═══════════════════════════════════════════════════════════════
+
+describe('Tag legacy [GENERAR_COTIZACION_PDF:] — desconectado del procesamiento (C-342 B.1)', () => {
+  // El handler en TMH:3060 usa indexOf('[GENERAR_COTIZACION:') como único prefix de procesamiento.
+  // El regex de limpieza mantiene (?:_PDF)? como red de seguridad.
+
+  const PROCESSING_PREFIX = '[GENERAR_COTIZACION:';
+  const CLEAN_REGEX = /\[GENERAR_COTIZACION(?:_PDF)?(?::[^\]]*)?\]/g;
+
+  test('tag nuevo [GENERAR_COTIZACION:{...}] SE detecta para procesamiento', () => {
+    const msg = 'Listo [GENERAR_COTIZACION:{"nombre":"Juan","pais":"COLOMBIA"}]';
+    expect(msg.indexOf(PROCESSING_PREFIX)).toBeGreaterThanOrEqual(0);
+  });
+
+  test('tag viejo [GENERAR_COTIZACION_PDF:{...}] NO se detecta para procesamiento (firma P7)', () => {
+    const msg = 'Listo [GENERAR_COTIZACION_PDF:{"nombre":"Juan","pais":"COLOMBIA"}]';
+    expect(msg.indexOf(PROCESSING_PREFIX)).toBe(-1);
+  });
+
+  test('tag viejo [GENERAR_COTIZACION_PDF:{...}] residual SE LIMPIA por red de seguridad', () => {
+    const msg = 'Listo [GENERAR_COTIZACION_PDF:{"nombre":"Juan","pais":"COLOMBIA"}]';
+    const cleaned = msg.replace(CLEAN_REGEX, '').trim();
+    expect(cleaned).not.toContain('[GENERAR_COTIZACION_PDF');
+    expect(cleaned).not.toContain('GENERAR_COTIZACION');
+    expect(cleaned).toContain('Listo');
+  });
+
+  test('tag nuevo [GENERAR_COTIZACION:{...}] residual SE LIMPIA por misma red', () => {
+    const msg = 'Listo [GENERAR_COTIZACION:{"nombre":"Juan"}]';
+    const cleaned = msg.replace(CLEAN_REGEX, '').trim();
+    expect(cleaned).not.toContain('[GENERAR_COTIZACION');
+    expect(cleaned).toContain('Listo');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
 // TEST SUITE 2: Tag regex patterns — Cada tag debe matchear
 // ═══════════════════════════════════════════════════════════════
 
@@ -213,9 +250,11 @@ describe('Emoji system', () => {
     expect(emoji).toBe('🙎‍♀️');
   });
 
-  test('emoji proactive es 🤹‍♀️', () => {
+  test('emoji proactive es 👩‍💻', () => {
+    // C-342 B.7: trigger 'proactive' ahora retorna 👩‍💻 (mujer tecnóloga).
+    // Antes caía al default y fallaba.
     const emoji = getMiiaEmoji('Revisé tu agenda', { trigger: 'proactive' });
-    expect(emoji).toBe('🤹‍♀️');
+    expect(emoji).toBe('👩‍💻');
   });
 
   test('emoji multi-action es 🤹‍♀️', () => {

@@ -3056,13 +3056,11 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   let _cotizTagProcessed = false; // FIX TDZ — mover antes de uso (igual que _agendaTagProcessed en C-065)
 
   // 11d-COTIZACION. Tag [GENERAR_COTIZACION:{json}] — Generar propuesta web interactiva
-  // Acepta también el tag viejo [GENERAR_COTIZACION_PDF:{json}] por compatibilidad con cache de Gemini
-  let cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION:');
-  let cotizTagPrefix = '[GENERAR_COTIZACION:';
-  if (cotizTagIdx === -1) {
-    cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION_PDF:');
-    cotizTagPrefix = '[GENERAR_COTIZACION_PDF:';
-  }
+  // C-342 B.1: tag legacy [GENERAR_COTIZACION_PDF:] DESCONECTADO del procesamiento (firma P7 C-329).
+  // El regex de limpieza más abajo mantiene `(?:_PDF)?` como red de seguridad para eliminar
+  // residuales de cache Gemini sin dejarlos visibles al lead.
+  const cotizTagIdx = aiMessage.indexOf('[GENERAR_COTIZACION:');
+  const cotizTagPrefix = '[GENERAR_COTIZACION:';
   if (cotizTagIdx !== -1) {
     const jsonStart = cotizTagIdx + cotizTagPrefix.length;
     let jsonEnd = -1;
@@ -3074,24 +3072,54 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     if (jsonEnd !== -1) {
       let pdfOk = false;
       try {
-        const cotizacionGenerator = require('../services/cotizacion_generator');
+        const cotizacionGenerator = require('../services/cotizacion_link'); // C-342 B.5: cotizacion_generator.js retirado
         const jsonStr = aiMessage.substring(jsonStart, jsonEnd);
         console.log(`${logPrefix} [COTIZ-TMH] JSON detectado: ${jsonStr.substring(0, 300)}`);
         const cotizData = JSON.parse(jsonStr);
-        // Validación server-side: moneda correcta según país del lead
+        // Validación server-side: moneda correcta según país del lead.
+        // C-342 B.4: Opción B completa — 17 países. Nativos (CO/CL/MX/ES) + 13 OP USD.
+        // Variantes con/sin tilde para robustez contra drift del LLM.
         const PAIS_MONEDA_MAP = {
-          'COLOMBIA': 'COP', 'CHILE': 'CLP', 'MEXICO': 'MXN',
+          // Nativos
+          'COLOMBIA': 'COP', 'CHILE': 'CLP', 'MEXICO': 'MXN', 'MÉXICO': 'MXN',
           'ESPAÑA': 'EUR', 'ESPANA': 'EUR',
-          'REPUBLICA_DOMINICANA': 'USD', 'ARGENTINA': 'USD', 'INTERNACIONAL': 'USD',
+          // OP USD (pricing normalizado)
+          'ARGENTINA': 'USD',
+          'REPUBLICA_DOMINICANA': 'USD', 'REPÚBLICA_DOMINICANA': 'USD', 'REPUBLICA DOMINICANA': 'USD', 'REPÚBLICA DOMINICANA': 'USD',
+          'PERU': 'USD', 'PERÚ': 'USD',
+          'ECUADOR': 'USD',
+          'USA': 'USD', 'EEUU': 'USD', 'ESTADOS_UNIDOS': 'USD', 'ESTADOS UNIDOS': 'USD',
+          'URUGUAY': 'USD',
+          'PARAGUAY': 'USD',
+          'BOLIVIA': 'USD',
+          'VENEZUELA': 'USD',
+          'GUATEMALA': 'USD',
+          'COSTA_RICA': 'USD', 'COSTA RICA': 'USD',
+          'PANAMA': 'USD', 'PANAMÁ': 'USD',
+          'BRASIL': 'USD', 'BRAZIL': 'USD',
+          // Fallback
+          'INTERNACIONAL': 'USD',
         };
         if (!cotizData.pais || cotizData.pais === 'INTERNACIONAL') {
-          const leadPrefix = basePhone.substring(0, 4);
-          if (leadPrefix.startsWith('57')) cotizData.pais = 'COLOMBIA';
-          else if (leadPrefix.startsWith('56')) cotizData.pais = 'CHILE';
-          else if (leadPrefix.startsWith('52')) cotizData.pais = 'MEXICO';
-          else if (leadPrefix.startsWith('54')) cotizData.pais = 'ARGENTINA';
-          else if (leadPrefix.startsWith('34')) cotizData.pais = 'ESPAÑA';
-          else if (/^1(809|829|849)/.test(basePhone)) cotizData.pais = 'REPUBLICA_DOMINICANA';
+          // Auto-resolver país desde prefijo telefónico (mismo orden que getCountryFromPhone — C-342 B.2)
+          const num = basePhone.replace(/[^0-9]/g, '');
+          if (num.startsWith('57')) cotizData.pais = 'COLOMBIA';
+          else if (num.startsWith('54')) cotizData.pais = 'ARGENTINA';
+          else if (num.startsWith('52')) cotizData.pais = 'MEXICO';
+          else if (num.startsWith('56')) cotizData.pais = 'CHILE';
+          else if (num.startsWith('51')) cotizData.pais = 'PERU';
+          else if (num.startsWith('593')) cotizData.pais = 'ECUADOR';
+          else if (num.startsWith('595')) cotizData.pais = 'PARAGUAY';
+          else if (num.startsWith('598')) cotizData.pais = 'URUGUAY';
+          else if (num.startsWith('591')) cotizData.pais = 'BOLIVIA';
+          else if (num.startsWith('502')) cotizData.pais = 'GUATEMALA';
+          else if (num.startsWith('506')) cotizData.pais = 'COSTA_RICA';
+          else if (num.startsWith('507')) cotizData.pais = 'PANAMA';
+          else if (num.startsWith('58'))  cotizData.pais = 'VENEZUELA';
+          else if (num.startsWith('55'))  cotizData.pais = 'BRASIL';
+          else if (/^1(809|829|849)/.test(num)) cotizData.pais = 'REPUBLICA_DOMINICANA'; // DO antes de US
+          else if (num.startsWith('1')) cotizData.pais = 'USA';
+          else if (num.startsWith('34')) cotizData.pais = 'ESPAÑA';
         }
         const expectedMoneda = PAIS_MONEDA_MAP[cotizData.pais];
         if (expectedMoneda && cotizData.moneda !== expectedMoneda) {

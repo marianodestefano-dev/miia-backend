@@ -77,7 +77,7 @@ jest.mock('../cerebro_absoluto', () => ({
 }));
 
 // Mock other local modules
-jest.mock('../cotizacion_generator', () => ({}));
+jest.mock('../services/cotizacion_link', () => ({ PRECIOS: {}, generarLinkCotizacion: jest.fn().mockResolvedValue(null) })); // C-342 B.5: cotizacion_generator.js retirado
 jest.mock('../web_scraper', () => ({ init: jest.fn(), processScraperCron: jest.fn() }));
 jest.mock('../estadisticas', () => ({
   getSummary: jest.fn().mockReturnValue({}),
