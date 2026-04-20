@@ -9518,8 +9518,10 @@ async function handleIncomingMessage(message) {
           const prompt = c.contact_type === 'medilink_team'
             ? buildMedilinkTeamPrompt(c.name, userProfile, { isBoss: c.isBoss })
             : buildFriendBroadcastPrompt(c.name, c.country, userProfile);
-          const presentInstruction = `\n\nINSTRUCCIÓN DE PRESENTACIÓN (broadcast inicial): Este es el PRIMER mensaje que ${c.name || 'este contacto'} recibe de MIIA. Presentate en 2-3 líneas, cálido, natural. NO hagas preguntas largas. Mencioná que sos la asistente de ${userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Mariano'} y que por acá te podrá escribir cuando necesite algo. Nada de publicidad ni pitch de ventas. Máximo 3 líneas.`;
-          const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.FAMILY_CHAT, prompt + presentInstruction, {}, { enableSearch: false });
+          // C-319 fix: orphan instruction heredada de C-303 removida — anulaba el MMC de
+          // buildFriendBroadcastPrompt/buildMedilinkTeamPrompt (C-311) y contaminaba con
+          // ${userProfile?.shortName}="Hola". El prompt ya autocontiene presentación + 3 capas MMC.
+          const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.FAMILY_CHAT, prompt, {}, { enableSearch: false });
           const text = (aiResult?.text || aiResult || '').trim();
           if (!text) { failed++; console.warn(`[PRESENTATE] ⚠️ IA vacía para ${c.phone}`); continue; }
           const finalText = applyMiiaEmoji(text, { chatType: c.contact_type, isFamily: c.contact_type === 'friend_broadcast' });
