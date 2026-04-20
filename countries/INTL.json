@@ -1,71 +1,166 @@
 {
   "code": "INTL",
   "name": "Internacional",
-  "flag": "\ud83c\udf0e",
+  "flag": "🌎",
   "phonePrefix": [],
   "pais_tag": "INTERNACIONAL",
   "timezone": "America/Bogota",
   "normalizedPricing": "OP",
-  "note": "Fallback para cualquier pa\u00eds no reconocido. Tambi\u00e9n se usa cuando la IA no puede determinar el pa\u00eds del lead.",
-
-  "currency": { "code": "USD", "symbol": "$", "display": "USD $", "thousandSep": ",", "decimals": 2 },
-
+  "note": "Fallback para cualquier país no reconocido. También se usa cuando la IA no puede determinar el país del lead.",
+  "currency": {
+    "code": "USD",
+    "symbol": "$",
+    "display": "USD $",
+    "thousandSep": ",",
+    "decimals": 2
+  },
   "pricing": {
     "plans": {
-      "esencial": { "base": 45, "adic": 12 },
-      "pro":      { "base": 65, "adic": 13 },
-      "titanium": { "base": 85, "adic": 14 }
+      "esencial": {
+        "base": 45,
+        "adic": 12
+      },
+      "pro": {
+        "base": 65,
+        "adic": 13
+      },
+      "titanium": {
+        "base": 85,
+        "adic": 14
+      }
     },
     "adicEscalonado": false
   },
-
   "bolsas": {
-    "wa": { "ranges": [150, 350, 800, 2000], "prices": [15, 35, 70, 170] },
-    "firma": { "ranges": [50, 100, 200, 500], "prices": [25, 40, 70, 170] }
+    "wa": {
+      "ranges": [
+        150,
+        350,
+        800,
+        2000
+      ],
+      "prices": [
+        15,
+        35,
+        70,
+        170
+      ]
+    },
+    "firma": {
+      "ranges": [
+        50,
+        100,
+        200,
+        500
+      ],
+      "prices": [
+        25,
+        40,
+        70,
+        170
+      ]
+    }
   },
-
   "modules": {
-    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
-    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
-    "factura": { "available": false },
-    "receta":  { "available": false }
+    "wa": {
+      "available": true,
+      "name": "WhatsApp — Recordatorios automáticos",
+      "desc": "Envíos automáticos de recordatorios y confirmaciones de citas."
+    },
+    "firma": {
+      "available": true,
+      "name": "Firma Electrónica",
+      "desc": "Para consentimientos informados y documentos clínicos."
+    },
+    "factura": {
+      "available": false
+    },
+    "receta": {
+      "available": false
+    }
   },
-
   "rules": {
-    "iva": { "rate": 0, "appliesTo": null, "note": "Precios en USD, sin IVA" },
+    "iva": {
+      "rate": 0,
+      "appliesTo": null,
+      "note": "Precios en USD, sin IVA"
+    },
     "anualOnly": false,
-    "modalidades": ["mensual", "semestral", "anual"],
-    "descuentos": { "mensual": 0.30, "semestral": 0.15, "anual": 0.20 },
+    "modalidades": [
+      "mensual",
+      "semestral",
+      "anual"
+    ],
+    "descuentos": {
+      "mensual": {
+        "rate": 0.3,
+        "months": 3
+      },
+      "semestral": {
+        "rate": 0.15,
+        "months": null
+      },
+      "anual": {
+        "rate": 0.2,
+        "months": null
+      }
+    },
     "promoMensual": "3 meses con descuento 30%, desde mes 4 precio regular",
     "siigo": null
   },
-
   "norms": [
-    { "title": "RGPD / GDPR \u2014 Protecci\u00f3n datos", "countryOnly": false },
-    { "title": "ISO 27001 \u2014 Seguridad certificada", "countryOnly": false },
-    { "title": "Normativa local privacidad cl\u00ednica", "countryOnly": false },
-    { "title": "Est\u00e1ndares internacionales telemedicina", "countryOnly": false }
+    {
+      "title": "RGPD / GDPR — Protección datos",
+      "countryOnly": false
+    },
+    {
+      "title": "ISO 27001 — Seguridad certificada",
+      "countryOnly": false
+    },
+    {
+      "title": "Normativa local privacidad clínica",
+      "countryOnly": false
+    },
+    {
+      "title": "Estándares internacionales telemedicina",
+      "countryOnly": false
+    }
   ],
-
   "includedFeatures": [],
-  "videos": { "countrySpecific": [] },
-
+  "videos": {
+    "countrySpecific": []
+  },
   "dialect": {
     "style": "espanol_neutro",
-    "pronouns": "t\u00fa/usted",
-    "expressions": ["perfecto", "claro", "excelente", "genial", "de acuerdo"],
-    "avoid": ["vos", "contame", "decime", "\u00f3rale", "plat\u00edcame", "cach\u00e1i", "bacán", "vale", "mae"],
-    "toneNote": "Espa\u00f1ol 100% neutro. Sin regionalismos de ning\u00fan pa\u00eds. Profesional y c\u00e1lido. Este es el default cuando no se conoce el pa\u00eds."
+    "pronouns": "tú/usted",
+    "expressions": [
+      "perfecto",
+      "claro",
+      "excelente",
+      "genial",
+      "de acuerdo"
+    ],
+    "avoid": [
+      "vos",
+      "contame",
+      "decime",
+      "órale",
+      "platícame",
+      "cachái",
+      "bacán",
+      "vale",
+      "mae"
+    ],
+    "toneNote": "Español 100% neutro. Sin regionalismos de ningún país. Profesional y cálido. Este es el default cuando no se conoce el país."
   },
-
   "salesDna": {
-    "approach": "Profesional y neutro. Discovery est\u00e1ndar. Preguntar de qu\u00e9 pa\u00eds es si no es obvio por el prefijo telef\u00f3nico.",
+    "approach": "Profesional y neutro. Discovery estándar. Preguntar de qué país es si no es obvio por el prefijo telefónico.",
     "objections": {
       "caro": "Precios en USD son competitivos para cualquier mercado LatAm.",
       "ya_tengo_sistema": "Destacar IA + WhatsApp + todo-en-uno.",
       "lo_pienso": "Fase 2: mejorar descuento."
     },
-    "closingTips": "Adaptar argumentos una vez se identifique el pa\u00eds real. Mientras tanto, enfocarse en funcionalidades universales.",
-    "culturalNotes": "Investigar de d\u00f3nde es el lead lo antes posible para adaptar tono y argumentos. Preguntar de forma natural: '\u00bfDesde d\u00f3nde me escribes?'"
+    "closingTips": "Adaptar argumentos una vez se identifique el país real. Mientras tanto, enfocarse en funcionalidades universales.",
+    "culturalNotes": "Investigar de dónde es el lead lo antes posible para adaptar tono y argumentos. Preguntar de forma natural: '¿Desde dónde me escribes?'"
   }
 }

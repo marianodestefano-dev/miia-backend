@@ -16,6 +16,7 @@
 
 const express = require('express');
 const crypto  = require('crypto');
+const { getCountryConfig, getCountryByPhone } = require('../countries');
 
 // ═══════════════════════════════════════════════════════════════
 // SLUGIFY — nombre de negocio → slug para URL
@@ -135,6 +136,35 @@ function deepMerge(defaults, overrides) {
 
 function generateHash() {
   return crypto.randomBytes(4).toString('hex'); // 8 chars hex
+}
+
+// ─────────────────────────────────────────────────────────────
+// buildDescuentoInfo(countryConfig, modalidad)
+// C-298 SEC-B decisión #3 + bug fix regla Mariano:
+//   Mensual 30% aplica SOLO primeros 3 meses; mes 4+ precio regular.
+//   Semestral/anual son permanentes.
+// Retorna objeto consumible por frontend sin recalcular rates.
+// ─────────────────────────────────────────────────────────────
+function buildDescuentoInfo(countryConfig, modalidad) {
+  const descuentos = countryConfig && countryConfig.rules && countryConfig.rules.descuentos;
+  if (!descuentos) return null;
+  const entry = descuentos[modalidad];
+  if (!entry) return null;
+
+  // Retrocompat: algunos docs viejos podrían tener formato plano (number)
+  const rate   = typeof entry === 'object' ? entry.rate   : entry;
+  const months = typeof entry === 'object' ? entry.months : null;
+
+  return {
+    modalidad,
+    rate,                              // ej 0.30
+    months,                            // 3 para mensual, null para permanente
+    isTemporary: months !== null && months > 0,
+    // Texto listo para renderizar al lado del precio
+    label: months
+      ? `Mes 1-${months}: ${Math.round(rate * 100)}% off · Mes ${months + 1}+: precio regular`
+      : `${Math.round(rate * 100)}% off (permanente sobre esta modalidad)`,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -258,9 +288,33 @@ module.exports = function createCotizacionRoutes({ db, verifyToken }) {
 
         const margin = tenantConfig.product.pricing_margin || 0;
 
+        // ═══ T-H.1.a + T-H.1.c: inyectar country_config + descuento_info ═══
+        // Fuente de verdad: miia-backend/countries/*.json (_schema.md)
+        // Resolución de país: params.country > lead_phone prefix > default 'CO'
+        let countryCode = (data.params && data.params.country)
+          ? String(data.params.country).toUpperCase()
+          : null;
+        if (!countryCode && data.lead_phone) {
+          const byPhone = getCountryByPhone(data.lead_phone);
+          if (byPhone) countryCode = byPhone.code;
+        }
+        if (!countryCode) countryCode = 'CO';
+
+        const countryConfig = getCountryConfig(countryCode) || getCountryConfig('INTL');
+
+        // Modalidad efectiva: si el país es anualOnly (ES), forzar 'anual'
+        const rawMod = (data.params && data.params.modalidad) || 'mensual';
+        const effMod = countryConfig.rules && countryConfig.rules.anualOnly
+          ? 'anual'
+          : rawMod;
+
+        const descuentoInfo = buildDescuentoInfo(countryConfig, effMod);
+
         return res.json({
           params:         data.params,
           tenant_config:  tenantConfig,
+          country_config: countryConfig,
+          descuento_info: descuentoInfo,
           lead_name:      data.lead_name,
           expires_at:     data.expires_at,
           expired:        false,

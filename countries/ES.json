@@ -1,87 +1,161 @@
 {
   "code": "ES",
-  "name": "Espa\u00f1a",
-  "flag": "\ud83c\uddea\ud83c\uddf8",
-  "phonePrefix": ["34"],
-  "pais_tag": "ESPA\u00d1A",
+  "name": "España",
+  "flag": "🇪🇸",
+  "phonePrefix": [
+    "34"
+  ],
+  "pais_tag": "ESPAÑA",
   "timezone": "Europe/Madrid",
-
   "currency": {
     "code": "EUR",
-    "symbol": "\u20ac",
-    "display": "EUR \u20ac",
+    "symbol": "€",
+    "display": "EUR €",
     "thousandSep": ",",
     "decimals": 2
   },
-
   "pricing": {
     "plans": {
-      "esencial": { "base": 840, "adic": 120 },
-      "pro":      { "base": 1200, "adic": 192 },
-      "titanium": { "base": 1440, "adic": 240 }
+      "esencial": {
+        "base": 840,
+        "adic": 120
+      },
+      "pro": {
+        "base": 1200,
+        "adic": 192
+      },
+      "titanium": {
+        "base": 1440,
+        "adic": 240
+      }
     },
     "adicEscalonado": false,
     "preciosAnuales": true,
-    "nota": "TODOS los precios de Espa\u00f1a son ANUALES (ya incluyen 12 meses). NO multiplicar por 12."
+    "nota": "TODOS los precios de España son ANUALES (ya incluyen 12 meses). NO multiplicar por 12."
   },
-
   "bolsas": {
     "wa": {
-      "ranges": [150, 350, 800, 2000],
-      "prices": [180, 396, 864, 2040]
+      "ranges": [
+        150,
+        350,
+        800,
+        2000
+      ],
+      "prices": [
+        180,
+        396,
+        864,
+        2040
+      ]
     },
     "firma": {
-      "ranges": [50, 100, 200, 500],
-      "prices": [300, 540, 960, 2400]
+      "ranges": [
+        50,
+        100,
+        200,
+        500
+      ],
+      "prices": [
+        300,
+        540,
+        960,
+        2400
+      ]
     }
   },
-
   "modules": {
-    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
-    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
-    "factura": { "available": false },
-    "receta":  { "available": false }
+    "wa": {
+      "available": true,
+      "name": "WhatsApp — Recordatorios automáticos",
+      "desc": "Envíos automáticos de recordatorios y confirmaciones de citas."
+    },
+    "firma": {
+      "available": true,
+      "name": "Firma Electrónica",
+      "desc": "Para consentimientos informados y documentos clínicos."
+    },
+    "factura": {
+      "available": false
+    },
+    "receta": {
+      "available": false
+    }
   },
-
   "rules": {
-    "iva": { "rate": 0, "appliesTo": null, "note": "Precios netos, 0% IVA (el IVA europeo lo gestiona el cliente)" },
+    "iva": {
+      "rate": 0,
+      "appliesTo": null,
+      "note": "Precios netos, 0% IVA (el IVA europeo lo gestiona el cliente)"
+    },
     "anualOnly": true,
-    "modalidades": ["anual"],
-    "descuentos": { "anual": 0.20 },
+    "modalidades": [
+      "anual"
+    ],
+    "descuentos": {
+      "anual": {
+        "rate": 0.2,
+        "months": null
+      }
+    },
     "promoMensual": null,
     "siigo": null,
     "enforcement": "Frontend oculta botones mensual/semestral. Backend fuerza modalidad='anual' si detecta EUR."
   },
-
   "norms": [
-    { "title": "RGPD / GDPR \u2014 Protecci\u00f3n de datos", "countryOnly": false },
-    { "title": "LOPD-GDD \u2014 Ley Org\u00e1nica de Protecci\u00f3n de Datos", "countryOnly": false },
-    { "title": "ISO 27001 \u2014 Seguridad certificada", "countryOnly": false },
-    { "title": "Real Decreto 1093/2010 \u2014 Historia cl\u00ednica digital SNS", "countryOnly": false }
+    {
+      "title": "RGPD / GDPR — Protección de datos",
+      "countryOnly": false
+    },
+    {
+      "title": "LOPD-GDD — Ley Orgánica de Protección de Datos",
+      "countryOnly": false
+    },
+    {
+      "title": "ISO 27001 — Seguridad certificada",
+      "countryOnly": false
+    },
+    {
+      "title": "Real Decreto 1093/2010 — Historia clínica digital SNS",
+      "countryOnly": false
+    }
   ],
-
   "includedFeatures": [],
-
   "videos": {
     "countrySpecific": []
   },
-
   "dialect": {
     "style": "tuteo_espanol",
-    "pronouns": "t\u00fa/usted",
-    "expressions": ["vale", "genial", "perfecto", "estupendo", "de acuerdo", "venga"],
-    "avoid": ["vos", "contame", "decime", "dale", "\u00f3rale", "plat\u00edcame", "cach\u00e1i", "bacán", "listo", "con mucho gusto"],
-    "toneNote": "Profesional-directo. Los espa\u00f1oles prefieren ir al grano. 'Vale' y 'perfecto' son comodines. No usar latinoamericanismos. Cuidado con 'coger' (en Espa\u00f1a es neutro, en LatAm no)."
+    "pronouns": "tú/usted",
+    "expressions": [
+      "vale",
+      "genial",
+      "perfecto",
+      "estupendo",
+      "de acuerdo",
+      "venga"
+    ],
+    "avoid": [
+      "vos",
+      "contame",
+      "decime",
+      "dale",
+      "órale",
+      "platícame",
+      "cachái",
+      "bacán",
+      "listo",
+      "con mucho gusto"
+    ],
+    "toneNote": "Profesional-directo. Los españoles prefieren ir al grano. 'Vale' y 'perfecto' son comodines. No usar latinoamericanismos. Cuidado con 'coger' (en España es neutro, en LatAm no)."
   },
-
   "salesDna": {
-    "approach": "Directos y pr\u00e1cticos. No alargar el discovery. Ir al valor r\u00e1pido. Mencionar RGPD y cumplimiento europeo como diferenciador.",
+    "approach": "Directos y prácticos. No alargar el discovery. Ir al valor rápido. Mencionar RGPD y cumplimiento europeo como diferenciador.",
     "objections": {
-      "caro": "Comparar con Doctolib, Doctoralia, ClinicCloud (competencia europea). Medilink tiene IA incluida y soporte en espa\u00f1ol nativo.",
-      "ya_tengo_sistema": "Preguntar cu\u00e1l. Si es Doctoralia \u2192 destacar que Medilink es gesti\u00f3n completa, no solo agenda.",
-      "lo_pienso": "Fase 2: mejorar descuento anual. Espa\u00f1a solo ofrece anual \u2014 el 20% ya es atractivo."
+      "caro": "Comparar con Doctolib, Doctoralia, ClinicCloud (competencia europea). Medilink tiene IA incluida y soporte en español nativo.",
+      "ya_tengo_sistema": "Preguntar cuál. Si es Doctoralia → destacar que Medilink es gestión completa, no solo agenda.",
+      "lo_pienso": "Fase 2: mejorar descuento anual. España solo ofrece anual — el 20% ya es atractivo."
     },
-    "closingTips": "El pago anual \u00fanico simplifica la contabilidad. Mencionarlo como ventaja. Los precios en EUR eliminan riesgo cambiario.",
-    "culturalNotes": "El mercado espa\u00f1ol es exigente con la protecci\u00f3n de datos (RGPD). ISO 27001 + AWS es un argumento fuerte. Muchas cl\u00ednicas privadas buscan digitalizarse post-COVID."
+    "closingTips": "El pago anual único simplifica la contabilidad. Mencionarlo como ventaja. Los precios en EUR eliminan riesgo cambiario.",
+    "culturalNotes": "El mercado español es exigente con la protección de datos (RGPD). ISO 27001 + AWS es un argumento fuerte. Muchas clínicas privadas buscan digitalizarse post-COVID."
   }
 }

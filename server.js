@@ -357,8 +357,8 @@ const FAMILY_CONTACTS = {
   'JUANCHO': { name: 'Juancho', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️' },
   'JUAN DIEGO': { name: 'Juancho', relation: 'cuñado, hermano mayor de Ale', emoji: '🥑⚖️🏍️' },
   'MARIA CLARA': { name: 'Maria', relation: 'concuñada, esposa de Juancho', emoji: '🏠🏍️🙏' },
-  'VIVI': { name: 'Vivi', relation: 'JEFA', emoji: '👩‍💼👑' },
-  'VIVIANA': { name: 'Vivi', relation: 'JEFA', emoji: '👩‍💼👑' },
+  // T-A (C-293): Vivi removida de FAMILY_CONTACTS. Ahora vive en contact_index/56994128069
+  //              con contact_type='medilink_team' + isBoss=true. Ver migrations/pre_populate_contact_index.js
   'FLAKO': { name: 'Flako', relation: 'amigo del papá', emoji: '😎' }
 };
 
@@ -983,6 +983,16 @@ async function runAgendaEngine() {
       // Leads y contactos que pidieron recordatorio → se envía SIEMPRE a la hora exacta
       if (contactRequested || isMiiaCenterLeadEvt) {
         console.log(`[AGENDA] 🕐 Recordatorio a hora exacta para ${evt.contactName || evt.contactPhone} (pedido por contacto: ${!!contactRequested}, source: ${evt.source || 'default'})`);
+      }
+
+      // ═══ T-B (C-293): Eventos de broadcast (friend_broadcast / medilink_team) ═══
+      // Cuando un contacto del broadcast dice "recordame X", el recordatorio DEBE ir
+      // a ese contacto (no al owner, no a terceros). Forzamos remindContact=true
+      // cuando el source es uno de los canales del broadcast y contactPhone está seteado.
+      const isBroadcastReminder = evt.source === 'friend_broadcast' || evt.source === 'medilink_team';
+      if (isBroadcastReminder && !evt.remindContact && evt.contactPhone && evt.contactPhone !== 'self') {
+        console.log(`[AGENDA] 🔒 T-B: Evento ${doc.id} source="${evt.source}" contactPhone=${evt.contactPhone} → forzando remindContact=true (recordatorio al contacto que lo pidió)`);
+        evt.remindContact = true;
       }
 
       // ═══ BUG4-FIX: Eventos creados desde self-chat son recordatorios PARA EL OWNER ═══
@@ -4686,24 +4696,57 @@ ${(() => { const lc = leadPhone.substring(0, 2); if (lc === '57') return '- DIAL
     const isNotEquipoPresent = effectiveMsg && !effectiveMsg.match(/(?:presenta(?:te)?|preséntate)\s+(?:miia\s+)?(?:al?\s+)?equipo/i);
     if (isAdmin && presentarIndividualMatch && isNotEquipoPresent) {
       const namesRaw = presentarIndividualMatch[1].trim();
-      // Parsear nombres: "Kamila y Liliana", "Kamila, Liliana", "Kamila"
-      const names = namesRaw.split(/\s*(?:,|y)\s*/i).map(n => n.trim()).filter(n => n.length > 0);
-      console.log(`[PRESENTAR] 🎬 Owner pidió presentación individual a: ${names.join(', ')}`);
+      // Parsear nombres/teléfonos: "Kamila y Liliana", "+573001234567, Kamila", "+573001234567"
+      const tokens = namesRaw.split(/\s*(?:,|\sy\s)\s*/i).map(n => n.trim()).filter(n => n.length > 0);
+      console.log(`[PRESENTAR] 🎬 Owner pidió presentación individual a: ${tokens.join(', ')}`);
 
-      // Buscar cada nombre en familyContacts
+      // T-C: aceptar tokens que sean teléfonos (E.164 con o sin +, mínimo 7 dígitos).
+      // Si el token es un teléfono → buscar nombre en contact_index, contactGroups o familyContacts.
+      // Si no se encuentra, usar "Nuevo contacto" como fallback y emoji 👋.
+      const phoneTokenRegex = /^\+?\d{7,15}$/;
       const targets = [];
       const notFound = [];
-      for (const name of names) {
-        const nameLower = name.toLowerCase();
-        const match = Object.entries(familyContacts).find(([, info]) => {
-          const n = (info.name || '').toLowerCase();
-          const fn = (info.fullName || '').toLowerCase();
-          return n === nameLower || fn === nameLower || n.includes(nameLower) || fn.includes(nameLower);
-        });
-        if (match) {
-          targets.push({ phone: match[0], info: match[1] });
+      for (const token of tokens) {
+        const cleaned = token.replace(/[\s\-()]/g, '');
+        const isPhone = phoneTokenRegex.test(cleaned);
+        if (isPhone) {
+          const basePhone = cleaned.replace(/^\+/, '');
+          // 1. Buscar nombre en familyContacts por key exacta
+          let info = familyContacts[basePhone];
+          // 2. Fuzzy lookup por suffix (últimos 10 dígitos) en familyContacts
+          if (!info) {
+            const suffix = basePhone.slice(-10);
+            const matchEntry = Object.entries(familyContacts).find(([k]) => k.replace(/\D/g, '').slice(-10) === suffix);
+            if (matchEntry) info = matchEntry[1];
+          }
+          // 3. Buscar en contact_index de Firestore (best-effort; fallback a token genérico)
+          if (!info) {
+            try {
+              const ciDoc = await db.collection('users').doc(OWNER_UID).collection('contact_index').doc(basePhone).get();
+              if (ciDoc.exists) {
+                const ci = ciDoc.data();
+                info = { name: ci.name || 'Nuevo contacto', relation: ci.contact_type || 'contacto', emoji: '👋' };
+              }
+            } catch (e) {
+              console.warn(`[PRESENTAR] contact_index lookup falló para ${basePhone}: ${e.message}`);
+            }
+          }
+          // 4. Fallback genérico — MIIA igual se presenta, usa "Nuevo contacto"
+          if (!info) info = { name: 'Nuevo contacto', relation: 'contacto nuevo', emoji: '👋' };
+          targets.push({ phone: basePhone, info });
+          console.log(`[PRESENTAR] 📞 Token teléfono "${token}" → ${basePhone} (${info.name})`);
         } else {
-          notFound.push(name);
+          const nameLower = token.toLowerCase();
+          const match = Object.entries(familyContacts).find(([, i]) => {
+            const n = (i.name || '').toLowerCase();
+            const fn = (i.fullName || '').toLowerCase();
+            return n === nameLower || fn === nameLower || n.includes(nameLower) || fn.includes(nameLower);
+          });
+          if (match) {
+            targets.push({ phone: match[0], info: match[1] });
+          } else {
+            notFound.push(token);
+          }
         }
       }
 
@@ -7723,6 +7766,76 @@ REGLAS:
         aiMessage = aiMessage.replace(/\[CONSULTAR_AGENDA\]/g, '').trim();
         if (!aiMessage) aiMessage = 'Tuve un problema consultando tu agenda. ¿Podrías intentar de nuevo?';
       }
+    }
+
+    // ═══ T-I (C-293) TAG [AGREGAR_HINCHA] / [QUITAR_HINCHA] — wire chat → miia_sports ═══
+    // Emitido por MIIA cuando detecta intención EXPLÍCITA del contacto:
+    //   "soy hincha de Boca" / "sigo a Verstappen" / "mi equipo es X"
+    //   [AGREGAR_HINCHA:contactPhone|deporte|equipo|rivalidad?]
+    //   [QUITAR_HINCHA:contactPhone|deporte]
+    // contactPhone = 'self' si el owner se agrega a sí mismo, o el phone del contacto.
+    // Handler escribe a users/{uid}/miia_sports/{docId} y refresca el engine en caliente.
+    const agregarHinchaMatch = aiMessage.match(/\[AGREGAR_HINCHA:([^\]]+)\]/g);
+    if (agregarHinchaMatch) {
+      for (const tag of agregarHinchaMatch) {
+        const inner = tag.replace('[AGREGAR_HINCHA:', '').replace(']', '');
+        const parts = inner.split('|').map(p => p.trim());
+        if (parts.length >= 3) {
+          const [rawPhone, deporte, equipoRaw, rivalidad] = parts;
+          // Resolver contactPhone: 'self' | basePhone del caller | phone explícito
+          let contactPhone = rawPhone;
+          if (rawPhone === 'self' || rawPhone === basePhone || rawPhone === phone) {
+            contactPhone = isSelfChat ? 'self' : basePhone;
+          } else if (/^\+?\d{7,15}$/.test(rawPhone.replace(/[\s\-()]/g, ''))) {
+            contactPhone = rawPhone.replace(/[\s\-()+]/g, '');
+          }
+          const contactName = contactPhone === 'self'
+            ? 'Owner'
+            : (leadNames[`${contactPhone}@s.whatsapp.net`] || leadNames[contactPhone] || familyContacts[contactPhone]?.name || 'Contacto');
+          const sportType = (deporte || '').toLowerCase();
+          const sportPref = { type: sportType };
+          // F1 usa driver; resto usa team
+          if (sportType === 'f1') sportPref.driver = equipoRaw;
+          else sportPref.team = equipoRaw;
+          if (rivalidad) sportPref.rivalry = rivalidad;
+
+          try {
+            await sportEngine.addSportPreference(contactPhone, contactName, sportPref);
+            console.log(`[AGREGAR_HINCHA] ✅ ${contactName} (${contactPhone}) → ${sportType}/${equipoRaw}${rivalidad ? ` vs ${rivalidad}` : ''}`);
+          } catch (e) {
+            console.error(`[AGREGAR_HINCHA] ❌ Error:`, e.message);
+          }
+        } else {
+          console.warn(`[AGREGAR_HINCHA] ⚠️ Tag mal formado: ${tag}`);
+        }
+      }
+      aiMessage = aiMessage.replace(/\[AGREGAR_HINCHA:[^\]]+\]/g, '').trim();
+    }
+
+    const quitarHinchaMatch = aiMessage.match(/\[QUITAR_HINCHA:([^\]]+)\]/g);
+    if (quitarHinchaMatch) {
+      for (const tag of quitarHinchaMatch) {
+        const inner = tag.replace('[QUITAR_HINCHA:', '').replace(']', '');
+        const parts = inner.split('|').map(p => p.trim());
+        if (parts.length >= 2) {
+          const [rawPhone, deporte] = parts;
+          let contactPhone = rawPhone;
+          if (rawPhone === 'self' || rawPhone === basePhone || rawPhone === phone) {
+            contactPhone = isSelfChat ? 'self' : basePhone;
+          } else if (/^\+?\d{7,15}$/.test(rawPhone.replace(/[\s\-()]/g, ''))) {
+            contactPhone = rawPhone.replace(/[\s\-()+]/g, '');
+          }
+          try {
+            await sportEngine.removeSportPreference(contactPhone, (deporte || '').toLowerCase());
+            console.log(`[QUITAR_HINCHA] 🗑️ ${contactPhone} → ${deporte}`);
+          } catch (e) {
+            console.error(`[QUITAR_HINCHA] ❌ Error:`, e.message);
+          }
+        } else {
+          console.warn(`[QUITAR_HINCHA] ⚠️ Tag mal formado: ${tag}`);
+        }
+      }
+      aiMessage = aiMessage.replace(/\[QUITAR_HINCHA:[^\]]+\]/g, '').trim();
     }
 
     // ═══ TAG [CANCELAR_EVENTO] / [ELIMINAR_EVENTO] (alias) — Cancelar evento del owner ═══
@@ -11079,6 +11192,72 @@ app.post('/api/broadcast-return', express.json(), async (req, res) => {
 
   console.log(`[BROADCAST] 📢 MIIA ha vuelto! Enviado a ${results.sent.length}/${results.total + 1} usuarios`);
   res.json({ success: true, ...results });
+});
+
+// ──────────────────────────────────────────────────────────────
+// POST /api/send-message
+// Endpoint interno para notificaciones del cotizador (routes/cotizaciones.js
+// sendOwnerNotification) y otros módulos que necesiten emitir mensajes WhatsApp
+// desde contexto HTTP.
+// Auth: Bearer MIIA_INTERNAL_TOKEN
+// Body: { tenantId, phone, message }
+// Ruteo:
+//   - tenantId === OWNER_UID → safeSendMessage (sock principal)
+//   - otros tenants → sock del tenant vía tenantManager.getTenantClient
+// Spec: C-297 SEC-B / C-298 SEC-E (aprobado)
+// ──────────────────────────────────────────────────────────────
+app.post('/api/send-message', express.json(), async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.replace('Bearer ', '').trim();
+  if (!process.env.MIIA_INTERNAL_TOKEN || token !== process.env.MIIA_INTERNAL_TOKEN) {
+    console.warn('[API-SEND-MSG] ❌ Unauthorized: token inválido o no configurado');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { tenantId, phone, message } = req.body || {};
+  if (!tenantId || !phone || !message) {
+    console.warn(`[API-SEND-MSG] ❌ Bad request: faltan campos (tenantId=${!!tenantId}, phone=${!!phone}, message=${!!message})`);
+    return res.status(400).json({ error: 'Missing required fields: tenantId, phone, message' });
+  }
+
+  // Normalizar JID
+  const basePhone = String(phone).split('@')[0].split(':')[0].replace(/^\+/, '');
+  const jid = phone.includes('@') ? phone : `${basePhone}@s.whatsapp.net`;
+
+  // Bloqueo absoluto: grupos y status
+  if (jid.endsWith('@g.us') || jid.includes('status@')) {
+    console.warn(`[API-SEND-MSG] 🚫 Destino bloqueado (grupo/status): ${jid}`);
+    return res.status(400).json({ error: 'Destination not allowed (group/status)' });
+  }
+
+  try {
+    let sentId = null;
+
+    if (tenantId === OWNER_UID) {
+      // Owner principal → safeSendMessage (registra msgId, respeta rate limits, etc.)
+      const selfBase = (getOwnerSock()?.user?.id || '').split(':')[0].split('@')[0];
+      const isSelfChat = selfBase && selfBase === basePhone;
+      const result = await safeSendMessage(jid, message, { isSelfChat, skipEmoji: true });
+      sentId = result?.key?.id || null;
+      console.log(`[API-SEND-MSG] ✅ OWNER → ${jid} (id=${sentId || 'n/a'}, selfChat=${isSelfChat})`);
+    } else {
+      // Tenant secundario → sock del tenant
+      const sock = tenantManager.getTenantClient(tenantId);
+      if (!sock) {
+        console.warn(`[API-SEND-MSG] ❌ Tenant ${tenantId} sin sock activo`);
+        return res.status(503).json({ error: 'Tenant not connected', tenantId });
+      }
+      const result = await sock.sendMessage(jid, { text: message });
+      sentId = result?.key?.id || null;
+      if (sentId) tenantManager.registerSentMsgId(tenantId, sentId);
+      console.log(`[API-SEND-MSG] ✅ TENANT ${tenantId} → ${jid} (id=${sentId || 'n/a'})`);
+    }
+
+    return res.json({ success: true, messageId: sentId });
+  } catch (err) {
+    console.error(`[API-SEND-MSG] ❌ Error enviando a ${jid} (tenant=${tenantId}):`, err.message);
+    return res.status(500).json({ error: 'Send failed', detail: err.message });
+  }
 });
 
 // POST /api/tenant/:uid/logout — Disconnect tenant WhatsApp

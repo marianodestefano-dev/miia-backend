@@ -66,8 +66,21 @@ Cuando MIIA habla con un lead de México, solo necesita leer `MX.json`. No neces
 | `rules.iva.appliesTo` | string? | A qué se aplica ("plan_base" = solo plan+adic, null = no aplica) |
 | `rules.anualOnly` | boolean | true = solo permite modalidad anual (España) |
 | `rules.modalidades` | string[] | Modalidades permitidas |
-| `rules.descuentos` | object | Porcentajes de descuento por modalidad |
+| `rules.descuentos` | object | Descuentos por modalidad (ver formato abajo) |
+| `rules.descuentos.{modalidad}.rate` | number | Tasa decimal (0.30 = 30%) |
+| `rules.descuentos.{modalidad}.months` | number \| null | Meses que dura el descuento. `null` = permanente. `3` = solo primeros 3 meses (mensual) |
 | `rules.siigo` | string? | Regla SIIGO (solo Colombia) |
+
+**Formato `rules.descuentos` (v2.0 — desde C-298):**
+```jsonc
+{
+  "mensual":   { "rate": 0.30, "months": 3 },     // mes 1-3 con 30% off, mes 4+ precio regular
+  "semestral": { "rate": 0.15, "months": null },  // permanente
+  "anual":     { "rate": 0.20, "months": null }   // permanente
+}
+```
+España solo tiene `anual`. Todos los demás países tienen las 3 modalidades.
+Backend calcula ambos valores (mes 1-3 con descuento / mes 4+ regular) cuando `modalidad=mensual`.
 
 ### Normativa
 Array de objetos `{ title, countryOnly }`. Si `countryOnly=true`, solo se muestra en ese país.

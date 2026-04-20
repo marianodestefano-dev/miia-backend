@@ -1,11 +1,12 @@
 {
   "code": "MX",
-  "name": "M\u00e9xico",
-  "flag": "\ud83c\uddf2\ud83c\uddfd",
-  "phonePrefix": ["52"],
+  "name": "México",
+  "flag": "🇲🇽",
+  "phonePrefix": [
+    "52"
+  ],
   "pais_tag": "MEXICO",
   "timezone": "America/Mexico_City",
-
   "currency": {
     "code": "MXN",
     "symbol": "$",
@@ -13,80 +14,169 @@
     "thousandSep": ",",
     "decimals": 2
   },
-
   "pricing": {
     "plans": {
-      "esencial": { "base": 842.80, "adic": 250 },
-      "pro":      { "base": 1180,   "adic": 300 },
-      "titanium": { "base": 1297,   "adic": 450 }
+      "esencial": {
+        "base": 842.8,
+        "adic": 250
+      },
+      "pro": {
+        "base": 1180,
+        "adic": 300
+      },
+      "titanium": {
+        "base": 1297,
+        "adic": 450
+      }
     },
     "adicEscalonado": false
   },
-
   "bolsas": {
     "wa": {
-      "ranges": [150, 350, 800, 2000],
-      "prices": [210, 360, 680, 1300]
+      "ranges": [
+        150,
+        350,
+        800,
+        2000
+      ],
+      "prices": [
+        210,
+        360,
+        680,
+        1300
+      ]
     },
     "firma": {
-      "ranges": [50, 100, 200, 500],
-      "prices": [450, 790, 1400, 3300]
+      "ranges": [
+        50,
+        100,
+        200,
+        500
+      ],
+      "prices": [
+        450,
+        790,
+        1400,
+        3300
+      ]
     },
     "factura": {
-      "ranges": [50, 100, 200, 500],
-      "prices": [160, 270, 440, 500]
+      "ranges": [
+        50,
+        100,
+        200,
+        500
+      ],
+      "prices": [
+        160,
+        270,
+        440,
+        500
+      ]
     }
   },
-
   "modules": {
-    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
-    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
-    "factura": { "available": true, "name": "Facturador electr\u00f3nico", "desc": "Facturaci\u00f3n electr\u00f3nica integrada con CFDI." },
-    "receta":  { "available": false }
+    "wa": {
+      "available": true,
+      "name": "WhatsApp — Recordatorios automáticos",
+      "desc": "Envíos automáticos de recordatorios y confirmaciones de citas."
+    },
+    "firma": {
+      "available": true,
+      "name": "Firma Electrónica",
+      "desc": "Para consentimientos informados y documentos clínicos."
+    },
+    "factura": {
+      "available": true,
+      "name": "Facturador electrónico",
+      "desc": "Facturación electrónica integrada con CFDI."
+    },
+    "receta": {
+      "available": false
+    }
   },
-
   "rules": {
     "iva": {
       "rate": 0.16,
       "appliesTo": "plan_base",
-      "note": "IVA 16% se aplica SOLO al plan base (base + usuarios adicionales CON descuento). NO aplica a m\u00f3dulos adicionales (bolsas WA, Firma, Factura). El IVA se calcula despu\u00e9s del descuento: (neto_plan) * 0.16"
+      "note": "IVA 16% se aplica SOLO al plan base (base + usuarios adicionales CON descuento). NO aplica a módulos adicionales (bolsas WA, Firma, Factura). El IVA se calcula después del descuento: (neto_plan) * 0.16"
     },
     "anualOnly": false,
-    "modalidades": ["mensual", "semestral", "anual"],
-    "descuentos": { "mensual": 0.30, "semestral": 0.15, "anual": 0.20 },
+    "modalidades": [
+      "mensual",
+      "semestral",
+      "anual"
+    ],
+    "descuentos": {
+      "mensual": {
+        "rate": 0.3,
+        "months": 3
+      },
+      "semestral": {
+        "rate": 0.15,
+        "months": null
+      },
+      "anual": {
+        "rate": 0.2,
+        "months": null
+      }
+    },
     "promoMensual": "3 meses con descuento 30%, desde mes 4 precio regular",
     "siigo": null
   },
-
   "norms": [
-    { "title": "NOM-024-SSA3 \u2014 Expediente cl\u00ednico electr\u00f3nico", "countryOnly": false },
-    { "title": "Ley Federal de Protecci\u00f3n de Datos Personales", "countryOnly": false },
-    { "title": "CFDI \u2014 Facturaci\u00f3n electr\u00f3nica SAT", "countryOnly": false },
-    { "title": "NOM-004-SSA3 \u2014 Expediente cl\u00ednico", "countryOnly": false }
+    {
+      "title": "NOM-024-SSA3 — Expediente clínico electrónico",
+      "countryOnly": false
+    },
+    {
+      "title": "Ley Federal de Protección de Datos Personales",
+      "countryOnly": false
+    },
+    {
+      "title": "CFDI — Facturación electrónica SAT",
+      "countryOnly": false
+    },
+    {
+      "title": "NOM-004-SSA3 — Expediente clínico",
+      "countryOnly": false
+    }
   ],
-
   "includedFeatures": [],
-
   "videos": {
     "countrySpecific": []
   },
-
   "dialect": {
     "style": "tuteo_mexicano",
-    "pronouns": "t\u00fa/usted",
-    "expressions": ["\u00f3rale", "plat\u00edcame", "sale", "va", "padre", "con gusto", "\u00e9chale un ojo"],
-    "avoid": ["vos", "contame", "decime", "mir\u00e1", "dale", "cach\u00e1i", "bacán"],
-    "toneNote": "Respetuoso y c\u00e1lido. M\u00e9xico usa mucho 'usted' en contexto profesional. Ser amable sin ser excesivamente informal. 'Plat\u00edcame' es m\u00e1s natural que 'contame'."
+    "pronouns": "tú/usted",
+    "expressions": [
+      "órale",
+      "platícame",
+      "sale",
+      "va",
+      "padre",
+      "con gusto",
+      "échale un ojo"
+    ],
+    "avoid": [
+      "vos",
+      "contame",
+      "decime",
+      "mirá",
+      "dale",
+      "cachái",
+      "bacán"
+    ],
+    "toneNote": "Respetuoso y cálido. México usa mucho 'usted' en contexto profesional. Ser amable sin ser excesivamente informal. 'Platícame' es más natural que 'contame'."
   },
-
   "salesDna": {
-    "approach": "Los mexicanos valoran la relaci\u00f3n y la confianza. Discovery conversacional, preguntar sobre su consultorio/cl\u00ednica. No presionar demasiado r\u00e1pido.",
+    "approach": "Los mexicanos valoran la relación y la confianza. Discovery conversacional, preguntar sobre su consultorio/clínica. No presionar demasiado rápido.",
     "objections": {
-      "caro": "Comparar con Nimbo, Denteris o Saludtools (competencia local). Destacar que el IVA ya est\u00e1 incluido en el c\u00e1lculo \u2014 sin sorpresas.",
-      "ya_tengo_sistema": "Preguntar cu\u00e1l y destacar la IA + WhatsApp + integraci\u00f3n todo-en-uno.",
-      "lo_pienso": "Fase 2: 'D\u00e9jame checar con mi gerencia si te puedo conseguir algo mejor...' (usar 'checar' no 'verificar')."
+      "caro": "Comparar con Nimbo, Denteris o Saludtools (competencia local). Destacar que el IVA ya está incluido en el cálculo — sin sorpresas.",
+      "ya_tengo_sistema": "Preguntar cuál y destacar la IA + WhatsApp + integración todo-en-uno.",
+      "lo_pienso": "Fase 2: 'Déjame checar con mi gerencia si te puedo conseguir algo mejor...' (usar 'checar' no 'verificar')."
     },
-    "closingTips": "Mencionar que el IVA est\u00e1 desglosado en la propuesta. Profesionales mexicanos valoran la transparencia fiscal. CFDI integrado es un diferenciador enorme.",
-    "culturalNotes": "El mercado mexicano es grande y competido. La facturaci\u00f3n electr\u00f3nica (CFDI) es obligatoria \u2014 mencionarla como ventaja clave. Mencionar soporte en espa\u00f1ol y horario compatible."
+    "closingTips": "Mencionar que el IVA está desglosado en la propuesta. Profesionales mexicanos valoran la transparencia fiscal. CFDI integrado es un diferenciador enorme.",
+    "culturalNotes": "El mercado mexicano es grande y competido. La facturación electrónica (CFDI) es obligatoria — mencionarla como ventaja clave. Mencionar soporte en español y horario compatible."
   }
 }

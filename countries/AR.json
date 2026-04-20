@@ -1,12 +1,13 @@
 {
   "code": "AR",
   "name": "Argentina",
-  "flag": "\ud83c\udde6\ud83c\uddf7",
-  "phonePrefix": ["54"],
+  "flag": "🇦🇷",
+  "phonePrefix": [
+    "54"
+  ],
   "pais_tag": "ARGENTINA",
   "timezone": "America/Argentina/Buenos_Aires",
   "normalizedPricing": "OP",
-
   "currency": {
     "code": "USD",
     "symbol": "$",
@@ -14,81 +15,159 @@
     "thousandSep": ",",
     "decimals": 2
   },
-
   "pricing": {
     "plans": {
-      "esencial": { "base": 45, "adic": 12 },
-      "pro":      { "base": 65, "adic": 13 },
-      "titanium": { "base": 85, "adic": 14 }
+      "esencial": {
+        "base": 45,
+        "adic": 12
+      },
+      "pro": {
+        "base": 65,
+        "adic": 13
+      },
+      "titanium": {
+        "base": 85,
+        "adic": 14
+      }
     },
     "adicEscalonado": false
   },
-
   "bolsas": {
     "wa": {
-      "ranges": [150, 350, 800, 2000],
-      "prices": [15, 35, 70, 170]
+      "ranges": [
+        150,
+        350,
+        800,
+        2000
+      ],
+      "prices": [
+        15,
+        35,
+        70,
+        170
+      ]
     },
     "firma": {
-      "ranges": [50, 100, 200, 500],
-      "prices": [25, 40, 70, 170]
+      "ranges": [
+        50,
+        100,
+        200,
+        500
+      ],
+      "prices": [
+        25,
+        40,
+        70,
+        170
+      ]
     }
   },
-
   "modules": {
-    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
-    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
-    "factura": { "available": false },
-    "receta":  {
+    "wa": {
+      "available": true,
+      "name": "WhatsApp — Recordatorios automáticos",
+      "desc": "Envíos automáticos de recordatorios y confirmaciones de citas."
+    },
+    "firma": {
+      "available": true,
+      "name": "Firma Electrónica",
+      "desc": "Para consentimientos informados y documentos clínicos."
+    },
+    "factura": {
+      "available": false
+    },
+    "receta": {
       "available": true,
       "name": "Recetas Digitales",
-      "desc": "Prescripci\u00f3n electr\u00f3nica con validez legal en Argentina.",
+      "desc": "Prescripción electrónica con validez legal en Argentina.",
       "pricePerUser": 3,
       "currency": "USD",
       "unlimited": true,
       "hasBolsa": false,
-      "note": "$3 USD por usuario/mes. Env\u00edos ILIMITADOS. Sin bolsa de consumo."
+      "note": "$3 USD por usuario/mes. Envíos ILIMITADOS. Sin bolsa de consumo."
     }
   },
-
   "rules": {
-    "iva": { "rate": 0, "appliesTo": null, "note": "Precios en USD, sin IVA" },
+    "iva": {
+      "rate": 0,
+      "appliesTo": null,
+      "note": "Precios en USD, sin IVA"
+    },
     "anualOnly": false,
-    "modalidades": ["mensual", "semestral", "anual"],
-    "descuentos": { "mensual": 0.30, "semestral": 0.15, "anual": 0.20 },
+    "modalidades": [
+      "mensual",
+      "semestral",
+      "anual"
+    ],
+    "descuentos": {
+      "mensual": {
+        "rate": 0.3,
+        "months": 3
+      },
+      "semestral": {
+        "rate": 0.15,
+        "months": null
+      },
+      "anual": {
+        "rate": 0.2,
+        "months": null
+      }
+    },
     "promoMensual": "3 meses con descuento 30%, desde mes 4 precio regular",
     "siigo": null
   },
-
   "norms": [
-    { "title": "Ley 25.326 \u2014 Protecci\u00f3n datos personales", "countryOnly": false },
-    { "title": "Ley 26.529 \u2014 Derechos del paciente", "countryOnly": false },
-    { "title": "Res. 404/2023 \u2014 Receta electr\u00f3nica", "countryOnly": false },
-    { "title": "Est\u00e1ndares HL7 Argentina", "countryOnly": false }
+    {
+      "title": "Ley 25.326 — Protección datos personales",
+      "countryOnly": false
+    },
+    {
+      "title": "Ley 26.529 — Derechos del paciente",
+      "countryOnly": false
+    },
+    {
+      "title": "Res. 404/2023 — Receta electrónica",
+      "countryOnly": false
+    },
+    {
+      "title": "Estándares HL7 Argentina",
+      "countryOnly": false
+    }
   ],
-
   "includedFeatures": [],
-
   "videos": {
     "countrySpecific": []
   },
-
   "dialect": {
     "style": "voseo",
     "pronouns": "vos",
-    "expressions": ["contame", "decime", "mir\u00e1", "dale", "genial", "b\u00e1rbaro", "fen\u00f3meno"],
-    "avoid": ["\u00f3rale", "plat\u00edcame", "cach\u00e1i", "bacán", "vale", "con mucho gusto"],
-    "toneNote": "Informal-cercano. Argentina usa voseo SIEMPRE. 'Contame sobre tu consultorio' es m\u00e1s natural que 'cu\u00e9ntame'. Tono directo, sin rodeos."
+    "expressions": [
+      "contame",
+      "decime",
+      "mirá",
+      "dale",
+      "genial",
+      "bárbaro",
+      "fenómeno"
+    ],
+    "avoid": [
+      "órale",
+      "platícame",
+      "cachái",
+      "bacán",
+      "vale",
+      "con mucho gusto"
+    ],
+    "toneNote": "Informal-cercano. Argentina usa voseo SIEMPRE. 'Contame sobre tu consultorio' es más natural que 'cuéntame'. Tono directo, sin rodeos."
   },
-
   "salesDna": {
-    "approach": "Los argentinos son directos y negociadores natos. Esperan buen precio y buen producto. El discovery puede ser m\u00e1s r\u00e1pido, pero valoran la conversaci\u00f3n genuina.",
+    "approach": "Los argentinos son directos y negociadores natos. Esperan buen precio y buen producto. El discovery puede ser más rápido, pero valoran la conversación genuina.",
     "objections": {
-      "caro": "Los precios est\u00e1n en USD \u2014 estable, sin devaluaci\u00f3n. Comparar con competencia local. Destacar que las Recetas Digitales son $3 USD ilimitadas.",
-      "ya_tengo_sistema": "Preguntar cu\u00e1l. Si usan planilla Excel \u2192 mucho por ganar. Si usan otro SaaS \u2192 destacar IA + WhatsApp.",
+      "caro": "Los precios están en USD — estable, sin devaluación. Comparar con competencia local. Destacar que las Recetas Digitales son $3 USD ilimitadas.",
+      "ya_tengo_sistema": "Preguntar cuál. Si usan planilla Excel → mucho por ganar. Si usan otro SaaS → destacar IA + WhatsApp.",
       "lo_pienso": "Fase 2: 'Dejame ver si te puedo conseguir algo mejor...' El argentino espera negociar."
     },
-    "closingTips": "Recetas Digitales a $3 USD ilimitadas es un diferenciador ENORME para Argentina. Destacar que no hay bolsa de consumo \u2014 es tarifa plana por usuario. Muchos centros argentinos necesitan receta electr\u00f3nica por la Res. 404/2023.",
-    "culturalNotes": "El mercado argentino valora el precio en USD (estabilidad). La receta electr\u00f3nica es regulatoriamente nueva y hay demanda. Soporte en espa\u00f1ol rioplatense genera confianza."
+    "closingTips": "Recetas Digitales a $3 USD ilimitadas es un diferenciador ENORME para Argentina. Destacar que no hay bolsa de consumo — es tarifa plana por usuario. Muchos centros argentinos necesitan receta electrónica por la Res. 404/2023.",
+    "culturalNotes": "El mercado argentino valora el precio en USD (estabilidad). La receta electrónica es regulatoriamente nueva y hay demanda. Soporte en español rioplatense genera confianza."
   }
 }

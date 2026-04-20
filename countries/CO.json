@@ -1,11 +1,12 @@
 {
   "code": "CO",
   "name": "Colombia",
-  "flag": "\ud83c\udde8\ud83c\uddf4",
-  "phonePrefix": ["57"],
+  "flag": "🇨🇴",
+  "phonePrefix": [
+    "57"
+  ],
   "pais_tag": "COLOMBIA",
   "timezone": "America/Bogota",
-
   "currency": {
     "code": "COP",
     "symbol": "$",
@@ -13,83 +14,202 @@
     "thousandSep": ".",
     "decimals": 0
   },
-
   "pricing": {
     "plans": {
-      "esencial": { "base": 125000, "adic": 35000 },
-      "pro":      { "base": 150000, "adic": 40000 },
-      "titanium": { "base": 225000, "adic": 55000 }
+      "esencial": {
+        "base": 125000,
+        "adic": 35000
+      },
+      "pro": {
+        "base": 150000,
+        "adic": 40000
+      },
+      "titanium": {
+        "base": 225000,
+        "adic": 55000
+      }
     },
     "adicEscalonado": false
   },
-
   "bolsas": {
     "wa": {
-      "ranges": [150, 350, 800, 2000],
-      "prices": [11000, 23000, 75000, 120000]
+      "ranges": [
+        150,
+        350,
+        800,
+        2000
+      ],
+      "prices": [
+        11000,
+        23000,
+        75000,
+        120000
+      ]
     },
     "firma": {
-      "ranges": [50, 200, 500, 1000],
-      "prices": [15000, 30000, 70000, 140000]
+      "ranges": [
+        50,
+        200,
+        500,
+        1000
+      ],
+      "prices": [
+        15000,
+        30000,
+        70000,
+        140000
+      ]
     },
     "factura": {
-      "ranges": [50, 200, 500, 1000],
-      "prices": [32000, 50000, 88000, 165000]
+      "ranges": [
+        50,
+        200,
+        500,
+        1000
+      ],
+      "prices": [
+        32000,
+        50000,
+        88000,
+        165000
+      ]
     }
   },
-
   "modules": {
-    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
-    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
-    "factura": { "available": true, "name": "Facturador electr\u00f3nico", "desc": "Facturaci\u00f3n electr\u00f3nica integrada. Incluye FEV-RIPS." },
-    "receta":  { "available": false }
+    "wa": {
+      "available": true,
+      "name": "WhatsApp — Recordatorios automáticos",
+      "desc": "Envíos automáticos de recordatorios y confirmaciones de citas."
+    },
+    "firma": {
+      "available": true,
+      "name": "Firma Electrónica",
+      "desc": "Para consentimientos informados y documentos clínicos."
+    },
+    "factura": {
+      "available": true,
+      "name": "Facturador electrónico",
+      "desc": "Facturación electrónica integrada. Incluye FEV-RIPS."
+    },
+    "receta": {
+      "available": false
+    }
   },
-
   "rules": {
-    "iva": { "rate": 0, "appliesTo": null, "note": "Precios netos, 0% IVA" },
+    "iva": {
+      "rate": 0,
+      "appliesTo": null,
+      "note": "Precios netos, 0% IVA"
+    },
     "anualOnly": false,
-    "modalidades": ["mensual", "semestral", "anual"],
-    "descuentos": { "mensual": 0.30, "semestral": 0.15, "anual": 0.20 },
+    "modalidades": [
+      "mensual",
+      "semestral",
+      "anual"
+    ],
+    "descuentos": {
+      "mensual": {
+        "rate": 0.3,
+        "months": 3
+      },
+      "semestral": {
+        "rate": 0.15,
+        "months": null
+      },
+      "anual": {
+        "rate": 0.2,
+        "months": null
+      }
+    },
     "promoMensual": "3 meses con descuento 30%, desde mes 4 precio regular",
-    "siigo": "Si el lead usa SIIGO o BOLD + plan Titanium, facturaci\u00f3n electr\u00f3nica es $0. NUNCA cobrar factura si ya tiene SIIGO+Titanium. Solo aplica Colombia+Titanium. Solo mencionarlo si el lead trae el tema primero."
+    "siigo": "Si el lead usa SIIGO o BOLD + plan Titanium, facturación electrónica es $0. NUNCA cobrar factura si ya tiene SIIGO+Titanium. Solo aplica Colombia+Titanium. Solo mencionarlo si el lead trae el tema primero."
   },
-
   "norms": [
-    { "title": "Res. 256/2016 \u2014 Calidad servicios", "countryOnly": true },
-    { "title": "Res. 2275/2023 \u2014 HC electr\u00f3nica + RIPS", "countryOnly": true },
-    { "title": "Res. 3100/2019 \u2014 Habilitaci\u00f3n centros", "countryOnly": true },
-    { "title": "Res. 1888/2024 \u2014 Interoperabilidad", "countryOnly": true },
-    { "title": "Ley 1581/2012 \u2014 Habeas data", "countryOnly": true }
+    {
+      "title": "Res. 256/2016 — Calidad servicios",
+      "countryOnly": true
+    },
+    {
+      "title": "Res. 2275/2023 — HC electrónica + RIPS",
+      "countryOnly": true
+    },
+    {
+      "title": "Res. 3100/2019 — Habilitación centros",
+      "countryOnly": true
+    },
+    {
+      "title": "Res. 1888/2024 — Interoperabilidad",
+      "countryOnly": true
+    },
+    {
+      "title": "Ley 1581/2012 — Habeas data",
+      "countryOnly": true
+    }
   ],
-
   "includedFeatures": [
-    { "icon": "\ud83e\uddf6", "title": "Facturaci\u00f3n electr\u00f3nica", "subtitle": "Sin salir de la plataforma.", "countryOnly": true },
-    { "icon": "\ud83d\udcca", "title": "RIPS + CUPS + FEV", "subtitle": "Env\u00edo directo al Ministerio.", "countryOnly": true }
+    {
+      "icon": "🧶",
+      "title": "Facturación electrónica",
+      "subtitle": "Sin salir de la plataforma.",
+      "countryOnly": true
+    },
+    {
+      "icon": "📊",
+      "title": "RIPS + CUPS + FEV",
+      "subtitle": "Envío directo al Ministerio.",
+      "countryOnly": true
+    }
   ],
-
   "videos": {
     "countrySpecific": [
-      { "title": "FEV-RIPS", "url": "https://www.loom.com/share/8460513bc41a46f9a46c465e3be4c401", "plans": ["e", "p", "t"] },
-      { "title": "Convenios con EPS", "url": "https://www.youtube.com/watch?v=brMsWGFUd3M", "plans": ["p", "t"] }
+      {
+        "title": "FEV-RIPS",
+        "url": "https://www.loom.com/share/8460513bc41a46f9a46c465e3be4c401",
+        "plans": [
+          "e",
+          "p",
+          "t"
+        ]
+      },
+      {
+        "title": "Convenios con EPS",
+        "url": "https://www.youtube.com/watch?v=brMsWGFUd3M",
+        "plans": [
+          "p",
+          "t"
+        ]
+      }
     ]
   },
-
   "dialect": {
     "style": "tuteo_formal",
-    "pronouns": "t\u00fa/usted (adaptar al lead)",
-    "expressions": ["listo", "claro", "con mucho gusto", "dale", "\u00bfc\u00f3mo se encuentra?", "con gusto"],
-    "avoid": ["contame", "decime", "mir\u00e1", "vos", "\u00f3rale", "plat\u00edcame"],
-    "toneNote": "Formal-c\u00e1lido. Usar 'usted' con leads nuevos, pasar a 't\u00fa' si el lead es informal. Colombia valora la cortes\u00eda y el respeto."
+    "pronouns": "tú/usted (adaptar al lead)",
+    "expressions": [
+      "listo",
+      "claro",
+      "con mucho gusto",
+      "dale",
+      "¿cómo se encuentra?",
+      "con gusto"
+    ],
+    "avoid": [
+      "contame",
+      "decime",
+      "mirá",
+      "vos",
+      "órale",
+      "platícame"
+    ],
+    "toneNote": "Formal-cálido. Usar 'usted' con leads nuevos, pasar a 'tú' si el lead es informal. Colombia valora la cortesía y el respeto."
   },
-
   "salesDna": {
-    "approach": "Discovery primero. Los colombianos valoran la relaci\u00f3n personal antes de hablar de precios. Preguntar por el centro, la especialidad, cu\u00e1ntos profesionales.",
+    "approach": "Discovery primero. Los colombianos valoran la relación personal antes de hablar de precios. Preguntar por el centro, la especialidad, cuántos profesionales.",
     "objections": {
       "caro": "Comparar con competencia local (Preven, Medifolios). Medilink incluye WhatsApp + IA + Firma que otros cobran aparte.",
-      "ya_tengo_sistema": "Preguntar qu\u00e9 sistema usa. Si es Medifolios \u2192 destacar telemedicina + firma + WhatsApp. Si es Excel \u2192 destacar automatizaci\u00f3n.",
-      "lo_pienso": "Fase 2 de negociaci\u00f3n: 'Dej\u00e1me consultar con gerencia si puedo mejorarte el descuento...'"
+      "ya_tengo_sistema": "Preguntar qué sistema usa. Si es Medifolios → destacar telemedicina + firma + WhatsApp. Si es Excel → destacar automatización.",
+      "lo_pienso": "Fase 2 de negociación: 'Dejáme consultar con gerencia si puedo mejorarte el descuento...'"
     },
     "closingTips": "El descuento progresivo funciona bien en Colombia. Empezar 15-20%, subir a 30% si duda. Siempre hacer sentir al lead ESPECIAL.",
-    "culturalNotes": "Valoran mucho el soporte. Mencionar 'capacitaci\u00f3n incluida + soporte L-V'. Los centros colombianos suelen necesitar RIPS/FEV \u2014 es un diferenciador clave."
+    "culturalNotes": "Valoran mucho el soporte. Mencionar 'capacitación incluida + soporte L-V'. Los centros colombianos suelen necesitar RIPS/FEV — es un diferenciador clave."
   }
 }

@@ -1,11 +1,12 @@
 {
   "code": "CL",
   "name": "Chile",
-  "flag": "\ud83c\udde8\ud83c\uddf1",
-  "phonePrefix": ["56"],
+  "flag": "🇨🇱",
+  "phonePrefix": [
+    "56"
+  ],
   "pais_tag": "CHILE",
   "timezone": "America/Santiago",
-
   "currency": {
     "code": "CLP",
     "symbol": "$",
@@ -13,82 +14,185 @@
     "thousandSep": ".",
     "decimals": 0
   },
-
   "pricing": {
     "plans": {
-      "esencial": { "base": 35000, "adic": 15000 },
-      "pro":      { "base": 55000, "adic": 16000 },
-      "titanium": { "base": 85000, "adic": 18000 }
+      "esencial": {
+        "base": 35000,
+        "adic": 15000
+      },
+      "pro": {
+        "base": 55000,
+        "adic": 16000
+      },
+      "titanium": {
+        "base": 85000,
+        "adic": 18000
+      }
     },
     "adicEscalonado": true,
     "adicTiers": {
-      "esencial": { "tier1": 15000, "tier2": 12500, "tier3": 9500 },
-      "pro":      { "tier1": 16000, "tier2": 13500, "tier3": 10500 },
-      "titanium": { "tier1": 18000, "tier2": 15500, "tier3": 12000 }
+      "esencial": {
+        "tier1": 15000,
+        "tier2": 12500,
+        "tier3": 9500
+      },
+      "pro": {
+        "tier1": 16000,
+        "tier2": 13500,
+        "tier3": 10500
+      },
+      "titanium": {
+        "tier1": 18000,
+        "tier2": 15500,
+        "tier3": 12000
+      }
     },
     "adicTierRanges": "tier1: 2-5 usuarios, tier2: 6-10, tier3: 11+"
   },
-
   "bolsas": {
     "wa": {
-      "ranges": [150, 350, 800, 2000],
-      "prices": [17780, 38894, 83671, 197556]
+      "ranges": [
+        150,
+        350,
+        800,
+        2000
+      ],
+      "prices": [
+        17780,
+        38894,
+        83671,
+        197556
+      ]
     },
     "firma": {
-      "ranges": [50, 200, 500, 1000],
-      "prices": [20833, 39063, 69444, 164474]
+      "ranges": [
+        50,
+        200,
+        500,
+        1000
+      ],
+      "prices": [
+        20833,
+        39063,
+        69444,
+        164474
+      ]
     },
     "factura": {
-      "ranges": [50, 200, 500, 1000],
-      "prices": [10000, 13000, 20000, 30000]
+      "ranges": [
+        50,
+        200,
+        500,
+        1000
+      ],
+      "prices": [
+        10000,
+        13000,
+        20000,
+        30000
+      ]
     }
   },
-
   "modules": {
-    "wa":      { "available": true, "name": "WhatsApp \u2014 Recordatorios autom\u00e1ticos", "desc": "Env\u00edos autom\u00e1ticos de recordatorios y confirmaciones de citas." },
-    "firma":   { "available": true, "name": "Firma Electr\u00f3nica", "desc": "Para consentimientos informados y documentos cl\u00ednicos." },
-    "factura": { "available": true, "name": "Facturador electr\u00f3nico", "desc": "Facturaci\u00f3n electr\u00f3nica integrada." },
-    "receta":  { "available": false }
+    "wa": {
+      "available": true,
+      "name": "WhatsApp — Recordatorios automáticos",
+      "desc": "Envíos automáticos de recordatorios y confirmaciones de citas."
+    },
+    "firma": {
+      "available": true,
+      "name": "Firma Electrónica",
+      "desc": "Para consentimientos informados y documentos clínicos."
+    },
+    "factura": {
+      "available": true,
+      "name": "Facturador electrónico",
+      "desc": "Facturación electrónica integrada."
+    },
+    "receta": {
+      "available": false
+    }
   },
-
   "rules": {
-    "iva": { "rate": 0, "appliesTo": null, "note": "Precios netos, 0% IVA" },
+    "iva": {
+      "rate": 0,
+      "appliesTo": null,
+      "note": "Precios netos, 0% IVA"
+    },
     "anualOnly": false,
-    "modalidades": ["mensual", "semestral", "anual"],
-    "descuentos": { "mensual": 0.30, "semestral": 0.15, "anual": 0.20 },
+    "modalidades": [
+      "mensual",
+      "semestral",
+      "anual"
+    ],
+    "descuentos": {
+      "mensual": {
+        "rate": 0.3,
+        "months": 3
+      },
+      "semestral": {
+        "rate": 0.15,
+        "months": null
+      },
+      "anual": {
+        "rate": 0.2,
+        "months": null
+      }
+    },
     "promoMensual": "3 meses con descuento 30%, desde mes 4 precio regular",
     "siigo": null
   },
-
   "norms": [
-    { "title": "Ley 20.584 \u2014 Derechos del paciente", "countryOnly": false },
-    { "title": "Ley 19.628 \u2014 Protecci\u00f3n datos personales", "countryOnly": false },
-    { "title": "Norma GES \u2014 Garant\u00edas expl\u00edcitas en salud", "countryOnly": false },
-    { "title": "Est\u00e1ndares ISP \u2014 Registro sanitario", "countryOnly": false }
+    {
+      "title": "Ley 20.584 — Derechos del paciente",
+      "countryOnly": false
+    },
+    {
+      "title": "Ley 19.628 — Protección datos personales",
+      "countryOnly": false
+    },
+    {
+      "title": "Norma GES — Garantías explícitas en salud",
+      "countryOnly": false
+    },
+    {
+      "title": "Estándares ISP — Registro sanitario",
+      "countryOnly": false
+    }
   ],
-
   "includedFeatures": [],
-
   "videos": {
     "countrySpecific": []
   },
-
   "dialect": {
     "style": "tuteo_informal",
-    "pronouns": "t\u00fa",
-    "expressions": ["ya", "cach\u00e1i", "bacán", "po", "dale", "listo"],
-    "avoid": ["vos", "contame", "decime", "\u00f3rale", "plat\u00edcame", "con mucho gusto"],
-    "toneNote": "Informal-profesional. Chile usa 'tú' pero con modismos propios. No forzar chilenismos si no es natural \u2014 mejor espa\u00f1ol neutro-cercano."
+    "pronouns": "tú",
+    "expressions": [
+      "ya",
+      "cachái",
+      "bacán",
+      "po",
+      "dale",
+      "listo"
+    ],
+    "avoid": [
+      "vos",
+      "contame",
+      "decime",
+      "órale",
+      "platícame",
+      "con mucho gusto"
+    ],
+    "toneNote": "Informal-profesional. Chile usa 'tú' pero con modismos propios. No forzar chilenismos si no es natural — mejor español neutro-cercano."
   },
-
   "salesDna": {
-    "approach": "Los chilenos son pr\u00e1cticos y directos. Valoran la eficiencia. Ir al grano m\u00e1s r\u00e1pido que con colombianos.",
+    "approach": "Los chilenos son prácticos y directos. Valoran la eficiencia. Ir al grano más rápido que con colombianos.",
     "objections": {
-      "caro": "Comparar con Dentalink o ReservoSalud (competencia local). Medilink es m\u00e1s completo y con IA incluida.",
-      "ya_tengo_sistema": "Preguntar cu\u00e1l y destacar lo que Medilink tiene de diferente (IA, WhatsApp, firma).",
-      "lo_pienso": "Fase 2: mejorar descuento. Los chilenos responden bien a 'te consegu\u00ed algo especial'."
+      "caro": "Comparar con Dentalink o ReservoSalud (competencia local). Medilink es más completo y con IA incluida.",
+      "ya_tengo_sistema": "Preguntar cuál y destacar lo que Medilink tiene de diferente (IA, WhatsApp, firma).",
+      "lo_pienso": "Fase 2: mejorar descuento. Los chilenos responden bien a 'te conseguí algo especial'."
     },
-    "closingTips": "Mencionar que los precios adicionales son escalonados \u2014 m\u00e1s usuarios = menor costo unitario. Esto motiva a centros medianos.",
-    "culturalNotes": "El mercado chileno es m\u00e1s tech-savvy que el promedio LatAm. La IA y automatizaci\u00f3n son argumentos fuertes."
+    "closingTips": "Mencionar que los precios adicionales son escalonados — más usuarios = menor costo unitario. Esto motiva a centros medianos.",
+    "culturalNotes": "El mercado chileno es más tech-savvy que el promedio LatAm. La IA y automatización son argumentos fuertes."
   }
 }
