@@ -143,7 +143,7 @@ const cerebroAbsoluto = require('./data/cerebro_absoluto');
 const confidenceEngine = require('./core/confidence_engine');
 const messageLogic = require('./core/message_logic');
 const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping, shouldBigEmoji, MIIA_OFFICIAL_EMOJIS, BIG_MOOD_EMOJIS } = require('./core/miia_emoji');
-const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
+const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, buildFriendBroadcastPrompt, buildMedilinkTeamPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
 const { runSelfTest } = require('./core/self_test');
@@ -9425,6 +9425,75 @@ async function handleIncomingMessage(message) {
       } else {
         await safeSendMessage(targetPhoneId, `ℹ️ El contacto +${rawPhoneSrv} no estaba pausado. Todo normal.`, { isSelfChat: true });
       }
+      return;
+    }
+
+    // ═══ T-G (C-303): Comando "MIIA PRESENTATE CONMIGO" / "MIIA PRESENTATE CON TANDA N" ═══
+    // Dispara broadcast de presentación desde MIIA CENTER a los contactos pre-poblados
+    // en contact_index (T1=familia, T2=amigos, T3=equipo medilink). Idempotente: ya
+    // clasificados con contact_type='friend_broadcast' o 'medilink_team'.
+    const presentMatch = body.match(/^MIIA\s+PRESENTATE\s+(CONMIGO|CON\s+TANDA\s+([123]))\s*$/i);
+    if (presentMatch && OWNER_UID) {
+      const isConmigo = /CONMIGO/i.test(presentMatch[1]);
+      const tandaNum = presentMatch[2] ? `T${presentMatch[2]}` : null;
+      const db = admin.firestore();
+      const ciRef = db.collection('users').doc(OWNER_UID).collection('contact_index');
+
+      let targets = [];
+      try {
+        if (isConmigo) {
+          const ownerSnap = await ciRef.where('relation', '==', 'owner_personal').limit(1).get();
+          if (ownerSnap.empty) {
+            targets = [{ phone: OWNER_PERSONAL_PHONE, name: userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Mariano', country: 'CO', tanda: 'T1', contact_type: 'friend_broadcast', isBoss: false }];
+          } else {
+            const d = ownerSnap.docs[0].data();
+            targets = [{ phone: d.phone, name: d.name || 'Mariano', country: d.country || 'CO', tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false }];
+          }
+        } else {
+          const tSnap = await ciRef.where('tanda', '==', tandaNum).get();
+          targets = tSnap.docs.map(doc => {
+            const d = doc.data();
+            return { phone: d.phone, name: d.name, country: d.country || 'CO', tanda: d.tanda, contact_type: d.contact_type || 'friend_broadcast', isBoss: d.isBoss === true };
+          });
+        }
+      } catch (qErr) {
+        console.error(`[PRESENTATE] ❌ Error leyendo contact_index:`, qErr.message);
+        await safeSendMessage(targetPhoneId, `❌ No pude leer contact_index: ${qErr.message}`, { isSelfChat: true });
+        return;
+      }
+
+      if (!targets.length) {
+        await safeSendMessage(targetPhoneId, `⚠️ No hay contactos para ${isConmigo ? 'CONMIGO' : tandaNum} en contact_index.`, { isSelfChat: true });
+        return;
+      }
+
+      const label = isConmigo ? 'CONMIGO (test)' : `${tandaNum} (${targets.length} contactos)`;
+      console.log(`[PRESENTATE] 🚀 Inicio broadcast ${label}`);
+      await safeSendMessage(targetPhoneId, `🚀 Iniciando MIIA PRESENTATE → ${label}. Te aviso al terminar.`, { isSelfChat: true });
+
+      let sent = 0, failed = 0;
+      for (const c of targets) {
+        try {
+          const prompt = c.contact_type === 'medilink_team'
+            ? buildMedilinkTeamPrompt(c.name, userProfile, { isBoss: c.isBoss })
+            : buildFriendBroadcastPrompt(c.name, c.country, userProfile);
+          const presentInstruction = `\n\nINSTRUCCIÓN DE PRESENTACIÓN (broadcast inicial): Este es el PRIMER mensaje que ${c.name || 'este contacto'} recibe de MIIA. Presentate en 2-3 líneas, cálido, natural. NO hagas preguntas largas. Mencioná que sos la asistente de ${userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Mariano'} y que por acá te podrá escribir cuando necesite algo. Nada de publicidad ni pitch de ventas. Máximo 3 líneas.`;
+          const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.FAMILY_CHAT, prompt + presentInstruction, {}, { enableSearch: false });
+          const text = (aiResult?.text || aiResult || '').trim();
+          if (!text) { failed++; console.warn(`[PRESENTATE] ⚠️ IA vacía para ${c.phone}`); continue; }
+          const finalText = applyMiiaEmoji(text, { chatType: c.contact_type, isFamily: c.contact_type === 'friend_broadcast' });
+          const jid = `${c.phone}@s.whatsapp.net`;
+          await safeSendMessage(jid, finalText, { isFamily: c.contact_type === 'friend_broadcast' });
+          sent++;
+          await new Promise(r => setTimeout(r, 4000)); // 4s entre envíos para no gatillar rate limits
+        } catch (sendErr) {
+          failed++;
+          console.error(`[PRESENTATE] ❌ Fallo enviando a ${c.phone}:`, sendErr.message);
+        }
+      }
+
+      console.log(`[PRESENTATE] ✅ Broadcast ${label} terminado: ${sent} enviados, ${failed} fallidos`);
+      await safeSendMessage(targetPhoneId, `✅ MIIA PRESENTATE → ${label}\n• Enviados: ${sent}\n• Fallidos: ${failed}`, { isSelfChat: true });
       return;
     }
 
