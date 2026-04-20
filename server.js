@@ -556,6 +556,25 @@ let vacunaCounter = {};
 let isSystemPaused = false;
 const nightPendingLeads = new Set(); // leads que escribieron durante el silencio nocturno
 
+// ═══ T-G / C-311: Override temporal de contact_type para testing del owner ═══
+// Se setea con "MIIA PRESENTATE CONMIGO" (friend_broadcast) o "MIIA PRESENTATE COMO MEDILINK_TEAM"
+// (medilink_team). Aplica por basePhone y expira automáticamente tras TTL (4h).
+// Key: basePhone (str) → Value: { type: 'friend_broadcast'|'medilink_team', expiresAt: ms }
+const _tempContactTypeOverrides = new Map();
+function getTempContactOverride(basePhone) {
+  const o = _tempContactTypeOverrides.get(basePhone);
+  if (!o) return null;
+  if (o.expiresAt <= Date.now()) {
+    _tempContactTypeOverrides.delete(basePhone);
+    return null;
+  }
+  return o.type;
+}
+function setTempContactOverride(basePhone, type, ttlMs = 4 * 60 * 60 * 1000) {
+  _tempContactTypeOverrides.set(basePhone, { type, expiresAt: Date.now() + ttlMs });
+  console.log(`[T-G-OVERRIDE] ${basePhone} → ${type} por ${Math.round(ttlMs/60000)}min`);
+}
+
 // Schedule config cache por UID — se refresca cada 5 min
 const _scheduleCache = {};
 async function getScheduleConfig(uid) {
@@ -5638,10 +5657,25 @@ Nuevo resumen actualizado:`;
 
     // isAdmin ya fue reasignado para self-chat al inicio de processMiiaResponse (línea ~995)
 
+    // ═══ C-311: Override temporal de contact_type (test del owner) ═══
+    // Si MIIA PRESENTATE COMO MEDILINK_TEAM o CONMIGO seteó un override en memoria
+    // (TTL 4h), usar buildFriendBroadcastPrompt/buildMedilinkTeamPrompt directamente.
+    // Solo aplica cuando NO es self-chat (mensaje del owner desde su personal a MIIA CENTER).
+    const tempOverride = !isAdmin ? getTempContactOverride(basePhone) : null;
+
     // ═══ SISTEMA MODULAR DE PROMPTS v1.0 ═══
     // Clasificador detecta intención → ensamblador carga solo módulos relevantes
     let promptMeta = null;
-    if (isAdmin) {
+    if (tempOverride === 'friend_broadcast' || tempOverride === 'medilink_team') {
+      const overrideProfile = { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile?.name || MIIA_SALES_PROFILE.name || 'Mariano', shortName: userProfile?.shortName || 'Mariano' };
+      const overrideName = leadNames[phone] || userProfile?.shortName || 'Mariano';
+      if (tempOverride === 'medilink_team') {
+        activeSystemPrompt = buildMedilinkTeamPrompt(overrideName, overrideProfile, { isBoss: false });
+      } else {
+        activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, 'CO', overrideProfile);
+      }
+      console.log(`[T-G-OVERRIDE] ✅ ${basePhone} → ${tempOverride} (prompt directo, bypass clasificador)`);
+    } else if (isAdmin) {
       // ═══ FIX MIIA CENTER: El owner de MIIA CENTER es el OWNER SUPREMO ═══
       // userProfile puede estar vacío/minimal → merge con MIIA_SALES_PROFILE
       // para que el prompt tenga name, businessName, businessDescription, etc.
@@ -9432,9 +9466,10 @@ async function handleIncomingMessage(message) {
     // Dispara broadcast de presentación desde MIIA CENTER a los contactos pre-poblados
     // en contact_index (T1=familia, T2=amigos, T3=equipo medilink). Idempotente: ya
     // clasificados con contact_type='friend_broadcast' o 'medilink_team'.
-    const presentMatch = body.match(/^MIIA\s+PRESENTATE\s+(CONMIGO|CON\s+TANDA\s+([123]))\s*$/i);
+    const presentMatch = body.match(/^MIIA\s+PRESENTATE\s+(CONMIGO|CON\s+TANDA\s+([123])|COMO\s+MEDILINK_TEAM)\s*$/i);
     if (presentMatch && OWNER_UID) {
       const isConmigo = /CONMIGO/i.test(presentMatch[1]);
+      const isComoMedilink = /COMO\s+MEDILINK_TEAM/i.test(presentMatch[1]);
       const tandaNum = presentMatch[2] ? `T${presentMatch[2]}` : null;
       const db = admin.firestore();
       const ciRef = db.collection('users').doc(OWNER_UID).collection('contact_index');
@@ -9449,6 +9484,12 @@ async function handleIncomingMessage(message) {
             const d = ownerSnap.docs[0].data();
             targets = [{ phone: d.phone, name: d.name || 'Mariano', country: d.country || 'CO', tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false }];
           }
+          // C-311: override temporal para que las conversaciones subsecuentes con el owner usen friend_broadcast
+          setTempContactOverride(OWNER_PERSONAL_PHONE, 'friend_broadcast');
+        } else if (isComoMedilink) {
+          // C-311: test del owner como medilink_team — solo al self del owner
+          targets = [{ phone: OWNER_PERSONAL_PHONE, name: userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Mariano', country: 'CO', tanda: 'T3', contact_type: 'medilink_team', isBoss: false }];
+          setTempContactOverride(OWNER_PERSONAL_PHONE, 'medilink_team');
         } else {
           const tSnap = await ciRef.where('tanda', '==', tandaNum).get();
           targets = tSnap.docs.map(doc => {
@@ -9463,11 +9504,11 @@ async function handleIncomingMessage(message) {
       }
 
       if (!targets.length) {
-        await safeSendMessage(targetPhoneId, `⚠️ No hay contactos para ${isConmigo ? 'CONMIGO' : tandaNum} en contact_index.`, { isSelfChat: true });
+        await safeSendMessage(targetPhoneId, `⚠️ No hay contactos para ${isConmigo ? 'CONMIGO' : (isComoMedilink ? 'COMO MEDILINK_TEAM' : tandaNum)} en contact_index.`, { isSelfChat: true });
         return;
       }
 
-      const label = isConmigo ? 'CONMIGO (test)' : `${tandaNum} (${targets.length} contactos)`;
+      const label = isConmigo ? 'CONMIGO (test)' : (isComoMedilink ? 'COMO MEDILINK_TEAM (test owner)' : `${tandaNum} (${targets.length} contactos)`);
       console.log(`[PRESENTATE] 🚀 Inicio broadcast ${label}`);
       await safeSendMessage(targetPhoneId, `🚀 Iniciando MIIA PRESENTATE → ${label}. Te aviso al terminar.`, { isSelfChat: true });
 
