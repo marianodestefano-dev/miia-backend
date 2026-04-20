@@ -160,7 +160,7 @@ function getMiiaEmoji(message, ctx = {}) {
 
   if (ctx.isLaw) return '👩‍⚖️';      // Respuesta justa / regla firme
   if (ctx.isRepairing) return '👩‍🔧';  // Reparando/soporte
-  if (ctx.dontKnow) return '🙅‍♀️';    // Duda / necesita aclaración
+  if (ctx.dontKnow) return '🤷‍♀️';    // C-342 B.7: "no sé" → shrug (antes 🙅‍♀️ daba sensación de rechazo)
   if (ctx.isMultiAction) return '🤹‍♀️'; // Multi-acción
 
   // ═══ PRIORIDAD 5: Triggers específicos ═══
@@ -182,6 +182,9 @@ function getMiiaEmoji(message, ctx = {}) {
 
   // Algo especial (evento, fecha, celebración)
   if (ctx.trigger === 'special' || ctx.trigger === 'sport') return '🤵‍♀️';
+
+  // C-342 B.7: MIIA proactiva (briefing, alerta anticipada, follow-up) — mujer tecnóloga
+  if (ctx.trigger === 'proactive') return '👩‍💻';
 
   // ═══ PRIORIDAD 6: Tema del mensaje — cada emoji = un significado ═══
 

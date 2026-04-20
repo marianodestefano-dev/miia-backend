@@ -351,12 +351,13 @@ async function diffFromCheckpoint(checkpointName) {
 // ═══════════════════════════════════════════════════════════════════
 // TÉCNICA 7: Auto-sync precios del generator → prompt
 // Genera el bloque de precios del prompt DESDE la misma fuente de verdad
-// que usa cotizacion_generator.js. SOLO LECTURA — nunca modifica la raíz.
+// que usa services/cotizacion_link.js. SOLO LECTURA — nunca modifica la raíz.
 // Los precios exclusivos por lead viven en el training data, no aquí.
+// C-342 B.5: fuente migrada de cotizacion_generator.js (zombi retirado) a cotizacion_link.js.
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Generate pricing prompt text directly from cotizacion_generator.js price matrices.
+ * Generate pricing prompt text directly from cotizacion_link.js price matrices.
  * READ-ONLY: This NEVER modifies the source prices. It only READS and formats.
  * Per-lead pricing lives in training data (cerebro), not here.
  * @returns {string} The pricing block ready to inject into prompts
@@ -364,12 +365,12 @@ async function diffFromCheckpoint(checkpointName) {
 function generatePricingFromSource() {
   let PRECIOS;
   try {
-    const cg = require('../services/cotizacion_generator');
+    const cg = require('../services/cotizacion_link');
     PRECIOS = cg.PRECIOS || cg.default?.PRECIOS;
-    if (!PRECIOS) throw new Error('PRECIOS not exported from cotizacion_generator');
+    if (!PRECIOS) throw new Error('PRECIOS not exported from cotizacion_link');
   } catch (e) {
-    console.error(`[PROMPT-REGISTRY] Cannot import cotizacion_generator:`, e.message);
-    return '## PRECIOS\n[ERROR: No se pudieron cargar precios desde cotizacion_generator.js]';
+    console.error(`[PROMPT-REGISTRY] Cannot import cotizacion_link:`, e.message);
+    return '## PRECIOS\n[ERROR: No se pudieron cargar precios desde cotizacion_link.js]';
   }
 
   const planLabels = { S: 'ESENCIAL', M: 'PRO', L: 'TITANIUM' };

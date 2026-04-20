@@ -48,3 +48,19 @@ scripts/adn_output/
 
 # Incident log dumps
 logs_incidente_*.txt
+
+# ADN scripts — contienen conversaciones reales de clientes MediLink. NO versionar.
+/scripts/adn_dump_all.js
+/scripts/adn_soporte_extract.js
+/scripts/adn_ventas_extract.js
+/scripts/adn_ventas_extract_v3.js
+/scripts/adn_ventas_raw.json
+
+# Benchmark outputs locales — se regeneran
+/scripts/benchmark/results_*.json
+/scripts/benchmark/t2_run_log.txt
+
+# Server backups locales
+server.js.bak_*
+*.bak_c*
+*.bak_bug*
