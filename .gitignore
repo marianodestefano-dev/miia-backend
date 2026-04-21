@@ -60,6 +60,16 @@ logs_incidente_*.txt
 /scripts/benchmark/results_*.json
 /scripts/benchmark/t2_run_log.txt
 
+# Estudio interno 300 — outputs locales del runner BLIND renamed (C-350 SEC-D Q1 / C-352 SEC-C paso 1)
+# Los .md/.json se regeneran corriendo run_blind_family_chat.js. Insumo interno Vi+Wi, no GitHub.
+/scripts/benchmark/estudio_interno_300_batch1_*.json
+/scripts/benchmark/estudio_interno_300_batch1_*.md
+
+# Scripts one-shot (no productivo, no versionar) — C-347 SEC-B + C-352 SEC-C paso 3
+/scripts/delete_peru_cotizacion.js
+/scripts/generate_8_mocks_fase_c.js
+/scripts/generate_demo_ar_links.js
+
 # Server backups locales
 server.js.bak_*
 *.bak_c*
