@@ -157,6 +157,44 @@ PERO si necesitás explicar algo con ejemplos claros, mostrar una demo detallada
 };
 
 /**
+ * C-355 (BUG B Capa 1): saludos/filler que NUNCA deben salir como ownerFirst.
+ * Si Firestore users/{uid}.name = "Hola Mariano" → split(' ')[0]='Hola' corrompe prompts.
+ * Lista defensiva: token descartable si el owner real nunca se llamaría así.
+ */
+const OWNER_GREETING_TOKENS = new Set([
+  'hola', 'holis', 'holi', 'holaa',
+  'buenos', 'buenas',
+  'qué', 'que', 'cómo', 'como',
+  'soy', 'me', 'te', 'yo', 'tu', 'su',
+  'saludos', 'saludo',
+]);
+
+/**
+ * C-355 (BUG B Capa 1+3): resuelve ownerFirst sanitizado.
+ * Orden: shortName (si no es greeting) → primer token real de name → 'Mariano'.
+ * Log defensivo si detecta contaminación.
+ */
+function resolveOwnerFirstName(userProfile) {
+  const p = userProfile || {};
+  const short = String(p.shortName || '').trim();
+  if (short && !OWNER_GREETING_TOKENS.has(short.toLowerCase())) return short;
+
+  const name = String(p.name || '').trim();
+  if (name) {
+    const tokens = name.split(/\s+/);
+    for (const t of tokens) {
+      if (t && !OWNER_GREETING_TOKENS.has(t.toLowerCase())) {
+        if (short || tokens[0] !== t) {
+          console.warn(`[OWNER_FIRST] ⚠️ Sanitize aplicado — name="${name}" shortName="${short}" → ownerFirst="${t}". Revisar Firestore users/{uid}.name/shortName si persiste.`);
+        }
+        return t;
+      }
+    }
+  }
+  return 'Mariano';
+}
+
+/**
  * Resuelve el perfil del owner: si no se pasa, usa defaults genéricos.
  */
 function resolveProfile(ownerProfile) {
@@ -1893,7 +1931,7 @@ function buildFriendBroadcastPrompt(contactName, countryCode, ownerProfile) {
     contactName = '';
   }
   const p = resolveProfile(ownerProfile);
-  const ownerFirst = p.shortName || p.name?.split(' ')[0] || 'Mariano';
+  const ownerFirst = resolveOwnerFirstName(p);
   const who = contactName || 'esta persona';
 
   // Detectar dialecto por prefijo país (fallback neutro)
@@ -1930,7 +1968,7 @@ function buildFriendBroadcastPrompt(contactName, countryCode, ownerProfile) {
     };
   }
 
-  return `Sos MIIA, una asistente de inteligencia artificial que se conecta al WhatsApp de ${ownerFirst} para acompañar a las personas que él quiere.
+  return `Sos MIIA, una compañera que ${ownerFirst} armó para acompañar a las personas que él quiere — familia y amigos cercanos.
 
 Tu esencia: MMC (Memoria MIIA Central).
 No sos un chatbot que ejecuta tareas y olvida. Sos una presencia que se construye con cada persona que te habla. Cada conversación que tenés con ${who}, te queda. Va armando tu imagen de quién es ${who} — cómo habla, qué le importa, qué le preocupa, qué le gusta. Con el tiempo la idea es que puedas acompañar a ${who} no como robot, sino como una melodía que recuerda cada nota anterior. Eso es MMC: continuidad, aprender y recordar.
@@ -2030,7 +2068,7 @@ function buildMedilinkTeamPrompt(contactName, ownerProfile, options = {}) {
     contactName = '';
   }
   const p = resolveProfile(ownerProfile);
-  const ownerFirst = p.shortName || p.name?.split(' ')[0] || 'Mariano';
+  const ownerFirst = resolveOwnerFirstName(p);
   const who = contactName || 'este miembro del equipo';
   const isBoss = options.isBoss === true;
 
@@ -2038,7 +2076,7 @@ function buildMedilinkTeamPrompt(contactName, ownerProfile, options = {}) {
     ? `\nIMPORTANTE: ${who} es JEFA de ${ownerFirst}. Tratala con respeto laboral extra — profesional, concisa, sin familiaridad excesiva. Si pide algo, priorizalo.\n`
     : '';
 
-  return `Sos MIIA, una asistente de inteligencia artificial que ${ownerFirst} construyó para apoyar al equipo de MediLink.
+  return `Sos MIIA, una compañera que ${ownerFirst} armó para apoyar al equipo de MediLink.
 
 Tu esencia: MMC (Memoria MIIA Central).
 No sos un chatbot. Sos una presencia que aprende a conocer a cada miembro del equipo — cómo trabajan, qué clientes manejan, qué les cuesta más, qué ritmo tienen. Cada conversación te queda. Con el tiempo la idea es que acompañes al equipo no como robot sino como alguien que sabe quién es cada uno. Eso es MMC: continuidad, aprender y recordar.
@@ -2543,6 +2581,7 @@ module.exports = {
   buildADN,
   buildVademecum,
   resolveProfile,
+  resolveOwnerFirstName,
   DEFAULT_OWNER_PROFILE,
   MIIA_SALES_PROFILE,
 

@@ -143,7 +143,7 @@ const cerebroAbsoluto = require('./data/cerebro_absoluto');
 const confidenceEngine = require('./core/confidence_engine');
 const messageLogic = require('./core/message_logic');
 const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, resetOffended, getCurrentMiiaMood, isMiiaSleeping, shouldBigEmoji, MIIA_OFFICIAL_EMOJIS, BIG_MOOD_EMOJIS } = require('./core/miia_emoji');
-const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, buildFriendBroadcastPrompt, buildMedilinkTeamPrompt, MIIA_SALES_PROFILE } = require('./core/prompt_builder');
+const { buildPrompt, buildTenantBrainString, buildOwnerFamilyPrompt, buildEquipoPrompt, buildSportsPrompt, buildInvokedPrompt, buildOutreachLeadPrompt, buildFriendBroadcastPrompt, buildMedilinkTeamPrompt, MIIA_SALES_PROFILE, resolveOwnerFirstName } = require('./core/prompt_builder');
 const { assemblePrompt } = require('./core/prompt_modules');
 const interMiia = require('./core/inter_miia');
 const { runSelfTest } = require('./core/self_test');
@@ -370,6 +370,26 @@ let OWNER_UID = process.env.OWNER_UID || '';
 if (!OWNER_UID) console.log('[CONFIG] ℹ️ OWNER_UID no configurado — se auto-detectará desde Firestore (role=admin).');
 // whatsappClient ahora es un getter que busca el sock del owner en tenant_manager
 // Esto mantiene compatibilidad con toda la lógica existente del owner
+
+// ═══ C-355 (BUG C): resolveOwnerCountry — resuelve país DEL OWNER para dialecto MIIA ═══
+// Cadena de resolución: (1) preferencia explícita userProfile.ownerCountry →
+// (2) Firestore contact_index/self .country (upstream) → (3) prefijo del phone real del owner →
+// (4) default 'AR' (Mariano). Diferente de businessCountry (el tenant MIIA CENTER vive en CO).
+// TODO multi-tenant: cuando haya N owners, cada uno expondrá su ownerCountry en su userProfile
+// y este helper se volverá tenant-aware (uid-scoped). Por ahora 1 owner (Mariano) → default AR.
+function resolveOwnerCountry(userProfile, fallbackPhone) {
+  const explicit = userProfile && userProfile.ownerCountry;
+  if (explicit) return String(explicit).toUpperCase();
+  const ph = String(fallbackPhone || '').replace(/\D/g, '');
+  if (ph.startsWith('549') || ph.startsWith('5411') || ph.startsWith('54')) return 'AR';
+  if (ph.startsWith('57')) return 'CO';
+  if (ph.startsWith('52')) return 'MX';
+  if (ph.startsWith('34')) return 'ES';
+  if (ph.startsWith('56')) return 'CL';
+  if (ph.startsWith('51')) return 'PE';
+  return 'AR';
+}
+
 function getOwnerSock() {
   if (!OWNER_UID) return null;
   return tenantManager.getTenantClient(OWNER_UID);
@@ -5672,7 +5692,7 @@ Nuevo resumen actualizado:`;
       if (tempOverride === 'medilink_team') {
         activeSystemPrompt = buildMedilinkTeamPrompt(overrideName, overrideProfile, { isBoss: false });
       } else {
-        activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, 'CO', overrideProfile);
+        activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), overrideProfile);
       }
       console.log(`[T-G-OVERRIDE] ✅ ${basePhone} → ${tempOverride} (prompt directo, bypass clasificador)`);
     } else if (isAdmin) {
@@ -9479,22 +9499,22 @@ async function handleIncomingMessage(message) {
         if (isConmigo) {
           const ownerSnap = await ciRef.where('relation', '==', 'owner_personal').limit(1).get();
           if (ownerSnap.empty) {
-            targets = [{ phone: OWNER_PERSONAL_PHONE, name: userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Mariano', country: 'CO', tanda: 'T1', contact_type: 'friend_broadcast', isBoss: false }];
+            targets = [{ phone: OWNER_PERSONAL_PHONE, name: resolveOwnerFirstName(userProfile), country: resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), tanda: 'T1', contact_type: 'friend_broadcast', isBoss: false }];
           } else {
             const d = ownerSnap.docs[0].data();
-            targets = [{ phone: d.phone, name: d.name || 'Mariano', country: d.country || 'CO', tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false }];
+            targets = [{ phone: d.phone, name: d.name || 'Mariano', country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false }];
           }
           // C-311: override temporal para que las conversaciones subsecuentes con el owner usen friend_broadcast
           setTempContactOverride(OWNER_PERSONAL_PHONE, 'friend_broadcast');
         } else if (isComoMedilink) {
           // C-311: test del owner como medilink_team — solo al self del owner
-          targets = [{ phone: OWNER_PERSONAL_PHONE, name: userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Mariano', country: 'CO', tanda: 'T3', contact_type: 'medilink_team', isBoss: false }];
+          targets = [{ phone: OWNER_PERSONAL_PHONE, name: resolveOwnerFirstName(userProfile), country: resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), tanda: 'T3', contact_type: 'medilink_team', isBoss: false }];
           setTempContactOverride(OWNER_PERSONAL_PHONE, 'medilink_team');
         } else {
           const tSnap = await ciRef.where('tanda', '==', tandaNum).get();
           targets = tSnap.docs.map(doc => {
             const d = doc.data();
-            return { phone: d.phone, name: d.name, country: d.country || 'CO', tanda: d.tanda, contact_type: d.contact_type || 'friend_broadcast', isBoss: d.isBoss === true };
+            return { phone: d.phone, name: d.name, country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda, contact_type: d.contact_type || 'friend_broadcast', isBoss: d.isBoss === true };
           });
         }
       } catch (qErr) {
@@ -9524,7 +9544,7 @@ async function handleIncomingMessage(message) {
           const aiResult = await aiGateway.smartCall(aiGateway.CONTEXTS.FAMILY_CHAT, prompt, {}, { enableSearch: false });
           const text = (aiResult?.text || aiResult || '').trim();
           if (!text) { failed++; console.warn(`[PRESENTATE] ⚠️ IA vacía para ${c.phone}`); continue; }
-          const finalText = applyMiiaEmoji(text, { chatType: c.contact_type, isFamily: c.contact_type === 'friend_broadcast' });
+          const finalText = applyMiiaEmoji(text, { chatType: c.contact_type, isFamily: c.contact_type === 'friend_broadcast', isAutoPresentation: true });
           const jid = `${c.phone}@s.whatsapp.net`;
           await safeSendMessage(jid, finalText, { isFamily: c.contact_type === 'friend_broadcast' });
           sent++;
@@ -11748,7 +11768,7 @@ function buildContextualFallback(type, { contactName, ownerName, contactPhone, e
   const country = getCountryFromPhone(contactPhone || OWNER_PHONE || '57');
   const isVos = country === 'AR';
   const name = contactName || '';
-  const ow = ownerName || userProfile?.name?.split(' ')[0] || '';
+  const ow = ownerName || resolveOwnerFirstName(userProfile) || '';
   const em = emoji || '😊';
 
   switch (type) {
@@ -12134,7 +12154,7 @@ async function processMorningBriefing() {
     }
 
     // ── 5. Siempre enviar algo — incluso si no hay novedades ──
-    const briefingName = userProfile?.shortName || userProfile?.name?.split(' ')[0] || '';
+    const briefingName = resolveOwnerFirstName(userProfile);
 
     if (!scraperResults.length && !leadsSection && !approvalsSection && !pendingContactsSection) {
       // Sin novedades: generar saludo natural con IA (no hardcodeado)
@@ -12342,7 +12362,7 @@ app.post('/api/admin-chat', express.json(), async (req, res) => {
     if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
 
     const adnStr = cerebroAbsoluto.getTrainingData();
-    const trainOwner = userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'Owner';
+    const trainOwner = resolveOwnerFirstName(userProfile) || 'Owner';
     const historyStr = history.slice(-10).map(m => `${m.role === 'user' ? trainOwner : 'MIIA'}: ${m.content}`).join('\n');
 
     const hasProducts = adnStr && (adnStr.includes('precio') || adnStr.includes('servicio') || adnStr.includes('producto') || adnStr.includes('costo') || adnStr.includes('tarifa') || adnStr.length > 200);
@@ -12420,7 +12440,7 @@ Segunda línea: si es UTIL escribe una versión mejorada y concisa del conocimie
       const knowledgeToSave = detail || message;
       cerebroAbsoluto.appendLearning(knowledgeToSave, 'WEB_TRAINING');
       saveDB();
-      const trainOwner2 = userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'El owner';
+      const trainOwner2 = resolveOwnerFirstName(userProfile) || 'El owner';
       const confirmPrompt = `Eres MIIA. ${trainOwner2} acaba de enseñarte: "${knowledgeToSave}". Confirma en 1 oración que lo entendiste y guardaste.`;
       const confirmation = await generateAIContent(confirmPrompt);
       res.json({ response: confirmation || '✅ Guardado en mi memoria.', saved: true, tipo: 'UTIL' });
@@ -16415,7 +16435,7 @@ hola@miia-app.com`;
         }
 
         // Generar mensaje inicial — MIIA se presenta como representante del área Enterprise
-        const entOwner = userProfile?.shortName || userProfile?.name?.split(' ')[0] || 'el equipo';
+        const entOwner = resolveOwnerFirstName(userProfile) || 'el equipo';
         let waMessage = '';
         try {
           const msgPrompt = `Genera un mensaje de WhatsApp CORTO (máximo 4-5 oraciones) para ${name} que acaba de solicitar información sobre MIIA Enterprise.
