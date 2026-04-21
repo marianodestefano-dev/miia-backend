@@ -216,3 +216,29 @@ describe('C-355 INTEGRACIÓN — 4 fixes simultáneos sobre caso real del Bloque
     expect(finalText).toMatch(/Mariano me contó/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// C-357 — Auto-presentación inicial (MMC) en primera interacción
+// ═══════════════════════════════════════════════════════════════════
+
+describe('AUTO-PRESENTACIÓN INICIAL (C-357)', () => {
+  const cleanProfile = { name: 'Mariano De Stefano', shortName: 'Mariano' };
+
+  it('isFirstInteraction=true inyecta el bloque protocolo', () => {
+    const prompt = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, true);
+    expect(prompt).toContain('PROTOCOLO DE AUTO-PRESENTACIÓN INICIAL');
+    expect(prompt).toContain('inteligencia Y memoria artificial');
+    expect(prompt).toContain('no soy un robot que');
+  });
+
+  it('isFirstInteraction=false (default) NO inyecta el bloque', () => {
+    const prompt = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false);
+    expect(prompt).not.toContain('PROTOCOLO DE AUTO-PRESENTACIÓN INICIAL');
+  });
+
+  it('dialecto AR se mantiene en el bloque', () => {
+    const prompt = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, true);
+    expect(prompt).toMatch(/"vos"/);
+    expect(prompt).not.toMatch(/"tú"/);
+  });
+});

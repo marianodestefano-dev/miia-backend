@@ -5689,12 +5689,20 @@ Nuevo resumen actualizado:`;
     if (tempOverride === 'friend_broadcast' || tempOverride === 'medilink_team') {
       const overrideProfile = { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile?.name || MIIA_SALES_PROFILE.name || 'Mariano', shortName: userProfile?.shortName || 'Mariano' };
       const overrideName = leadNames[phone] || userProfile?.shortName || 'Mariano';
+      // C-357: detectar si es primera interacción via contact_index/{phone}.messageCount
+      let isFirstInteraction = false;
+      try {
+        const ciSnap = await admin.firestore().collection('users').doc(OWNER_UID).collection('contact_index').doc(basePhone).get();
+        isFirstInteraction = !ciSnap.exists || (ciSnap.data()?.messageCount || 0) === 0;
+      } catch (fErr) {
+        console.warn(`[T-G-OVERRIDE] contact_index lookup fallback para ${basePhone}: ${fErr.message}`);
+      }
       if (tempOverride === 'medilink_team') {
         activeSystemPrompt = buildMedilinkTeamPrompt(overrideName, overrideProfile, { isBoss: false });
       } else {
-        activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), overrideProfile);
+        activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), overrideProfile, isFirstInteraction);
       }
-      console.log(`[T-G-OVERRIDE] ✅ ${basePhone} → ${tempOverride} (prompt directo, bypass clasificador)`);
+      console.log(`[T-G-OVERRIDE] ✅ ${basePhone} → ${tempOverride} (prompt directo, bypass clasificador, firstInteraction=${isFirstInteraction})`);
     } else if (isAdmin) {
       // ═══ FIX MIIA CENTER: El owner de MIIA CENTER es el OWNER SUPREMO ═══
       // userProfile puede estar vacío/minimal → merge con MIIA_SALES_PROFILE
@@ -9499,22 +9507,22 @@ async function handleIncomingMessage(message) {
         if (isConmigo) {
           const ownerSnap = await ciRef.where('relation', '==', 'owner_personal').limit(1).get();
           if (ownerSnap.empty) {
-            targets = [{ phone: OWNER_PERSONAL_PHONE, name: resolveOwnerFirstName(userProfile), country: resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), tanda: 'T1', contact_type: 'friend_broadcast', isBoss: false }];
+            targets = [{ phone: OWNER_PERSONAL_PHONE, name: resolveOwnerFirstName(userProfile), country: resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), tanda: 'T1', contact_type: 'friend_broadcast', isBoss: false, messageCount: 0 }];
           } else {
             const d = ownerSnap.docs[0].data();
-            targets = [{ phone: d.phone, name: d.name || 'Mariano', country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false }];
+            targets = [{ phone: d.phone, name: d.name || 'Mariano', country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false, messageCount: d.messageCount || 0 }];
           }
           // C-311: override temporal para que las conversaciones subsecuentes con el owner usen friend_broadcast
           setTempContactOverride(OWNER_PERSONAL_PHONE, 'friend_broadcast');
         } else if (isComoMedilink) {
           // C-311: test del owner como medilink_team — solo al self del owner
-          targets = [{ phone: OWNER_PERSONAL_PHONE, name: resolveOwnerFirstName(userProfile), country: resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), tanda: 'T3', contact_type: 'medilink_team', isBoss: false }];
+          targets = [{ phone: OWNER_PERSONAL_PHONE, name: resolveOwnerFirstName(userProfile), country: resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), tanda: 'T3', contact_type: 'medilink_team', isBoss: false, messageCount: 0 }];
           setTempContactOverride(OWNER_PERSONAL_PHONE, 'medilink_team');
         } else {
           const tSnap = await ciRef.where('tanda', '==', tandaNum).get();
           targets = tSnap.docs.map(doc => {
             const d = doc.data();
-            return { phone: d.phone, name: d.name, country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda, contact_type: d.contact_type || 'friend_broadcast', isBoss: d.isBoss === true };
+            return { phone: d.phone, name: d.name, country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda, contact_type: d.contact_type || 'friend_broadcast', isBoss: d.isBoss === true, messageCount: d.messageCount || 0 };
           });
         }
       } catch (qErr) {
@@ -9535,9 +9543,10 @@ async function handleIncomingMessage(message) {
       let sent = 0, failed = 0;
       for (const c of targets) {
         try {
+          const isFirstInteraction = (c.messageCount || 0) === 0;
           const prompt = c.contact_type === 'medilink_team'
             ? buildMedilinkTeamPrompt(c.name, userProfile, { isBoss: c.isBoss })
-            : buildFriendBroadcastPrompt(c.name, c.country, userProfile);
+            : buildFriendBroadcastPrompt(c.name, c.country, userProfile, isFirstInteraction);
           // C-319 fix: orphan instruction heredada de C-303 removida — anulaba el MMC de
           // buildFriendBroadcastPrompt/buildMedilinkTeamPrompt (C-311) y contaminaba con
           // ${userProfile?.shortName}="Hola". El prompt ya autocontiene presentación + 3 capas MMC.
