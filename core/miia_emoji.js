@@ -298,21 +298,6 @@ function applyMiiaEmoji(message, ctx = {}) {
     }
   }
 
-  // ═══ C-355 (BUG D): Auto-presentación broadcast → DEFAULT_EMOJI fijo, bypass detectMessageTopic ═══
-  // Gemini en presentaciones poéticas usa frases tipo "el arte de acompañarte" → el regex \barte\b
-  // de detectMessageTopic devolvía topic='art' → 🎨 spurious. Para broadcasts iniciales el emoji
-  // correcto es la identidad base 👱‍♀️. Además limpia emojis-objeto sueltos que Gemini a veces
-  // inserta en el cuerpo (🎨🎮📚📸⚙️) — sin ZWJ, así que el strip del cuerpo de arriba no los agarra.
-  if (ctx.isAutoPresentation === true) {
-    const OBJECT_EMOJIS_TO_STRIP = ['🎨', '🎮', '📚', '📸', '⚙️', '🎉', '💕', '☕', '🍷', '😴'];
-    for (const objEmo of OBJECT_EMOJIS_TO_STRIP) {
-      if (message.includes(objEmo)) {
-        message = message.split(objEmo).join('').replace(/\s{2,}/g, ' ').trim();
-      }
-    }
-    return `${DEFAULT_EMOJI}: ${message}`;
-  }
-
   const emoji = getMiiaEmoji(message, ctx);
   if (!emoji) return message; // Sleep mode: sin prefijo
   return `${emoji}: ${message}`;
