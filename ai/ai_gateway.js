@@ -214,6 +214,36 @@ function applyTierOverride(aiTier, context, config) {
   return config;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// SWITCH DE MODELO FAMILY_CHAT (C-348 SEC-C.1 / C-352 paso 9)
+// ═══════════════════════════════════════════════════════════════════
+// Permite alternar el modelo que responde en FAMILY_CHAT (incluye MEDILINK_TEAM
+// y FRIEND_BROADCAST, que comparten este contexto) sin tocar código, solo
+// cambiando la env var en Railway dashboard + redeploy.
+// Uso: testing conversacional Bloques 1-4 de PLAN_PRUEBA_CONVERSACIONAL_MODELOS.md
+// Default si no está seteada o valor inválido: config por defecto (Opus 4.6).
+const FAMILY_CHAT_MODEL_MAP = {
+  'sonnet-4-6':   { provider: 'claude', model: 'claude-sonnet-4-6' },
+  'haiku-4-5':    { provider: 'claude', model: 'claude-haiku-4-5-20251001' },
+  'opus-4-7':     { provider: 'claude', model: 'claude-opus-4-7' },
+  'opus-4-6':     { provider: 'claude', model: 'claude-opus-4-6' },
+  'gemini-flash': { provider: 'gemini', model: 'gemini-2.5-flash' }
+};
+
+function applyFamilyChatModelOverride(context, config) {
+  if (context !== CONTEXTS.FAMILY_CHAT) return config;
+  const envValue = process.env.MIIA_MODEL_FAMILY_CHAT;
+  if (!envValue) return config;
+  const mapped = FAMILY_CHAT_MODEL_MAP[envValue];
+  if (!mapped) {
+    console.warn(`[AI-GW] ⚠️ MIIA_MODEL_FAMILY_CHAT="${envValue}" no es válido. Valores aceptados: ${Object.keys(FAMILY_CHAT_MODEL_MAP).join(', ')}. Usando default (${config.model}).`);
+    return config;
+  }
+  const fallbacks = ['gemini', 'openai', 'claude'].filter(p => p !== mapped.provider);
+  console.log(`[AI-GW] 🎚️ FAMILY_CHAT override: ${envValue} → ${mapped.provider}/${mapped.model}`);
+  return { ...config, preferred: mapped.provider, model: mapped.model, fallbacks };
+}
+
 // Métricas por proveedor
 const providerMetrics = {
   gemini: { calls: 0, failures: 0, totalLatencyMs: 0, lastCallAt: null },
@@ -264,7 +294,8 @@ function getApiKey(provider, ownerConfig) {
  */
 async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
   const baseConfig = CONTEXT_CONFIG[context] || CONTEXT_CONFIG[CONTEXTS.GENERAL];
-  const config = applyTierOverride(ownerConfig?.aiTier, context, baseConfig);
+  const tierConfig = applyTierOverride(ownerConfig?.aiTier, context, baseConfig);
+  const config = applyFamilyChatModelOverride(context, tierConfig);
   totalCalls++;
 
   // forceProvider: override para regeneración (ej: forzar gemini con google_search)
@@ -385,7 +416,8 @@ async function smartCall(context, prompt, ownerConfig = {}, opts = {}) {
  */
 async function smartChat(context, messages, systemPrompt, ownerConfig = {}, opts = {}) {
   const baseConfig = CONTEXT_CONFIG[context] || CONTEXT_CONFIG[CONTEXTS.GENERAL];
-  const config = applyTierOverride(ownerConfig?.aiTier, context, baseConfig);
+  const tierConfig = applyTierOverride(ownerConfig?.aiTier, context, baseConfig);
+  const config = applyFamilyChatModelOverride(context, tierConfig);
   totalCalls++;
 
   const ownerProvider = ownerConfig?.aiProvider;
