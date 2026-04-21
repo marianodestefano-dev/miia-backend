@@ -196,6 +196,10 @@ async function generarLinkCotizacion(tenantUid, lead, params) {
         citasMes:        params.citasMes || 70,
         descuentoCustom: params.descuentoCustom || null,
         usuariosBonus:   params.usuariosBonus || 0,
+        // C-350: lockUsers = true → owner cotizó desde self-chat con bonus fijo.
+        // Frontend oculta botones +/- y el lead NO puede modificar la cantidad.
+        // Uso: "hacé cotización para Argentina 5 usuarios + 3 gratis" (comando owner).
+        lockUsers:       !!params.lockUsers,
         // Segmentación por tipo de negocio: si Gemini detecta estética/derma,
         // emite lockPlan="titanium" → HTML muestra SOLO esa card (oculta Esencial/Pro).
         lockPlan:        (params.lockPlan && ['esencial','pro','titanium'].includes(String(params.lockPlan).toLowerCase()))
