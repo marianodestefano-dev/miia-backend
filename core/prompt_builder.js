@@ -4,6 +4,9 @@
  * v3.0: Parametrizado para multi-tenant. Todas las funciones aceptan ownerProfile.
  *       Si no se pasa ownerProfile, usa defaults genéricos (backward compatible con server.js).
  *
+ * v3.1 (C-386 sesión 3): re-exporta loader V2 (loadVoiceDNAForGroup, resolveV2ChatType)
+ *      desde core/voice_v2_loader.js. Inerte hasta que TMH wire-in lo invoque.
+ *
  * Modos:
  * - Owner self-chat: buildOwnerSelfChatPrompt(ownerProfile)
  * - Owner familia: buildOwnerFamilyPrompt(contactName, familyData, ownerProfile)
@@ -14,6 +17,10 @@
  */
 
 'use strict';
+
+// === V2 (C-386) — loader DNA lingüístico, re-exportado para que TMH pueda invocarlo
+// vía require('../core/prompt_builder').loadVoiceDNAForGroup ===
+const _v2Loader = require('./voice_v2_loader');
 
 // ═══════════════════════════════════════════════════════════════════
 // PERFIL DEFAULT — Fallback GENÉRICO (SIN datos hardcodeados de nadie)
@@ -2658,5 +2665,10 @@ module.exports = {
 
   // Protection
   buildElderlyPrompt,
+
+  // === V2 LOADER (C-386 sesión 3) ===
+  loadVoiceDNAForGroup: _v2Loader.loadVoiceDNAForGroup,
+  resolveV2ChatType: _v2Loader.resolveV2ChatType,
+  getV2LoaderStats: _v2Loader.getLoaderStats,
 };
 
