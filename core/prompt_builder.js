@@ -4,6 +4,10 @@
  * v3.0: Parametrizado para multi-tenant. Todas las funciones aceptan ownerProfile.
  *       Si no se pasa ownerProfile, usa defaults genéricos (backward compatible con server.js).
  *
+ * v3.1 (C-388 corrección C-386): re-exporta loader V2 (loadVoiceDNAForGroup, resolveV2ChatType,
+ *      isV2EligibleUid) desde core/voice_v2_loader.js. Inerte hasta que TMH wire-in lo invoque.
+ *      Scope etapa 1: SOLO MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2).
+ *
  * Modos:
  * - Owner self-chat: buildOwnerSelfChatPrompt(ownerProfile)
  * - Owner familia: buildOwnerFamilyPrompt(contactName, familyData, ownerProfile)
@@ -14,6 +18,10 @@
  */
 
 'use strict';
+
+// === V2 (C-388 corrección C-386) — loader DNA lingüístico, re-exportado para que TMH pueda invocarlo
+// vía require('../core/prompt_builder').loadVoiceDNAForGroup ===
+const _v2Loader = require('./voice_v2_loader');
 
 // ═══════════════════════════════════════════════════════════════════
 // PERFIL DEFAULT — Fallback GENÉRICO (SIN datos hardcodeados de nadie)
@@ -2658,5 +2666,11 @@ module.exports = {
 
   // Protection
   buildElderlyPrompt,
+
+  // === V2 LOADER (C-388 corrección C-386) — re-export desde voice_v2_loader.js ===
+  loadVoiceDNAForGroup: _v2Loader.loadVoiceDNAForGroup,
+  resolveV2ChatType: _v2Loader.resolveV2ChatType,
+  isV2EligibleUid: _v2Loader.isV2EligibleUid,
+  getV2LoaderStats: _v2Loader.getLoaderStats,
 };
 

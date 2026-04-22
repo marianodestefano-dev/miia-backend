@@ -66,6 +66,16 @@ const { runPostprocess, runAIAudit, getFallbackMessage } = require('../core/miia
 const { validatePreSend } = require('../core/miia_validator');
 const { fetchOfficialTRM } = require('../core/financial_verify');
 
+// === V2 (C-388 corrección de scope C-386) — wire-in voice_seed + mode_detectors + splitter + emoji injector ===
+// Scope ETAPA 1: SOLO MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2). MIIA Personal (bq2...) NO usa V2.
+// Doctrina §2-bis CLAUDE.md: pruebas en CENTER → migración a Personal → CENTER reduce a 4 subregistros pro.
+// Cada bloque envuelto en try/catch — si V2 falla, V1 sigue como hoy.
+const { resolveV2ChatType, loadVoiceDNAForGroup, isV2EligibleUid } = require('../core/voice_v2_loader');
+const { splitBySubregistro } = require('../core/split_smart_heuristic');
+const { injectInBubbleArray } = require('../core/emoji_injector');
+const { auditV2Response, getFallbackByChatType: getV2FallbackByChatType } = require('../core/v2_auditor');
+const V2_OWNER_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
+
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
 // ═══════════════════════════════════════════════════════════════
@@ -2736,6 +2746,40 @@ ${history}
 
 MIIA, genera tu respuesta breve, estratégica y humana:`;
 
+  // ═══════════════════════════════════════════════════════════════
+  // V2 UPSTREAM (C-388 corrección C-386) — inyectar DNA lingüístico del subregistro
+  // SOLO MIIA CENTER (V2_OWNER_CENTER_UID). MIIA Personal NO entra acá hasta etapa 2.
+  // try/catch defensivo: si falla, V1 sigue como antes.
+  // ═══════════════════════════════════════════════════════════════
+  let v2ChatType = null;
+  let v2VoiceBlock = null;
+  let v2Subregistro = null;
+  if (isV2EligibleUid(uid)) {
+    try {
+      v2ChatType = resolveV2ChatType({
+        uid,
+        isSelfChat,
+        contactType,
+        basePhone,
+        countryCode: getCountryFromPhone ? getCountryFromPhone(basePhone) : null,
+      });
+      const dna = loadVoiceDNAForGroup(v2ChatType, { ownerName: ctx.ownerProfile?.shortName || 'Mariano' });
+      if (dna && !dna.fallback && dna.systemBlock) {
+        v2VoiceBlock = dna.systemBlock;
+        v2Subregistro = dna.subregistro;
+        // Inyectar el bloque V2 ANTES del historial — refuerza el voice ANTES de generación
+        fullPrompt += `\n\n[V2 VOICE DNA — subregistro: ${v2Subregistro}]\n${v2VoiceBlock}`;
+        console.log(`${logPrefix} [V2][UPSTREAM] subregistro=${v2Subregistro} chars=${v2VoiceBlock.length} chatType=${v2ChatType}`);
+      } else {
+        console.log(`${logPrefix} [V2][UPSTREAM] fallback (no DNA para chatType=${v2ChatType})`);
+      }
+    } catch (v2Err) {
+      console.error(`${logPrefix} [V2][UPSTREAM] error cargando DNA, sigue V1: ${v2Err.message}`);
+      v2ChatType = null;
+      v2VoiceBlock = null;
+    }
+  }
+
   // ═══ SEARCH-HINT: Refuerzo de búsqueda para temas de tiempo real ═══
   const REALTIME_PATTERNS = [
     { rx: /\b(clima|tiempo meteorol|temperatura|pronóstico|pron[oó]stico|lluvia|llover|soleado|nublado|tormenta)\b/i, topic: 'clima' },
@@ -4998,6 +5042,68 @@ REGLAS:
   aiMessage = cleanResidualTags(aiMessage);
 
   // ═══════════════════════════════════════════════════════════════
+  // V2 DOWNSTREAM (C-388 corrección C-386) — auditor 10 red flags + regenerate-once + fallback §8
+  // SOLO MIIA CENTER y SOLO si UPSTREAM cargó DNA (v2ChatType !== null).
+  // try/catch defensivo: si falla, V1 ya pulió y aiMessage queda intacto.
+  // ═══════════════════════════════════════════════════════════════
+  if (isV2EligibleUid(uid) && v2ChatType) {
+    try {
+      const v2Audit = auditV2Response(aiMessage, v2ChatType, {
+        basePhone,
+        lastContactMessage: messageBody,
+        attemptNumber: 1,
+      });
+
+      if (v2Audit.warningFlags.length > 0) {
+        console.warn(`${logPrefix} [V2][AUDIT] WARNINGS: ${v2Audit.warningFlags.map(f => f.code).join(',')}`);
+      }
+
+      if (v2Audit.shouldRegenerate) {
+        console.warn(`${logPrefix} [V2][AUDIT] CRÍTICO flagged: ${v2Audit.criticalFlags.map(f => f.code).join(',')} — regenerando UNA vez`);
+        const retryPrompt = `${fullPrompt}\n\n${v2Audit.hint}`;
+        let retryMessage = aiMessage;
+        try {
+          const retryResult = await aiGateway.smartCall(
+            aiContext,
+            retryPrompt,
+            { aiProvider, aiApiKey },
+            { enableSearch }
+          );
+          if (retryResult.text && retryResult.text.trim()) {
+            retryMessage = cleanResidualTags(retryResult.text);
+            console.log(`${logPrefix} [V2][AUDIT] retry OK (${retryResult.latencyMs}ms, ${retryMessage.length}c)`);
+          }
+        } catch (retryErr) {
+          console.error(`${logPrefix} [V2][AUDIT] retry falló: ${retryErr.message}`);
+        }
+
+        const retryAudit = auditV2Response(retryMessage, v2ChatType, {
+          basePhone,
+          lastContactMessage: messageBody,
+          attemptNumber: 2,
+        });
+
+        if (retryAudit.shouldUseFallback) {
+          console.error(`${logPrefix} [V2][AUDIT] 2do intento también flagged (${retryAudit.criticalFlags.map(f => f.code).join(',')}) — usando fallback §8`);
+          const fb = retryAudit.fallback || getV2FallbackByChatType(v2ChatType);
+          if (!fb) {
+            console.error(`${logPrefix} [V2][AUDIT] owner_selfchat atascado (fallback=null) — NO ENVIAR. Alertar Mariano.`);
+            return; // bail out — no enviar nada al owner
+          }
+          aiMessage = fb;
+        } else {
+          aiMessage = retryMessage;
+          console.log(`${logPrefix} [V2][AUDIT] retry pasó auditor (warnings=${retryAudit.warningFlags.length})`);
+        }
+      } else {
+        console.log(`${logPrefix} [V2][AUDIT] OK (warnings=${v2Audit.warningFlags.length})`);
+      }
+    } catch (v2AuditErr) {
+      console.error(`${logPrefix} [V2][AUDIT] error en auditor (fail-open, envía aiMessage tal cual): ${v2AuditErr.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // 11d-PROMESA-ROTA. Detectar cuando MIIA dice "ya lo hice" sin haber emitido tag
   // Si MIIA confirma una acción pero NO emitió el tag → la acción NO se ejecutó → PROMESA ROTA
   // En vez de dejar pasar la mentira, reemplazamos la confirmación falsa por honestidad
@@ -5143,6 +5249,37 @@ REGLAS:
     parts = autoSplitByLength(aiMessage);
     if (parts) console.log(`${logPrefix} ✂️ Auto-split por longitud: ${parts.length} partes`);
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // V2 DOWNSTREAM (C-388 corrección C-386) — splitter por subregistro + emoji injector
+  // SOLO MIIA CENTER y SOLO si UPSTREAM cargó DNA (v2ChatType !== null).
+  // try/catch defensivo: si falla, V1 splitter sigue como hoy.
+  // ═══════════════════════════════════════════════════════════════
+  if (isV2EligibleUid(uid) && v2ChatType) {
+    try {
+      const v1Parts = (parts && parts.length > 0) ? parts : [aiMessage];
+      const v2Parts = splitBySubregistro(v1Parts, v2ChatType, { respectExistingSplit: true });
+      if (v2Parts && v2Parts.length > 0) {
+        // Emoji injector sobre el array final (amplifica solo última burbuja)
+        const lastPaymentTs = ctx.lastPaymentTimestamp || 0;
+        const emojiResult = injectInBubbleArray(v2Parts, v2ChatType, {
+          peakLevel: undefined, // se infiere del texto
+          isOnboardingPaga: lastPaymentTs > 0 && (Date.now() - lastPaymentTs < 5 * 60 * 1000),
+        });
+        if (emojiResult.applied && emojiResult.details) {
+          console.log(`${logPrefix} [V2][EMOJI] kind=${emojiResult.details.kind} emoji=${emojiResult.details.emoji} reason=${emojiResult.details.reason}`);
+          parts = emojiResult.parts;
+        } else {
+          parts = v2Parts;
+        }
+        console.log(`${logPrefix} [V2][SPLIT] subregistro=${v2Subregistro} parts=${parts.length} (V1=${v1Parts.length})`);
+      }
+    } catch (v2SplitErr) {
+      console.error(`${logPrefix} [V2][SPLIT/EMOJI] error, usando V1 splitter: ${v2SplitErr.message}`);
+      // parts queda como lo dejó el splitter V1
+    }
+  }
+
   if (parts && parts.length >= 2) {
     const maxParts = Math.min(parts.length, 4); // Máximo 4 burbujas
     console.log(`${logPrefix} ✂️ Mensaje dividido en ${maxParts} partes`);
