@@ -214,6 +214,49 @@ function downloadBuffer(url, maxSize = 8 * 1024 * 1024) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// DOBLE SEÑAL (B.4 — C-398): evitar falsos positivos del trigger por
+// una sola keyword. Antes de enviar GIF/showcase, el mensaje de MIIA
+// debe tener (a) keyword del feature Y (b) marcador de pitch/capacidad.
+// Si aparece un "suppressor" conversacional (ej: "el correo de Juan",
+// "la familia de Ale"), abortamos: estamos hablando DE alguien, no de
+// la capacidad de MIIA.
+// ═══════════════════════════════════════════════════════════════
+
+const FEATURE_PITCH_PATTERNS = [
+  /\bpuedo\s+(hacer|gestionar|manejar|agendar|enviar|buscar|armar|revisar|seguir|leer|conect)/i,
+  /\bte\s+(ayudo|armo|agendo|mando|aviso|cuido|sigo|conecto|gestion|manejo)/i,
+  /\bme\s+encargo\b/i,
+  /\bhago\s+(el|la|los|las)?\s*(seguimiento|agendamiento|envío|envio|cotizaci)/i,
+  /\btambi[eé]n\s+(puedo|hago|te)\b/i,
+  /\b(en\s+tiempo\s+real|al\s+instante|sin\s+intervenci|autom[aá]ticamente|24\/7|las\s+24\s+horas)\b/i,
+  /\b(m[oó]dulo|funci[oó]n|feature|sistema|integraci[oó]n)\s/i,
+  /\bvas\s+a\s+(poder|tener|recibir)/i,
+  /\bpodr[aá]s?\s+/i,
+  /\bte\s+(va\s+a|voy\s+a)\s+(avis|permit|ayud|lleg|mandar)/i,
+  /\btodo\s+(conectado|organizado|en\s+un\s+lugar)/i,
+];
+
+const CONVERSATIONAL_SUPPRESSORS = [
+  /\b(el|la|los|las)\s+(correo|mail|agenda|familia|grupo|equipo|cita|turno|cotizaci[oó]n)\s+de\s+[A-ZÁÉÍÓÚÑ]/,
+  /\b(respondi[oó]|escribi[oó]|mand[oó]|dijo|lleg[oó]|vino|lla?m[oó])\b/i,
+  /\bde\s+(pap[aá]|mam[aá]|mi\s+(hijo|hija|hermano|hermana))/i,
+  /\b(ayer|anoche|anteayer|la\s+semana\s+pasada)\b/i,
+];
+
+function hasFeaturePitchContext(msg) {
+  if (!msg || typeof msg !== 'string') return false;
+  const text = msg.toLowerCase();
+
+  const pitchHits = FEATURE_PITCH_PATTERNS.reduce((n, rx) => n + (rx.test(text) ? 1 : 0), 0);
+  if (pitchHits === 0) return false;
+
+  const suppressorHits = CONVERSATIONAL_SUPPRESSORS.reduce((n, rx) => n + (rx.test(msg) ? 1 : 0), 0);
+  if (suppressorHits >= pitchHits) return false;
+
+  return true;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // DETECT & PREPARE — Detectar feature y buscar GIF real
 // ═══════════════════════════════════════════════════════════════
 
@@ -229,10 +272,19 @@ async function detectAndPrepareGifs(aiMessage, phone) {
   const msgLower = aiMessage.toLowerCase();
   const toSend = [];
 
+  // B.4 doble señal: sin pitch context, no disparamos GIFs (aunque haya keyword match).
+  // Esto evita falsos positivos como "la familia de Juan" disparando showcase "familia".
+  const pitchOk = hasFeaturePitchContext(aiMessage);
+
   for (const [feature, entry] of Object.entries(GIF_CATALOG)) {
     // Check keywords
     const matches = entry.keywords.some(kw => msgLower.includes(kw));
     if (!matches) continue;
+
+    if (!pitchOk) {
+      console.log(`[MIIA-GIFS] 🚫 keyword=${feature} match pero no hay pitch context — skip (doble señal B.4)`);
+      continue;
+    }
 
     // Check cooldown
     const cooldownKey = `${phone}:${feature}`;
@@ -392,9 +444,18 @@ function detectShowcaseVideo(aiMessage, phone) {
 
   const msgLower = aiMessage.toLowerCase();
 
+  // B.4 doble señal para showcase MP4s: mismo criterio que GIFs.
+  // Evita mandar "16_mama_activa_miia.mp4" cuando MIIA dice "tu mamá preguntó por vos".
+  const pitchOk = hasFeaturePitchContext(aiMessage);
+
   for (const [feature, keywords] of Object.entries(SHOWCASE_KEYWORDS)) {
     const matches = keywords.some(kw => msgLower.includes(kw));
     if (!matches) continue;
+
+    if (!pitchOk) {
+      console.log(`[MIIA-GIFS] 🚫 showcase=${feature} keyword match pero no pitch context — skip (doble señal B.4)`);
+      continue;
+    }
 
     // Cooldown check
     const cooldownKey = `${phone}:showcase_${feature}`;
@@ -458,4 +519,7 @@ module.exports = {
   searchTenorGif,
   downloadBuffer,
   initGifDirectory,
+  hasFeaturePitchContext,
+  FEATURE_PITCH_PATTERNS,
+  CONVERSATIONAL_SUPPRESSORS,
 };
