@@ -5969,6 +5969,10 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
       : '';
 
     // ═══ AGENDA INYECCIÓN: Cargar próximos eventos para self-chat ═══
+    // Fecha y hora local del owner (según código de país de su teléfono)
+    const ownerCountryCode = getCountryFromPhone(OWNER_PHONE);
+    const ownerTimezone = getTimezoneForCountry(ownerCountryCode);
+
     let agendaStr = '';
     if (isSelfChat || isAdmin) {
       try {
@@ -5985,14 +5989,14 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
         if (!agendaSnap.empty) {
           const events = agendaSnap.docs.map(d => {
             const e = d.data();
-            const dateStr = e.scheduledForLocal || e.scheduledFor || '';
+            const dateStr = formatAgendaDateForPrompt(e, ownerTimezone);
             const modeEmoji = e.eventMode === 'virtual' ? '📹' : e.eventMode === 'telefono' ? '📞' : '📍';
             const contact = e.contactName || e.contactPhone || '';
             const loc = e.eventLocation ? ` — ${e.eventLocation}` : '';
             return `  ${modeEmoji} ${dateStr} | ${e.reason || '⚠️ SIN TÍTULO — preguntale al owner qué es'}${contact ? ` (con ${contact})` : ''}${loc}`;
           });
-          agendaStr = `\n\n📅 [TU AGENDA — PRÓXIMOS ${events.length} EVENTOS]:\n${events.join('\n')}\nSi te piden "mi agenda", "qué tengo agendado", "mis próximos eventos" → mostrá esta lista. NO inventar links externos.`;
-          console.log(`[AGENDA-INJECT] ✅ ${events.length} eventos inyectados al prompt`);
+          agendaStr = `\n\n📅 [TU AGENDA — PRÓXIMOS ${events.length} EVENTOS] (timezone owner: ${ownerTimezone}):\n${events.join('\n')}\nSi te piden "mi agenda", "qué tengo agendado", "mis próximos eventos" → mostrá esta lista. NO inventar links externos. Las fechas/horas ya están en la hora local del owner.`;
+          console.log(`[AGENDA-INJECT] ✅ ${events.length} eventos inyectados al prompt (tz=${ownerTimezone})`);
         } else {
           agendaStr = '\n\n📅 [TU AGENDA]: No hay eventos agendados en los próximos 7 días. Si te piden "mi agenda" → decilo honestamente.';
           console.log('[AGENDA-INJECT] ℹ️ Sin eventos próximos');
@@ -6001,10 +6005,6 @@ NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con h
         console.error('[AGENDA-INJECT] ❌ Error cargando agenda:', agendaErr.message);
       }
     }
-
-    // Fecha y hora local del owner (según código de país de su teléfono)
-    const ownerCountryCode = getCountryFromPhone(OWNER_PHONE);
-    const ownerTimezone = getTimezoneForCountry(ownerCountryCode);
     const localNowStr = new Date().toLocaleString('es-ES', { timeZone: ownerTimezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const systemDateStr = `[FECHA Y HORA LOCAL DEL USUARIO: ${localNowStr} (${ownerTimezone})]`;
 
@@ -11744,6 +11744,36 @@ function getTimezoneForCountry(country) {
     CR: 'America/Costa_Rica', PA: 'America/Panama'
   };
   return tzMap[country] || 'America/Bogota';
+}
+
+// ═══ HELPER: Formatea fecha de evento para inyección al prompt (C-398 B.3)
+// Cubre el bug "Timezone ISO UTC → local en prompt_builder":
+//   - Si el evento tiene `scheduledForLocal` válido (YYYY-MM-DD[ T]HH:MM) → lo usa,
+//     reemplazando T por espacio y recortando a 16c (sin segundos ni Z).
+//   - Si solo tiene `scheduledFor` (UTC ISO) → lo convierte al timezone del owner
+//     con es-ES locale (día/mes/año 24h), NUNCA muestra la Z cruda.
+// Siempre devuelve string corto legible (ej: "2026-04-24 09:00").
+function formatAgendaDateForPrompt(evt, ownerTimezone) {
+  if (!evt) return '';
+  const tz = ownerTimezone || 'America/Bogota';
+  const localRaw = evt.scheduledForLocal;
+  if (localRaw && typeof localRaw === 'string' && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(localRaw)) {
+    return localRaw.replace('T', ' ').substring(0, 16);
+  }
+  const utc = evt.scheduledFor;
+  if (utc && typeof utc === 'string') {
+    try {
+      const d = new Date(utc);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleString('es-ES', {
+          timeZone: tz,
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', hour12: false,
+        }).replace(',', '');
+      }
+    } catch (_) { /* cae al fallback abajo */ }
+  }
+  return '';
 }
 
 // ═══ HELPER: Dialecto por país del contacto (para inyectar en prompts) ═��═
