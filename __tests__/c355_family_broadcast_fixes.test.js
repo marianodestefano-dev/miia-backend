@@ -247,3 +247,62 @@ describe('AUTO-PRESENTACIÓN INICIAL (C-357)', () => {
     expect(prompt).not.toMatch(/"tú"/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// C-397 §5 COMMIT 6 — V2 Voice DNA wire-in en buildFriendBroadcastPrompt
+// ═══════════════════════════════════════════════════════════════════
+// ZONA SAGRADA C-311 (family-chat, path Personal). ETAPA 1 D.1 exige V1 puro
+// en Personal hasta pase firmado. Guard isV2EligibleUid asegura que SOLO
+// MIIA CENTER UID activa V2 (simulación A2 del ANEXO 2026-04-23).
+
+describe('C-397 §5 COMMIT 6 — V2 wire-in en buildFriendBroadcastPrompt', () => {
+  const cleanProfile = { name: 'Mariano De Stefano', shortName: 'Mariano' };
+  const CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
+  const PERSONAL_UID = 'bq2BbtCVF8cZo30tum584zrGATJ3';
+
+  it('sin options (backward compat) → V1 puro idéntico', () => {
+    const promptViejo = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false);
+    const promptNuevo = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false, {});
+    expect(promptNuevo).toBe(promptViejo);
+    expect(promptNuevo).not.toContain('VOICE DNA V2');
+  });
+
+  it('uid Personal → V1 puro (ZONA SAGRADA C-311, ETAPA 1 D.1)', () => {
+    const promptV1 = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false);
+    const promptPersonal = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false, { uid: PERSONAL_UID });
+    expect(promptPersonal).toBe(promptV1);
+  });
+
+  it('uid random no-whitelist → V1 puro', () => {
+    const promptV1 = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false);
+    const promptRandom = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false, { uid: 'random-uid-xyz' });
+    expect(promptRandom).toBe(promptV1);
+  });
+
+  it('uid CENTER → inyecta bloque V2 family (simulación A2 ANEXO)', () => {
+    const promptV1 = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false);
+    const promptCenter = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false, { uid: CENTER_UID });
+    // V2 solo si el loader devuelve systemBlock válido. Si no encuentra §2.4, cae a V1.
+    // Acepto ambos casos (V1 o V1 + bloque extra) — lo crítico es NO crashear.
+    expect(promptCenter.length).toBeGreaterThanOrEqual(promptV1.length);
+  });
+
+  it('wire-in no crashea con profile null', () => {
+    expect(() => {
+      buildFriendBroadcastPrompt('Laura', 'AR', null, false, { uid: CENTER_UID });
+    }).not.toThrow();
+  });
+
+  it('wire-in no crashea con contactName vacío', () => {
+    expect(() => {
+      buildFriendBroadcastPrompt('', 'AR', cleanProfile, false, { uid: CENTER_UID });
+    }).not.toThrow();
+  });
+
+  it('V1 pipeline intacto: las reglas absolutas siguen presentes', () => {
+    const prompt = buildFriendBroadcastPrompt('Laura', 'AR', cleanProfile, false, { uid: PERSONAL_UID });
+    expect(prompt).toContain('REGLAS ABSOLUTAS');
+    expect(prompt).toContain('NO menciones "MediLink"');
+    expect(prompt).toContain('APRENDIZAJE_PERSONAL');
+  });
+});

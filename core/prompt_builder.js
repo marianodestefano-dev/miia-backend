@@ -1936,7 +1936,7 @@ Si el agente intenta usar MIIA para algo personal (3ra vez que lo bloquees):
 // - NO emitir recordatorios a terceros
 // - Si pregunta por algo no implementado → "Eso se viene pronto, te aviso cuando esté listo"
 // - NUNCA decir "ya te lo mandé" sin haberlo hecho (regla 6.23)
-function buildFriendBroadcastPrompt(contactName, countryCode, ownerProfile, isFirstInteraction = false) {
+function buildFriendBroadcastPrompt(contactName, countryCode, ownerProfile, isFirstInteraction = false, options = {}) {
   if (contactName && (/^\d{6,}$/.test(contactName) || /^Lead\s+\d/i.test(contactName))) {
     contactName = '';
   }
@@ -1978,7 +1978,7 @@ function buildFriendBroadcastPrompt(contactName, countryCode, ownerProfile, isFi
     };
   }
 
-  return `Sos MIIA, una compañera que ${ownerFirst} armó para acompañar a las personas que él quiere — familia y amigos cercanos.
+  const basePrompt = `Sos MIIA, una compañera que ${ownerFirst} armó para acompañar a las personas que él quiere — familia y amigos cercanos.
 
 Tu esencia: MMC (Memoria MIIA Central).
 No sos un chatbot que ejecuta tareas y olvida. Sos una presencia que se construye con cada persona que te habla. Cada conversación que tenés con ${who}, te queda. Va armando tu imagen de quién es ${who} — cómo habla, qué le importa, qué le preocupa, qué le gusta. Con el tiempo la idea es que puedas acompañar a ${who} no como robot, sino como una melodía que recuerda cada nota anterior. Eso es MMC: continuidad, aprender y recordar.
@@ -2103,6 +2103,28 @@ REGLAS ABSOLUTAS (no negociables):
 Si hay info concreta de ${who} en tu memoria (cumples, equipo favorito, anécdotas), usala naturalmente — eso es MMC en acción. Si es la primera charla real, preguntale algo suyo para empezar a conocerlo.
 
 ${buildPrioridadesCompactas('friend_broadcast')}`;
+
+  // === V2 Voice DNA wire-in (CARTA_C-397 §5 + ANEXO 2026-04-23 — COMMIT 6) ===
+  // ZONA SAGRADA C-311: este prompt es path Personal (family-chat). ETAPA 1 D.1
+  // exige V1 puro en Personal hasta pase firmado por Mariano. El guard
+  // isV2EligibleUid(uid) asegura que SOLO MIIA CENTER activa V2 acá (útil para
+  // simulación contextos 3-5 del ANEXO A2). Personal o uid ausente → V1 idéntico.
+  try {
+    const uid = options && options.uid;
+    if (uid && _v2Loader.isV2EligibleUid(uid)) {
+      const dna = _v2Loader.loadVoiceDNAForGroup('family', {
+        contactName: contactName || '',
+        ownerName: ownerFirst
+      });
+      if (dna && !dna.fallback && dna.systemBlock) {
+        return basePrompt + '\n\n' + dna.systemBlock;
+      }
+    }
+  } catch (err) {
+    console.error(`[V2][buildFriendBroadcastPrompt] ⚠️ wire-in error: ${err.message} — fallback V1 puro`);
+  }
+
+  return basePrompt;
 }
 
 // ─── T-F (C-293): MEDILINK_TEAM prompt ──────────────────────────────
@@ -2326,7 +2348,7 @@ function buildPrompt(opts) {
     case 'owner_group':
       return buildGroupPrompt(opts.groupConfig, opts.contactName, opts.ownerProfile);
     case 'friend_broadcast':
-      return buildFriendBroadcastPrompt(opts.contactName, opts.countryCode, opts.ownerProfile);
+      return buildFriendBroadcastPrompt(opts.contactName, opts.countryCode, opts.ownerProfile, opts.isFirstInteraction || false, { uid: opts.uid });
     case 'medilink_team':
       return buildMedilinkTeamPrompt(opts.contactName, opts.ownerProfile, { isBoss: opts.isBoss });
     case 'owner_invoked':
