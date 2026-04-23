@@ -49,7 +49,7 @@ const featureAnnouncer = require('../core/feature_announcer');
 const securityContacts = require('../services/security_contacts');
 const { createCalendarEvent, getScheduleConfig: getCalScheduleConfig, checkCalendarAvailability, checkSlotAvailability, detectEventCategory } = require('../core/google_calendar');
 const outreachEngine = require('../core/outreach_engine');
-const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, getCurrentMiiaMood, shouldBigEmoji, BIG_MOOD_EMOJIS } = require('../core/miia_emoji');
+const { applyMiiaEmoji, detectOwnerMood, detectMessageTopic, getCurrentMiiaMood, shouldBigEmoji, BIG_MOOD_EMOJIS, MIIA_OFFICIAL_EMOJIS } = require('../core/miia_emoji');
 
 const aiGateway = require('../ai/ai_gateway');
 const promptCache = require('../ai/prompt_cache');
@@ -5347,6 +5347,52 @@ REGLAS:
     } catch (v2SplitErr) {
       console.error(`${logPrefix} [V2][SPLIT/EMOJI] error, usando V1 splitter: ${v2SplitErr.message}`);
       // parts queda como lo dejó el splitter V1
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // B.5 (C-398.E) — Emoji por tema de burbuja (§6.6 CLAUDE.md)
+  // applyMiiaEmoji() aplicó prefijo al mensaje ENTERO antes del split → solo bubble 0 lo tiene.
+  // Rehidratamos bubbles 1..N-1 con su propio emoji según el topic de cada burbuja.
+  // Gate: mismo que L5271 (ownerRevealsAsAI || isSelfChat) — si owner simula persona, NO aplicar.
+  // Compatible con V2 (la última burbuja ya tiene sus triple emojis AL FINAL, prefijo al inicio no colisiona).
+  // ═══════════════════════════════════════════════════════════════
+  if ((ownerRevealsAsAI || isSelfChat) && parts && parts.length >= 2) {
+    try {
+      const _actionsExecB5 = [_emailTagProcessed, _agendaTagProcessed, _tareaTagProcessed, _cancelTagProcessed, _moveTagProcessed, _cotizTagProcessed].filter(Boolean).length;
+      const bubbleBaseCtx = {
+        isSelfChat,
+        contactType: contactType || 'lead',
+        isMultiAction: _actionsExecB5 >= 2,
+        ownerMood,
+      };
+      let _rehydrated = 0;
+      for (let bi = 1; bi < parts.length; bi++) {
+        const bubble = parts[bi];
+        if (!bubble || typeof bubble !== 'string') continue;
+        // Si la burbuja ya arranca con un emoji oficial MIIA → respetar (p.ej. IA lo puso correctamente)
+        const bMatch = bubble.match(/^((?:[\p{Emoji_Presentation}\p{Extended_Pictographic}][\u{FE0F}\u{200D}\u{2640}\u{2642}♀♂]*\s*)+):?\s*/u);
+        if (bMatch) {
+          const prefixEmoji = bMatch[1].trim();
+          if (MIIA_OFFICIAL_EMOJIS.has(prefixEmoji)) continue;
+        }
+        const perTopic = detectMessageTopic(bubble);
+        const isGreetB = /\b(hola|buenos?\s*d[ií]as?|buenas?\s*(tardes?|noches?)|hey)\b/i.test(bubble);
+        const isFarewellB = /\b(chau|adi[oó]s|nos vemos|hasta\s*(luego|ma[ñn]ana))\b/i.test(bubble);
+        parts[bi] = applyMiiaEmoji(bubble, {
+          ...bubbleBaseCtx,
+          messageBody: bubble,
+          topic: perTopic.topic,
+          cinemaSub: perTopic.cinemaSub,
+          trigger: isGreetB ? 'greeting' : isFarewellB ? 'farewell' : 'general',
+        });
+        _rehydrated++;
+      }
+      if (_rehydrated > 0) {
+        console.log(`${logPrefix} [EMOJI-PER-BUBBLE] ${_rehydrated}/${parts.length - 1} burbujas rehidratadas (§6.6)`);
+      }
+    } catch (perBubbleErr) {
+      console.warn(`${logPrefix} [EMOJI-PER-BUBBLE] ⚠️ ${perBubbleErr.message} — bubble 0 conserva su emoji, resto queda sin prefijo`);
     }
   }
 
