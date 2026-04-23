@@ -902,13 +902,22 @@ setTimeout(() => {
 // ═══ AGENDA INTELIGENTE (FAMILIA + OWNER + LEADS MIIA CENTER) ═══
 // Eventos proactivos: cumpleaños, recordatorios, retomar contacto, deportes (futuro)
 // REGLA: Owner/familia → solo 10:00-22:00. Leads MIIA CENTER → 24/7 (son globales, distinto timezone).
+let _agendaTickCount = 0;
 async function runAgendaEngine() {
-  if (!OWNER_UID) return;
+  _agendaTickCount++;
+  const tickStart = Date.now();
+  const tickId = `T${_agendaTickCount}`;
+  if (!OWNER_UID) {
+    console.log(`[AGENDA][${tickId}] ⏭️ tick skipped: OWNER_UID vacío (¿AUTO-INIT no corrió?)`);
+    return;
+  }
   const scheduleConfig = await getScheduleConfig(OWNER_UID);
   const tz = scheduleConfig?.timezone || 'America/Bogota';
   const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
   const h = localNow.getHours();
   const isOwnerSafeHours = h >= 10 && h < 22;
+  // Contadores de observabilidad (B.1 C-398)
+  const tally = { pending: 0, upcoming: 0, retried: 0, preSent: 0, sent: 0, redirected: 0, skippedHours: 0, skippedBroken: 0, skippedNoPermission: 0, errored: 0 };
 
   try {
     const now = new Date();
@@ -932,8 +941,9 @@ async function runAgendaEngine() {
         // Solo reintentar si el error fue reciente (< 30 min)
         const errorAge = evt.errorAt ? (now - new Date(evt.errorAt)) : Infinity;
         if (errorAge < 1800000) { // < 30 min
-          console.log(`[AGENDA:RETRY] 🔄 Reintentando recordatorio ${doc.id}: "${(evt.reason || '').substring(0, 40)}" (error: ${evt.error})`);
+          console.log(`[AGENDA:RETRY][${tickId}] 🔄 Reintentando recordatorio ${doc.id}: "${(evt.reason || '').substring(0, 40)}" (error: ${evt.error})`);
           await doc.ref.update({ status: 'pending', retryCount: (evt.retryCount || 0) + 1 });
+          tally.retried++;
         }
       }
     } catch (retryErr) {
@@ -952,6 +962,7 @@ async function runAgendaEngine() {
         .limit(10)
         .get();
 
+      tally.upcoming = upcomingSnap.size;
       for (const doc of upcomingSnap.docs) {
         const evt = doc.data();
         // Solo avisar si no se envió reminder previo aún
@@ -959,13 +970,17 @@ async function runAgendaEngine() {
         // Pre-recordatorios: SIEMPRE enviar si el owner lo creó (manual, selfchat, calendar sync)
         // Solo bloquear por horario si es reminder auto-generado (followup, proactivo)
         const isOwnerCreated = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_selfchat' || evt.source === 'owner_manual' || evt.contactPhone === 'self';
-        if (!isOwnerSafeHours && !isOwnerCreated && evt.source !== 'miia_center_lead') continue;
+        if (!isOwnerSafeHours && !isOwnerCreated && evt.source !== 'miia_center_lead') {
+          tally.skippedHours++;
+          continue;
+        }
 
         // Guard ESTRICTO: si el evento no tiene datos mínimos, NO enviar basura al owner
         const reason = evt.reason || evt.title || '';
         if (!reason || reason === 'undefined') {
-          console.log(`[AGENDA] ⏭️ Skip pre-recordatorio ${doc.id}: reason vacío/undefined — evento incompleto`);
+          console.log(`[AGENDA][${tickId}] ⏭️ Skip pre-recordatorio ${doc.id}: reason vacío/undefined — evento incompleto`);
           await doc.ref.update({ preReminderSent: true, skippedBroken: true });
+          tally.skippedBroken++;
           continue;
         }
         const hora = evt.scheduledForLocal ? evt.scheduledForLocal.split('T')[1]?.substring(0, 5) : '';
@@ -983,9 +998,11 @@ async function runAgendaEngine() {
         try {
           await safeSendMessage(`${OWNER_PHONE}@s.whatsapp.net`, reminderMsg, { isSelfChat: true });
           await doc.ref.update({ preReminderSent: true });
-          console.log(`[AGENDA] ⏰ Pre-recordatorio 10min enviado: "${evt.reason}" a las ${hora}`);
+          console.log(`[AGENDA][${tickId}] ⏰ Pre-recordatorio 10min enviado: "${evt.reason}" a las ${hora}`);
+          tally.preSent++;
         } catch (remErr) {
-          console.error(`[AGENDA] ❌ Error enviando pre-recordatorio ${doc.id}:`, remErr.message);
+          console.error(`[AGENDA][${tickId}] ❌ Error enviando pre-recordatorio ${doc.id}:`, remErr.message);
+          tally.errored++;
         }
         await new Promise(r => setTimeout(r, 1000));
       }
@@ -993,14 +1010,21 @@ async function runAgendaEngine() {
       console.error(`[AGENDA] ❌ Error en pre-recordatorios:`, preRemErr.message);
     }
 
-    if (pendingSnap.empty) return;
+    tally.pending = pendingSnap.size;
+    console.log(`[AGENDA][${tickId}] 🔍 tick start tz=${tz} localH=${h} safeHours=${isOwnerSafeHours} pending=${tally.pending} upcoming=${tally.upcoming} retried=${tally.retried} preSent=${tally.preSent}`);
+
+    if (pendingSnap.empty) {
+      console.log(`[AGENDA][${tickId}] ✅ tick end (no pending) duration=${Date.now() - tickStart}ms tally=${JSON.stringify(tally)}`);
+      return;
+    }
 
     for (const doc of pendingSnap.docs) {
       const evt = doc.data();
       // Guardia: si no tiene contactPhone, no se puede enviar — marcar como error y seguir
       if (!evt.contactPhone) {
-        console.error(`[AGENDA] ❌ Evento ${doc.id} sin contactPhone — no se puede enviar. Datos: reason="${evt.reason}", contactName="${evt.contactName}"`);
+        console.error(`[AGENDA][${tickId}] ❌ Evento ${doc.id} sin contactPhone — no se puede enviar. Datos: reason="${evt.reason}", contactName="${evt.contactName}"`);
         await doc.ref.update({ status: 'error', error: 'contactPhone undefined' });
+        tally.errored++;
         continue;
       }
       // Resolver destinatario: 'self' = recordatorio al owner
@@ -1017,6 +1041,8 @@ async function runAgendaEngine() {
       const isOwnerCreatedEvt = evt.source === 'google_calendar_sync' || evt.source === 'selfchat' || evt.source === 'owner_selfchat' || evt.source === 'owner_manual' || (isOwnerReminder && evt.contactPhone === 'self');
       if (!contactRequested && !isMiiaCenterLeadEvt && !isOwnerCreatedEvt && !isOwnerSafeHours) {
         // Recordatorio auto-generado, fuera de horario → esperar
+        console.log(`[AGENDA][${tickId}] ⏸️ Evento ${doc.id} "${(evt.reason || '').substring(0, 40)}" diferido: fuera de horario seguro (h=${h}) y no es owner-created/lead/contactRequested`);
+        tally.skippedHours++;
         continue;
       }
       // Leads y contactos que pidieron recordatorio → se envía SIEMPRE a la hora exacta
@@ -1041,7 +1067,7 @@ async function runAgendaEngine() {
       // redirigir al owner en vez de saltar.
       const isOwnerCreatedReminder = evt.source === 'selfchat' || evt.source === 'owner_selfchat' || evt.source === 'owner_manual' || evt.source === 'google_calendar_sync';
       if (!isOwnerReminder && !evt.remindContact && isOwnerCreatedReminder) {
-        console.log(`[AGENDA] 🔄 BUG4-FIX: Evento ${doc.id} de source="${evt.source}" sin remindContact → redirigiendo al owner (intent: recordatorio personal)`);
+        console.log(`[AGENDA][${tickId}] 🔄 BUG4-FIX: Evento ${doc.id} de source="${evt.source}" sin remindContact → redirigiendo al owner (intent: recordatorio personal)`);
         // Redirigir: enviar al owner en vez de al contacto
         const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
         const evtReasonRedirect = evt.reason || evt.title || '';
@@ -1052,25 +1078,29 @@ async function runAgendaEngine() {
           try {
             await safeSendMessage(ownerJid, redirectMsg, { isSelfChat: true });
             await doc.ref.update({ status: 'completed', completedAt: new Date().toISOString(), redirectedToOwner: true });
-            console.log(`[AGENDA] ✅ Recordatorio personal enviado al owner: "${evtReasonRedirect}"`);
+            console.log(`[AGENDA][${tickId}] ✅ Recordatorio personal enviado al owner: "${evtReasonRedirect}"`);
+            tally.redirected++;
           } catch (redirectErr) {
-            console.error(`[AGENDA] ❌ Error enviando recordatorio redirigido: ${redirectErr.message}`);
+            console.error(`[AGENDA][${tickId}] ❌ Error enviando recordatorio redirigido: ${redirectErr.message}`);
+            tally.errored++;
           }
         }
         continue;
       }
       // ═══ SEGURIDAD: Si remindContact=false y NO es para el owner, NO enviar ═══
       if (!isOwnerReminder && !evt.remindContact) {
-        console.log(`[AGENDA] ⏭️ Evento ${doc.id} no tiene permiso para contactar a ${evt.contactName}. Solo owner.`);
+        console.log(`[AGENDA][${tickId}] ⏭️ Evento ${doc.id} no tiene permiso para contactar a ${evt.contactName}. Solo owner.`);
         await doc.ref.update({ status: 'skipped_no_contact_permission' });
+        tally.skippedNoPermission++;
         continue;
       }
 
       // Guard ESTRICTO: si reason es vacío/undefined, evento roto — no mandar basura
       const evtReason = evt.reason || evt.title || '';
       if (!evtReason || evtReason === 'undefined') {
-        console.log(`[AGENDA] ⏭️ Skip evento ${doc.id}: reason vacío/undefined — marcando como error`);
+        console.log(`[AGENDA][${tickId}] ⏭️ Skip evento ${doc.id}: reason vacío/undefined — marcando como error`);
         await doc.ref.update({ status: 'error', error: 'reason undefined — evento incompleto' });
+        tally.skippedBroken++;
         continue;
       }
       const mentioned = evt.mentionedContact || '';
@@ -1101,8 +1131,9 @@ async function runAgendaEngine() {
           const rawReason = evt.reason || evt.title || 'Evento programado';
           const rawReminder = `📖 ${hora ? hora + ' : ' : ''}${rawReason}${mentioned ? ` (con ${mentioned})` : ''}`;
           await safeSendMessage(phone, rawReminder, { isSelfChat: true });
-          console.log(`[AGENDA-SLEEP] 📖 Recordatorio crudo enviado: "${rawReminder}"`);
+          console.log(`[AGENDA-SLEEP][${tickId}] 📖 Recordatorio crudo enviado: "${rawReminder}"`);
           await doc.ref.update({ status: 'sent', sentAt: new Date().toISOString() });
+          tally.sent++;
           await new Promise(r => setTimeout(r, 2000));
           continue;
         }
@@ -1113,7 +1144,7 @@ async function runAgendaEngine() {
           // Enviar recordatorio al contacto destinatario
           // FIX: Si es recordatorio al owner, usar isSelfChat:true para que Baileys use sock.user.id
           await safeSendMessage(phone, response, { isSelfChat: isOwnerReminder, emojiCtx: { trigger: 'reminder' } });
-          console.log(`[AGENDA] 📤 Recordatorio enviado a ${evt.contactName}${isLate ? ` (CON DISCULPA — ${delayMinutes}min retraso)` : ''}: "${response.substring(0, 60)}..."`);
+          console.log(`[AGENDA][${tickId}] 📤 Recordatorio enviado a ${evt.contactName}${isLate ? ` (CON DISCULPA — ${delayMinutes}min retraso)` : ''}: "${response.substring(0, 60)}..."`);
 
           // Si lo pidió alguien del círculo (no el owner en self-chat), informar al owner también
           if (evt.requestedBy && evt.requestedBy !== `${OWNER_PHONE}@s.whatsapp.net` && evt.source !== 'owner_selfchat') {
@@ -1125,16 +1156,20 @@ async function runAgendaEngine() {
           }
 
           await doc.ref.update({ status: 'sent', sentAt: now.toISOString() });
+          tally.sent++;
         }
       } catch (e) {
-        console.error(`[AGENDA] ❌ Error procesando evento ${doc.id}:`, e.message);
+        console.error(`[AGENDA][${tickId}] ❌ Error procesando evento ${doc.id}:`, e.message);
         await doc.ref.update({ status: 'error', error: e.message, errorAt: new Date().toISOString() });
+        tally.errored++;
       }
 
       await new Promise(r => setTimeout(r, 2000));
     }
+    console.log(`[AGENDA][${tickId}] ✅ tick end duration=${Date.now() - tickStart}ms tally=${JSON.stringify(tally)}`);
   } catch (e) {
-    console.error(`[AGENDA] ❌ Error general:`, e.message);
+    console.error(`[AGENDA][${tickId}] ❌ Error general:`, e.message);
+    console.log(`[AGENDA][${tickId}] ⚠️ tick end (con error) duration=${Date.now() - tickStart}ms tally=${JSON.stringify(tally)}`);
   }
 }
 
