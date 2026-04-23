@@ -5687,8 +5687,8 @@ Nuevo resumen actualizado:`;
     // Clasificador detecta intención → ensamblador carga solo módulos relevantes
     let promptMeta = null;
     if (tempOverride === 'friend_broadcast' || tempOverride === 'medilink_team') {
-      const overrideProfile = { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile?.name || MIIA_SALES_PROFILE.name || 'Mariano', shortName: userProfile?.shortName || 'Mariano' };
-      const overrideName = leadNames[phone] || userProfile?.shortName || 'Mariano';
+      const overrideProfile = { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile?.name || MIIA_SALES_PROFILE.name, shortName: userProfile?.shortName || resolveOwnerFirstName(userProfile) };
+      const overrideName = leadNames[phone] || userProfile?.shortName || resolveOwnerFirstName(userProfile);
       // C-357: detectar si es primera interacción via contact_index/{phone}.messageCount
       let isFirstInteraction = false;
       try {
@@ -5709,7 +5709,7 @@ Nuevo resumen actualizado:`;
       // para que el prompt tenga name, businessName, businessDescription, etc.
       const isMiiaCenterSelf = OWNER_UID === 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
       const effectiveProfile = isMiiaCenterSelf
-        ? { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile.name || MIIA_SALES_PROFILE.name || 'Mariano', shortName: userProfile.shortName || 'Mariano' }
+        ? { ...MIIA_SALES_PROFILE, ...userProfile, name: userProfile.name || MIIA_SALES_PROFILE.name, shortName: userProfile.shortName || resolveOwnerFirstName(userProfile) }
         : userProfile;
 
       // 🛡️ Anti-greeting: calcular si el owner interactuó recientemente
@@ -9510,7 +9510,7 @@ async function handleIncomingMessage(message) {
             targets = [{ phone: OWNER_PERSONAL_PHONE, name: resolveOwnerFirstName(userProfile), country: resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), tanda: 'T1', contact_type: 'friend_broadcast', isBoss: false, messageCount: 0 }];
           } else {
             const d = ownerSnap.docs[0].data();
-            targets = [{ phone: d.phone, name: d.name || 'Mariano', country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false, messageCount: d.messageCount || 0 }];
+            targets = [{ phone: d.phone, name: d.name || resolveOwnerFirstName(userProfile), country: d.country || resolveOwnerCountry(userProfile, d.phone), tanda: d.tanda || 'T1', contact_type: d.contact_type || 'friend_broadcast', isBoss: false, messageCount: d.messageCount || 0 }];
           }
           // C-311: override temporal para que las conversaciones subsecuentes con el owner usen friend_broadcast
           setTempContactOverride(OWNER_PERSONAL_PHONE, 'friend_broadcast');

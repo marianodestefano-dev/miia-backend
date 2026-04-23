@@ -178,9 +178,9 @@ const OWNER_GREETING_TOKENS = new Set([
 ]);
 
 /**
- * C-355 (BUG B Capa 1+3): resuelve ownerFirst sanitizado.
- * Orden: shortName (si no es greeting) → primer token real de name → 'Mariano'.
- * Log defensivo si detecta contaminación.
+ * C-355 (BUG B Capa 1+3) + C-397 §2.4 regla anti-hardcode (firma Mariano 2026-04-23):
+ * resuelve ownerFirst dinámicamente desde userProfile. Cero literal "Mariano".
+ * Orden: shortName (si no es greeting) → primer token real de name → '' + log ERROR.
  */
 function resolveOwnerFirstName(userProfile) {
   const p = userProfile || {};
@@ -199,7 +199,9 @@ function resolveOwnerFirstName(userProfile) {
       }
     }
   }
-  return 'Mariano';
+  // C-397 §2.4 — fallback sin literal. Loud error para que se detecte en prod.
+  console.error(`[OWNER_FIRST] ❌ CRITICAL: no se pudo resolver ownerFirstName desde userProfile (shortName="${short}" name="${name}"). Revisar Firestore users/{uid}.name/shortName.`);
+  return '';
 }
 
 /**

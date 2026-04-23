@@ -2763,7 +2763,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         basePhone,
         countryCode: getCountryFromPhone ? getCountryFromPhone(basePhone) : null,
       });
-      const dna = loadVoiceDNAForGroup(v2ChatType, { ownerName: ctx.ownerProfile?.shortName || 'Mariano' });
+      const dna = loadVoiceDNAForGroup(v2ChatType, { ownerName: ctx.ownerProfile?.shortName || (ctx.ownerProfile?.name || '').split(/\s+/)[0] || '' });
       if (dna && !dna.fallback && dna.systemBlock) {
         v2VoiceBlock = dna.systemBlock;
         v2Subregistro = dna.subregistro;

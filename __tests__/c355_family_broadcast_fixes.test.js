@@ -59,10 +59,15 @@ describe('C-355 BUG B — resolveOwnerFirstName sanitize', () => {
     expect(out).toBe('Mariano');
   });
 
-  test('perfil vacío → "Mariano" (fallback final)', () => {
-    expect(resolveOwnerFirstName({})).toBe('Mariano');
-    expect(resolveOwnerFirstName(null)).toBe('Mariano');
-    expect(resolveOwnerFirstName(undefined)).toBe('Mariano');
+  test('perfil vacío → "" (C-397 §2.4 anti-hardcode: fallback sin literal)', () => {
+    // C-397 firma Mariano 2026-04-23 §2.4: zero literal "Mariano" en código.
+    // Antes: fallback final devolvía 'Mariano'. Ahora: '' + console.error loud.
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    expect(resolveOwnerFirstName({})).toBe('');
+    expect(resolveOwnerFirstName(null)).toBe('');
+    expect(resolveOwnerFirstName(undefined)).toBe('');
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 
   test('tokens case-insensitive: "HOLA Mariano" → "Mariano"', () => {
