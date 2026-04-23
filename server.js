@@ -16936,6 +16936,14 @@ server.listen(PORT, () => {
           console.log(`[AUTO-INIT] OWNER_UID desde env: ${OWNER_UID}`);
         }
 
+        // [STARTUP] V2 wire-in marker (SEC-C.1 check 2 — C-396)
+        try {
+          const { isV2EligibleUid } = require('./core/voice_v2_loader');
+          console.log(`[STARTUP] V2 wired-in — OWNER_UID=${OWNER_UID} v2Eligible=${isV2EligibleUid(OWNER_UID)} commit=${process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown'} ts=${new Date().toISOString()}`);
+        } catch (e) {
+          console.error(`[STARTUP] ❌ voice_v2_loader require falló: ${e.message}`);
+        }
+
         // 🛡️ FIX CRÍTICO: loadFromFirestore se ejecutaba ANTES de que OWNER_UID existiera
         // → conversations, contactTypes, leadNames NUNCA se cargaban de Firestore
         // → MIIA decía "no tengo esa info" cuando le preguntaban por leads
