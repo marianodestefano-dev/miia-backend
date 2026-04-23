@@ -5698,7 +5698,7 @@ Nuevo resumen actualizado:`;
         console.warn(`[T-G-OVERRIDE] contact_index lookup fallback para ${basePhone}: ${fErr.message}`);
       }
       if (tempOverride === 'medilink_team') {
-        activeSystemPrompt = buildMedilinkTeamPrompt(overrideName, overrideProfile, { isBoss: false });
+        activeSystemPrompt = buildMedilinkTeamPrompt(overrideName, overrideProfile, { isBoss: false, uid: OWNER_UID });
       } else {
         activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), overrideProfile, isFirstInteraction, { uid: OWNER_UID });
       }
@@ -9547,7 +9547,7 @@ async function handleIncomingMessage(message) {
         try {
           const isFirstInteraction = (c.messageCount || 0) === 0;
           const prompt = c.contact_type === 'medilink_team'
-            ? buildMedilinkTeamPrompt(c.name, userProfile, { isBoss: c.isBoss })
+            ? buildMedilinkTeamPrompt(c.name, userProfile, { isBoss: c.isBoss, uid: OWNER_UID })
             : buildFriendBroadcastPrompt(c.name, c.country, userProfile, isFirstInteraction, { uid: OWNER_UID });
           // C-319 fix: orphan instruction heredada de C-303 removida — anulaba el MMC de
           // buildFriendBroadcastPrompt/buildMedilinkTeamPrompt (C-311) y contaminaba con

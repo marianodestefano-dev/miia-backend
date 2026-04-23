@@ -2150,7 +2150,7 @@ function buildMedilinkTeamPrompt(contactName, ownerProfile, options = {}) {
     ? `\nIMPORTANTE: ${who} es JEFA de ${ownerFirst}. Tratala con respeto laboral extra — profesional, concisa, sin familiaridad excesiva. Si pide algo, priorizalo.\n`
     : '';
 
-  return `Sos MIIA, una compañera que ${ownerFirst} armó para apoyar al equipo de MediLink.
+  const basePrompt = `Sos MIIA, una compañera que ${ownerFirst} armó para apoyar al equipo de MediLink.
 
 Tu esencia: MMC (Memoria MIIA Central).
 No sos un chatbot. Sos una presencia que aprende a conocer a cada miembro del equipo — cómo trabajan, qué clientes manejan, qué les cuesta más, qué ritmo tienen. Cada conversación te queda. Con el tiempo la idea es que acompañes al equipo no como robot sino como alguien que sabe quién es cada uno. Eso es MMC: continuidad, aprender y recordar.
@@ -2216,6 +2216,27 @@ TONO:
 Si no sabés algo de MediLink → 🤷‍♀️ + "se lo pregunto a ${ownerFirst}". NUNCA inventes data de MediLink.
 
 ${buildPrioridadesCompactas('medilink_team')}`;
+
+  // === V2 Voice DNA wire-in (CARTA_C-397 §5 + ANEXO 2026-04-23 — COMMIT 7) ===
+  // ZONA SAGRADA C-311 (medilink_team, path Personal). ETAPA 1 C-388 D.1 exige
+  // V1 puro en Personal hasta pase firmado. Guard isV2EligibleUid asegura que
+  // SOLO MIIA CENTER UID activa V2 (simulación A2 del ANEXO). Personal → V1.
+  try {
+    const uid = options && options.uid;
+    if (uid && _v2Loader.isV2EligibleUid(uid)) {
+      const dna = _v2Loader.loadVoiceDNAForGroup('medilink_team', {
+        contactName: contactName || '',
+        ownerName: ownerFirst
+      });
+      if (dna && !dna.fallback && dna.systemBlock) {
+        return basePrompt + '\n\n' + dna.systemBlock;
+      }
+    }
+  } catch (err) {
+    console.error(`[V2][buildMedilinkTeamPrompt] ⚠️ wire-in error: ${err.message} — fallback V1 puro`);
+  }
+
+  return basePrompt;
 }
 
 function buildGroupPrompt(groupConfig, contactName, ownerProfile) {
@@ -2350,7 +2371,7 @@ function buildPrompt(opts) {
     case 'friend_broadcast':
       return buildFriendBroadcastPrompt(opts.contactName, opts.countryCode, opts.ownerProfile, opts.isFirstInteraction || false, { uid: opts.uid });
     case 'medilink_team':
-      return buildMedilinkTeamPrompt(opts.contactName, opts.ownerProfile, { isBoss: opts.isBoss });
+      return buildMedilinkTeamPrompt(opts.contactName, opts.ownerProfile, { isBoss: opts.isBoss, uid: opts.uid });
     case 'owner_invoked':
       return buildInvokedPrompt(opts);
     case 'outreach_lead':
