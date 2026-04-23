@@ -37,9 +37,11 @@ const fs = require('fs');
 const path = require('path');
 
 const VOICE_SEED_PATH = path.join(__dirname, '..', 'prompts', 'v2', 'voice_seed.md');
+const VOICE_SEED_CENTER_PATH = path.join(__dirname, '..', 'prompts', 'v2', 'voice_seed_center.md');
 const MODE_DETECTORS_PATH = path.join(__dirname, '..', 'prompts', 'v2', 'mode_detectors.md');
 
 let _voiceSeedCache = null;
+let _voiceSeedCenterCache = null;
 let _modeDetectorsCache = null;
 let _loadAttempts = 0;
 let _loadFailures = 0;
@@ -60,6 +62,15 @@ const SUBREGISTRO_HEADERS = {
   medilink_team: '### 2.8 (PARCIAL) `vivi_team_medilink`'
 };
 
+// C-397 §5 — Mapping chatType → header en voice_seed_center.md (MIIA CENTER)
+// CENTER solo tiene subregistros de producto (venta + soporte). No hay familia/amigos/ale.
+const SUBREGISTRO_HEADERS_CENTER = {
+  lead: '### 2.1 `leads_medilink`',
+  client: '### 2.2 `clientes_medilink`',
+  follow_up_cold: '### 2.3 `follow_up_cold_medilink`',
+  soporte_producto_miia: '### 2.4 `soporte_producto_miia`'
+};
+
 /**
  * Lee voice_seed.md desde disco (con cache).
  * @returns {string|null} contenido completo, o null si no se puede leer.
@@ -71,6 +82,23 @@ function readVoiceSeed() {
     return _voiceSeedCache;
   } catch (err) {
     console.error(`[V2][voice_v2_loader] ❌ FAIL leyendo voice_seed.md: ${err.message}`);
+    _loadFailures++;
+    return null;
+  }
+}
+
+/**
+ * Lee voice_seed_center.md desde disco (con cache).
+ * C-397 §5 — semilla de voz específica de MIIA CENTER (voz del producto).
+ * @returns {string|null} contenido completo, o null si no se puede leer.
+ */
+function readVoiceSeedCenter() {
+  if (_voiceSeedCenterCache && process.env.V2_VOICE_NO_CACHE !== 'true') return _voiceSeedCenterCache;
+  try {
+    _voiceSeedCenterCache = fs.readFileSync(VOICE_SEED_CENTER_PATH, 'utf8');
+    return _voiceSeedCenterCache;
+  } catch (err) {
+    console.error(`[V2][voice_v2_loader] ❌ FAIL leyendo voice_seed_center.md: ${err.message}`);
     _loadFailures++;
     return null;
   }
@@ -117,13 +145,16 @@ function extractSubregistro(fullText, headerLine) {
 
 /**
  * Extrae la "IDENTIDAD BASE COMÚN" (§1) que aplica a TODOS los subregistros.
+ * Busca el cierre por el próximo "## §2 " (tolera distintos títulos: LOS 7 SUBREGISTROS,
+ * SUBREGISTROS CENTER, etc.).
  * @param {string} fullText
  * @returns {string}
  */
 function extractIdentidadBaseComun(fullText) {
   const start = fullText.indexOf('## §1 IDENTIDAD BASE COMÚN');
   if (start === -1) return '';
-  const end = fullText.indexOf('## §2 LOS 7 SUBREGISTROS', start);
+  // Busca el próximo "## §2 " (cualquier título: "LOS 7 SUBREGISTROS" o "SUBREGISTROS CENTER")
+  const end = fullText.indexOf('## §2 ', start + 1);
   if (end === -1) return fullText.slice(start).trim();
   return fullText.slice(start, end).trim();
 }
@@ -255,6 +286,75 @@ ${baseIdentidad ? baseIdentidad + '\n\n' : ''}${subSection}`;
 }
 
 /**
+ * C-397 §5 — Función paralela a loadVoiceDNAForGroup pero lee voice_seed_center.md.
+ *
+ * Uso: MIIA CENTER en cualquiera de sus 4 subregistros de producto
+ * (leads_medilink, clientes_medilink, follow_up_cold_medilink, soporte_producto_miia).
+ *
+ * Comportamiento:
+ *   - chatType='owner_selfchat' → snapshot completo del voice_seed_center.md
+ *     (equivalente a loadVoiceDNAForGroup para CENTER self-chat de Mariano).
+ *   - chatType en SUBREGISTRO_HEADERS_CENTER → identidad base §1 + subregistro §2.x
+ *   - chatType no soportado → fallback=true, caller usa V1.
+ *   - voice_seed_center.md no legible → fallback=true, caller usa V1.
+ *
+ * NO ROMPE loadVoiceDNAForGroup — es una función paralela independiente.
+ *
+ * @param {string} chatType
+ * @param {object} [opts]
+ * @param {string} [opts.contactName]
+ * @param {boolean} [opts.skipBaseIdentidad]
+ * @returns {{systemBlock: string, subregistro: string|null, fallback: boolean, source: string}}
+ */
+function loadVoiceDNAForCenter(chatType, opts = {}) {
+  _loadAttempts++;
+  const t0 = Date.now();
+
+  const seed = readVoiceSeedCenter();
+  if (!seed) {
+    console.warn(`[V2][voice_v2_loader] ⚠️ FALLBACK V1 — voice_seed_center no disponible (intento #${_loadAttempts}, fallos #${_loadFailures})`);
+    return { systemBlock: '', subregistro: null, fallback: true, source: 'none' };
+  }
+
+  // owner_selfchat de MIIA CENTER → snapshot completo
+  if (chatType === 'owner_selfchat') {
+    const block = `\n\n[VOICE DNA V2 — SNAPSHOT COMPLETO MIIA CENTER (CENTER seed)]\nFuente: prompts/v2/voice_seed_center.md\nUso: self-chat owner MIIA CENTER. Visibilidad completa de los 4 subregistros de producto (etapa 1 C-397).\n\n${seed}`;
+    console.log(`[V2][voice_v2_loader] ✅ Loaded CENTER SNAPSHOT para owner_selfchat (${seed.length} chars, ${Date.now() - t0}ms)`);
+    return { systemBlock: block, subregistro: 'owner_selfchat_snapshot_center', fallback: false, source: 'voice_seed_center.md §0-§8' };
+  }
+
+  const baseHeader = SUBREGISTRO_HEADERS_CENTER[chatType];
+  if (!baseHeader) {
+    console.warn(`[V2][voice_v2_loader] ⚠️ chatType no soportado en CENTER: '${chatType}' — fallback V1`);
+    return { systemBlock: '', subregistro: null, fallback: true, source: 'unknown_chattype_center' };
+  }
+
+  const baseIdentidad = opts.skipBaseIdentidad ? '' : extractIdentidadBaseComun(seed);
+  const subSection = extractSubregistro(seed, baseHeader);
+
+  if (!subSection) {
+    console.warn(`[V2][voice_v2_loader] ⚠️ Subregistro CENTER NO encontrado para chatType='${chatType}' (header='${baseHeader}') — fallback V1`);
+    return { systemBlock: '', subregistro: null, fallback: true, source: 'subregistro_missing_center' };
+  }
+
+  const block = `
+
+[VOICE DNA V2 — chatType=${chatType} (MIIA CENTER)]
+Fuente: prompts/v2/voice_seed_center.md (subregistro ${baseHeader.replace('### ', '').replace(/`/g, '')})
+Instrucción: usá EXACTAMENTE el tono, aperturas, frases-firma y emojis del subregistro siguiente. NO mezclar con otros subregistros. Reglas de voice_seed_center §1 (IDENTIDAD BASE COMÚN CENTER) aplican siempre. CENTER SÍ puede decir que es IA — es su propuesta de valor. NUNCA menciona owner narrativo (Mariano, dueño, jefe).
+
+${baseIdentidad ? baseIdentidad + '\n\n' : ''}${subSection}`;
+
+  console.log(`[V2][voice_v2_loader] ✅ Loaded CENTER chatType='${chatType}' subregistro='${baseHeader}' (${block.length} chars, ${Date.now() - t0}ms) contact='${opts.contactName || '?'}'`);
+  return {
+    systemBlock: block,
+    subregistro: chatType,
+    fallback: false,
+    source: `voice_seed_center.md ${baseHeader}`
+  };
+}
+
+/**
  * Devuelve métricas operacionales (para health checks).
  */
 function getLoaderStats() {
@@ -272,14 +372,17 @@ function getLoaderStats() {
  */
 function resetCache() {
   _voiceSeedCache = null;
+  _voiceSeedCenterCache = null;
   _modeDetectorsCache = null;
 }
 
 module.exports = {
   loadVoiceDNAForGroup,
+  loadVoiceDNAForCenter,
   resolveV2ChatType,
   isV2EligibleUid,
   readVoiceSeed,
+  readVoiceSeedCenter,
   readModeDetectors,
   extractByHeader,
   getLoaderStats,
@@ -288,5 +391,6 @@ module.exports = {
   ALE_PHONE,
   OWNER_PERSONAL_UID,
   MIIA_CENTER_UID,
-  SUBREGISTRO_HEADERS
+  SUBREGISTRO_HEADERS,
+  SUBREGISTRO_HEADERS_CENTER
 };
