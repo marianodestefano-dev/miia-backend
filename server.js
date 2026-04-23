@@ -16938,10 +16938,11 @@ server.listen(PORT, () => {
           console.log(`[AUTO-INIT] OWNER_UID desde env: ${OWNER_UID}`);
         }
 
-        // [STARTUP] V2 wire-in marker (SEC-C.1 check 2 — C-396)
+        // [STARTUP] V2 wire-in marker (SEC-C.1 check 2 — C-396 / extendido C-397 §5 COMMIT 7)
         try {
           const { isV2EligibleUid } = require('./core/voice_v2_loader');
-          console.log(`[STARTUP] V2 wired-in — OWNER_UID=${OWNER_UID} v2Eligible=${isV2EligibleUid(OWNER_UID)} commit=${process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown'} ts=${new Date().toISOString()}`);
+          const v2ContextsWired = ['miia_lead', 'miia_client', 'selfchat', 'family-chat', 'medilink-team'];
+          console.log(`[STARTUP] V2 wired-in — OWNER_UID=${OWNER_UID} v2Eligible=${isV2EligibleUid(OWNER_UID)} v2ContextsWired=[${v2ContextsWired.join(', ')}] commit=${process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown'} ts=${new Date().toISOString()}`);
         } catch (e) {
           console.error(`[STARTUP] ❌ voice_v2_loader require falló: ${e.message}`);
         }
