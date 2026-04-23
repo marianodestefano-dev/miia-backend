@@ -123,6 +123,43 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────
+  describe('buildVoiceV2Block() — chatType=miia_client + CENTER profile (COMMIT 4)', () => {
+    test('devuelve bloque §2.2 clientes_medilink + meta.chatType=miia_client', () => {
+      const out = buildVoiceV2Block({
+        chatType: 'miia_client',
+        ownerProfile: centerProfile,
+        context: { uid: MIIA_CENTER_UID, contactName: 'Dr. Cliente' }
+      });
+      expect(out).not.toBeNull();
+      expect(out.block).toContain('VOICE DNA V2');
+      expect(out.block).toContain('clientes_medilink');
+      expect(out.meta).toMatchObject({
+        chatType: 'miia_client',
+        owner: 'center',
+        subregistro: 'client'
+      });
+    });
+
+    test('Personal profile + miia_client → null (ETAPA 1 no elegible)', () => {
+      const out = buildVoiceV2Block({
+        chatType: 'miia_client',
+        ownerProfile: personalProfile,
+        context: { uid: OWNER_PERSONAL_UID }
+      });
+      expect(out).toBeNull();
+    });
+
+    test('miia_client + CENTER sin uid → sigue funcionando por marker', () => {
+      const out = buildVoiceV2Block({
+        chatType: 'miia_client',
+        ownerProfile: centerProfile
+      });
+      expect(out).not.toBeNull();
+      expect(out.meta.subregistro).toBe('client');
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
   describe('buildVoiceV2Block() — chatType=miia_lead + Personal profile', () => {
     test('Personal profile → null (ETAPA 1 no elegible)', () => {
       const out = buildVoiceV2Block({
@@ -144,15 +181,6 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
 
   // ─────────────────────────────────────────────────────────────────────
   describe('buildVoiceV2Block() — chatType no soportado en COMMIT 2', () => {
-    test('chatType=miia_client → null (COMMIT 4 lo activa)', () => {
-      const out = buildVoiceV2Block({
-        chatType: 'miia_client',
-        ownerProfile: centerProfile,
-        context: { uid: MIIA_CENTER_UID }
-      });
-      expect(out).toBeNull();
-    });
-
     test('chatType=selfchat → null (COMMIT 5 lo activa)', () => {
       const out = buildVoiceV2Block({
         chatType: 'selfchat',
@@ -311,16 +339,20 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       expect(result.meta.v2).toBeNull();
     });
 
-    test('assemblePrompt(miia_client + CENTER) → COMMIT 3 scope NO activa V2 en client', () => {
-      // En COMMIT 3 solo miia_lead. miia_client se activa en COMMIT 4.
+    test('assemblePrompt(miia_client + CENTER) → COMMIT 4 activa V2 con §2.2', () => {
       const result = assemblePrompt({
         chatType: 'miia_client',
         messageBody: 'tengo un problema',
         ownerProfile: miiaSalesProfile,
         context: { uid: MIIA_CENTER_UID }
       });
-      expect(result.meta.modulesLoaded).not.toContain('mod_voice_v2');
-      expect(result.meta.v2).toBeNull();
+      expect(result.meta.modulesLoaded).toContain('mod_voice_v2');
+      expect(result.prompt).toContain('clientes_medilink');
+      expect(result.meta.v2).toMatchObject({
+        chatType: 'miia_client',
+        owner: 'center',
+        subregistro: 'client'
+      });
     });
 
     test('assemblePrompt NO rompe si module mod_voice_v2 retorna null (V1 pipeline intacto)', () => {

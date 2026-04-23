@@ -16,12 +16,15 @@
  *
  * Scope COMMIT 2 (A1 item 2):
  *   - SOLO responde a chatType === 'miia_lead'.
- *   - CENTER (ownerProfile marker) → carga voice_seed_center.md §2.1 leads_medilink.
- *   - Personal owner → null (ETAPA 1 C-388 D.1: Personal corre V1 puro).
- *   - Otros chatTypes (miia_client/selfchat/family/medilink_team) → null.
+ * Scope COMMIT 4 (A1 item 4):
+ *   - Agrega chatType === 'miia_client' (CENTER §2.2 clientes_medilink).
  *
- * Scope posteriores commits (A1 items 3-7):
- *   - COMMIT 4: extender a chatType='miia_client' (clientes_medilink CENTER).
+ * Branching general (vigente COMMIT 4):
+ *   - CENTER (ownerProfile marker) + chatType soportado → voice_seed_center.md §2.x.
+ *   - Personal owner → null (ETAPA 1 C-388 D.1: Personal corre V1 puro).
+ *   - Otros chatTypes (selfchat/family/medilink_team) → null todavía.
+ *
+ * Scope posteriores commits (A1 items 5-7):
  *   - COMMIT 5: extender a chatType='selfchat' (owner_selfchat snapshot).
  *   - COMMIT 6-7: wire-in en C-311 zone (friend_broadcast + medilink_team) —
  *     paths Personal, usan loadVoiceDNAForGroup (voice_seed.md).
@@ -63,14 +66,23 @@ function isMiiaCenterProfile(profile) {
  * @param {object} [args.context] — { uid, contactName, basePhone, countryCode }
  * @returns {{block: string, meta: {source: string, subregistro: string, chatType: string, owner: string}} | null}
  */
+// Mapping chatType entrada → subregistro V2 CENTER.
+// COMMIT 2 agregó 'miia_lead'. COMMIT 4 agrega 'miia_client'.
+// Próximos commits amplían: 'selfchat' (5), 'family_chat' (6), 'medilink_team' (7).
+const V2_CHATTYPE_TO_CENTER_SUBREG = {
+  miia_lead: 'lead',
+  miia_client: 'client'
+};
+
 function buildVoiceV2Block(args) {
   try {
     // Destructuring tolerante (args=null/undefined → defaults).
     const { chatType, ownerProfile, context } = args || {};
 
     // CAPA 2 — chatType no soportado en este commit.
-    // COMMIT 2 scope: SOLO miia_lead. Los demás commits amplían este filtro.
-    if (chatType !== 'miia_lead') {
+    // Soportados hasta COMMIT 4: miia_lead + miia_client. Otros retornan null.
+    const centerSubreg = V2_CHATTYPE_TO_CENTER_SUBREG[chatType];
+    if (!centerSubreg) {
       return null;
     }
 
@@ -90,8 +102,8 @@ function buildVoiceV2Block(args) {
     }
 
     if (isCenter) {
-      // CENTER → voice_seed_center.md §2.1 leads_medilink
-      const dna = loadVoiceDNAForCenter('lead', {
+      // CENTER → voice_seed_center.md §2.x según centerSubreg
+      const dna = loadVoiceDNAForCenter(centerSubreg, {
         contactName: context && context.contactName
       });
       // CAPA 1 — loader falló o bloque vacío.
@@ -103,7 +115,7 @@ function buildVoiceV2Block(args) {
         meta: {
           source: dna.source,
           subregistro: dna.subregistro,
-          chatType: 'miia_lead',
+          chatType,
           owner: 'center'
         }
       };
