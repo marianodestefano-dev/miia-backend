@@ -121,6 +121,70 @@ async function getGmailClient(uid, getOAuth2Client) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// HEALTH CHECK (B.2 — C-398)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Verifica que Gmail esté operativo para un owner. Cache in-memory 30min
+ * para evitar API spam (cada mensaje NO debe pegarle a Gmail).
+ *
+ * Devuelve { ready: boolean, reason: string, checkedAt: number, userEmail?: string }.
+ *
+ * Criterios para ready=true:
+ *   1. `users/{uid}.googleTokens` existe en Firestore.
+ *   2. Probe `gmail.users.getProfile({ userId: 'me' })` responde sin 401/403 en <5s.
+ *
+ * Fail-fast, fail-loudly: si falla, log con razón y quede cacheado 30min
+ * para no saturar la API con reintentos.
+ */
+const _gmailHealthCache = new Map(); // uid → { ready, reason, checkedAt, userEmail }
+const GMAIL_HEALTH_TTL_MS = 30 * 60 * 1000;
+
+async function healthCheck(uid, getOAuth2Client, { force = false } = {}) {
+  const now = Date.now();
+  const cached = _gmailHealthCache.get(uid);
+  if (!force && cached && (now - cached.checkedAt) < GMAIL_HEALTH_TTL_MS) {
+    return cached;
+  }
+
+  const result = { ready: false, reason: '', checkedAt: now, userEmail: null };
+
+  try {
+    const admin = require('firebase-admin');
+    const doc = await admin.firestore().collection('users').doc(uid).get();
+    const data = doc.exists ? doc.data() : {};
+
+    if (!data.googleTokens) {
+      result.reason = 'no_google_tokens';
+      _gmailHealthCache.set(uid, result);
+      return result;
+    }
+
+    const oauth2Client = getOAuth2Client();
+    oauth2Client.setCredentials(data.googleTokens);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    const probePromise = gmail.users.getProfile({ userId: 'me' });
+    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout_5s')), 5000));
+    const profile = await Promise.race([probePromise, timeoutPromise]);
+
+    result.ready = true;
+    result.reason = 'ok';
+    result.userEmail = profile?.data?.emailAddress || data.email || null;
+  } catch (err) {
+    const msg = err?.message || String(err);
+    if (/401|unauthorized|invalid_grant/i.test(msg)) result.reason = 'auth_expired';
+    else if (/403|insufficient|scope/i.test(msg)) result.reason = 'scope_missing';
+    else if (/timeout/i.test(msg)) result.reason = 'timeout';
+    else result.reason = `error:${msg.substring(0, 80)}`;
+    console.warn(`[GMAIL] ⚠️ healthCheck fallo uid=${uid.substring(0, 8)} reason=${result.reason}`);
+  }
+
+  _gmailHealthCache.set(uid, result);
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // CLASIFICACIÓN DE EMAILS
 // ═══════════════════════════════════════════════════════════════
 
@@ -874,6 +938,7 @@ module.exports = {
   getGmailClient,
   getUnreadEmails,
   runFullEmailCheck,
+  healthCheck,
 
   // Acciones
   handleSpamEmails,

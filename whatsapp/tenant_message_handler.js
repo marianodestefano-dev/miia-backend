@@ -2404,7 +2404,23 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     // C-216: Detectar mood ANTES de leer estado, igual que server.js
     ownerMood = detectOwnerMood(messageBody || '');
     ctx.ownerProfile.currentMood = getCurrentMiiaMood(); // C-214: conectar cable suelto PASO 6
-    activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile);
+
+    // B.2 (C-398): probe Gmail antes de construir el prompt. Si Google no está
+    // conectado u operativo, el prompt omite promesas de email. Cache 30min.
+    let _capabilities = { gmailReady: false };
+    try {
+      const gmailIntegration = require('../integrations/gmail_integration');
+      const { getOAuth2Client } = require('../core/google_calendar');
+      const _health = await gmailIntegration.healthCheck(uid, getOAuth2Client);
+      _capabilities.gmailReady = _health?.ready === true;
+      if (!_capabilities.gmailReady) {
+        console.log(`[TMH:${uid}] 📬 Gmail NOT ready (${_health?.reason}) — prompt omite capacidades de correo`);
+      }
+    } catch (capErr) {
+      console.warn(`[TMH:${uid}] ⚠️ Gmail healthCheck error: ${capErr.message} — asumo gmailReady=false`);
+    }
+
+    activeSystemPrompt = buildOwnerSelfChatPrompt(ctx.ownerProfile, messageBody, _capabilities);
 
     // ═══ FIX SALUDO: Inyectar aviso si ya saludó en esta franja ═══
     if (!ctx._greetingByPhone) ctx._greetingByPhone = {};

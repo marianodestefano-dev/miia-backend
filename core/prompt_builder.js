@@ -817,11 +817,16 @@ Si el lead corrige → regenerar y enviar de nuevo, SIEMPRE.`;
  * @param {object} [ownerProfile] - Perfil del owner desde Firestore
  * @returns {string} System prompt completo
  */
-function buildOwnerSelfChatPrompt(ownerProfile, messageBody) {
+function buildOwnerSelfChatPrompt(ownerProfile, messageBody, capabilities = {}) {
   const p = resolveProfile(ownerProfile);
   const adn = buildADN(p);
   const vademecum = buildVademecum(p, 'owner');
   const nicknames = p.nicknames?.length ? ` Le dice ${p.nicknames.map(n => `"${n}"`).join(', ')}.` : '';
+
+  // B.2 (C-398): capability gates — si el owner no tiene Gmail conectado/operativo,
+  // NO prometemos "te leo el correo" ni "te mando mails de tu parte". Ese fue el
+  // bug raíz: MIIA decía "buscá tu mail" cuando googleTokens estaba ausente.
+  const gmailReady = capabilities.gmailReady === true;
 
   // COTIZACION_PROTOCOL CONDICIONAL: solo cargar tabla completa (~2100 tokens) si el mensaje
   // menciona precios, cotizaciones o usuarios. Ahorra ~2100 tokens en 80% de mensajes.
@@ -1255,11 +1260,14 @@ ${p.shortName} envía una FOTO de ropa + texto como "me queda?", "qué opinas", 
 - **Sugerencia de outfit**: "qué me pongo para una reunión", "combiname algo casual"
 - **Opinión de look**: Foto + "me queda bien?" → análisis de colores, fit, estilo
 
-#### 📬 Gmail — Gestión inteligente de correo
+${gmailReady ? `#### 📬 Gmail — Gestión inteligente de correo
 - "¿tengo mails?" / "revisá mi correo" → lee, clasifica (urgente/importante/info/spam) y resume
 - Auto-elimina spam y crea filtros para bloquear remitentes
 - Trackea respuestas: "avisame cuando responda X" → MIIA chequea cada hora
-- Revisión automática cada 1 hora (10am-10pm)
+- Revisión automática cada 1 hora (10am-10pm)` : `#### 📬 Gmail — NO CONFIGURADO
+- Tu Google NO está conectado todavía. No puedo leer ni clasificar correo.
+- Si ${p.shortName || 'el owner'} te pide "revisá mi mail" / "¿tengo correos?" → respondele: "Todavía no tengo Gmail conectado. Cuando quieras, autorizá desde el Dashboard (Conexiones → Google) y lo activo al toque."
+- NO prometas leer, resumir ni avisar de mails hasta que esté conectado.`}
 
 #### 📋 Google Tasks — Lista de tareas
 - "mis tareas" / "tareas pendientes" → muestra lista con fechas
@@ -1277,9 +1285,11 @@ ${p.shortName} envía una FOTO de ropa + texto como "me queda?", "qué opinas", 
 - Modos: presencial | virtual (genera Google Meet) | telefono
 - Recordatorios automáticos configurables
 
-#### 📧 Envío de Emails
+${gmailReady ? `#### 📧 Envío de Emails
 - [ENVIAR_CORREO:email|asunto|cuerpo] → envía email desde la cuenta del owner
-- Necesita email del destinatario — si no lo tenés, PREGUNTÁ
+- Necesita email del destinatario — si no lo tenés, PREGUNTÁ` : `#### 📧 Envío de Emails — NO DISPONIBLE
+- Google no está conectado. NO emitas [ENVIAR_CORREO:...] — no tengo credenciales y el envío va a fallar.
+- Si piden "mandale un mail a X" → "Todavía no tengo Gmail conectado, así que no puedo mandar correos. Conectalo desde el Dashboard y te armo el envío cuando esté listo."`}
 
 #### 💬 Comunicación con contactos
 - "dile a [nombre] [mensaje]" → envía mensaje a contacto guardado
@@ -2043,8 +2053,8 @@ Respondé con honestidad total en tres capas:
 
 2. LO QUE YA HAGO (funcionalidades funcionales hoy):
    - Agendar cosas para vos (recordatorios, cumples, citas) — te aviso el día que pediste.
-   - Avisarte en vivo cuando juegue tu equipo / piloto / deportista favorito, con los momentos clave (goles, cambios, finales).
-   - Mandar correos de tu parte desde la casilla de ${ownerFirst}.
+   - Avisarte en vivo cuando juegue tu equipo / piloto / deportista favorito, con los momentos clave (goles, cambios, finales).${gmailReady ? `
+   - Mandar correos de tu parte desde la casilla de ${ownerFirst}.` : ''}
    - Buscar info actual en internet — clima, cotizaciones, noticias, horarios.
    - Charlar, escucharte, aprender quién sos.
 
@@ -2359,7 +2369,7 @@ function buildTenantBrainString(baseDNA, products, sessions, contactRules) {
 function buildPrompt(opts) {
   switch (opts.mode) {
     case 'owner_selfchat':
-      return buildOwnerSelfChatPrompt(opts.ownerProfile, opts.messageBody);
+      return buildOwnerSelfChatPrompt(opts.ownerProfile, opts.messageBody, opts.capabilities);
     case 'owner_family':
       return buildOwnerFamilyPrompt(opts.contactName, opts.familyData, opts.ownerProfile);
     case 'owner_lead':
