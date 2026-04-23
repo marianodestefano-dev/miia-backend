@@ -215,6 +215,12 @@ async function loadOwnerProfile(ownerUid) {
       } catch (_) {}
     }
     const resolvedName = data.name || data.displayName || 'Owner';
+    // B.6 (C-398.E): autonomyLevel persistido en Firestore. Default 3 (servicial).
+    // Rango válido 0-10. Se actualiza por señales en self-chat (ver detectAutonomyAdjust).
+    let autonomyLevel = 3;
+    if (typeof data.autonomyLevel === 'number' && Number.isFinite(data.autonomyLevel)) {
+      autonomyLevel = Math.max(0, Math.min(10, Math.round(data.autonomyLevel)));
+    }
     const profile = {
       name: resolvedName,
       fullName: resolvedName,
@@ -224,17 +230,82 @@ async function loadOwnerProfile(ownerUid) {
       country: data.country || 'Colombia',
       demoLink: demoLink,
       hasCustomPricing: hasCustomPricing,
+      autonomyLevel,
       // aiProvider: null = dejar que AI Gateway use CONTEXT_CONFIG automáticamente
       // Si el owner NO configuró un provider específico, dejar en null
       // 'gemini' como valor guardado = legacy, tratarlo como null para que CONTEXT_CONFIG decida
       aiProvider: (data.aiProvider && data.aiProvider !== 'gemini') ? data.aiProvider : null,
       aiApiKey: data.aiApiKey || data.geminiApiKey || process.env.GEMINI_API_KEY,
     };
-    console.log(`[TMH:${ownerUid}] ✅ Perfil cargado: ${profile.fullName} (${profile.businessName})`);
+    console.log(`[TMH:${ownerUid}] ✅ Perfil cargado: ${profile.fullName} (${profile.businessName}) — autonomy=${autonomyLevel}/10`);
     return profile;
   } catch (e) {
     console.error(`[TMH:${ownerUid}] ❌ Error cargando perfil de Firestore:`, e.message);
     return { ...DEFAULT_OWNER_PROFILE };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// B.6 (C-398.E): autonomyLevel updater + persistencia
+// Detecta señales del owner en self-chat y ajusta autonomyLevel (0-10).
+// ═══════════════════════════════════════════════════════════════
+
+// Patrones de AUMENTO de autonomía (+1)
+const AUTONOMY_UP_PATTERNS = [
+  /\bopin[aá]\s*(m[aá]s|vos|t[uú])\b/i,
+  /\bdame tu opini[oó]n\b/i,
+  /\bqu[eé] pens[aá]s\b/i,
+  /\bs[eé]\s*m[aá]s\s*(directa|firme|opinadora|honesta)\b/i,
+  /\bpropon[eé]\s*(m[aá]s|vos|t[uú])\b/i,
+  /\bdecidí?\s*vos\b/i,
+  /\bdec[ií]dilo\s*vos\b/i,
+  /\btom[aá]\s*la\s*iniciativa\b/i,
+  /\bno te quedes callada\b/i,
+  /\bquiero que opines\b/i,
+];
+
+// Patrones de DISMINUCIÓN de autonomía (-1)
+const AUTONOMY_DOWN_PATTERNS = [
+  /\b(no\s*opines|dejate? de opinar|menos opiniones?)\b/i,
+  /\b(callate|callada)\s*(un poco|por favor)?\b/i,
+  /\bno me des consejos\b/i,
+  /\blimit[aá]te a (ejecutar|lo que te pido)\b/i,
+  /\bs[eé]\s*m[aá]s\s*(servicial|sumisa|callada)\b/i,
+  /\bno preguntes (tanto|m[aá]s)\b/i,
+  /\bdejate? de proponer\b/i,
+];
+
+/**
+ * Detecta si el mensaje del owner ajusta autonomía.
+ * @param {string} text
+ * @returns {-1|0|1} delta
+ */
+function detectAutonomyAdjust(text) {
+  if (!text || typeof text !== 'string') return 0;
+  for (const pat of AUTONOMY_UP_PATTERNS) if (pat.test(text)) return +1;
+  for (const pat of AUTONOMY_DOWN_PATTERNS) if (pat.test(text)) return -1;
+  return 0;
+}
+
+/**
+ * Persiste nuevo autonomyLevel en Firestore con cap 0-10.
+ * @param {string} ownerUid
+ * @param {number} newLevel — valor crudo (se clampea)
+ * @param {string} [reason] — para log
+ * @returns {Promise<number>} nivel efectivo guardado
+ */
+async function persistAutonomyLevel(ownerUid, newLevel, reason = 'manual') {
+  const clamped = Math.max(0, Math.min(10, Math.round(Number(newLevel) || 0)));
+  try {
+    await db().collection('users').doc(ownerUid).set(
+      { autonomyLevel: clamped, autonomyUpdatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+    console.log(`[TMH:${ownerUid}] [AUTONOMY] ✅ persistido autonomyLevel=${clamped}/10 (reason=${reason})`);
+    return clamped;
+  } catch (e) {
+    console.error(`[TMH:${ownerUid}] [AUTONOMY] ❌ error persistiendo: ${e.message}`);
+    throw e;
   }
 }
 
@@ -2404,6 +2475,21 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     // C-216: Detectar mood ANTES de leer estado, igual que server.js
     ownerMood = detectOwnerMood(messageBody || '');
     ctx.ownerProfile.currentMood = getCurrentMiiaMood(); // C-214: conectar cable suelto PASO 6
+
+    // B.6 (C-398.E): detectar ajuste de autonomía y persistir
+    try {
+      const _autonomyDelta = detectAutonomyAdjust(messageBody || '');
+      if (_autonomyDelta !== 0) {
+        const _current = Number(ctx.ownerProfile.autonomyLevel ?? 3);
+        const _next = Math.max(0, Math.min(10, _current + _autonomyDelta));
+        if (_next !== _current) {
+          const _saved = await persistAutonomyLevel(uid, _next, `selfchat_${_autonomyDelta > 0 ? 'up' : 'down'}`);
+          ctx.ownerProfile.autonomyLevel = _saved;
+        }
+      }
+    } catch (autErr) {
+      console.warn(`[TMH:${uid}] [AUTONOMY] ⚠️ skip update: ${autErr.message}`);
+    }
 
     // B.2 (C-398): probe Gmail antes de construir el prompt. Si Google no está
     // conectado u operativo, el prompt omite promesas de email. Cache 30min.
@@ -5747,6 +5833,12 @@ module.exports = {
   loadOwnerProfile,
   loadBusinessCerebro,
   loadPersonalBrain,
+
+  // B.6 (C-398.E): autonomy helpers
+  detectAutonomyAdjust,
+  persistAutonomyLevel,
+  AUTONOMY_UP_PATTERNS,
+  AUTONOMY_DOWN_PATTERNS,
   loadBusinesses,
   loadContactGroups,
   classifyContact,
