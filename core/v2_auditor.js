@@ -259,6 +259,35 @@ function detectCambioRegistro(text, chatType) {
 }
 
 /**
+ * RF#11 — tercera_persona_factual_owner ⚠️ CRÍTICO
+ *
+ * Contexto: owner_selfchat. Si `ctx.eventSource === 'owner_manual'` (Mariano creó
+ * el evento/recordatorio a mano), atribuírselo a MIIA en tercera persona factual
+ * ("eso lo armó MIIA", "MIIA te agendó eso") es mentira — desvirtúa la autoría real.
+ *
+ * Firmado en C-398 SEC-B.8 (RF#11 nueva). Scope: solo aplica cuando eventSource está
+ * seteado explícitamente a 'owner_manual' para evitar falsos positivos en narrativa
+ * legítima donde MIIA sí intervino.
+ */
+function detectTerceraPersonaFactual(text, ctx) {
+  if (!text || !ctx || ctx.eventSource !== 'owner_manual') return null;
+  const patterns = [
+    /\beso\s+(lo\s+)?arm[óo]\s+miia\b/i,
+    /\bmiia\s+(te\s+)?agend[óo]\s+(eso|esto|ese|este|esa)\b/i,
+    /\blo\s+arm[óo]\s+miia\s+para\s+(vos|ti|m[íi]|usted)\b/i,
+    /\bmiia\s+(lo\s+)?cre[óo]\s+(eso|esto)\b/i,
+    /\beso\s+(te\s+)?lo\s+puso\s+miia\b/i,
+  ];
+  for (const rx of patterns) {
+    const m = text.match(rx);
+    if (m) {
+      return { match: m[0], pattern: rx.source };
+    }
+  }
+  return null;
+}
+
+/**
  * RF#10 — uso_exceso_mayusculas
  * >30% caracteres alfabéticos en MAYÚSCULAS sostenidas, excepto onboarding/énfasis controlado.
  */
@@ -417,6 +446,15 @@ function auditV2Response(candidate, chatType, ctx = {}) {
     });
   }
 
+  const terceraPersona = detectTerceraPersonaFactual(candidate, ctx);
+  if (terceraPersona) {
+    criticalFlags.push({
+      code: 'RF11_tercera_persona_factual_owner',
+      label: '⚠️ CRÍTICO: atribuye a MIIA evento que creó el owner manualmente',
+      detail: terceraPersona,
+    });
+  }
+
   // ===== Decisiones =====
   const flagged = criticalFlags.length > 0;
 
@@ -452,6 +490,83 @@ function auditV2Response(candidate, chatType, ctx = {}) {
 }
 
 /**
+ * auditSafetyRules — auditoría acotada SOLO a reglas cross-cutting de seguridad.
+ *
+ * Corre RF#7 (Ale leak) + RF#8 (IA leak) y NADA más. Pensada para tenants V1
+ * (no MIIA CENTER) donde el auditor V2 completo no se activa, pero RF#7 y RF#8
+ * son invariantes duros que aplican al producto entero.
+ *
+ * Firmada en C-398 SEC-B.11 — cierra el gap "RF#8 con lead no cortó en vivo"
+ * que se dio porque `auditV2Response` estaba gated por `isV2EligibleUid`.
+ *
+ * Mismo contrato de retorno que `auditV2Response`.
+ */
+function auditSafetyRules(candidate, chatType, ctx = {}) {
+  const empty = {
+    ok: false,
+    flagged: false,
+    criticalFlags: [],
+    warningFlags: [],
+    hint: null,
+    fallback: null,
+    shouldRegenerate: false,
+    shouldUseFallback: false,
+  };
+
+  if (!candidate || typeof candidate !== 'string') {
+    return { ...empty, ok: true, fallback: getFallbackByChatType(chatType), shouldUseFallback: true };
+  }
+
+  const attemptNumber = Number(ctx.attemptNumber) || 1;
+  const criticalFlags = [];
+
+  const aleLeak = detectAleLeak(candidate, chatType, ctx);
+  if (aleLeak) {
+    criticalFlags.push({
+      code: 'RF7_exclusividad_ale',
+      label: '⚠️ CRÍTICO: vocablo exclusivo de Ale en chat de otro contacto',
+      detail: aleLeak,
+    });
+  }
+
+  const iaLeak = detectIALeak(candidate, chatType);
+  if (iaLeak) {
+    criticalFlags.push({
+      code: 'RF8_no_ia_con_leads',
+      label: '⚠️ CRÍTICO: respuesta a lead/client revela IA o expone mecánica',
+      detail: iaLeak,
+    });
+  }
+
+  const flagged = criticalFlags.length > 0;
+  let shouldRegenerate = false;
+  let shouldUseFallback = false;
+  let fallback = null;
+  let hint = null;
+
+  if (flagged) {
+    if (attemptNumber >= 2) {
+      shouldUseFallback = true;
+      fallback = getFallbackByChatType(chatType);
+    } else {
+      shouldRegenerate = true;
+      hint = buildRegenerationHint(criticalFlags, chatType);
+    }
+  }
+
+  return {
+    ok: true,
+    flagged,
+    criticalFlags,
+    warningFlags: [],
+    hint,
+    fallback,
+    shouldRegenerate,
+    shouldUseFallback,
+  };
+}
+
+/**
  * Fallback genérico mínimo por chatType (mode_detectors §8).
  *
  * @param {string} chatType
@@ -465,13 +580,13 @@ function getFallbackByChatType(chatType) {
     case 'medilink_team':
     case 'follow_up_cold':
     case 'miia_lead':
-      return 'Vale, dejame revisarlo y vuelvo en un rato 🤗';
+      return 'Vale, dejame revisarlo y vuelvo en un rato';
     case 'family':
     case 'friend_argentino':
     case 'friend_colombiano':
       return 'Dale, ahora te respondo';
     case 'ale_pareja':
-      return 'Ahora te respondo amor 🥰';
+      return 'Ahora te respondo amor';
     case 'owner_selfchat':
       return null; // NO ENVIAR — caller debe alertar a Mariano
     default:
@@ -511,6 +626,9 @@ function buildRegenerationHint(criticalFlags, chatType) {
       case 'RF10_exceso_mayusculas':
         lines.push('- Bajá las MAYÚSCULAS sostenidas. Usalas SOLO para énfasis quirúrgico ("MUY IMPORTANTE" puntual). El resto en minúscula natural.');
         break;
+      case 'RF11_tercera_persona_factual_owner':
+        lines.push('- PROHIBIDO decir "eso lo armó MIIA", "MIIA te agendó eso", "lo armó MIIA para vos" u otra tercera persona factual atribuyendo el evento a MIIA. Ese evento lo creaste vos (owner) manualmente. Hablá en primera persona o neutra: "lo tenés agendado", "tenés eso para el...", "anoté esto".');
+        break;
       default:
         lines.push(`- Revisar: ${f.label}`);
     }
@@ -524,6 +642,7 @@ function buildRegenerationHint(criticalFlags, chatType) {
 
 module.exports = {
   auditV2Response,
+  auditSafetyRules,
   getFallbackByChatType,
   buildRegenerationHint,
   // detectores individuales (para tests)
@@ -537,6 +656,7 @@ module.exports = {
   detectIALeak,
   detectCambioRegistro,
   detectExcesoMayusculas,
+  detectTerceraPersonaFactual,
   // constantes
   ALE_PHONE,
   LEAD_LIKE,

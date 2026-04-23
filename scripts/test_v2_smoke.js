@@ -38,7 +38,7 @@ const {
 } = require('../core/voice_v2_loader');
 const { splitBySubregistro, getSplitMode } = require('../core/split_smart_heuristic');
 const { injectInBubbleArray } = require('../core/emoji_injector');
-const { auditV2Response, getFallbackByChatType } = require('../core/v2_auditor');
+const { auditV2Response, auditSafetyRules, getFallbackByChatType } = require('../core/v2_auditor');
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -207,7 +207,7 @@ console.log('INY-2 — RF#8 admite IA en chat con lead → CRÍTICO');
   check('INY2.5 hint contiene "PROHIBIDO admitir ser IA"', !!audit.hint && /PROHIBIDO/i.test(audit.hint) && /IA/i.test(audit.hint), 'hint debe instruir al modelo');
 
   const audit2 = auditV2Response(candidate, chatType, { lastContactMessage: 'hola', attemptNumber: 2 });
-  check('INY2.6 fallback lead = "Vale, dejame revisarlo y vuelvo en un rato 🤗"', audit2.fallback === 'Vale, dejame revisarlo y vuelvo en un rato 🤗', `got: ${audit2.fallback}`);
+  check('INY2.6 fallback lead = "Vale, dejame revisarlo y vuelvo en un rato" (sin emoji — applyMiiaEmoji agrega el oficial del chatType)', audit2.fallback === 'Vale, dejame revisarlo y vuelvo en un rato', `got: ${audit2.fallback}`);
 }
 console.log('');
 
@@ -242,6 +242,76 @@ console.log('INY-3 — GUARD UID: solo MIIA CENTER pasa, Personal y random caen 
 
   const r6 = resolveV2ChatType({ uid: MIIA_CENTER_UID, contactType: 'group', basePhone: '573137501884' });
   check('INY3.11 resolveV2ChatType(uid=CENTER, group/Ale phone) → unknown (etapa 1 no incluye ale_pareja)', r6 === 'unknown', `got: ${r6}`);
+}
+console.log('');
+
+// ════════════════════════════════════════════════════════════════
+// INY-11 — RF#11 tercera_persona_factual_owner (C-398 SEC-B.8)
+// ════════════════════════════════════════════════════════════════
+console.log('INY-11 — RF#11 tercera persona factual atribuyendo a MIIA evento owner_manual');
+{
+  const chatType = 'owner_selfchat';
+
+  // Solo debe flaguear si eventSource === 'owner_manual'
+  const candidate1 = 'Dale, eso lo armó MIIA para vos, te recuerdo 5 min antes';
+  const auditNoSrc = auditV2Response(candidate1, chatType, { attemptNumber: 1 });
+  check('INY11.1 sin ctx.eventSource → NO flagged', !auditNoSrc.criticalFlags.find(f => f.code === 'RF11_tercera_persona_factual_owner'), `flags: ${auditNoSrc.criticalFlags.map(f=>f.code).join(',')}`);
+
+  const auditManual = auditV2Response(candidate1, chatType, { attemptNumber: 1, eventSource: 'owner_manual' });
+  check('INY11.2 eventSource=owner_manual + "eso lo armó MIIA para vos" → flagged', !!auditManual.criticalFlags.find(f => f.code === 'RF11_tercera_persona_factual_owner'), `flags: ${auditManual.criticalFlags.map(f=>f.code).join(',')}`);
+
+  const candidate2 = 'Listo Mariano, MIIA te agendó eso para las 18h';
+  const audit2 = auditV2Response(candidate2, chatType, { attemptNumber: 1, eventSource: 'owner_manual' });
+  check('INY11.3 "MIIA te agendó eso" → flagged', !!audit2.criticalFlags.find(f => f.code === 'RF11_tercera_persona_factual_owner'), `flags: ${audit2.criticalFlags.map(f=>f.code).join(',')}`);
+
+  const candidate3 = 'Eso lo armó MIIA';
+  const audit3 = auditV2Response(candidate3, chatType, { attemptNumber: 1, eventSource: 'owner_manual' });
+  check('INY11.4 "Eso lo armó MIIA" (simple) → flagged', !!audit3.criticalFlags.find(f => f.code === 'RF11_tercera_persona_factual_owner'), `flags: ${audit3.criticalFlags.map(f=>f.code).join(',')}`);
+
+  // Caso legítimo: primera persona / neutra
+  const candidate4 = 'Listo, lo tenés agendado para las 18h';
+  const audit4 = auditV2Response(candidate4, chatType, { attemptNumber: 1, eventSource: 'owner_manual' });
+  check('INY11.5 primera persona/neutra "lo tenés agendado" → NO flagged', !audit4.criticalFlags.find(f => f.code === 'RF11_tercera_persona_factual_owner'), `flags: ${audit4.criticalFlags.map(f=>f.code).join(',')}`);
+
+  // Hint de regenerate
+  check('INY11.6 hint instruye primera persona/neutra', !!auditManual.hint && /tercera persona/i.test(auditManual.hint) && /primera persona|neutra/i.test(auditManual.hint), `hint: ${auditManual.hint}`);
+  check('INY11.7 shouldRegenerate=true en primer intento', auditManual.shouldRegenerate === true, `shouldRegenerate: ${auditManual.shouldRegenerate}`);
+}
+console.log('');
+
+// ════════════════════════════════════════════════════════════════
+// INY-12 — auditSafetyRules subset para tenants V1 (C-398 SEC-B.11)
+// ════════════════════════════════════════════════════════════════
+console.log('INY-12 — auditSafetyRules (V1 subset RF#7 + RF#8) para tenants no-eligible V2');
+{
+  // 12.1 — lead V1 admite IA → flagged por RF8
+  const candidate1 = 'Hola Dr. Pedro, soy una asistente de IA que automatiza estos mensajes';
+  const audit1 = auditSafetyRules(candidate1, 'lead', { lastContactMessage: 'hola', attemptNumber: 1 });
+  check('INY12.1 V1 lead "soy una asistente de IA" → flagged', audit1.flagged === true, `flagged: ${audit1.flagged}`);
+  check('INY12.2 RF8_no_ia_con_leads en criticalFlags', !!audit1.criticalFlags.find(f => f.code === 'RF8_no_ia_con_leads'), `flags: ${audit1.criticalFlags.map(f=>f.code).join(',')}`);
+  check('INY12.3 shouldRegenerate=true en primer intento', audit1.shouldRegenerate === true, `shouldRegenerate: ${audit1.shouldRegenerate}`);
+  check('INY12.4 hint instruye prohibición de admitir IA', !!audit1.hint && /PROHIBIDO/i.test(audit1.hint) && /IA/i.test(audit1.hint), `hint: ${audit1.hint}`);
+
+  // 12.2 — lead V1 respuesta limpia → NO flagged
+  const candidate2 = 'Hola Dr. Pedro, mucho gusto. Cuénteme un poco más sobre su clínica 🤗';
+  const audit2 = auditSafetyRules(candidate2, 'lead', { lastContactMessage: 'hola', attemptNumber: 1 });
+  check('INY12.5 V1 lead respuesta limpia → NO flagged', audit2.flagged !== true && !audit2.shouldRegenerate, `flagged: ${audit2.flagged}, regen: ${audit2.shouldRegenerate}`);
+
+  // 12.3 — 2do intento con admisión de IA → fallback
+  const audit3 = auditSafetyRules(candidate1, 'lead', { lastContactMessage: 'hola', attemptNumber: 2 });
+  check('INY12.6 V1 lead 2do intento admisión IA → shouldUseFallback=true', audit3.shouldUseFallback === true, `shouldUseFallback: ${audit3.shouldUseFallback}`);
+  check('INY12.7 V1 lead fallback no vacío', !!audit3.fallback && audit3.fallback.length > 0, `fallback: ${audit3.fallback}`);
+
+  // 12.4 — client V1 también protegido (RF#8 aplica a chatType='client')
+  const audit4 = auditSafetyRules('Hola, soy una inteligencia artificial que te escribe automáticamente', 'client', { attemptNumber: 1 });
+  check('INY12.8 V1 client "soy una inteligencia artificial" → flagged', audit4.flagged === true, `flagged: ${audit4.flagged}`);
+
+  // 12.5 — candidate vacío/nulo → ok + fallback (no crashea)
+  const audit5 = auditSafetyRules('', 'lead', { attemptNumber: 1 });
+  check('INY12.9 V1 candidate vacío → no crashea + shouldUseFallback=true', audit5.shouldUseFallback === true, `shouldUseFallback: ${audit5.shouldUseFallback}`);
+
+  const audit6 = auditSafetyRules(null, 'lead', { attemptNumber: 1 });
+  check('INY12.10 V1 candidate null → no crashea', audit6 && typeof audit6 === 'object', `audit6: ${JSON.stringify(audit6)}`);
 }
 console.log('');
 

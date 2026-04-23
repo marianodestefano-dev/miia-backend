@@ -73,7 +73,7 @@ const { fetchOfficialTRM } = require('../core/financial_verify');
 const { resolveV2ChatType, loadVoiceDNAForGroup, isV2EligibleUid } = require('../core/voice_v2_loader');
 const { splitBySubregistro } = require('../core/split_smart_heuristic');
 const { injectInBubbleArray } = require('../core/emoji_injector');
-const { auditV2Response, getFallbackByChatType: getV2FallbackByChatType } = require('../core/v2_auditor');
+const { auditV2Response, auditSafetyRules, getFallbackByChatType: getV2FallbackByChatType } = require('../core/v2_auditor');
 const V2_OWNER_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
 
 // ═══════════════════════════════════════════════════════════════
@@ -5100,6 +5100,60 @@ REGLAS:
       }
     } catch (v2AuditErr) {
       console.error(`${logPrefix} [V2][AUDIT] error en auditor (fail-open, envía aiMessage tal cual): ${v2AuditErr.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // V1 SAFETY AUDITOR (C-398 SEC-B.11) — cierra gap "RF#8 no cortó en vivo"
+  // Corre RF#7 (Ale leak) + RF#8 (IA leak) cuando NO aplica V2 (tenants V1, owner
+  // distinto de MIIA CENTER). Scope: solo lead-like chatTypes (lead / enterprise_lead
+  // / client / medilink_team). self-chat, familia, equipo y grupos NO se auditan acá.
+  // ═══════════════════════════════════════════════════════════════
+  const SAFETY_ELIGIBLE_TYPES = new Set(['lead', 'enterprise_lead', 'client', 'medilink_team']);
+  if (!isV2EligibleUid(uid) && !isSelfChat && SAFETY_ELIGIBLE_TYPES.has(contactType)) {
+    try {
+      const safetyAudit = auditSafetyRules(aiMessage, contactType, {
+        basePhone,
+        lastContactMessage: messageBody,
+        attemptNumber: 1,
+      });
+
+      if (safetyAudit.shouldRegenerate) {
+        console.warn(`${logPrefix} [V1][SAFETY-AUDIT] CRÍTICO flagged: ${safetyAudit.criticalFlags.map(f => f.code).join(',')} — regenerando UNA vez`);
+        const retryPrompt = `${fullPrompt}\n\n${safetyAudit.hint}`;
+        let retryMessage = aiMessage;
+        try {
+          const retryResult = await aiGateway.smartCall(
+            aiContext,
+            retryPrompt,
+            { aiProvider, aiApiKey },
+            { enableSearch }
+          );
+          if (retryResult.text && retryResult.text.trim()) {
+            retryMessage = cleanResidualTags(retryResult.text);
+            console.log(`${logPrefix} [V1][SAFETY-AUDIT] retry OK (${retryResult.latencyMs}ms, ${retryMessage.length}c)`);
+          }
+        } catch (retryErr) {
+          console.error(`${logPrefix} [V1][SAFETY-AUDIT] retry falló: ${retryErr.message}`);
+        }
+
+        const retryAudit = auditSafetyRules(retryMessage, contactType, {
+          basePhone,
+          lastContactMessage: messageBody,
+          attemptNumber: 2,
+        });
+
+        if (retryAudit.shouldUseFallback) {
+          console.error(`${logPrefix} [V1][SAFETY-AUDIT] 2do intento también flagged (${retryAudit.criticalFlags.map(f => f.code).join(',')}) — usando fallback §8`);
+          const fb = retryAudit.fallback || getV2FallbackByChatType(contactType);
+          if (fb) aiMessage = fb;
+        } else {
+          aiMessage = retryMessage;
+          console.log(`${logPrefix} [V1][SAFETY-AUDIT] retry pasó auditor`);
+        }
+      }
+    } catch (safetyErr) {
+      console.error(`${logPrefix} [V1][SAFETY-AUDIT] error (fail-open, envía aiMessage tal cual): ${safetyErr.message}`);
     }
   }
 
