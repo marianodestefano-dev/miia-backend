@@ -37,6 +37,9 @@ const engineState = {
   ownerUid: null,
 };
 
+// B.9 (C-398.E): observabilidad — contador monotónico de ticks
+let _sportsTickCount = 0;
+
 /**
  * @typedef {object} ActiveEvent
  * @property {string} sport — Tipo de deporte
@@ -159,31 +162,66 @@ async function runSportsEngine() {
   engineState.isRunning = true;
   const now = Date.now();
 
+  // B.9 (C-398.E): observabilidad — tick ID + tally por deporte + totales
+  const tickStart = Date.now();
+  _sportsTickCount++;
+  const tickId = `ST${_sportsTickCount}`;
+  const tally = {
+    scheduleChecked: false,
+    activeEvents: 0,
+    pollSkippedInterval: 0,     // no-poll porque aún no venció pollInterval
+    polled: 0,                   // polls ejecutados
+    changesDetected: 0,          // cambios sumados entre todos los eventos
+    messagesSent: 0,             // se incrementará desde notifyContacts via perTick
+    stale: 0,
+    errored: 0,
+    finished: 0,                 // eventos terminados en este tick
+    syncedState: false,
+  };
+  // perSport tally: { [sportType]: { active, polled, changes, errored } }
+  const perSport = {};
+  // Exposer state para que pollEvent/notifyContacts/sendFinalSummary lo actualicen
+  engineState._currentTick = { tickId, tally, perSport, tickStart };
+
+  console.log(`[SPORT-ENGINE][${tickId}] 🏁 tick start activeEvents=${Object.keys(engineState.activeEvents).length} contactsWithPrefs=${Object.keys(engineState.contactPrefs).length}`);
+
   try {
     // ═══ FASE 1: Check de calendarios (cada 30min) ═══
     if (!engineState.lastScheduleCheck ||
         now - engineState.lastScheduleCheck > SCHEDULE_CHECK_INTERVAL_MS) {
       await checkSchedules();
       engineState.lastScheduleCheck = now;
+      tally.scheduleChecked = true;
     }
 
     // ═══ FASE 2: Poll de eventos activos ═══
     const eventKeys = Object.keys(engineState.activeEvents);
+    tally.activeEvents = eventKeys.length;
     for (const eventKey of eventKeys) {
       const event = engineState.activeEvents[eventKey];
       if (!event) continue;
 
+      // Contabilizar active por deporte
+      if (!perSport[event.sport]) perSport[event.sport] = { active: 0, polled: 0, changes: 0, errored: 0 };
+      perSport[event.sport].active++;
+
       // ¿Stale? (>4h activo)
       if (now - event.pollingSince > EVENT_STALE_TIMEOUT_MS) {
-        console.log(`[SPORT-ENGINE] Evento stale, removiendo: ${eventKey}`);
+        console.log(`[SPORT-ENGINE][${tickId}] ⏲️ evento stale, removiendo: ${eventKey}`);
         delete engineState.activeEvents[eventKey];
+        tally.stale++;
         continue;
       }
 
       // ¿Es hora de pollear?
-      if (event.lastPollAt && now - event.lastPollAt < event.pollInterval) continue;
+      if (event.lastPollAt && now - event.lastPollAt < event.pollInterval) {
+        tally.pollSkippedInterval++;
+        continue;
+      }
 
       await pollEvent(eventKey, event);
+      tally.polled++;
+      perSport[event.sport].polled++;
     }
 
     // ═══ FASE 3: Sync estado a Firestore (debounced) ═══
@@ -191,11 +229,24 @@ async function runSportsEngine() {
         now - engineState.lastStateSyncAt > STATE_SYNC_DEBOUNCE_MS) {
       await syncState();
       engineState.lastStateSyncAt = now;
+      tally.syncedState = true;
     }
   } catch (err) {
-    console.error(`[SPORT-ENGINE] Error en ciclo principal: ${err.message}`);
+    console.error(`[SPORT-ENGINE][${tickId}] ❌ error en ciclo principal: ${err.message}`);
+    tally.errored++;
   } finally {
     engineState.isRunning = false;
+    const durationMs = Date.now() - tickStart;
+    // Log de cierre: solo detalle cuando hay actividad, one-liner cuando está idle
+    if (tally.activeEvents === 0 && !tally.scheduleChecked) {
+      console.log(`[SPORT-ENGINE][${tickId}] 💤 tick idle duration=${durationMs}ms`);
+    } else {
+      const perSportStr = Object.keys(perSport).length > 0
+        ? Object.entries(perSport).map(([s, t]) => `${s}(a=${t.active},p=${t.polled},c=${t.changes},e=${t.errored})`).join(' ')
+        : '—';
+      console.log(`[SPORT-ENGINE][${tickId}] ✅ tick end duration=${durationMs}ms tally=${JSON.stringify(tally)} perSport=${perSportStr}`);
+    }
+    engineState._currentTick = null;
   }
 }
 
@@ -289,6 +340,9 @@ async function pollEvent(eventKey, event) {
   const adapter = registry.get(event.sport);
   if (!adapter) return;
 
+  const tick = engineState._currentTick;
+  const tickId = tick?.tickId || '-';
+
   try {
     const newState = await adapter.getLiveState(event.matchId, event.metadata);
     if (!newState) {
@@ -300,6 +354,11 @@ async function pollEvent(eventKey, event) {
     const changes = adapter.detectChanges(event.lastState, newState);
 
     if (changes && changes.length > 0) {
+      if (tick) {
+        tick.tally.changesDetected += changes.length;
+        if (tick.perSport[event.sport]) tick.perSport[event.sport].changes += changes.length;
+      }
+      console.log(`[SPORT-ENGINE][${tickId}] 🔔 ${event.sport} ${event.name} → ${changes.length} cambio(s)`);
       for (const change of changes) {
         await notifyContacts(event, change, adapter, newState);
       }
@@ -312,13 +371,18 @@ async function pollEvent(eventKey, event) {
 
     // Si terminó, enviar resumen final y limpiar
     if (wasFinished) {
-      console.log(`[SPORT-ENGINE] 🏁 Evento terminado: ${event.name}`);
+      console.log(`[SPORT-ENGINE][${tickId}] 🏁 evento terminado: ${event.name}`);
+      if (tick) tick.tally.finished++;
       await sendFinalSummary(event, adapter, newState);
       delete engineState.activeEvents[eventKey];
     }
   } catch (err) {
-    console.error(`[SPORT-ENGINE] Error polleando ${eventKey}: ${err.message}`);
+    console.error(`[SPORT-ENGINE][${tickId}] ❌ error polleando ${eventKey}: ${err.message}`);
     event.lastPollAt = Date.now(); // No reintentar inmediatamente
+    if (tick) {
+      tick.tally.errored++;
+      if (tick.perSport[event.sport]) tick.perSport[event.sport].errored++;
+    }
   }
 }
 
@@ -381,7 +445,10 @@ async function notifyContacts(event, change, adapter, currentState) {
       cs.messagesSent++;
       cs.lastMessageAt = now;
 
-      console.log(`[SPORT-ENGINE] 📩 Enviado a ${contactData.contactName}: ${change.type} (${emotionLevel})`);
+      const tick = engineState._currentTick;
+      if (tick) tick.tally.messagesSent++;
+      const tickId = tick?.tickId || '-';
+      console.log(`[SPORT-ENGINE][${tickId}] 📩 enviado a ${contactData.contactName}: ${change.type} (${emotionLevel})`);
 
       // Pausa entre mensajes (human-like)
       await _sleep(2000 + Math.random() * 2000);
