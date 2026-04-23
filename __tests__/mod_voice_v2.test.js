@@ -12,6 +12,7 @@
 
 const { buildVoiceV2Block, isMiiaCenterProfile } = require('../core/mod_voice_v2');
 const { resetCache, MIIA_CENTER_UID, OWNER_PERSONAL_UID } = require('../core/voice_v2_loader');
+const { assemblePrompt } = require('../core/prompt_modules');
 
 describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
   beforeEach(() => {
@@ -244,6 +245,94 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
         context: { uid: MIIA_CENTER_UID }
       });
       expect(out).not.toBeNull();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  describe('Wire-in en assemblePrompt() — COMMIT 3 A1', () => {
+    // MIIA_SALES_PROFILE real tiene role='ventas MIIA producto' por guardia integridad L634
+    const miiaSalesProfile = {
+      name: 'MIIA',
+      businessName: 'MIIA',
+      role: 'ventas MIIA producto',
+      passions: 'ayudar a médicos'
+    };
+
+    test('assemblePrompt(miia_lead + CENTER) → inyecta V2 + meta.v2 poblado', () => {
+      const result = assemblePrompt({
+        chatType: 'miia_lead',
+        messageBody: 'Hola, quería saber qué es MIIA',
+        ownerProfile: miiaSalesProfile,
+        context: { uid: MIIA_CENTER_UID, contactName: 'Dr. Test' }
+      });
+      expect(result.prompt).toContain('VOICE DNA V2');
+      expect(result.prompt).toContain('leads_medilink');
+      expect(result.meta.modulesLoaded).toContain('mod_voice_v2');
+      expect(result.meta.v2).not.toBeNull();
+      expect(result.meta.v2).toMatchObject({
+        chatType: 'miia_lead',
+        owner: 'center',
+        subregistro: 'lead'
+      });
+    });
+
+    test('assemblePrompt(miia_lead + CENTER sin uid) → V2 igual se inyecta por marker', () => {
+      const result = assemblePrompt({
+        chatType: 'miia_lead',
+        messageBody: 'hola',
+        ownerProfile: miiaSalesProfile,
+        context: {}
+      });
+      expect(result.meta.modulesLoaded).toContain('mod_voice_v2');
+      expect(result.meta.v2).not.toBeNull();
+    });
+
+    test('assemblePrompt(lead + Personal profile) → NO inyecta V2 (V1 puro)', () => {
+      const result = assemblePrompt({
+        chatType: 'lead',
+        messageBody: 'hola',
+        ownerProfile: { name: 'Mariano De Stefano', businessName: 'MediLink', role: 'médico' },
+        context: { uid: OWNER_PERSONAL_UID }
+      });
+      expect(result.meta.modulesLoaded).not.toContain('mod_voice_v2');
+      expect(result.meta.v2).toBeNull();
+      expect(result.prompt).not.toContain('VOICE DNA V2');
+    });
+
+    test('assemblePrompt(selfchat + CENTER) → COMMIT 3 scope NO activa V2 en selfchat', () => {
+      // En COMMIT 3 solo miia_lead activa V2. selfchat se activa en COMMIT 5.
+      const result = assemblePrompt({
+        chatType: 'selfchat',
+        messageBody: 'hola',
+        ownerProfile: miiaSalesProfile,
+        context: { uid: MIIA_CENTER_UID, isAdmin: true }
+      });
+      expect(result.meta.modulesLoaded).not.toContain('mod_voice_v2');
+      expect(result.meta.v2).toBeNull();
+    });
+
+    test('assemblePrompt(miia_client + CENTER) → COMMIT 3 scope NO activa V2 en client', () => {
+      // En COMMIT 3 solo miia_lead. miia_client se activa en COMMIT 4.
+      const result = assemblePrompt({
+        chatType: 'miia_client',
+        messageBody: 'tengo un problema',
+        ownerProfile: miiaSalesProfile,
+        context: { uid: MIIA_CENTER_UID }
+      });
+      expect(result.meta.modulesLoaded).not.toContain('mod_voice_v2');
+      expect(result.meta.v2).toBeNull();
+    });
+
+    test('assemblePrompt NO rompe si module mod_voice_v2 retorna null (V1 pipeline intacto)', () => {
+      const result = assemblePrompt({
+        chatType: 'lead', // Personal path — V2 NO se activa
+        messageBody: 'hola',
+        ownerProfile: { name: 'Test User', businessName: 'Test Co', role: 'owner' }
+      });
+      // V1 clásico: debe tener core_identity, core_rules, mod_lead_sales
+      expect(result.meta.modulesLoaded).toContain('core_identity');
+      expect(result.meta.modulesLoaded).toContain('mod_lead_sales');
+      expect(result.meta.divergences).toHaveLength(0);
     });
   });
 

@@ -704,6 +704,33 @@ function assemblePrompt(opts) {
     loaded.push('mod_personality');
   }
 
+  // 4c. Inyectar V2 Voice DNA (CARTA_C-397 §5 + ANEXO 2026-04-23 — COMMIT 3)
+  // Post mod_personality → pre ensamble. COMMIT 3 activa SOLO chatType='miia_lead'.
+  // Próximos commits amplían a miia_client, selfchat, family_chat, medilink_team.
+  // Cualquier fallo en el wire-in NO rompe el pipeline — fallback V1 puro.
+  let v2Meta = null;
+  try {
+    const { buildVoiceV2Block } = require('./mod_voice_v2');
+    const v2 = buildVoiceV2Block({
+      chatType: safeChatType,
+      ownerProfile: p,
+      context: {
+        uid: ctx.ownerUid || ctx.uid,
+        contactName: ctx.contactName,
+        basePhone: ctx.basePhone,
+        countryCode: ctx.countryCode
+      }
+    });
+    if (v2 && v2.block) {
+      blocks.push(v2.block);
+      loaded.push('mod_voice_v2');
+      v2Meta = v2.meta;
+    }
+  } catch (err) {
+    // Defense-in-depth: si mod_voice_v2 no existe o crashea, pipeline V1 sigue ileso.
+    console.error(`[PROMPT_MODULES] ⚠️ V2 wire-in error: ${err.message} — fallback V1 puro`);
+  }
+
   // 5. Ensamblar prompt final
   const prompt = blocks.join('\n\n');
 
@@ -717,6 +744,7 @@ function assemblePrompt(opts) {
     divergences,
     tokenEstimate: Math.ceil(prompt.length / 4),
     timestamp: new Date().toISOString(),
+    v2: v2Meta, // C-397 §5: null si V1 puro, {source, subregistro, chatType, owner} si V2 inyectado
   };
 
   // Log exhaustivo (NASA standard)
@@ -726,7 +754,8 @@ function assemblePrompt(opts) {
   if (errors.length > 0) {
     console.error(`[PROMPT_MODULES] ❌ ERRORES:`, errors);
   }
-  console.log(`[PROMPT_MODULES] ✅ ${safeChatType} | intents=[${intents}] | loaded=[${loaded}] | ~${meta.tokenEstimate} tokens`);
+  const v2Tag = v2Meta ? ` | V2=${v2Meta.owner}/${v2Meta.subregistro}` : '';
+  console.log(`[PROMPT_MODULES] ✅ ${safeChatType} | intents=[${intents}] | loaded=[${loaded}] | ~${meta.tokenEstimate} tokens${v2Tag}`);
 
   return { prompt, meta };
 }
