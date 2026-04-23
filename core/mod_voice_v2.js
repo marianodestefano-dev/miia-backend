@@ -67,11 +67,12 @@ function isMiiaCenterProfile(profile) {
  * @returns {{block: string, meta: {source: string, subregistro: string, chatType: string, owner: string}} | null}
  */
 // Mapping chatType entrada → subregistro V2 CENTER.
-// COMMIT 2 agregó 'miia_lead'. COMMIT 4 agrega 'miia_client'.
-// Próximos commits amplían: 'selfchat' (5), 'family_chat' (6), 'medilink_team' (7).
+// COMMIT 2 → 'miia_lead'. COMMIT 4 → 'miia_client'. COMMIT 5 → 'selfchat'.
+// Próximos commits amplían: 'family_chat' (6), 'medilink_team' (7) en paths Personal.
 const V2_CHATTYPE_TO_CENTER_SUBREG = {
   miia_lead: 'lead',
-  miia_client: 'client'
+  miia_client: 'client',
+  selfchat: 'owner_selfchat'
 };
 
 function buildVoiceV2Block(args) {
@@ -80,7 +81,7 @@ function buildVoiceV2Block(args) {
     const { chatType, ownerProfile, context } = args || {};
 
     // CAPA 2 — chatType no soportado en este commit.
-    // Soportados hasta COMMIT 4: miia_lead + miia_client. Otros retornan null.
+    // Soportados hasta COMMIT 5: miia_lead + miia_client + selfchat. Otros retornan null.
     const centerSubreg = V2_CHATTYPE_TO_CENTER_SUBREG[chatType];
     if (!centerSubreg) {
       return null;
@@ -92,13 +93,24 @@ function buildVoiceV2Block(args) {
       return null;
     }
 
-    const isCenter = isMiiaCenterProfile(ownerProfile);
-
-    // Defensa en profundidad: si el caller pasa uid y NO es elegible V2 en etapa 1,
-    // retornar null aunque el marker CENTER esté presente. Evita casos anómalos
-    // (perfil confundido) antes de activar V2.
-    if (context && context.uid && !isV2EligibleUid(context.uid)) {
-      return null;
+    // Detección CENTER: jerarquía de señales.
+    //   1. Si context.uid presente → señal primaria (isV2EligibleUid).
+    //      * Motivo: en selfchat CENTER el ownerProfile puede estar mergeado
+    //        con userProfile del admin y pisar el name (rompe el marker).
+    //        context.uid (OWNER_UID) viene directo de la infra y es confiable.
+    //   2. Si context.uid ausente → fallback al marker del profile.
+    //      * Motivo: en paths tipo miia_lead el caller pasa MIIA_SALES_PROFILE
+    //        directo, sin merge. El marker es confiable ahí.
+    let isCenter;
+    if (context && typeof context.uid === 'string' && context.uid.length > 0) {
+      // Señal primaria: uid
+      if (!isV2EligibleUid(context.uid)) {
+        return null; // guard ETAPA 1 C-388 D.1
+      }
+      isCenter = true;
+    } else {
+      // Fallback: marker del profile
+      isCenter = isMiiaCenterProfile(ownerProfile);
     }
 
     if (isCenter) {

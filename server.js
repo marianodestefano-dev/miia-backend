@@ -5723,6 +5723,8 @@ Nuevo resumen actualizado:`;
         messageBody: userMessage,
         ownerProfile: effectiveProfile,
         context: {
+          uid: OWNER_UID, // C-397 §5 COMMIT 5: permite que mod_voice_v2 detecte CENTER por uid
+                          // (el merge de effectiveProfile puede pisar el marker name='MIIA')
           contactName: effectiveProfile.name || '',
           countryContext, // Dialecto del owner en self-chat
           affinityStage: conversationMetadata[phone]?.affinityStage,

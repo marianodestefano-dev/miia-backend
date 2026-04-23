@@ -160,6 +160,64 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────
+  describe('buildVoiceV2Block() — chatType=selfchat (COMMIT 5)', () => {
+    // En selfchat CENTER real, server.js L5712 hace merge de MIIA_SALES_PROFILE
+    // con userProfile del admin. El marker name='MIIA' puede pisarse. Por eso
+    // pasa context.uid=OWNER_UID como señal primaria.
+    const mergedCenterSelfchatProfile = {
+      name: 'Mariano De Stefano', // userProfile pisó el name de MIIA
+      businessName: 'MIIA',
+      role: 'ventas MIIA producto',
+      shortName: 'Mariano'
+    };
+
+    test('selfchat + uid=MIIA_CENTER → inyecta snapshot completo (sin depender del marker)', () => {
+      const out = buildVoiceV2Block({
+        chatType: 'selfchat',
+        ownerProfile: mergedCenterSelfchatProfile,
+        context: { uid: MIIA_CENTER_UID }
+      });
+      expect(out).not.toBeNull();
+      expect(out.block).toContain('VOICE DNA V2');
+      expect(out.block).toContain('SNAPSHOT COMPLETO MIIA CENTER');
+      expect(out.meta).toMatchObject({
+        chatType: 'selfchat',
+        owner: 'center',
+        subregistro: 'owner_selfchat_snapshot_center'
+      });
+    });
+
+    test('selfchat + uid=Personal → null (V1 puro)', () => {
+      const out = buildVoiceV2Block({
+        chatType: 'selfchat',
+        ownerProfile: personalProfile,
+        context: { uid: OWNER_PERSONAL_UID }
+      });
+      expect(out).toBeNull();
+    });
+
+    test('selfchat + CENTER profile puro (name=MIIA) sin uid → marker suficiente', () => {
+      const out = buildVoiceV2Block({
+        chatType: 'selfchat',
+        ownerProfile: centerProfile // marker puro, sin merge
+      });
+      expect(out).not.toBeNull();
+      expect(out.meta.owner).toBe('center');
+    });
+
+    test('selfchat + uid ausente + profile mergeado (name=Mariano) → null (no detecta CENTER)', () => {
+      // Caso defensivo: si el caller olvida pasar uid Y el profile tiene merge
+      // que rompe el marker, V2 degrada a null (V1 puro). Esto es correcto:
+      // mejor errar del lado seguro que activar V2 sobre Personal por error.
+      const out = buildVoiceV2Block({
+        chatType: 'selfchat',
+        ownerProfile: mergedCenterSelfchatProfile
+      });
+      expect(out).toBeNull();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
   describe('buildVoiceV2Block() — chatType=miia_lead + Personal profile', () => {
     test('Personal profile → null (ETAPA 1 no elegible)', () => {
       const out = buildVoiceV2Block({
@@ -181,15 +239,6 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
 
   // ─────────────────────────────────────────────────────────────────────
   describe('buildVoiceV2Block() — chatType no soportado en COMMIT 2', () => {
-    test('chatType=selfchat → null (COMMIT 5 lo activa)', () => {
-      const out = buildVoiceV2Block({
-        chatType: 'selfchat',
-        ownerProfile: centerProfile,
-        context: { uid: MIIA_CENTER_UID }
-      });
-      expect(out).toBeNull();
-    });
-
     test('chatType=family_chat → null (COMMIT 6 lo activa vía Personal)', () => {
       const out = buildVoiceV2Block({
         chatType: 'family_chat',
@@ -327,13 +376,28 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       expect(result.prompt).not.toContain('VOICE DNA V2');
     });
 
-    test('assemblePrompt(selfchat + CENTER) → COMMIT 3 scope NO activa V2 en selfchat', () => {
-      // En COMMIT 3 solo miia_lead activa V2. selfchat se activa en COMMIT 5.
+    test('assemblePrompt(selfchat + CENTER uid) → COMMIT 5 activa V2 snapshot', () => {
       const result = assemblePrompt({
         chatType: 'selfchat',
         messageBody: 'hola',
         ownerProfile: miiaSalesProfile,
         context: { uid: MIIA_CENTER_UID, isAdmin: true }
+      });
+      expect(result.meta.modulesLoaded).toContain('mod_voice_v2');
+      expect(result.prompt).toContain('SNAPSHOT COMPLETO MIIA CENTER');
+      expect(result.meta.v2).toMatchObject({
+        chatType: 'selfchat',
+        owner: 'center',
+        subregistro: 'owner_selfchat_snapshot_center'
+      });
+    });
+
+    test('assemblePrompt(selfchat + Personal uid) → V1 puro', () => {
+      const result = assemblePrompt({
+        chatType: 'selfchat',
+        messageBody: 'hola',
+        ownerProfile: { name: 'Mariano De Stefano', businessName: 'MediLink', role: 'médico' },
+        context: { uid: OWNER_PERSONAL_UID, isAdmin: true }
       });
       expect(result.meta.modulesLoaded).not.toContain('mod_voice_v2');
       expect(result.meta.v2).toBeNull();
