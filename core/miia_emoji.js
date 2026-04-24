@@ -281,22 +281,66 @@ function applyMiiaEmoji(message, ctx = {}) {
     }
   }
 
-  // ═══ C-037: Strip expandido de emojis genéricos que Gemini/Claude abusan en el body ═══
-  // La regla ANTI-EMOJI del prompt previene la mayoría, pero estos se cuelan igual.
-  // Se quitan del BODY (no del prefijo, que ya se limpió arriba).
-  const GEMINI_ABUSED_EMOJIS = [
-    '😅', '😂', '🤣', '😆', // risas/vergüenza
-    '🙈', '😬', '🫣',       // disculpa/timidez
-    '😊', '🤗', '😉', '☺️', // cortesía exagerada
-    '🎉', '✨', '💫', '🌟', // exclamación
-    '💪', '👍', '✅', '👌', // afirmación
-    '❤️', '💕', '💗',       // corazones excesivos
-  ];
-  for (const abused of GEMINI_ABUSED_EMOJIS) {
-    if (message.includes(abused)) {
-      message = message.split(abused).join('').replace(/\s{2,}/g, ' ').trim();
+  // ═══ C-401 v3: Strip single-only acotado por chatType (reemplaza C-037 strip total) ═══
+  // - chatType ∈ ALLOW_TRIPLE_CHATTYPES (family/friend_*/ale_pareja): NO-OP,
+  //   preservar texto tal cual. emoji_injector.js ya gateó triples legítimos
+  //   para estas audiencias (firmado C-386 A.3 + ratificado C-398.E opción c).
+  // - chatType profesional (leads/clients/medilink/miia_lead/owner_selfchat/
+  //   follow_up_cold) o unknown: single-only. Reduce repeticiones a la última
+  //   y conserva solo el último emoji distinto por posición.
+  // BIG EMOJI system intacto: path separado vía bigEmojiUsedToday + guard ZWJ
+  // ya aplicado arriba en MIIA_OFFICIAL_EMOJIS strip.
+  // Firmas Mariano:
+  //   2026-04-23 "Q2 SOLO BIG EMOJI... NO TRIPLE NI SEXTUBLE EMOJIS, ESO NO ME GUSTA"
+  //   2026-04-24 noche "SI MIIA QUIERE USAR EMOJIS QUE USE UNO SOLO, NO DEBE
+  //                     CONTAMINAR EL CHAT CON CIENTOS DE ELLOS"
+  //   2026-04-24 HUECO #1 "ok" (single-only acotado por chatType)
+  //   2026-04-24 HUECO #2 "BIG EMOJI ES UN SOLO EMOJI SUELTO QUE IDENTIFICA
+  //                        EL INICIO DE UN ESTADO DE MIIA. QUEDA COMO LO
+  //                        CREAMOS ASI CON VI"
+  const ALLOW_TRIPLE_CHATTYPES = new Set([
+    'family', 'friend_argentino', 'friend_colombiano', 'ale_pareja',
+  ]);
+  const _chatType = ctx.chatType || 'unknown';
+
+  if (!ALLOW_TRIPLE_CHATTYPES.has(_chatType)) {
+    // chatType profesional o unknown → aplicar single-only
+    const CURATED_EMOJIS = [
+      '😅', '😂', '🤣', '😆', // risas/vergüenza
+      '🙈', '😬', '🫣',       // disculpa/timidez
+      '😊', '🤗', '😉', '☺️', // cortesía exagerada
+      '🎉', '✨', '💫', '🌟', // exclamación
+      '💪', '👍', '✅', '👌', // afirmación
+      '❤️', '💕', '💗',       // corazones excesivos
+    ];
+
+    // PASO 1 — reducir repeticiones del mismo emoji a 1 última
+    for (const _emoji of CURATED_EMOJIS) {
+      const occurrences = message.split(_emoji).length - 1;
+      if (occurrences > 1) {
+        const lastIdx = message.lastIndexOf(_emoji);
+        const before = message.substring(0, lastIdx).split(_emoji).join('');
+        const after = message.substring(lastIdx);
+        message = before + after;
+      }
     }
+
+    // PASO 2 — si hay ≥2 emojis DISTINTOS presentes, conservar solo el
+    // último por posición
+    const presentEmojis = CURATED_EMOJIS
+      .filter((e) => message.includes(e))
+      .map((e) => ({ emoji: e, pos: message.lastIndexOf(e) }));
+    if (presentEmojis.length > 1) {
+      presentEmojis.sort((a, b) => b.pos - a.pos);
+      for (let i = 1; i < presentEmojis.length; i++) {
+        message = message.split(presentEmojis[i].emoji).join('');
+      }
+    }
+
+    // PASO 3 — limpieza de espacios múltiples
+    message = message.replace(/\s{2,}/g, ' ').trim();
   }
+  // (si _chatType ∈ ALLOW_TRIPLE_CHATTYPES → no-op, preservar texto)
 
   // ═══ C-355 (BUG D): Auto-presentación broadcast → DEFAULT_EMOJI fijo, bypass detectMessageTopic ═══
   // Gemini en presentaciones poéticas usa frases tipo "el arte de acompañarte" → el regex \barte\b
