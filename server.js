@@ -66,6 +66,17 @@ _logSanitizer.installConsoleOverride();
 // ═══ TOKEN ENCRYPTION — Encriptación de tokens sensibles en Firestore ═══
 const tokenEncryption = require('./core/token_encryption');
 
+// ═══ AUTH/ROLE MIDDLEWARE — C-406 Cimientos §3 C.7 ═══
+// Middleware centralizado para validar Firebase ID token + role-based access.
+// Aplicado inicialmente a endpoints críticos SIN auth previo (export/import,
+// admin-chat, admin/support-chat, admin/migrate-email). Endpoints que ya usan
+// verifyTenantAuth/verifyAdminToken inline conservan su auth (deuda C-406.b).
+const {
+  requireAuth: rrRequireAuth,
+  requireAdmin: rrRequireAdmin,
+  requireOwnerOfResource: rrRequireOwnerOfResource,
+} = require('./core/require_role');
+
 // ═══ RESILIENCE SHIELD — Monitoreo centralizado de salud ═══
 const shield = require('./core/resilience_shield');
 
@@ -12441,7 +12452,7 @@ app.post('/api/cerebro/learn', express.json(), (req, res) => {
 });
 
 // Chat conversacional para training.html — usa el mismo prompt admin que WhatsApp
-app.post('/api/admin-chat', express.json(), async (req, res) => {
+app.post('/api/admin-chat', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   try {
     const { message, history = [] } = req.body || {};
     if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
@@ -14278,7 +14289,7 @@ app.delete('/api/tenant/:uid/account', verifyTenantAuth, auditLogger.auditMiddle
 });
 
 // POST /api/tenant/:uid/export — Generate encrypted .miia backup
-app.post('/api/tenant/:uid/export', auditLogger.auditMiddleware(auditLogger.ACCESS_TYPES.EXPORT_DATA), async (req, res) => {
+app.post('/api/tenant/:uid/export', rrRequireAuth, rrRequireOwnerOfResource('uid'), auditLogger.auditMiddleware(auditLogger.ACCESS_TYPES.EXPORT_DATA), async (req, res) => {
   try {
     const { uid } = req.params;
 
@@ -14412,7 +14423,7 @@ app.post('/api/tenant/:uid/export', auditLogger.auditMiddleware(auditLogger.ACCE
 });
 
 // POST /api/tenant/:uid/import — Import encrypted .miia backup
-app.post('/api/tenant/:uid/import', express.json({ limit: '10mb' }), async (req, res) => {
+app.post('/api/tenant/:uid/import', rrRequireAuth, rrRequireOwnerOfResource('uid'), express.json({ limit: '10mb' }), async (req, res) => {
   try {
     const { uid } = req.params;
     const { backup } = req.body;
@@ -14972,7 +14983,7 @@ app.get('/api/admin/railway-deployments', verifyAdminToken, async (req, res) => 
 });
 
 // ── Admin Support Chat (Gemini) ──────────────────────────────────────────
-app.post('/api/admin/support-chat', express.json(), async (req, res) => {
+app.post('/api/admin/support-chat', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   // Auth inline (verifyAdminToken is defined below)
   try {
     const authHeader = req.headers.authorization;
@@ -15002,7 +15013,7 @@ URLs útiles: Railway dashboard, Firebase console, GitHub repo, Vercel dashboard
 });
 
 // ── Admin Email Migration ────────────────────────────────────────────────
-app.post('/api/admin/migrate-email', express.json(), async (req, res) => {
+app.post('/api/admin/migrate-email', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
