@@ -54,6 +54,15 @@ console.log = (...args) => { if (_isSignalNoise(...args)) return; _origLog(...ar
 console.warn = (...args) => { if (_isSignalNoise(...args)) return; _origWarn(...args); };
 console.error = (...args) => { if (_isSignalNoise(...args)) return; _origErr(...args); };
 
+// ═══ C-403: Log Sanitizer — redact phone/email/token/message en producción ═══
+// Instalar DESPUÉS del libsignal filter para que el chain sea:
+//   app → sanitizer wrapper → libsignal filter → stdout/stderr filter → terminal.
+// Activo solo si NODE_ENV=production Y MIIA_DEBUG_VERBOSE!=='true'.
+// Dev local y debug flag bypassan (no-op). Cubre 5.986 call sites console.*
+// existentes sin migración — override global. Spec DOC_PRIVACY §E.3.bis.2.
+const _logSanitizer = require('./core/log_sanitizer');
+_logSanitizer.installConsoleOverride();
+
 // ═══ TOKEN ENCRYPTION — Encriptación de tokens sensibles en Firestore ═══
 const tokenEncryption = require('./core/token_encryption');
 
