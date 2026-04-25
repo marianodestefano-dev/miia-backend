@@ -11057,7 +11057,7 @@ app.get('/api/conversations', rrRequireAuth, rrRequireOwnerOfResource('uid', 'qu
 
 // POST /api/tenant/init — Start WhatsApp for a SaaS client
 // Body: { uid, geminiApiKey? }
-app.post('/api/tenant/init', express.json(), async (req, res) => {
+app.post('/api/tenant/init', express.json(), rrRequireAuth, rrRequireOwnerOfResource('uid', 'body'), async (req, res) => {
   const { uid, geminiApiKey } = req.body;
   console.log(`[INIT] 🚀 POST /api/tenant/init - UID: ${uid}, GeminiKey: ${geminiApiKey ? 'YES' : 'NO (empty)'}`);
 
@@ -11527,7 +11527,8 @@ app.get('/api/tenants', rrRequireAuth, rrRequireAdmin, (req, res) => {
 });
 
 // ⭐ NUEVO ENDPOINT - Chat con MIIA desde frontend
-app.post('/api/chat', async (req, res) => {
+// C-406.b Bloque 1b: rrAuth + rrOwnerOfResource(userId, body) — abuse IA recursos.
+app.post('/api/chat', rrRequireAuth, rrRequireOwnerOfResource('userId', 'body'), async (req, res) => {
   const timestamp = new Date().toISOString();
   console.log('\n' + '='.repeat(60));
   console.log(`[${timestamp}] 💬 API CHAT - NUEVA PETICIÓN`);
@@ -11643,7 +11644,8 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // Endpoint para obtener estadísticas
-app.get('/api/stats', (req, res) => {
+// C-406.b Bloque 1b: rrAuth + rrAdmin — info leak stats globales del owner.
+app.get('/api/stats', rrRequireAuth, rrRequireAdmin, (req, res) => {
   const stats = {
     whatsappConnected: isReady,
     totalConversations: Object.keys(conversations).length,
@@ -12378,13 +12380,15 @@ setInterval(async () => {
 }, 60 * 1000);
 
 // Endpoint para disparar el scraper manualmente
-app.post('/api/scraper/run', (_req, res) => {
+// C-406.b Bloque 1b: rrAuth + rrAdmin — DoS scraper en background.
+app.post('/api/scraper/run', rrRequireAuth, rrRequireAdmin, (_req, res) => {
   res.json({ success: true, message: 'Scraper regulatorio activado en segundo plano.' });
   webScraper.runScraper().catch(e => console.error('[API] Error en scraper manual:', e.message));
 });
 
 // Endpoint para aprender el centro de ayuda del negocio (ej: ayuda.softwaremedilink.com)
-app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
+// C-406.b Bloque 1b: rrAuth + rrAdmin — afecta cerebroAbsoluto global.
+app.post('/api/cerebro/learn-helpcenter', rrRequireAuth, rrRequireAdmin, async (_req, res) => {
   const hcBizName = userProfile?.businessName || 'el negocio';
   res.json({ success: true, message: `Iniciando aprendizaje del centro de ayuda de ${hcBizName}...` });
   (async () => {
@@ -12435,7 +12439,8 @@ app.post('/api/cerebro/learn-helpcenter', async (_req, res) => {
 });
 
 // Endpoint para disparar el minado manualmente desde el panel
-app.post('/api/cerebro/mine-dna', async (_req, res) => {
+// C-406.b Bloque 1b: rrAuth + rrAdmin — DoS mining DNA.
+app.post('/api/cerebro/mine-dna', rrRequireAuth, rrRequireAdmin, async (_req, res) => {
   if (!getOwnerSock() || !getOwnerStatus().isReady) {
     return res.status(503).json({ error: 'WhatsApp no conectado.' });
   }
@@ -12445,7 +12450,8 @@ app.post('/api/cerebro/mine-dna', async (_req, res) => {
   );
 });
 
-app.get('/api/cerebro/status', (_req, res) => {
+// C-406.b Bloque 1b: rrAuth + rrAdmin — info leak stats cerebro global.
+app.get('/api/cerebro/status', rrRequireAuth, rrRequireAdmin, (_req, res) => {
   res.json({
     trainingDataLength: cerebroAbsoluto.getTrainingData().length,
     hasTrainingData: cerebroAbsoluto.getTrainingData().length > 0
