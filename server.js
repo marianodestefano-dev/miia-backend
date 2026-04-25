@@ -231,6 +231,8 @@ const promptCache = require('./ai/prompt_cache');
 
 // ═══ FEATURES — Sports, Integrations, Voice ═══
 const businessesRouter = require('./routes/businesses');
+// C-410 §3 C.10 — Consent disclaimer-mode + exclusions (Mitigación B)
+const createConsentRoutes = require('./routes/consent');
 const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
@@ -12556,6 +12558,12 @@ Segunda línea: si es UTIL escribe una versión mejorada y concisa del conocimie
 app.use('/api/tenant/:uid', businessesRouter);
 
 // ============================================
+// CONSENT (C-410 §3 C.10 / Mitigación B)
+// disclaimer-mode + exclusions self-service
+// ============================================
+app.use('/api/owner/consent', createConsentRoutes());
+
+// ============================================
 // P3 — SLOTS, PRIVACY, WEEKEND, MIGRATION, REPORTS
 // ============================================
 
@@ -14213,7 +14221,12 @@ app.delete('/api/tenant/:uid/account', verifyTenantAuth, auditLogger.auditMiddle
     // 2. Eliminar subcollections del usuario (estructura multi-negocio)
     const subcollections = [
       'businesses', 'contact_groups', 'contact_index',
-      'personal', 'settings', 'miia_sports', 'miia_interests'
+      'personal', 'settings', 'miia_sports', 'miia_interests',
+      // C-410 §3 C.10: cumple cláusula "borrado del corpus al cancelar cuenta"
+      // miia_persistent contiene tenant_conversations (corpus real) +
+      // pending_lids/dedup/lid_map/lid_contacts/daily_summary/contacts/training_data
+      // conversations + training_data son no-ops defensivos (paths legacy/inexistentes)
+      'conversations', 'training_data', 'miia_persistent'
     ];
 
     for (const subName of subcollections) {
