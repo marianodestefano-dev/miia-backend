@@ -275,3 +275,50 @@ describe('Firestore Rules — edge cases', () => {
     );
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// C-415 — Firestore Rules /contacts/{docId} top-level CRM legacy
+// ════════════════════════════════════════════════════════════════════════
+//
+// docId formato: ${uid}_${phone}. Owner solo lee/escribe sus propios.
+// Regex puro evita uso de split() (compatibilidad Rules engine).
+
+describe('C-415 — Firestore Rules /contacts/{docId} top-level (CRM legacy)', () => {
+  const PHONE_TEST = '+573054169969';
+  const docIdA = `${OWNER_A_UID}_${PHONE_TEST}`;
+  const docIdB = `${OWNER_B_UID}_${PHONE_TEST}`;
+
+  test('case 22 — owner A puede LEER /contacts/{ownA_phone} con auth match', async () => {
+    const db = testEnv.authenticatedContext(OWNER_A_UID).firestore();
+    await assertSucceeds(db.collection('contacts').doc(docIdA).get());
+  });
+
+  test('case 23 — owner A NO puede leer /contacts/{ownB_phone} (auth mismatch)', async () => {
+    const db = testEnv.authenticatedContext(OWNER_A_UID).firestore();
+    await assertFails(db.collection('contacts').doc(docIdB).get());
+  });
+
+  test('case 24 — formato inválido (sin underscore) → deny', async () => {
+    const db = testEnv.authenticatedContext(OWNER_A_UID).firestore();
+    await assertFails(db.collection('contacts').doc('invalidformat').get());
+    // El regex requiere '${uid}_+algo' — sin underscore o sin sufijo no matchea.
+  });
+
+  test('case 25 — usuario sin auth NO puede leer /contacts/{any}', async () => {
+    const db = testEnv.unauthenticatedContext().firestore();
+    await assertFails(db.collection('contacts').doc(docIdA).get());
+  });
+
+  test('case 26 — owner A puede ESCRIBIR /contacts/{ownA_phone}', async () => {
+    const db = testEnv.authenticatedContext(OWNER_A_UID).firestore();
+    await assertSucceeds(
+      db.collection('contacts').doc(docIdA).set({
+        name: 'Lead Test',
+        phone: PHONE_TEST,
+        contactType: 'lead',
+        client_uid: OWNER_A_UID,
+        updated_at: new Date(),
+      })
+    );
+  });
+});

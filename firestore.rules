@@ -120,6 +120,14 @@ service cloud.firestore {
       allow write: if false; // Solo el backend escribe
     }
 
+    // ═══ CONTACTS top-level (CRM legacy doc por owner) — C-415 ═══
+    // docId formato: ${uid}_${phone}. Owner solo lee/escribe sus propios contacts.
+    // Regex puro evita uso de split() (compatibilidad Firestore Rules engine).
+    match /contacts/{docId} {
+      allow read, write: if request.auth != null
+        && docId.matches(request.auth.uid + '_.+');
+    }
+
     // ═══ DEFAULT: Denegar todo lo que no esté explícitamente permitido ═══
     match /{document=**} {
       allow read, write: if false;
