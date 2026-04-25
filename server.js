@@ -5757,7 +5757,7 @@ Nuevo resumen actualizado:`;
       if (tempOverride === 'medilink_team') {
         activeSystemPrompt = buildMedilinkTeamPrompt(overrideName, overrideProfile, { isBoss: false, uid: OWNER_UID });
       } else {
-        activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), overrideProfile, isFirstInteraction, { uid: OWNER_UID });
+        activeSystemPrompt = buildFriendBroadcastPrompt(overrideName, resolveOwnerCountry(userProfile, OWNER_PERSONAL_PHONE), overrideProfile, isFirstInteraction, { uid: OWNER_UID, gmailReady: !!(userProfile?.googleTokens) });
       }
       console.log(`[T-G-OVERRIDE] ✅ ${basePhone} → ${tempOverride} (prompt directo, bypass clasificador, firstInteraction=${isFirstInteraction})`);
     } else if (isAdmin) {
@@ -9605,7 +9605,7 @@ async function handleIncomingMessage(message) {
           const isFirstInteraction = (c.messageCount || 0) === 0;
           const prompt = c.contact_type === 'medilink_team'
             ? buildMedilinkTeamPrompt(c.name, userProfile, { isBoss: c.isBoss, uid: OWNER_UID })
-            : buildFriendBroadcastPrompt(c.name, c.country, userProfile, isFirstInteraction, { uid: OWNER_UID });
+            : buildFriendBroadcastPrompt(c.name, c.country, userProfile, isFirstInteraction, { uid: OWNER_UID, gmailReady: !!(userProfile?.googleTokens) });
           // C-319 fix: orphan instruction heredada de C-303 removida — anulaba el MMC de
           // buildFriendBroadcastPrompt/buildMedilinkTeamPrompt (C-311) y contaminaba con
           // ${userProfile?.shortName}="Hola". El prompt ya autocontiene presentación + 3 capas MMC.

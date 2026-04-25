@@ -1952,6 +1952,15 @@ function buildFriendBroadcastPrompt(contactName, countryCode, ownerProfile, isFi
   }
   const p = resolveProfile(ownerProfile);
   const ownerFirst = resolveOwnerFirstName(p);
+  // C-411: gmailReady se referencia dentro del template literal de esta
+  // función (sección "LO QUE YA HAGO" — ofrecimiento "te mando correos
+  // de tu parte"). Sin esta declaración → ReferenceError runtime al
+  // disparar broadcast familia/amigos. Default false = degradación
+  // segura (callers que no propagan gmailReady → branch Gmail oculto,
+  // no crash). Diagnóstico inicial mencionaba 1263+1288+2056 pero el
+  // smoke C-411 PASO 4 confirmó que 1263/1288 viven en buildOwnerSelfChatPrompt
+  // (donde gmailReady SÍ se declara línea 829) — solo 2056 era el bug real.
+  const gmailReady = options?.gmailReady === true;
   const who = contactName || 'esta persona';
 
   // Detectar dialecto por prefijo país (fallback neutro)
@@ -2379,7 +2388,7 @@ function buildPrompt(opts) {
     case 'owner_group':
       return buildGroupPrompt(opts.groupConfig, opts.contactName, opts.ownerProfile);
     case 'friend_broadcast':
-      return buildFriendBroadcastPrompt(opts.contactName, opts.countryCode, opts.ownerProfile, opts.isFirstInteraction || false, { uid: opts.uid });
+      return buildFriendBroadcastPrompt(opts.contactName, opts.countryCode, opts.ownerProfile, opts.isFirstInteraction || false, { uid: opts.uid, gmailReady: opts.gmailReady === true });
     case 'medilink_team':
       return buildMedilinkTeamPrompt(opts.contactName, opts.ownerProfile, { isBoss: opts.isBoss, uid: opts.uid });
     case 'owner_invoked':
