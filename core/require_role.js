@@ -156,13 +156,28 @@ function requireRole(roleOrRoles) {
 }
 
 /**
- * Middleware factory: valida que req.params[paramName] coincida con
+ * Middleware factory: valida que `req[source][paramName]` coincida con
  * req.user.uid. Admin bypasea. Debe usarse DESPUÉS de requireAuth.
  *
- * @param {string} paramName - Nombre del param en la ruta (ej: 'uid').
+ * @param {string} paramName - Nombre del campo (ej: 'uid', 'userId').
+ * @param {string} source - Origen del campo: 'params' (default) | 'query' | 'body'.
+ *   - 'params': leer de req.params (ruta tipo /api/tenant/:uid/...)
+ *   - 'query':  leer de req.query (ruta tipo /api/conversations?uid=...)
+ *   - 'body':   leer de req.body (POST con uid en payload)
  * @returns {function} middleware Express
+ *
+ * Backwards compat: signature original `requireOwnerOfResource('uid')`
+ * sigue funcionando con default `source='params'` — los 5 endpoints C-406
+ * ya migrados (rrRequireOwnerOfResource('uid')) NO requieren cambios.
+ *
+ * Origen extensión: C-406.b.crit Pieza D (2026-04-25). /api/conversations
+ * pasa uid via query string, no params, por eso necesita source='query'.
  */
-function requireOwnerOfResource(paramName = 'uid') {
+function requireOwnerOfResource(paramName = 'uid', source = 'params') {
+  const VALID_SOURCES = ['params', 'query', 'body'];
+  if (!VALID_SOURCES.includes(source)) {
+    throw new Error(`requireOwnerOfResource: source inválido "${source}". Use: ${VALID_SOURCES.join(' | ')}`);
+  }
   return function requireOwnerOfResourceMiddleware(req, res, next) {
     if (!req.user) {
       return res.status(401).json({
@@ -174,17 +189,21 @@ function requireOwnerOfResource(paramName = 'uid') {
     if (req.user.isAdmin === true || req.user.role === 'admin') {
       return next();
     }
-    const resourceUid = req.params && req.params[paramName];
+    // Leer del source configurado
+    const container = req[source];
+    const resourceUid = container && container[paramName];
     if (!resourceUid) {
       return res.status(400).json({
         error: 'missing_param',
-        message: `Param :${paramName} ausente en la ruta.`,
+        message: `Campo "${paramName}" ausente en req.${source}.`,
+        source,
+        paramName,
       });
     }
     if (resourceUid !== req.user.uid) {
       return res.status(403).json({
         error: 'forbidden_ownership',
-        message: `No tienes permiso sobre este recurso. :${paramName}=${resourceUid} ≠ tu uid.`,
+        message: `No tienes permiso sobre este recurso. ${source}.${paramName}=${resourceUid} ≠ tu uid.`,
       });
     }
     next();

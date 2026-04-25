@@ -11008,7 +11008,9 @@ app.get('/api/status', async (req, res) => {
 });
 
 // ─── /api/conversations — contacts.html-compatible format ─────────────────────
-app.get('/api/conversations', async (req, res) => {
+// C-406.b.crit Pieza A: cierra vulnerabilidad cross-owner read.
+// Pre-fix permitía a cualquiera leer conversations de otro owner pasando su uid.
+app.get('/api/conversations', rrRequireAuth, rrRequireOwnerOfResource('uid', 'query'), async (req, res) => {
   const uid = req.query.uid;
 
   if (uid) {
@@ -12451,7 +12453,9 @@ app.get('/api/cerebro/status', (_req, res) => {
 });
 
 // Inyección directa de conocimiento (usado desde Claude, scripts externos, etc.)
-app.post('/api/cerebro/learn', express.json(), (req, res) => {
+// C-406.b.crit Pieza B: cierra vulnerabilidad inyección training global.
+// cerebroAbsoluto es el cerebro global del owner principal — solo admin escribe.
+app.post('/api/cerebro/learn', rrRequireAuth, rrRequireAdmin, express.json(), (req, res) => {
   const { text, source } = req.body || {};
   if (!text || !text.trim()) return res.status(400).json({ error: 'text requerido' });
   cerebroAbsoluto.appendLearning(text, source || 'API_DIRECTA');
@@ -12517,7 +12521,9 @@ Respondé natural, concisa y útil. Si pregunta qué sabés, mostrá ejemplos co
 });
 
 // Endpoint de entrenamiento web — guarda lo que Mariano enseña desde training.html
-app.post('/api/train', express.json(), async (req, res) => {
+// C-406.b.crit Pieza C: cierra vulnerabilidad inyección training tenant.
+// Como cerebroAbsoluto/userProfile son globales del owner principal, solo admin escribe.
+app.post('/api/train', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   console.log('Calling /api/train with body:', req.body);
   try {
     const { message } = req.body || {};

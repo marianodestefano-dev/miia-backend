@@ -291,6 +291,78 @@ describe('requireOwnerOfResource', () => {
     middleware(req, res, next);
     expect(res._status).toBe(401);
   });
+
+  // ═══ C-406.b.crit Pieza D — source param extensión ═══
+
+  test('C-406.b.crit — source="query" lee de req.query', () => {
+    const middleware = requireOwnerOfResource('uid', 'query');
+    const req = {
+      user: { uid: 'user123', role: 'user', isAdmin: false },
+      query: { uid: 'user123' },
+      params: {},
+    };
+    const { res } = makeReqRes();
+    const next = jest.fn();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  test('C-406.b.crit — source="query" rechaza uid ajeno con 403', () => {
+    const middleware = requireOwnerOfResource('uid', 'query');
+    const req = {
+      user: { uid: 'user123', role: 'user', isAdmin: false },
+      query: { uid: 'other_user' },
+      params: {},
+    };
+    const { res } = makeReqRes();
+    const next = jest.fn();
+    middleware(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res._status).toBe(403);
+    expect(res._body.message).toContain('query.uid=other_user');
+  });
+
+  test('C-406.b.crit — source="body" lee de req.body', () => {
+    const middleware = requireOwnerOfResource('uid', 'body');
+    const req = {
+      user: { uid: 'user123', role: 'user', isAdmin: false },
+      body: { uid: 'user123', other: 'data' },
+      params: {},
+    };
+    const { res } = makeReqRes();
+    const next = jest.fn();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  test('C-406.b.crit — source inválido throws al construir factory', () => {
+    expect(() => requireOwnerOfResource('uid', 'cookies')).toThrow(/source inválido/);
+  });
+
+  test('C-406.b.crit — backwards compat: sin source default "params"', () => {
+    // Mismo signature que C-406 original — 5 endpoints ya migrados NO requieren cambios
+    const middleware = requireOwnerOfResource('uid');
+    const req = {
+      user: { uid: 'user123', role: 'user', isAdmin: false },
+      params: { uid: 'user123' },
+    };
+    const { res } = makeReqRes();
+    const next = jest.fn();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  test('C-406.b.crit — admin bypasea source="query" igual que params', () => {
+    const middleware = requireOwnerOfResource('uid', 'query');
+    const req = {
+      user: { uid: 'admin_uid', role: 'admin', isAdmin: true },
+      query: { uid: 'some_other_user' },
+    };
+    const { res } = makeReqRes();
+    const next = jest.fn();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
