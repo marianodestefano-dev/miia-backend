@@ -27,6 +27,8 @@ const { callAI } = require('../ai/ai_client');
 const { buildTenantPrompt, buildOwnerLeadPrompt } = require('../core/prompt_builder');
 const { sendSessionRecoveryEmail } = require('../services/mail_service');
 const { handleTenantMessage } = require('./tenant_message_handler');
+// C-410.b §1 Pieza A — safety filter para excluir info sensible del corpus ADN
+const safetyFilter = require('../core/safety_filter');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 const tenants = new Map();
@@ -2706,6 +2708,16 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               || m.message?.imageMessage?.caption
               || '';
             if (!body.trim()) return null;
+            // C-410.b §1 Pieza A — honra flag del safety_filter, no entrenar
+            // con info sensible (salud/finanzas/judicial/menores/credenciales).
+            // Filtro absoluto en mining: independiente de config per-category.
+            // Fail-safe: si la regex throws (body raro), skip ese msg sin abortar batch.
+            try {
+              if (safetyFilter.classifyMessageSensitivity(body)) return null;
+            } catch (sfErr) {
+              console.warn(`[TM:${uid}] [SAFETY-MINING] regex error: ${sfErr.message} — skipping msg`);
+              return null;
+            }
             return `${m.key?.fromMe ? 'VENDEDOR' : 'CONTACTO'}: ${body.replace(/\n/g, ' ')}`;
           }).filter(Boolean).join('\n');
 

@@ -76,6 +76,14 @@ const { injectInBubbleArray } = require('../core/emoji_injector');
 const { auditV2Response, auditSafetyRules, getFallbackByChatType: getV2FallbackByChatType } = require('../core/v2_auditor');
 const V2_OWNER_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
 
+// === C-410.b — Safety filter (Mitigación C auto-skip pre-IA pipeline) ===
+// Activación granular por (uid, categoría, action) según safety_filter_config.
+// Bootstrap CENTER aplicado idempotente al boot (server.js).
+// Doctrina §2-bis: solo CENTER tiene config bootstrap; Personal/otros owners
+// quedan disabled hasta C-410.c con firma textual.
+const safetyFilter = require('../core/safety_filter');
+const consentRoutes = require('../routes/consent');
+
 // ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
 // ═══════════════════════════════════════════════════════════════
@@ -1814,6 +1822,93 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     return;
   }
 
+  // ── PASO 4.5: Safety filter Mitigación C (C-410.b) ──
+  // Pre-clasificador: detecta info sensible y aplica action por categoría
+  // (block / log_warn / log_only / disabled). Activación granular por uid.
+  // Doctrina §2-bis: bootstrap CENTER inicial (idempotente al boot).
+  // Guards: NO self-chat, NO grupo, NO fromMe (consistente con regla 6.10/6.13/6.17).
+  const isGroupSafety = phone && phone.endsWith && phone.endsWith('@g.us');
+  if (!isSelfChat && !isGroupSafety && !isFromMe) {
+    try {
+      const sfEnabled = await safetyFilter.isSafetyFilterEnabledForUid(ctx.ownerUid);
+      if (sfEnabled) {
+        const bodyToCheck = messageContext.isTranscribedAudio
+          ? (messageContext.transcription || messageBody)
+          : messageBody;
+        const classif = safetyFilter.classifyMessageSensitivity(bodyToCheck);
+        if (classif) {
+          const catCfg = await safetyFilter.getCategoryConfig(ctx.ownerUid, classif.category);
+          if (catCfg.enabled) {
+            const action = catCfg.action;
+            // Resolver contactName via lookupContactIndex (ya verificado existe TMH:466)
+            let contactName = ctx.leadNames[phone] || null;
+            if (!contactName) {
+              try {
+                const ci = await lookupContactIndex(ctx.ownerUid, basePhone);
+                contactName = ci?.name || null;
+              } catch (_) { /* fail-safe: 'anónimo' default */ }
+            }
+            const incidentId = await safetyFilter.recordSafetyIncident(
+              ctx.ownerUid, basePhone, classif, bodyToCheck, action, contactName
+            );
+
+            if (action === 'block') {
+              await consentRoutes.addExclusionInternal(ctx.ownerUid, basePhone, {
+                reason: 'sensitive_data_auto',
+                source: 'safety_filter',
+                category: classif.category,
+                incidentId,
+              });
+              if (safetyFilter.shouldAlertOwner(ctx.ownerUid, basePhone, classif.category)) {
+                const ownerJid = ctx.ownerUid && tenantState && tenantState.ownerJid;
+                if (ownerJid) {
+                  await safetyFilter.sendOwnerSafetyAlert({
+                    uid: ctx.ownerUid,
+                    ownerSelfJid: ownerJid,
+                    contactPhoneE164: `+${basePhone}`,
+                    classification: classif,
+                    action,
+                    contactName: contactName || 'anónimo',
+                    incidentId,
+                    sendFn: async (uid, jid, text) => sendTenantMessage(tenantState, jid, text),
+                  });
+                }
+              }
+              const phoneRedacted = safetyFilter._redactPhone(`+${basePhone}`);
+              console.log(`${logPrefix} 🛑 Safety filter BLOCK ${phoneRedacted} cat=${classif.category} incident=${incidentId || 'none'}`);
+              return; // skip IA pipeline + skip persist a chat history
+            }
+
+            if (action === 'log_warn' || action === 'log_only') {
+              messageContext.excluded_from_training = true;
+              if (action === 'log_warn' && safetyFilter.shouldAlertOwner(ctx.ownerUid, basePhone, classif.category)) {
+                const ownerJid = ctx.ownerUid && tenantState && tenantState.ownerJid;
+                if (ownerJid) {
+                  await safetyFilter.sendOwnerSafetyAlert({
+                    uid: ctx.ownerUid,
+                    ownerSelfJid: ownerJid,
+                    contactPhoneE164: `+${basePhone}`,
+                    classification: classif,
+                    action,
+                    contactName: contactName || 'anónimo',
+                    incidentId,
+                    sendFn: async (uid, jid, text) => sendTenantMessage(tenantState, jid, text),
+                  });
+                }
+              }
+              const phoneRedacted = safetyFilter._redactPhone(`+${basePhone}`);
+              console.log(`${logPrefix} ⚠️ Safety filter ${action.toUpperCase()} ${phoneRedacted} cat=${classif.category} — pipeline continúa, msg+respuesta excluidos del corpus ADN`);
+              // continúa a PASO 5
+            }
+          }
+        }
+      }
+    } catch (sfErr) {
+      // Fail-safe: si safety_filter falla, NO bloquea pipeline (continúa V1)
+      console.error(`${logPrefix} [SAFETY] error en wire-in: ${sfErr.message} — continuando pipeline V1`);
+    }
+  }
+
   // ── PASO 5: Guardar mensaje entrante (con contexto de respuesta/reenvío) ──
   if (!ctx.conversations[phone]) ctx.conversations[phone] = [];
   // En 3-way (miiaActive + isFromMe): marcar como owner, no como assistant
@@ -1833,6 +1928,11 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   if (messageContext.isForwarded) {
     msgEntry.isForwarded = true;
     console.log(`${logPrefix} ↪️ Mensaje reenviado (score: ${messageContext.forwardingScore || 1})`);
+  }
+  // C-410.b: si el safety_filter marcó este mensaje como sensible (action=log_warn|log_only),
+  // marcar el entry para que el mining ADN futuro lo excluya del corpus.
+  if (messageContext.excluded_from_training) {
+    msgEntry.excluded_from_training = true;
   }
   ctx.conversations[phone].push(msgEntry);
   if (ctx.conversations[phone].length > 40) {
@@ -5533,11 +5633,17 @@ REGLAS:
   }
 
   // ── PASO 13: Guardar respuesta en historial ──
-  ctx.conversations[phone].push({
+  // C-410.b: si el msg entrante tenía info sensible (log_warn/log_only), la respuesta
+  // de MIIA tampoco debe entrenar el corpus ADN comercial. Hereda el flag.
+  const assistantEntry = {
     role: 'assistant',
     content: aiMessage,
     timestamp: Date.now()
-  });
+  };
+  if (messageContext.excluded_from_training) {
+    assistantEntry.excluded_from_training = true;
+  }
+  ctx.conversations[phone].push(assistantEntry);
   if (ctx.conversations[phone].length > 40) {
     ctx.conversations[phone] = ctx.conversations[phone].slice(-40);
   }

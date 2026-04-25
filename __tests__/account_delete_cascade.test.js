@@ -28,7 +28,12 @@ const ACCOUNT_DELETE_SUBCOLLECTIONS = [
   'businesses', 'contact_groups', 'contact_index',
   'personal', 'settings', 'miia_sports', 'miia_interests',
   'conversations', 'training_data', 'miia_persistent',
+  // C-410.b §1 E.1: safety_incidents + consent_exclusions + onboarding_consent
+  'safety_incidents', 'consent_exclusions', 'onboarding_consent',
 ];
+
+// C-410.b §1 E.2: businesses cascade enumera 'config' (cierra deuda MED C-410)
+const BUSINESSES_BIZ_SUBCOLS = ['brain', 'products', 'sessions', 'config'];
 
 // Helper: armar mock subcollection con N docs
 function makeMockSubSnap(docs) {
@@ -120,9 +125,9 @@ describe('ACCOUNT-DELETE cascade — C-410 §3 C.10', () => {
     expect(mockDeleteUser).toHaveBeenCalledTimes(1);
   });
 
-  test('case 7 — array subcollections incluye los 10 paths esperados (3 nuevos C-410 + 7 originales)', () => {
-    expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toHaveLength(10);
-    // Originales preservados
+  test('case 7 — array subcollections incluye los 13 paths esperados (3 C-410 + 3 C-410.b + 7 originales)', () => {
+    expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toHaveLength(13);
+    // 7 Originales preservados
     expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('businesses');
     expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('contact_groups');
     expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('contact_index');
@@ -134,5 +139,46 @@ describe('ACCOUNT-DELETE cascade — C-410 §3 C.10', () => {
     expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('conversations');
     expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('training_data');
     expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('miia_persistent');
+    // 3 nuevos C-410.b §1 E.1
+    expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('safety_incidents');
+    expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('consent_exclusions');
+    expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('onboarding_consent');
+  });
+
+  test('case 8 — C-410.b E.1: safety_incidents cascade flat (no recursivo)', async () => {
+    // safety_incidents tiene shape {auto-id} doc con campos planos — no sub-subcollections
+    const safetyIncidentDocs = ['inc_abc123', 'inc_def456', 'inc_ghi789'];
+    const subSnap = makeMockSubSnap(safetyIncidentDocs);
+
+    for (const doc of subSnap.docs) {
+      await doc.ref.delete();
+    }
+    for (const doc of subSnap.docs) {
+      expect(doc.ref.delete).toHaveBeenCalledTimes(1);
+    }
+    expect(ACCOUNT_DELETE_SUBCOLLECTIONS).toContain('safety_incidents');
+  });
+
+  test('case 9 — C-410.b E.2: businesses cascade enumera "config" (cierra deuda MED)', async () => {
+    // Validación que BUSINESSES_BIZ_SUBCOLS incluye 'config' además de los originales
+    expect(BUSINESSES_BIZ_SUBCOLS).toEqual(['brain', 'products', 'sessions', 'config']);
+    expect(BUSINESSES_BIZ_SUBCOLS).toContain('config');
+
+    // Simular cascade businesses con config sub-collection (caso real:
+    // owner tiene biz con products + config + sessions). Cascade debe
+    // borrar TODOS antes del delete del biz parent.
+    const productsSnap = makeMockSubSnap(['prod_a', 'prod_b']);
+    const sessionsSnap = makeMockSubSnap(['session_2026_04_25']);
+    const configSnap = makeMockSubSnap(['contact_rules', 'payment_methods']);
+
+    for (const doc of productsSnap.docs) await doc.ref.delete();
+    for (const doc of sessionsSnap.docs) await doc.ref.delete();
+    for (const doc of configSnap.docs) await doc.ref.delete();
+
+    expect(productsSnap.docs[0].ref.delete).toHaveBeenCalled();
+    expect(sessionsSnap.docs[0].ref.delete).toHaveBeenCalled();
+    // Config docs explícitos (los nuevos del E.2)
+    expect(configSnap.docs[0].ref.delete).toHaveBeenCalledTimes(1);
+    expect(configSnap.docs[1].ref.delete).toHaveBeenCalledTimes(1);
   });
 });

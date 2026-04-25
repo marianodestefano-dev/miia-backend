@@ -235,6 +235,47 @@ function createConsentRoutes(deps = {}) {
   return router;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// PROGRAMMATIC API — para uso interno de safety_filter / otros módulos
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Agrega una exclusión programáticamente (no vía HTTP).
+ * Usado por core/safety_filter.js cuando detecta info sensible con action='block'.
+ *
+ * @param {string} uid - owner UID
+ * @param {string} rawPhone - phone (E.164 con o sin +, será normalizado)
+ * @param {Object} payload - { reason, source, category?, incidentId? }
+ * @returns {Promise<{ success: boolean, phone: string, reason: string } | { error: string }>}
+ */
+async function addExclusionInternal(uid, rawPhone, payload = {}) {
+  if (!uid || typeof uid !== 'string') {
+    return { error: 'invalid_uid' };
+  }
+  const phone = normalizePhone(rawPhone);
+  if (!phone) {
+    return { error: 'invalid_phone' };
+  }
+  try {
+    const doc = {
+      excluded: true,
+      reason: typeof payload.reason === 'string' ? payload.reason.trim().slice(0, 500) : 'sensitive_data_auto',
+      source: typeof payload.source === 'string' ? payload.source.trim().slice(0, 50) : 'safety_filter',
+      addedAt: new Date().toISOString(),
+      addedBy: 'system',
+    };
+    if (payload.category) doc.category = String(payload.category).slice(0, 30);
+    if (payload.incidentId) doc.incidentId = String(payload.incidentId).slice(0, 100);
+    await exclusionRef(uid, phone).set(doc, { merge: true });
+    console.log(`[CONSENT] exclusion AUTO uid=${uid} phone=${phone} reason=${doc.reason} category=${doc.category || '-'}`);
+    return { success: true, phone, reason: doc.reason };
+  } catch (e) {
+    console.error(`[CONSENT] addExclusionInternal error uid=${uid} phone=${phone}: ${e.message}`);
+    return { error: 'internal_error', message: e.message };
+  }
+}
+
 module.exports = createConsentRoutes;
+module.exports.addExclusionInternal = addExclusionInternal;
 module.exports._normalizePhone = normalizePhone;
 module.exports._VALID_MODES = VALID_MODES;

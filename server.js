@@ -293,6 +293,12 @@ try {
   if (credential) {
     admin.initializeApp({ credential });
     console.log('[FIREBASE] ✅ Firebase Admin inicializado correctamente');
+    // C-410.b §2.4 — bootstrap idempotente safety_filter para MIIA CENTER.
+    // Solo aplica si el flag enabled NO está set y bootstrap NO está locked
+    // por el owner. Skip si SAFETY_FILTER_SKIP_BOOTSTRAP=1 (tests / debug).
+    require('./core/safety_filter').ensureBootstrap()
+      .then(r => r.applied && console.log('[SAFETY] ✅ Bootstrap CENTER aplicado'))
+      .catch(e => console.error('[SAFETY] Bootstrap error:', e.message));
   }
 } catch (e) {
   console.error('[FIREBASE] ERROR al inicializar:', e.message);
@@ -14226,7 +14232,10 @@ app.delete('/api/tenant/:uid/account', verifyTenantAuth, auditLogger.auditMiddle
       // miia_persistent contiene tenant_conversations (corpus real) +
       // pending_lids/dedup/lid_map/lid_contacts/daily_summary/contacts/training_data
       // conversations + training_data son no-ops defensivos (paths legacy/inexistentes)
-      'conversations', 'training_data', 'miia_persistent'
+      'conversations', 'training_data', 'miia_persistent',
+      // C-410.b §1 E.1: safety_incidents (auditoría legal pre-filtro Mitigación C)
+      // C-410.b §1 E.1: consent_exclusions (auto-add por safety_filter action=block)
+      'safety_incidents', 'consent_exclusions', 'onboarding_consent'
     ];
 
     for (const subName of subcollections) {
@@ -14236,12 +14245,16 @@ app.delete('/api/tenant/:uid/account', verifyTenantAuth, auditLogger.auditMiddle
           // Para businesses, también borrar sub-subcollections
           if (subName === 'businesses') {
             for (const bizDoc of subSnap.docs) {
-              const bizSubcols = ['brain', 'products', 'sessions'];
+              // C-410.b §1 E.2: 'config' agregado (cierra deuda MED C-410)
+              // El código actual escribe contact_rules y payment_methods
+              // dentro de businesses/{bizId}/config/* (no en raíz). Sin
+              // 'config' en este loop quedan huérfanos al cancelar cuenta.
+              const bizSubcols = ['brain', 'products', 'sessions', 'config'];
               for (const bsc of bizSubcols) {
                 const bscSnap = await bizDoc.ref.collection(bsc).get();
                 for (const d of bscSnap.docs) await d.ref.delete();
               }
-              // contact_rules y payment_methods son docs directos
+              // contact_rules y payment_methods (paths legacy raíz — no rompen 'config')
               try { await bizDoc.ref.collection('contact_rules').doc('rules').delete(); } catch (_) {}
               try { await bizDoc.ref.collection('payment_methods').doc('methods').delete(); } catch (_) {}
             }
