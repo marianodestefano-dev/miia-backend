@@ -11522,7 +11522,7 @@ app.post('/api/tenant/:uid/train', express.json(), (req, res) => {
 });
 
 // GET /api/tenants — List all active tenants (admin only)
-app.get('/api/tenants', verifyAdminToken, (req, res) => {
+app.get('/api/tenants', rrRequireAuth, rrRequireAdmin, (req, res) => {
   res.json(tenantManager.getAllTenants());
 });
 
@@ -13735,7 +13735,7 @@ app.get('/api/tenant/:uid/security-contacts/:relationId/data', async (req, res) 
 const promptRegistry = require('./core/prompt_registry');
 
 // Listar módulos
-app.get('/api/prompt-registry/modules', verifyAdminToken, async (req, res) => {
+app.get('/api/prompt-registry/modules', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const modules = await promptRegistry.listModules();
     res.json(modules);
@@ -13743,7 +13743,7 @@ app.get('/api/prompt-registry/modules', verifyAdminToken, async (req, res) => {
 });
 
 // Obtener un módulo
-app.get('/api/prompt-registry/modules/:id', verifyAdminToken, async (req, res) => {
+app.get('/api/prompt-registry/modules/:id', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const mod = await promptRegistry.getModule(req.params.id);
     if (!mod) return res.status(404).json({ error: 'Module not found' });
@@ -13752,7 +13752,7 @@ app.get('/api/prompt-registry/modules/:id', verifyAdminToken, async (req, res) =
 });
 
 // Guardar/actualizar módulo
-app.post('/api/prompt-registry/modules/:id', verifyAdminToken, express.json(), async (req, res) => {
+app.post('/api/prompt-registry/modules/:id', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   try {
     const { content, description } = req.body;
     if (!content) return res.status(400).json({ error: 'content required' });
@@ -13764,7 +13764,7 @@ app.post('/api/prompt-registry/modules/:id', verifyAdminToken, express.json(), a
 });
 
 // Listar checkpoints
-app.get('/api/prompt-registry/checkpoints', verifyAdminToken, async (req, res) => {
+app.get('/api/prompt-registry/checkpoints', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const checkpoints = await promptRegistry.listCheckpoints();
     res.json(checkpoints);
@@ -13772,7 +13772,7 @@ app.get('/api/prompt-registry/checkpoints', verifyAdminToken, async (req, res) =
 });
 
 // Crear checkpoint
-app.post('/api/prompt-registry/checkpoints', verifyAdminToken, express.json(), async (req, res) => {
+app.post('/api/prompt-registry/checkpoints', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   try {
     const { name, note } = req.body;
     if (!name) return res.status(400).json({ error: 'name required' });
@@ -13782,7 +13782,7 @@ app.post('/api/prompt-registry/checkpoints', verifyAdminToken, express.json(), a
 });
 
 // Rollback a un checkpoint
-app.post('/api/prompt-registry/rollback', verifyAdminToken, express.json(), async (req, res) => {
+app.post('/api/prompt-registry/rollback', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   try {
     const { checkpointName } = req.body;
     if (!checkpointName) return res.status(400).json({ error: 'checkpointName required' });
@@ -13792,7 +13792,7 @@ app.post('/api/prompt-registry/rollback', verifyAdminToken, express.json(), asyn
 });
 
 // Diff actual vs checkpoint
-app.get('/api/prompt-registry/diff/:checkpointName', verifyAdminToken, async (req, res) => {
+app.get('/api/prompt-registry/diff/:checkpointName', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const diff = await promptRegistry.diffFromCheckpoint(req.params.checkpointName);
     res.json(diff);
@@ -13800,7 +13800,7 @@ app.get('/api/prompt-registry/diff/:checkpointName', verifyAdminToken, async (re
 });
 
 // Seed desde prompt_builder (run once)
-app.post('/api/prompt-registry/seed', verifyAdminToken, async (req, res) => {
+app.post('/api/prompt-registry/seed', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const promptBuilder = require('./core/prompt_builder');
     const result = await promptRegistry.seedFromPromptBuilder(promptBuilder);
