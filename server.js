@@ -12529,6 +12529,28 @@ app.post('/api/train', rrRequireAuth, rrRequireAdmin, express.json(), async (req
     const { message } = req.body || {};
     if (!message || !message.trim()) return res.status(400).json({ error: 'message requerido' });
 
+    // C-413 Cambio 1: APRENDE: explícito = intent admin claro, bypass eval Gemini.
+    // Regex robusto a leading whitespace (\s* al inicio). Cap 5000 chars
+    // server-side defensa-en-profundidad (frontend ya cap a 5000 en owner-dashboard:5503).
+    const APRENDE_REGEX = /^\s*APRENDE:\s*/i;
+    if (APRENDE_REGEX.test(message)) {
+      const knowledgeToSave = message.replace(APRENDE_REGEX, '').trim().slice(0, 5000);
+      if (knowledgeToSave.length < 5) {
+        return res.json({
+          response: 'Por favor agregá contenido después de APRENDE: para que pueda guardarlo.',
+          saved: false,
+          tipo: 'EMPTY'
+        });
+      }
+      cerebroAbsoluto.appendLearning(knowledgeToSave, 'WEB_TRAINING_EXPLICIT');
+      saveDB();
+      return res.json({
+        response: `✅ Guardado en mi memoria: "${knowledgeToSave.slice(0, 80)}${knowledgeToSave.length > 80 ? '...' : ''}"`,
+        saved: true,
+        tipo: 'UTIL_EXPLICIT'
+      });
+    }
+
     // Evaluar si el mensaje es conocimiento útil antes de guardar
     const evalPrompt = `Eres un sistema de control de calidad de conocimiento para una IA de ventas.
 El usuario escribió: "${message.substring(0, 300)}"
@@ -12545,6 +12567,18 @@ Segunda línea: si es UTIL escribe una versión mejorada y concisa del conocimie
     const lines = (evalResult || '').split('\n').map(l => l.trim()).filter(Boolean);
     const tipo = (lines[0] || '').toUpperCase().replace(/[^A-Z]/g, '');
     const detail = lines[1] || '';
+
+    // C-413 Cambio 2: fail soft educativo si Gemini devuelve formato inesperado.
+    // En lugar de "guardar a ciegas" (que ensucia corpus sin undo), educar al
+    // admin sobre el patrón APRENDE: explícito (Cambio 1 cubre intent claro).
+    if (tipo !== 'UTIL' && tipo !== 'PREGUNTA' && tipo !== 'BASURA') {
+      console.warn(`[/api/train] Gemini devolvió formato inesperado: "${(evalResult || '').slice(0, 100)}"`);
+      return res.json({
+        response: 'Hmm, no estoy segura si querés que guarde eso. Si es conocimiento para enseñarme, escribilo con prefijo "APRENDE: ..." y lo guardo seguro. Si era pregunta o test, ignorá.',
+        saved: false,
+        tipo: 'UNKNOWN'
+      });
+    }
 
     if (tipo === 'UTIL') {
       const knowledgeToSave = detail || message;
