@@ -15119,6 +15119,44 @@ app.post('/api/admin/migrate-email', rrRequireAuth, rrRequireAdmin, express.json
   }
 });
 
+// ── C-419 Inspect contact_groups duplicates (read-only) ──────────────────
+app.get('/api/admin/inspect-contact-groups/:uid', rrRequireAuth, rrRequireAdmin, async (req, res) => {
+  try {
+    const { uid } = req.params;
+    if (!uid || !/^[A-Za-z0-9]{20,30}$/.test(uid)) {
+      return res.status(400).json({ error: 'uid_invalido' });
+    }
+    const cgRef = admin.firestore().collection('users').doc(uid).collection('contact_groups');
+    const snap = await cgRef.get();
+    const groups = [];
+    const byName = {};
+    for (const doc of snap.docs) {
+      const data = doc.data();
+      const name = data.name || '(sin name)';
+      const sub = await doc.ref.collection('contacts').get();
+      const item = {
+        docId: doc.id,
+        name,
+        icon: data.icon || '',
+        contactsCount: sub.size,
+        createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().toISOString() : null,
+        source: data.source || null,
+      };
+      groups.push(item);
+      const key = String(name).toUpperCase().trim();
+      if (!byName[key]) byName[key] = [];
+      byName[key].push(doc.id);
+    }
+    const duplicatesByName = Object.fromEntries(
+      Object.entries(byName).filter(([_, ids]) => ids.length > 1)
+    );
+    res.json({ uid, total: snap.size, groups, duplicatesByName });
+  } catch (e) {
+    console.error('[ADMIN INSPECT-CG]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Middleware: verify Firebase Admin ─────────────────────────────────────
 
 async function verifyAdminToken(req, res, next) {
