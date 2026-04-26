@@ -11522,8 +11522,28 @@ app.post('/api/tenant/:uid/train', express.json(), (req, res) => {
 });
 
 // GET /api/tenants — List all active tenants (admin only)
-app.get('/api/tenants', rrRequireAuth, rrRequireAdmin, (req, res) => {
-  res.json(tenantManager.getAllTenants());
+app.get('/api/tenants', rrRequireAuth, rrRequireAdmin, async (req, res) => {
+  // C-425: enriquecer con name/email/whatsapp_number de users/{uid} para
+  // que admin-dashboard muestre "Hola MIIA · +573054169969" en lugar de
+  // UID truncado. JOIN async con graceful catch — si falla, devuelve
+  // shape original (backward compat).
+  const tenants = tenantManager.getAllTenants();
+  const enriched = await Promise.all(tenants.map(async (t) => {
+    try {
+      const userDoc = await admin.firestore().collection('users').doc(t.uid).get();
+      const data = userDoc.exists ? userDoc.data() : {};
+      return {
+        ...t,
+        name: data.name || null,
+        email: data.email || null,
+        whatsapp_number: data.whatsapp_number || null,
+      };
+    } catch (e) {
+      console.error('[/api/tenants JOIN]', t.uid, e.message);
+      return t;
+    }
+  }));
+  res.json(enriched);
 });
 
 // ⭐ NUEVO ENDPOINT - Chat con MIIA desde frontend
