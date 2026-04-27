@@ -85,6 +85,17 @@ process.on('unhandledRejection', (err) => {
   console.error('[UNHANDLED REJECTION]', err);
   shield.recordNodeError('unhandledRejection', err);
 
+  // C-433 §B observability: detección Firestore RESOURCE_EXHAUSTED en promesas
+  // sin catch. Mismo grep que uncaughtException — alerta unificada.
+  if (err && (err.code === 8 || err.code === 'resource-exhausted' ||
+      /RESOURCE_EXHAUSTED|resource.exhausted|rate.limit/i.test(err.message || ''))) {
+    console.error('[V2-ALERT][FS-RATE-LIMIT]', {
+      source: 'unhandledRejection',
+      code: err.code,
+      message: (err.message || '').slice(0, 200),
+    });
+  }
+
   // Fix C-220B: Baileys "Timed Out" puede dejar socket zombie (conectado pero inbound muerto)
   // Forzar que _lastRealEvent sea viejo para que Watchdog V2 haga probe activo en su próximo ciclo
   const errMsg = err?.message || '';
@@ -109,6 +120,18 @@ process.on('unhandledRejection', (err) => {
 process.on('uncaughtException', (err) => {
   console.error('[UNCAUGHT EXCEPTION]', err);
   shield.recordNodeError('uncaughtException', err);
+  // C-433 §B observability: detección genérica Firestore RESOURCE_EXHAUSTED
+  // (gRPC code 8) o rate-limit en errors no manejados. Permite grep priorizado:
+  // railway logs -s miia-backend | grep -F '[V2-ALERT][FS-RATE-LIMIT]'
+  if (err && (err.code === 8 || err.code === 'resource-exhausted' ||
+      /RESOURCE_EXHAUSTED|resource.exhausted|rate.limit/i.test(err.message || ''))) {
+    console.error('[V2-ALERT][FS-RATE-LIMIT]', {
+      source: 'uncaughtException',
+      code: err.code,
+      message: (err.message || '').slice(0, 200),
+      stack: (err.stack || '').slice(0, 500),
+    });
+  }
   // NO process.exit() — Railway reinicia el proceso, pero queremos intentar seguir
 });
 
@@ -15458,6 +15481,15 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
     res.json({ received: true });
   } catch (e) {
     console.error('[PADDLE] webhook error:', e.message);
+    // C-433 §B observability: alerta priorizada por fallos de webhook de pago
+    // (railway logs -s miia-backend | grep -F '[V2-ALERT][PAYMENT-FAIL]')
+    console.error('[V2-ALERT][PAYMENT-FAIL]', {
+      provider: 'paddle',
+      stage: 'webhook',
+      error: e.message,
+      headers_signature_present: !!req.headers['paddle-signature'],
+      body_len: req.body ? req.body.length : 0,
+    });
     res.status(400).send('Webhook error: ' + e.message);
   }
 });
@@ -15727,6 +15759,13 @@ app.post('/api/mercadopago/webhook', express.json(), async (req, res) => {
     res.json({ received: true });
   } catch (e) {
     console.error('[MP] webhook error:', e.message);
+    // C-433 §B observability — alerta priorizada Mercado Pago webhook fail
+    console.error('[V2-ALERT][PAYMENT-FAIL]', {
+      provider: 'mercadopago',
+      stage: 'webhook',
+      error: e.message,
+      type: req.body?.type || 'unknown',
+    });
     res.status(400).send('Webhook error: ' + e.message);
   }
 });

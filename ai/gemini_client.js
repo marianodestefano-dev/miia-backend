@@ -111,11 +111,33 @@ async function callGemini(apiKey, prompt, opts = {}) {
       if (isRetryable && attempt < retries) {
         const delay = RETRY_DELAYS[attempt] || 45000;
         console.warn(`[GEMINI] Error ${response.status} — retry in ${delay / 1000}s (${attempt + 1}/${retries})`);
+        // C-433 §B observability: alerta priorizada solo en 429 (quota agotada)
+        // 503 es transient; 429 indica límite real de cuota / rate limit Google.
+        if (response.status === 429) {
+          console.error('[V2-ALERT][QUOTA-EXHAUST]', {
+            provider: 'gemini',
+            status: 429,
+            attempt: attempt + 1,
+            retries,
+            delay_ms: delay,
+            model: model || DEFAULT_MODEL,
+          });
+        }
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
 
       const errText = await response.text();
+      // C-433 §B: si los retries 429 agotaron, alert priorizado final (queda sin texto generado)
+      if (response.status === 429) {
+        console.error('[V2-ALERT][QUOTA-EXHAUST]', {
+          provider: 'gemini',
+          status: 429,
+          retries_exhausted: true,
+          model: model || DEFAULT_MODEL,
+          err_prefix: errText.substring(0, 100),
+        });
+      }
       throw new Error(`Gemini API error: ${response.status} - ${errText.substring(0, 200)}`);
     } catch (err) {
       clearTimeout(warningTimer);

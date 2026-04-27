@@ -1409,6 +1409,16 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
         console.log(`[TM:${uid}] ❌ Disconnected (code: ${statusCode}). Reconnect: ${shouldReconnect}. isCurrentSocket: ${isCurrentSocket}`);
+        // C-433 §B observability: alert grep-able en Railway logs
+        // (railway logs -s miia-backend | grep -F '[V2-ALERT][BAILEYS-DISCONNECT]')
+        console.error('[V2-ALERT][BAILEYS-DISCONNECT]', {
+          uid,
+          statusCode,
+          shouldReconnect,
+          isCurrentSocket,
+          loggedOut: statusCode === DisconnectReason.loggedOut,
+          reason: lastDisconnect?.error?.message || 'unknown',
+        });
 
         if (shouldReconnect) {
           // ═══ FIX RACE CONDITION: No reconectar si ya hay socket nuevo activo ═══
