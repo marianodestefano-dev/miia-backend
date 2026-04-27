@@ -85,6 +85,81 @@ const safetyFilter = require('../core/safety_filter');
 const consentRoutes = require('../routes/consent');
 
 // ═══════════════════════════════════════════════════════════════
+// C-434 — Helpers anti-bug Planta Baja (§6.19 cache TTL + §6.21 input loop)
+// ═══════════════════════════════════════════════════════════════
+
+// §A — Bug §6.19: cache contactTypes con TTL 30 días.
+// Doctrina: protecciones nuevas NUNCA bypasables por caché pre-existente.
+// Entries sin meta (legacy / migration) se tratan como stale → re-classify
+// en su próximo touch. Entries con timestamp se invalidan tras 30 días.
+const CONTACT_TYPE_TTL_DAYS = 30;
+const CONTACT_TYPE_TTL_MS = CONTACT_TYPE_TTL_DAYS * 24 * 60 * 60 * 1000;
+
+function isContactTypeStale(ctx, phone) {
+  if (!ctx.contactTypesMeta) return true; // Sin meta inicializada → forzar re-classify
+  const ts = ctx.contactTypesMeta[phone];
+  if (!ts || typeof ts !== 'number') return true; // Sin timestamp legacy → re-classify
+  return (Date.now() - ts) > CONTACT_TYPE_TTL_MS;
+}
+
+function recordContactTypeFresh(ctx, phone) {
+  if (!ctx.contactTypesMeta) ctx.contactTypesMeta = {};
+  ctx.contactTypesMeta[phone] = Date.now();
+}
+
+// §B — Bug §6.21: anti-loop por similarity input contacto.
+// Buffer últimos 5 inputs por phone. Si nuevo input == identico O Jaccard
+// trigrams ≥ 0.95 con uno en ventana 5 min → NO regenerar respuesta.
+// Complementa loopWatcher (§6.20) que detecta volumen out, pero NO detecta
+// inputs repetidos del contacto que generan respuestas variadas Gemini.
+const LOOP_INPUT_WINDOW_MS = 5 * 60 * 1000;
+const LOOP_INPUT_SIMILARITY_THRESHOLD = 0.95;
+const LOOP_INPUT_BUFFER_SIZE = 5;
+
+function _trigrams(s) {
+  s = String(s || '').toLowerCase().trim();
+  if (s.length < 3) return new Set([s]);
+  const tris = new Set();
+  for (let i = 0; i <= s.length - 3; i++) tris.add(s.slice(i, i + 3));
+  return tris;
+}
+
+function _jaccardSimilarity(a, b) {
+  const A = _trigrams(a);
+  const B = _trigrams(b);
+  if (A.size === 0 && B.size === 0) return 1;
+  let intersection = 0;
+  for (const t of A) if (B.has(t)) intersection++;
+  const union = A.size + B.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function isInputLoop(ctx, phone, currentText) {
+  if (!ctx.lastInputs || !ctx.lastInputs[phone]) return false;
+  const buffer = ctx.lastInputs[phone];
+  const now = Date.now();
+  const text = String(currentText || '');
+  for (const entry of buffer) {
+    if (!entry || typeof entry.ts !== 'number') continue;
+    if (now - entry.ts > LOOP_INPUT_WINDOW_MS) continue;
+    if (entry.text === text) return { match: 'exact', age_ms: now - entry.ts };
+    const sim = _jaccardSimilarity(entry.text, text);
+    if (sim >= LOOP_INPUT_SIMILARITY_THRESHOLD) {
+      return { match: 'similar', similarity: sim, age_ms: now - entry.ts };
+    }
+  }
+  return false;
+}
+
+function recordInput(ctx, phone, text) {
+  if (!ctx.lastInputs) ctx.lastInputs = {};
+  if (!ctx.lastInputs[phone]) ctx.lastInputs[phone] = [];
+  const buf = ctx.lastInputs[phone];
+  buf.push({ text: String(text || '').slice(0, 500), ts: Date.now() });
+  while (buf.length > LOOP_INPUT_BUFFER_SIZE) buf.shift();
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ESTADO POR TENANT (aislado en memoria)
 // ═══════════════════════════════════════════════════════════════
 
@@ -1985,6 +2060,9 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
           // Actualizar contactTypes en memoria
           ctx.contactTypes[phone] = newType;
           ctx.contactTypes[`${basePhone}@s.whatsapp.net`] = newType;
+          // C-434 §A: marcar timestamp para TTL 30d (clasificación manual owner)
+          recordContactTypeFresh(ctx, phone);
+          recordContactTypeFresh(ctx, `${basePhone}@s.whatsapp.net`);
           // Persistir en contact_index
           await saveContactIndex(ownerUid, basePhone, {
             type: newType,
@@ -2128,6 +2206,14 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // ── PASO 7: Clasificar contacto (cascada multi-negocio) ──
   let contactType = ctx.contactTypes[phone];
   let classification = null;
+  // C-434 §A — Bug §6.19 fix: cache TTL 30d. Entries sin meta (migration legacy
+  // pre-fix) se tratan como stale → re-classify primer touch. Entries con
+  // timestamp >30d → re-classify. Cierra bypass histórico de bloqueo
+  // precautorio C-004 (incidente bot Coordinadora 2026-04-14).
+  if (contactType && isContactTypeStale(ctx, phone)) {
+    console.log(`${logPrefix} [C-434][§6.19-FIX] cache stale ${phone.substring(0, 12)}... — re-classifying`);
+    contactType = null; // forzar cascada classifyContact
+  }
   // BUG1-FIX: Usar fuzzyPhoneLookup para detectar familia/equipo con formatos inconsistentes
   const familyLookup = fuzzyPhoneLookup(ctx.familyContacts, basePhone);
   const teamLookup = fuzzyPhoneLookup(ctx.teamContacts, basePhone);
@@ -2163,6 +2249,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       }
     }
     ctx.contactTypes[phone] = contactType;
+    recordContactTypeFresh(ctx, phone); // C-434 §A: marcar timestamp para TTL 30d
   }
 
   // ── PASO 7b: CONTACT GATE — Decisión centralizada: ¿MIIA responde o no? ──
@@ -3046,6 +3133,29 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   if (!aiApiKey || aiApiKey === 'YOUR_GEMINI_API_KEY_HERE') {
     console.error(`${logPrefix} ❌ NO HAY API KEY configurada para uid=${uid}. Mensaje de ${basePhone} sin respuesta.`);
     return;
+  }
+
+  // C-434 §B — Bug §6.21 fix: anti-loop por input rep contacto.
+  // Si nuevo input es idéntico O similarity ≥ 0.95 con uno en ventana 5 min →
+  // NO regenerar respuesta. Cierra gap incidente bot Coordinadora 2026-04-14
+  // (anti-loop por eco MIIA no detectaba inputs repetidos del bot externo).
+  // Self-chat queda excluido (Mariano puede repetir libremente).
+  if (!isSelfChat && messageBody) {
+    const loopMatch = isInputLoop(ctx, phone, messageBody);
+    if (loopMatch) {
+      console.error('[V2-ALERT][INPUT-LOOP]', {
+        uid,
+        phone: phone.substring(0, 12) + '...',
+        contactType,
+        match: loopMatch.match,
+        similarity: loopMatch.similarity,
+        age_seconds: Math.round(loopMatch.age_ms / 1000),
+        action: 'no_response_returned',
+      });
+      console.log(`${logPrefix} [C-434][§6.21-FIX] input loop detectado (${loopMatch.match}) — NO regenerar respuesta`);
+      return; // bail out — no llamar Gemini, no responder al contacto
+    }
+    recordInput(ctx, phone, messageBody);
   }
 
   // Determinar contexto de IA para router inteligente
@@ -6000,6 +6110,17 @@ module.exports = {
   // Contexto (para inspección o testing)
   getOrCreateContext,
   tenantContexts,
+
+  // C-434 §A + §B helpers (anti-bugs Planta Baja, exportados para tests)
+  isContactTypeStale,
+  recordContactTypeFresh,
+  isInputLoop,
+  recordInput,
+  CONTACT_TYPE_TTL_DAYS,
+  CONTACT_TYPE_TTL_MS,
+  LOOP_INPUT_WINDOW_MS,
+  LOOP_INPUT_SIMILARITY_THRESHOLD,
+  LOOP_INPUT_BUFFER_SIZE,
 
   // Firestore helpers (para uso externo o testing)
   loadOwnerProfile,
