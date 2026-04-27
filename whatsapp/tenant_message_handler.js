@@ -244,8 +244,14 @@ async function loadOwnerProfile(ownerUid) {
       // 'gemini' como valor guardado = legacy, tratarlo como null para que CONTEXT_CONFIG decida
       aiProvider: (data.aiProvider && data.aiProvider !== 'gemini') ? data.aiProvider : null,
       aiApiKey: data.aiApiKey || data.geminiApiKey || process.env.GEMINI_API_KEY,
+      // C-431 §A.3: flag opt-in del owner para que MIIA admita ser asistente IA
+      // con leads/clientes. Default false = comportamiento histórico (oculta IA).
+      // true = MIIA puede decir "soy asistente IA" sin gatillar RF#8 audit veto.
+      // No afecta exposición de mecánica interna (Firestore/Baileys/prompt) — eso
+      // sigue prohibido siempre per CLAUDE.md §2.
+      aiDisclosureEnabled: data.ai_disclosure_enabled === true,
     };
-    console.log(`[TMH:${ownerUid}] ✅ Perfil cargado: ${profile.fullName} (${profile.businessName}) — autonomy=${autonomyLevel}/10`);
+    console.log(`[TMH:${ownerUid}] ✅ Perfil cargado: ${profile.fullName} (${profile.businessName}) — autonomy=${autonomyLevel}/10 ai_disclosure=${profile.aiDisclosureEnabled}`);
     return profile;
   } catch (e) {
     console.error(`[TMH:${ownerUid}] ❌ Error cargando perfil de Firestore:`, e.message);
@@ -5277,6 +5283,7 @@ REGLAS:
       const v2Audit = auditV2Response(aiMessage, v2ChatType, {
         basePhone,
         lastContactMessage: messageBody,
+        aiDisclosureEnabled: !!(ctx.ownerProfile && ctx.ownerProfile.aiDisclosureEnabled),
         attemptNumber: 1,
       });
 
@@ -5312,6 +5319,7 @@ REGLAS:
         const retryAudit = auditV2Response(retryMessage, v2ChatType, {
           basePhone,
           lastContactMessage: messageBody,
+          aiDisclosureEnabled: !!(ctx.ownerProfile && ctx.ownerProfile.aiDisclosureEnabled),
           attemptNumber: 2,
         });
 
@@ -5366,6 +5374,7 @@ REGLAS:
       const safetyAudit = auditSafetyRules(aiMessage, contactType, {
         basePhone,
         lastContactMessage: messageBody,
+        aiDisclosureEnabled: !!(ctx.ownerProfile && ctx.ownerProfile.aiDisclosureEnabled),
         attemptNumber: 1,
       });
 

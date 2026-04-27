@@ -10983,6 +10983,46 @@ app.post('/api/consent/adn', express.json(), async (req, res) => {
   }
 });
 
+// ── Consent AI Disclosure — owner configura si MIIA puede admitir ser IA (C-431 §A.1)
+// Cierra GAP-1 doctrinal CLAUDE.md §2 ("owners deben CONFIGURAR si MIIA admite ser IA").
+// Pre-existente: hard-coded (V1 oculta, MIIA CENTER admite). Post-C-431: flag per-owner.
+// Audit trail granular: cada cambio agrega record nuevo (timestamp en doc id) — append-only.
+app.post('/api/owner/ai-disclosure', express.json(), async (req, res) => {
+  try {
+    const { uid, enabled, browser_ip, user_agent, screen, language } = req.body;
+    if (!uid || typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'uid y enabled (boolean) requeridos' });
+    }
+
+    const serverIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'desconocida';
+    const ts = Date.now();
+
+    const record = {
+      uid,
+      consent_type: 'ai_disclosure',
+      enabled,
+      timestamp: new Date().toISOString(),
+      ip_browser: browser_ip || 'desconocida',
+      ip_server: serverIp,
+      user_agent: user_agent || '',
+      screen: screen || '',
+      language: language || ''
+    };
+
+    await admin.firestore().collection('consent_records').doc(`${uid}_ai_disclosure_${ts}`).set(record);
+    await admin.firestore().collection('users').doc(uid).update({
+      ai_disclosure_enabled: enabled,
+      ai_disclosure_set_at: new Date()
+    });
+
+    console.log(`[CONSENT-AI] Owner ${uid.substring(0, 12)}... ai_disclosure=${enabled} (IP: ${serverIp})`);
+    res.json({ success: true, enabled });
+  } catch (e) {
+    console.error('[CONSENT-AI] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/status', async (req, res) => {
   const uid = req.query.uid;
   if (!uid) return res.json({ connected: false, hasQR: false });

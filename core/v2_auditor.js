@@ -207,25 +207,36 @@ function detectAleLeak(text, chatType, ctx) {
  * Respuesta a lead/client revela ser IA o expone mecánica interna.
  * Excepción: family/ale_pareja (familia sabe que existe MIIA).
  * Excepción: chatType === 'miia_lead' (MIIA CENTER tiene reglas distintas).
+ * Excepción C-431 §A.3: si owner aceptó ai_disclosure_enabled=true, MIIA puede
+ * decir abiertamente que es asistente IA (cierra GAP-1 doctrinal CLAUDE.md §2).
+ * Sigue prohibiendo exponer mecánica interna (Firestore/Baileys/prompt/cron) —
+ * eso es leak de infraestructura, no de identidad IA.
  */
-function detectIALeak(text, chatType) {
+function detectIALeak(text, chatType, aiDisclosureEnabled = false) {
   if (!text) return null;
   if (chatType === 'miia_lead') return null; // MIIA CENTER permite admitir IA
   if (FAMILY_LIKE.has(chatType)) return null; // familia sabe — no flag
   if (chatType === 'owner_selfchat') return null; // self-chat = Mariano consigo
 
-  // Solo aplicamos a leads, clients, medilink_team, follow_up_cold, group desconocido
-  const patterns = [
+  // C-431 §A.3: si owner habilitó disclosure IA, los patterns de "admite IA"
+  // (identidad) NO son leak. Los patterns de mecánica interna (modelo, infra,
+  // términos técnicos) SÍ siguen siendo leak siempre — son riesgo distinto.
+  const identityPatterns = [
     { rx: /\bsoy\s+(una?|el|la)\s+(ia|i\.a\.|inteligencia\s+artificial)\b/i, label: 'admite IA' },
     { rx: /\bsoy\s+(una?|el|la)\s+\w+(\s+\w+)?\s+(de|con)\s+(ia|i\.a\.|inteligencia\s+artificial)\b/i, label: 'admite "de IA" (asistente de IA, etc)' },
     { rx: /\bsoy\s+un?a?\s+(asistente\s+virtual|bot|chatbot|asistente\s+autom[áa]tic[ao]|asistente\s+digital)\b/i, label: 'admite asistente virtual/bot' },
     { rx: /\b(automatiza|automatizo|automatic[ao])\s+(estos\s+)?mensajes?\b/i, label: 'admite automatización de mensajes' },
     { rx: /\b(no\s+soy\s+una\s+persona\s+real|soy\s+un\s+programa)\b/i, label: 'admite no-persona' },
+  ];
+  const mechanicsPatterns = [
     { rx: /\bmi\s+(sistema|algoritmo|modelo\s+de\s+lenguaje|prompt|backend)\b/i, label: 'expone mecánica' },
     { rx: /\b(gemini|gpt|claude|openai|anthropic|llama|mistral)\b/i, label: 'menciona modelo IA' },
     { rx: /\b(firestore|baileys|whatsapp\s+api|google\s+cloud|railway)\b/i, label: 'expone infraestructura' },
     { rx: /\b(prompt|cron|pipeline|tag|webhook)\b/i, label: 'expone término técnico' },
   ];
+  const patterns = aiDisclosureEnabled
+    ? mechanicsPatterns                  // identidad IA permitida; mecánica sigue prohibida
+    : [...identityPatterns, ...mechanicsPatterns];
   const hits = [];
   for (const p of patterns) {
     const m = text.match(p.rx);
@@ -362,7 +373,7 @@ function auditV2Response(candidate, chatType, ctx = {}) {
     });
   }
 
-  const iaLeak = detectIALeak(candidate, chatType);
+  const iaLeak = detectIALeak(candidate, chatType, !!ctx.aiDisclosureEnabled);
   if (iaLeak) {
     criticalFlags.push({
       code: 'RF8_no_ia_con_leads',
@@ -529,7 +540,7 @@ function auditSafetyRules(candidate, chatType, ctx = {}) {
     });
   }
 
-  const iaLeak = detectIALeak(candidate, chatType);
+  const iaLeak = detectIALeak(candidate, chatType, !!ctx.aiDisclosureEnabled);
   if (iaLeak) {
     criticalFlags.push({
       code: 'RF8_no_ia_con_leads',
