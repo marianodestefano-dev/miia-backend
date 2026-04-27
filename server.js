@@ -248,6 +248,8 @@ const instagramHandler = require('./core/instagram_handler');
 const numberMigration = require('./core/number_migration');
 const privacyReport = require('./core/privacy_report');
 const auditLogger = require('./core/audit_logger');
+// C-435 §B — Zod validation para 5 endpoints públicos (Iter 4 Top 5)
+const publicSchemas = require('./core/validation/public_schemas');
 const waGateway = require('./whatsapp/whatsapp_gateway');
 const aiGateway = require('./ai/ai_gateway');
 const promptCache = require('./ai/prompt_cache');
@@ -10963,10 +10965,10 @@ app.get('/api/firebase-status', (_req, res) => {
 
 // ─── /api/status — WhatsApp connection status (used by dashboard.html) ────────
 // ── Consentimiento ADN — firma electrónica con IP del servidor ───────────────
-app.post('/api/consent/adn', express.json(), async (req, res) => {
+app.post('/api/consent/adn', express.json(), publicSchemas.validate(publicSchemas.consentAdnSchema), async (req, res) => {
   try {
+    // C-435 §B — Zod ya validó uid (20-128 chars) + accepted (truthy).
     const { uid, email, accepted, browser_ip, user_agent, screen, language, consent_text } = req.body;
-    if (!uid || !accepted) return res.status(400).json({ error: 'uid y accepted requeridos' });
 
     // Leer número de WhatsApp del tenant desde Firestore
     let waNumber = 'no conectado';
@@ -15449,7 +15451,19 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
       if (!isValid) return res.status(401).send('Invalid signature');
     }
 
-    const event = JSON.parse(req.body.toString());
+    // C-435 §B/§F — Zod validation post-signature (passthrough permisivo)
+    let event;
+    try {
+      event = JSON.parse(req.body.toString());
+    } catch (_) {
+      return res.status(400).send('Invalid JSON');
+    }
+    const _zParse = publicSchemas.paddleWebhookSchema.safeParse(event);
+    if (!_zParse.success) {
+      console.warn('[PADDLE] webhook schema fail', _zParse.error.issues.slice(0, 3));
+      return res.status(400).json({ error: 'Validation failed', details: _zParse.error.issues.slice(0, 5).map(i => ({ path: i.path.join('.'), message: i.message })) });
+    }
+    event = _zParse.data;
     const eventType = event.event_type;
     const data = event.data;
     const customData = data?.custom_data || {};
@@ -15720,7 +15734,7 @@ app.post('/api/mercadopago/agent-checkout', express.json(), async (req, res) => 
   }
 });
 
-app.post('/api/mercadopago/webhook', express.json(), async (req, res) => {
+app.post('/api/mercadopago/webhook', express.json(), publicSchemas.validate(publicSchemas.mercadopagoWebhookSchema), async (req, res) => {
   try {
     const { type, data } = req.body;
     if (type !== 'payment') return res.json({ received: true });
@@ -16619,17 +16633,13 @@ app.post('/api/admin/new-registration', express.json(), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTERPRISE LEAD ENDPOINT — Formulario público para captar leads enterprise
 // ═══════════════════════════════════════════════════════════════════════════════
-app.post('/api/enterprise-lead', express.json(), async (req, res) => {
+app.post('/api/enterprise-lead', express.json(), publicSchemas.validate(publicSchemas.enterpriseLeadSchema), async (req, res) => {
   const startTime = Date.now();
   console.log('[ENTERPRISE-LEAD] 📥 Nueva solicitud recibida');
 
   try {
-    // ── 1. Validar datos del formulario ──
+    // C-435 §B — Zod ya validó shape (name/email/phone obligatorios + caps).
     const { name, email, phone, website, team_size, message } = req.body || {};
-    if (!name || !email || !phone) {
-      console.warn('[ENTERPRISE-LEAD] ❌ Datos incompletos:', { name: !!name, email: !!email, phone: !!phone });
-      return res.status(400).json({ error: 'name, email y phone son requeridos' });
-    }
     console.log(`[ENTERPRISE-LEAD] 👤 Lead: ${name} | ${email} | ${phone} | website: ${website || 'N/A'} | team: ${team_size || 'N/A'}`);
 
     // ── 2. Guardar lead en Firestore ──
@@ -16861,7 +16871,7 @@ app.get('/api/instagram/webhook', (req, res) => {
 });
 
 // Recibir mensajes entrantes de Instagram DMs
-app.post('/api/instagram/webhook', express.json(), async (req, res) => {
+app.post('/api/instagram/webhook', express.json(), publicSchemas.validate(publicSchemas.instagramWebhookSchema), async (req, res) => {
   // Responder 200 inmediatamente (Meta requiere respuesta rápida)
   res.sendStatus(200);
 
