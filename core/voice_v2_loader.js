@@ -81,7 +81,7 @@ function readVoiceSeed() {
     _voiceSeedCache = fs.readFileSync(VOICE_SEED_PATH, 'utf8');
     return _voiceSeedCache;
   } catch (err) {
-    console.error(`[V2][voice_v2_loader] ❌ FAIL leyendo voice_seed.md: ${err.message}`);
+    console.error('[V2-ALERT]', { context: 'voice_v2_loader.readVoiceSeed', error: err.message, path: VOICE_SEED_PATH, code: err.code, stack: err.stack });
     _loadFailures++;
     return null;
   }
@@ -98,7 +98,7 @@ function readVoiceSeedCenter() {
     _voiceSeedCenterCache = fs.readFileSync(VOICE_SEED_CENTER_PATH, 'utf8');
     return _voiceSeedCenterCache;
   } catch (err) {
-    console.error(`[V2][voice_v2_loader] ❌ FAIL leyendo voice_seed_center.md: ${err.message}`);
+    console.error('[V2-ALERT]', { context: 'voice_v2_loader.readVoiceSeedCenter', error: err.message, path: VOICE_SEED_CENTER_PATH, code: err.code, stack: err.stack });
     _loadFailures++;
     return null;
   }
@@ -115,7 +115,7 @@ function readModeDetectors() {
     _modeDetectorsCache = fs.readFileSync(MODE_DETECTORS_PATH, 'utf8');
     return _modeDetectorsCache;
   } catch (err) {
-    console.error(`[V2][voice_v2_loader] ❌ FAIL leyendo mode_detectors.md: ${err.message}`);
+    console.error('[V2-ALERT]', { context: 'voice_v2_loader.readModeDetectors', error: err.message, path: MODE_DETECTORS_PATH, code: err.code, stack: err.stack });
     _loadFailures++;
     return null;
   }
@@ -242,7 +242,7 @@ function loadVoiceDNAForGroup(chatType, opts = {}) {
 
   const seed = readVoiceSeed();
   if (!seed) {
-    console.warn(`[V2][voice_v2_loader] ⚠️ FALLBACK V1 — voice_seed no disponible (intento #${_loadAttempts}, fallos #${_loadFailures})`);
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForGroup', reason: 'voice_seed_unavailable', chatType, attempts: _loadAttempts, failures: _loadFailures, fallback_to: 'V1' });
     return { systemBlock: '', subregistro: null, fallback: true, source: 'none' };
   }
 
@@ -256,7 +256,7 @@ function loadVoiceDNAForGroup(chatType, opts = {}) {
   // Resto: identidad base común §1 + subregistro específico §2.x
   const baseHeader = SUBREGISTRO_HEADERS[chatType];
   if (!baseHeader) {
-    console.warn(`[V2][voice_v2_loader] ⚠️ chatType desconocido: '${chatType}' — fallback V1`);
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForGroup', reason: 'unknown_chattype', chatType, fallback_to: 'V1' });
     return { systemBlock: '', subregistro: null, fallback: true, source: 'unknown_chattype' };
   }
 
@@ -264,7 +264,7 @@ function loadVoiceDNAForGroup(chatType, opts = {}) {
   const subSection = extractSubregistro(seed, baseHeader);
 
   if (!subSection) {
-    console.warn(`[V2][voice_v2_loader] ⚠️ Subregistro NO encontrado en voice_seed.md para chatType='${chatType}' (header buscado='${baseHeader}') — fallback V1`);
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForGroup', reason: 'subregistro_missing_in_seed', chatType, baseHeader, fallback_to: 'V1' });
     return { systemBlock: '', subregistro: null, fallback: true, source: 'subregistro_missing' };
   }
 
@@ -312,7 +312,7 @@ function loadVoiceDNAForCenter(chatType, opts = {}) {
 
   const seed = readVoiceSeedCenter();
   if (!seed) {
-    console.warn(`[V2][voice_v2_loader] ⚠️ FALLBACK V1 — voice_seed_center no disponible (intento #${_loadAttempts}, fallos #${_loadFailures})`);
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForCenter', reason: 'voice_seed_center_unavailable', chatType, attempts: _loadAttempts, failures: _loadFailures, fallback_to: 'V1' });
     return { systemBlock: '', subregistro: null, fallback: true, source: 'none' };
   }
 
@@ -325,7 +325,7 @@ function loadVoiceDNAForCenter(chatType, opts = {}) {
 
   const baseHeader = SUBREGISTRO_HEADERS_CENTER[chatType];
   if (!baseHeader) {
-    console.warn(`[V2][voice_v2_loader] ⚠️ chatType no soportado en CENTER: '${chatType}' — fallback V1`);
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForCenter', reason: 'unknown_chattype_center', chatType, fallback_to: 'V1' });
     return { systemBlock: '', subregistro: null, fallback: true, source: 'unknown_chattype_center' };
   }
 
@@ -333,7 +333,7 @@ function loadVoiceDNAForCenter(chatType, opts = {}) {
   const subSection = extractSubregistro(seed, baseHeader);
 
   if (!subSection) {
-    console.warn(`[V2][voice_v2_loader] ⚠️ Subregistro CENTER NO encontrado para chatType='${chatType}' (header='${baseHeader}') — fallback V1`);
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForCenter', reason: 'subregistro_missing_center', chatType, baseHeader, fallback_to: 'V1' });
     return { systemBlock: '', subregistro: null, fallback: true, source: 'subregistro_missing_center' };
   }
 

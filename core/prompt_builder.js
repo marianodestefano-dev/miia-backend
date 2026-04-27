@@ -2140,7 +2140,14 @@ ${buildPrioridadesCompactas('friend_broadcast')}`;
       }
     }
   } catch (err) {
-    console.error(`[V2][buildFriendBroadcastPrompt] ⚠️ wire-in error: ${err.message} — fallback V1 puro`);
+    console.error('[V2-ALERT]', {
+      context: 'prompt_builder.buildFriendBroadcastPrompt_wirein',
+      uid: options && options.uid,
+      chatType: 'family',
+      error: err.message,
+      stack: err.stack,
+      fallback_to: 'V1',
+    });
   }
 
   return basePrompt;
@@ -2252,7 +2259,14 @@ ${buildPrioridadesCompactas('medilink_team')}`;
       }
     }
   } catch (err) {
-    console.error(`[V2][buildMedilinkTeamPrompt] ⚠️ wire-in error: ${err.message} — fallback V1 puro`);
+    console.error('[V2-ALERT]', {
+      context: 'prompt_builder.buildMedilinkTeamPrompt_wirein',
+      uid: options && options.uid,
+      chatType: 'medilink_team',
+      error: err.message,
+      stack: err.stack,
+      fallback_to: 'V1',
+    });
   }
 
   return basePrompt;

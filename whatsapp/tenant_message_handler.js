@@ -2973,10 +2973,34 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         fullPrompt += `\n\n[V2 VOICE DNA — subregistro: ${v2Subregistro}]\n${v2VoiceBlock}`;
         console.log(`${logPrefix} [V2][UPSTREAM] subregistro=${v2Subregistro} chars=${v2VoiceBlock.length} chatType=${v2ChatType}`);
       } else {
-        console.log(`${logPrefix} [V2][UPSTREAM] fallback (no DNA para chatType=${v2ChatType})`);
+        // C-426 §B.3: UID elegible V2 + chatType resuelto pero DNA cayó a fallback.
+        // Esto NO es comportamiento esperado en MIIA CENTER — si pasa, hay bug
+        // en seed o en chatType resolution. Alert para hacer grep en logs prod.
+        if (v2ChatType && v2ChatType !== 'unknown') {
+          console.warn('[V2-ALERT]', {
+            context: 'TMH.upstream_v2_dna_fallback',
+            uid,
+            chatType: v2ChatType,
+            contactType,
+            basePhone,
+            isSelfChat,
+            source: dna?.source || 'no_dna',
+            fallback_to: 'V1',
+          });
+        } else {
+          console.log(`${logPrefix} [V2][UPSTREAM] fallback (no DNA para chatType=${v2ChatType})`);
+        }
       }
     } catch (v2Err) {
-      console.error(`${logPrefix} [V2][UPSTREAM] error cargando DNA, sigue V1: ${v2Err.message}`);
+      console.error('[V2-ALERT]', {
+        context: 'TMH.upstream_v2_dna_load_error',
+        uid,
+        chatType: v2ChatType,
+        contactType,
+        error: v2Err.message,
+        stack: v2Err.stack,
+        fallback_to: 'V1',
+      });
       v2ChatType = null;
       v2VoiceBlock = null;
     }
@@ -5276,7 +5300,13 @@ REGLAS:
             console.log(`${logPrefix} [V2][AUDIT] retry OK (${retryResult.latencyMs}ms, ${retryMessage.length}c)`);
           }
         } catch (retryErr) {
-          console.error(`${logPrefix} [V2][AUDIT] retry falló: ${retryErr.message}`);
+          console.error('[V2-ALERT]', {
+            context: 'TMH.audit_retry_call_failed',
+            uid,
+            chatType: v2ChatType,
+            error: retryErr.message,
+            action: 'using_original_aiMessage_for_retryAudit',
+          });
         }
 
         const retryAudit = auditV2Response(retryMessage, v2ChatType, {
@@ -5286,10 +5316,22 @@ REGLAS:
         });
 
         if (retryAudit.shouldUseFallback) {
-          console.error(`${logPrefix} [V2][AUDIT] 2do intento también flagged (${retryAudit.criticalFlags.map(f => f.code).join(',')}) — usando fallback §8`);
+          console.error('[V2-ALERT]', {
+            context: 'TMH.audit_retry_still_flagged',
+            uid,
+            chatType: v2ChatType,
+            criticalFlags: retryAudit.criticalFlags.map(f => f.code),
+            action: 'using_fallback_§8',
+          });
           const fb = retryAudit.fallback || getV2FallbackByChatType(v2ChatType);
           if (!fb) {
-            console.error(`${logPrefix} [V2][AUDIT] owner_selfchat atascado (fallback=null) — NO ENVIAR. Alertar Mariano.`);
+            console.error('[V2-ALERT]', {
+              context: 'TMH.audit_owner_selfchat_no_fallback',
+              uid,
+              chatType: v2ChatType,
+              action: 'bailout_no_send',
+              alert_owner: true,
+            });
             return; // bail out — no enviar nada al owner
           }
           aiMessage = fb;
@@ -5301,7 +5343,14 @@ REGLAS:
         console.log(`${logPrefix} [V2][AUDIT] OK (warnings=${v2Audit.warningFlags.length})`);
       }
     } catch (v2AuditErr) {
-      console.error(`${logPrefix} [V2][AUDIT] error en auditor (fail-open, envía aiMessage tal cual): ${v2AuditErr.message}`);
+      console.error('[V2-ALERT]', {
+        context: 'TMH.audit_runtime_error',
+        uid,
+        chatType: v2ChatType,
+        error: v2AuditErr.message,
+        stack: v2AuditErr.stack,
+        action: 'fail_open_send_aiMessage',
+      });
     }
   }
 
@@ -5531,7 +5580,15 @@ REGLAS:
         console.log(`${logPrefix} [V2][SPLIT] subregistro=${v2Subregistro} parts=${parts.length} (V1=${v1Parts.length})`);
       }
     } catch (v2SplitErr) {
-      console.error(`${logPrefix} [V2][SPLIT/EMOJI] error, usando V1 splitter: ${v2SplitErr.message}`);
+      console.error('[V2-ALERT]', {
+        context: 'TMH.split_emoji_runtime_error',
+        uid,
+        chatType: v2ChatType,
+        subregistro: v2Subregistro,
+        error: v2SplitErr.message,
+        stack: v2SplitErr.stack,
+        action: 'fallback_v1_splitter',
+      });
       // parts queda como lo dejó el splitter V1
     }
   }
