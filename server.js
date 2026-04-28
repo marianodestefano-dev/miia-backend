@@ -11076,6 +11076,32 @@ app.get(
   }
 );
 
+// C-443 — Privacy Report Export (download JSON GDPR-compliant)
+app.get(
+  '/api/privacy/report/export',
+  rrRequireAuth,
+  rrRequireOwnerOfResource('userId', 'query'),
+  publicSchemas.validate(privacyReportSchemas.privacyReportRequestSchema, { source: 'query' }),
+  async (req, res) => {
+    try {
+      const { userId } = req.query;
+      const report = await privacyReportBuilder.buildPrivacyReport(userId);
+      const datePart = new Date().toISOString().slice(0, 10);
+      const filename = `privacy_report_${userId}_${datePart}.json`;
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      console.log(`[PRIVACY-EXPORT] Owner ${userId.substring(0, 12)}... export download`);
+      res.send(JSON.stringify(report, null, 2));
+    } catch (e) {
+      console.error('[V2-ALERT][PRIVACY-EXPORT-FAIL]', {
+        error: e.message,
+        userId_prefix: (req.query.userId || '').substring(0, 12) + '...',
+      });
+      res.status(500).json({ error: 'Privacy export failed', detail: e.message });
+    }
+  }
+);
+
 app.get('/api/status', async (req, res) => {
   const uid = req.query.uid;
   if (!uid) return res.json({ connected: false, hasQR: false });
