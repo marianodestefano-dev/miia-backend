@@ -228,15 +228,48 @@ async function getReceivedReservations(bizPhone, status) {
 
 /**
  * Actualizar estado de una solicitud de reserva recibida.
+ *
+ * C-460-RESERVATIONS-TX: envuelto en runTransaction con check status
+ * pre-condition. Race window: 2 updates concurrentes (ej: business
+ * confirma + cron auto-cancela timeout) -> last-write-wins.
  */
 async function updateReceivedReservation(bizPhone, requestId, status) {
   const cleanPhone = (bizPhone || '').replace(/[^0-9]/g, '');
-  await db().collection('miia_network').doc(cleanPhone)
-    .collection('reservation_requests').doc(requestId).update({
-      status,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  if (!cleanPhone) throw new Error('bizPhone invalid');
+  if (!requestId) throw new Error('requestId invalid');
+
+  const fs = db();
+  const ref = fs.collection('miia_network').doc(cleanPhone)
+    .collection('reservation_requests').doc(requestId);
+
+  try {
+    await fs.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        const err = new Error(`Solicitud ${requestId} no existe`);
+        err.code = 'RESERVATION_NOT_FOUND';
+        throw err;
+      }
+      const current = snap.data() || {};
+
+      if (status && !_isValidReservationTransition(current.status, status)) {
+        const err = new Error(`Transition invalido: ${current.status} -> ${status}`);
+        err.code = 'RESERVATION_INVALID_TRANSITION';
+        err.from = current.status;
+        err.to = status;
+        throw err;
+      }
+
+      tx.update(ref, {
+        status,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
     });
-  console.log(`[MIIA-NETWORK] 📝 Solicitud ${requestId} → ${status}`);
+  } catch (txErr) {
+    if (txErr.code) throw txErr;
+    throw new Error(`updateReceivedReservation tx failed: ${txErr.message}`);
+  }
+  console.log(`[MIIA-NETWORK] 📝 Solicitud ${requestId} → ${status} (tx atomica)`);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -403,25 +436,86 @@ async function getReservations(uid, filters = {}) {
 }
 
 /**
- * Actualizar estado de una reserva.
+ * C-460-RESERVATIONS-TX — Atomic update via Firestore runTransaction.
+ *
+ * Origen: C-456 audit ITEM B.1 hallazgo BAJA-MEDIA. Refactor pattern
+ * analogo C-457 verify-otp + C-448 forgetme + C-450 distill lock.
+ *
+ * Bug previo: read doc.get() -> validate -> doc.update sin tx. Race
+ * window entre 2 updates concurrentes (ej: owner confirma + cron auto-
+ * cancela timeout) -> last-write-wins, 1 cambio se pierde.
+ *
+ * Fix: read + check status pre-condition + update DENTRO de tx atomico.
+ *
+ * Status transitions validas (forward-only):
+ *   pending -> confirmed | cancelled | completed
+ *   confirmed -> completed | cancelled
+ *   cancelled -> (terminal, no transitions)
+ *   completed -> (terminal, no transitions)
+ *
+ * Si el caller pide invalid transition -> throws err.code='RESERVATION_
+ * INVALID_TRANSITION' con err.from + err.to.
  */
+const _RESERVATION_VALID_TRANSITIONS = {
+  pending: new Set(['confirmed', 'cancelled', 'completed']),
+  confirmed: new Set(['completed', 'cancelled']),
+  cancelled: new Set([]),
+  completed: new Set([]),
+};
+
+function _isValidReservationTransition(from, to) {
+  if (!from || !to) return true; // partial updates sin status -> OK
+  if (from === to) return true; // idempotente
+  const allowed = _RESERVATION_VALID_TRANSITIONS[from];
+  if (!allowed) return true; // status no en la maquina formal -> permisivo
+  return allowed.has(to);
+}
+
 async function updateReservation(uid, reservationId, updates) {
-  const ref = db().collection('users').doc(uid)
+  if (!uid || typeof uid !== 'string') throw new Error('uid invalid');
+  if (!reservationId) throw new Error('reservationId invalid');
+  if (!updates || typeof updates !== 'object') throw new Error('updates invalid');
+
+  const fs = db();
+  const ref = fs.collection('users').doc(uid)
     .collection('miia_reservations').doc(reservationId);
 
-  const doc = await ref.get();
-  if (!doc.exists) {
-    throw new Error(`Reserva ${reservationId} no existe`);
+  let resultData;
+  try {
+    resultData = await fs.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        const err = new Error(`Reserva ${reservationId} no existe`);
+        err.code = 'RESERVATION_NOT_FOUND';
+        throw err;
+      }
+      const current = snap.data() || {};
+
+      // Validar transition si el update incluye status.
+      if (updates.status && !_isValidReservationTransition(current.status, updates.status)) {
+        const err = new Error(`Transition invalido: ${current.status} -> ${updates.status}`);
+        err.code = 'RESERVATION_INVALID_TRANSITION';
+        err.from = current.status;
+        err.to = updates.status;
+        throw err;
+      }
+
+      const updateData = { ...updates, updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+      if (updates.status === 'confirmed') {
+        updateData.confirmedAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      tx.update(ref, updateData);
+      return updateData;
+    });
+  } catch (txErr) {
+    // Re-throw con code preservado para que callers puedan diferenciar.
+    if (txErr.code) throw txErr;
+    throw new Error(`updateReservation tx failed: ${txErr.message}`);
   }
 
-  const updateData = { ...updates, updatedAt: admin.firestore.FieldValue.serverTimestamp() };
-  if (updates.status === 'confirmed') {
-    updateData.confirmedAt = admin.firestore.FieldValue.serverTimestamp();
-  }
-
-  await ref.update(updateData);
-  console.log(`[RESERVATIONS] 📝 Reserva ${reservationId} actualizada: ${JSON.stringify(updates)}`);
-  return { reservationId, ...updateData };
+  console.log(`[RESERVATIONS] 📝 Reserva ${reservationId} actualizada (tx atomica): ${JSON.stringify(updates)}`);
+  return { reservationId, ...resultData };
 }
 
 /**
@@ -688,6 +782,10 @@ module.exports = {
   getReservations,
   updateReservation,
   cancelReservation,
+
+  // C-460-RESERVATIONS-TX: state machine helper exportado para tests.
+  _isValidReservationTransition,
+  _RESERVATION_VALID_TRANSITIONS,
 
   // Favorites
   saveFavorite,
