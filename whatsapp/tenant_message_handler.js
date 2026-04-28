@@ -4539,29 +4539,50 @@ REGLAS:
               const isExternalContact = contacto && contacto !== 'self' && /^\d{8,15}$/.test(contacto.replace(/\D/g, ''));
               const resolvedContactPhone = isExternalContact ? contacto : (isSelfChat ? 'self' : (basePhone || phone || contacto));
 
-              await db().collection('users').doc(ownerUid).collection('miia_agenda').add({
-                contactPhone: resolvedContactPhone,
-                contactName: contactName,
-                mentionedContact: contacto,
-                scheduledFor: scheduledForUTC,
-                scheduledForLocal: fecha,
-                ownerTimezone: effectiveTimezone,
-                reason: razon,
-                durationMinutes: tmhAgendarDuration,
-                promptHint: hint || '',
-                eventMode: eventMode,
-                eventLocation: ubicacion || '',
-                meetLink: meetLink || '',
-                status: 'pending',
-                calendarSynced: calendarOk,
-                calendarEventId: calendarEventId || null,
-                agendaType: agendaType || 'personal',
-                remindContact: !isSelfChat || isExternalContact,
-                reminderMinutes: 10,
-                requestedBy: phone,
-                createdAt: new Date().toISOString(),
-                source: isSelfChat ? 'owner_selfchat' : 'contact_request'
-              });
+              // C-475 ROOT-CAUSE: validar scheduledForUTC es ISO valido ANTES de .add()
+              // + defaults para todos los optional fields (Firestore rechaza undefined).
+              // Sin este guard, integrity_engine.js L240/L247 marca el evento como
+              // _corruptData=true por scheduledFor invalido o reason vacio.
+              const _scheduledIsoOk = typeof scheduledForUTC === 'string'
+                && scheduledForUTC.length > 0
+                && !isNaN(new Date(scheduledForUTC).getTime());
+              const _reasonOk = typeof razon === 'string' && razon.trim().length > 0;
+              if (!_scheduledIsoOk || !_reasonOk) {
+                console.error(`${logPrefix} [AGENDA-TMH] ❌ C-475 GUARD: rechazo evento invalido (scheduledFor=${scheduledForUTC} reason="${razon}"). NO se guarda en Firestore para evitar _corruptData.`);
+                if (!isSelfChat) {
+                  try {
+                    await sendToOwnerSelfChat(
+                      `⚠️ No pude agendar el evento de *${contactName || 'contacto'}*.\n` +
+                      `Razón: datos inválidos (fecha="${fecha}" reason="${razon}").\n` +
+                      `MIIA NO promete sin cumplir — pediles que repitan con fecha clara.`
+                    );
+                  } catch (_) {}
+                }
+              } else {
+                await db().collection('users').doc(ownerUid).collection('miia_agenda').add({
+                  contactPhone: resolvedContactPhone || 'unknown',
+                  contactName: contactName || '',
+                  mentionedContact: contacto || '',
+                  scheduledFor: scheduledForUTC,
+                  scheduledForLocal: fecha,
+                  ownerTimezone: effectiveTimezone,
+                  reason: razon,
+                  durationMinutes: typeof tmhAgendarDuration === 'number' ? tmhAgendarDuration : 30,
+                  promptHint: hint || '',
+                  eventMode: eventMode || 'presencial',
+                  eventLocation: ubicacion || '',
+                  meetLink: meetLink || '',
+                  status: 'pending',
+                  calendarSynced: !!calendarOk,
+                  calendarEventId: calendarEventId || null,
+                  agendaType: agendaType || 'personal',
+                  remindContact: !isSelfChat || isExternalContact,
+                  reminderMinutes: 10,
+                  requestedBy: phone || '',
+                  createdAt: new Date().toISOString(),
+                  source: isSelfChat ? 'owner_selfchat' : 'contact_request'
+                });
+              }
               _agendaTagProcessed = true; // FIX C-060 A: respaldo — ya se seteó en Calendar OK
               if (!_agendaLastResult) _agendaLastResult = { razon, fecha, contactName, calendarOk, dedup: false };
               console.log(`${logPrefix} [AGENDA-TMH] ✅ Evento guardado en Firestore`);
