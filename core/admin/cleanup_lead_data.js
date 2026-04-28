@@ -54,6 +54,28 @@ function _toJid(phone) {
 }
 
 /**
+ * Genera todas las variantes de key posibles para un phone en
+ * Firestore: raw (573...), con sufijo @s.whatsapp.net, y posiblemente
+ * @lid si hay LIDs almacenados (no comunes pero defensivo).
+ *
+ * Anchor C-459 ejecucion: hallazgo prod muestra que contactTypes
+ * tiene tanto "573163937365" como "573163937365@s.whatsapp.net" para
+ * el mismo contacto. Ambas variants deben borrarse.
+ */
+function _allKeyVariants(phone) {
+  const out = new Set();
+  if (typeof phone !== 'string' || !phone.length) return [];
+  // Phone raw (sin sufijo)
+  const raw = phone.includes('@') ? phone.split('@')[0] : phone;
+  out.add(raw);
+  // Con sufijo whatsapp
+  out.add(`${raw}@s.whatsapp.net`);
+  // Con sufijo lid (defensivo - menos comun)
+  out.add(`${raw}@lid`);
+  return Array.from(out);
+}
+
+/**
  * Lista todos los rastros de los phones target en el tenant.
  * NO borra nada. Solo retorna snapshot para auditoria.
  *
@@ -68,39 +90,54 @@ async function inspectLeadData(ownerUid, phones) {
   if (!Array.isArray(phones) || phones.length === 0) {
     throw new Error('phones array required');
   }
-  const targetJids = phones.map(_toJid).filter(Boolean);
+  // Generar TODAS las variantes de key (raw + @s.whatsapp.net + @lid).
+  // Anchor C-459 ejecucion: prod tiene mismas data en ambos formatos.
+  const allVariants = phones.flatMap(_allKeyVariants);
   const dbFs = _getFirestore();
   const result = {
     tenantConversations: {},
     miiaMemory: [],
   };
 
-  // 1. tenant_conversations — leer doc + extraer subkeys por phone
+  // 1. tenant_conversations — leer doc + extraer subkeys por phone variant
+  // C-459 LOUD-FAIL: si UNAUTHENTICATED u otro error, propagar (no silent).
+  let tcDoc;
   try {
-    const tcDoc = await dbFs.collection('users').doc(ownerUid)
+    tcDoc = await dbFs.collection('users').doc(ownerUid)
       .collection('miia_persistent').doc('tenant_conversations').get();
-    if (tcDoc.exists) {
-      const data = tcDoc.data() || {};
-      for (const jid of targetJids) {
-        const slot = {
-          conversations: (data.conversations || {})[jid] || null,
-          contactTypes: (data.contactTypes || {})[jid] || null,
-          leadNames: (data.leadNames || {})[jid] || null,
-          conversationMetadata: (data.conversationMetadata || {})[jid] || null,
-          ownerActiveChats: (data.ownerActiveChats || {})[jid] || null,
-        };
-        result.tenantConversations[jid] = slot;
+  } catch (e) {
+    throw new Error(`tenant_conversations.get failed: ${e.message}`);
+  }
+  if (tcDoc && tcDoc.exists) {
+    const data = tcDoc.data() || {};
+    for (const variant of allVariants) {
+      const slot = {
+        conversations: (data.conversations || {})[variant] || null,
+        contactTypes: (data.contactTypes || {})[variant] || null,
+        leadNames: (data.leadNames || {})[variant] || null,
+        conversationMetadata: (data.conversationMetadata || {})[variant] || null,
+        ownerActiveChats: (data.ownerActiveChats || {})[variant] || null,
+      };
+      // Solo agregar slot al resultado si tiene al menos 1 valor real
+      const hasData = Object.values(slot).some((v) => v !== null);
+      if (hasData) {
+        result.tenantConversations[variant] = slot;
       }
     }
-  } catch (_) { /* tenant_conversations puede no existir */ }
+  }
 
-  // 2. miia_memory — buscar episodios donde contactPhone === jid
+  // 2. miia_memory — buscar episodios donde contactPhone === variant
+  let memSnap;
   try {
-    const memSnap = await dbFs.collection('users').doc(ownerUid)
+    memSnap = await dbFs.collection('users').doc(ownerUid)
       .collection('miia_memory').get();
+  } catch (e) {
+    throw new Error(`miia_memory.get failed: ${e.message}`);
+  }
+  if (memSnap) {
     for (const ep of memSnap.docs) {
       const epData = ep.data() || {};
-      if (targetJids.includes(epData.contactPhone)) {
+      if (allVariants.includes(epData.contactPhone)) {
         result.miiaMemory.push({
           episodeId: ep.id,
           contactPhone: epData.contactPhone,
@@ -110,7 +147,7 @@ async function inspectLeadData(ownerUid, phones) {
         });
       }
     }
-  } catch (_) { /* miia_memory puede no existir */ }
+  }
 
   return result;
 }
@@ -160,7 +197,9 @@ async function deleteLeadData(ownerUid, phones) {
   if (!Array.isArray(phones) || phones.length === 0) {
     throw new Error('phones array required');
   }
-  const targetJids = phones.map(_toJid).filter(Boolean);
+  // Generar TODAS las variantes de key (anchor C-459: prod tiene tanto
+  // raw como @s.whatsapp.net en contactTypes).
+  const allVariants = phones.flatMap(_allKeyVariants);
   const dbFs = _getFirestore();
   // Priorizar mock test (dbFs._FieldValue) si esta presente; sino usar real.
   let FieldValue = dbFs._FieldValue || null;
@@ -179,55 +218,65 @@ async function deleteLeadData(ownerUid, phones) {
     ownerActiveChats: [],
   };
 
-  // 1. tenant_conversations — borrar keys map per-phone via FieldValue.delete
+  // 1. tenant_conversations — borrar keys map per-variant.
+  // C-459 LOUD-FAIL: errores propagan, no silent.
+  // C-459 anchor: dotted paths con @ (ej "conversations.573@s.whatsapp.net")
+  // NO se aplican en Firestore update. Refactor: read full doc + mutate in-
+  // memory + set overwrite. Usa FieldPath explicito si esta soportado.
+  const tcRef = dbFs.collection('users').doc(ownerUid)
+    .collection('miia_persistent').doc('tenant_conversations');
+  let tcDoc;
   try {
-    const tcRef = dbFs.collection('users').doc(ownerUid)
-      .collection('miia_persistent').doc('tenant_conversations');
-    const tcDoc = await tcRef.get();
-    if (tcDoc.exists) {
-      const update = {};
-      for (const jid of targetJids) {
-        const data = tcDoc.data() || {};
-        if ((data.conversations || {})[jid] !== undefined) {
-          update[`conversations.${jid}`] = FieldValue ? FieldValue.delete() : null;
-          deletedKeys.conversations.push(jid);
+    tcDoc = await tcRef.get();
+  } catch (e) {
+    throw new Error(`tenant_conversations.get failed: ${e.message}`);
+  }
+  if (tcDoc && tcDoc.exists) {
+    const data = tcDoc.data() || {};
+    let mutated = false;
+    const fields = ['conversations', 'contactTypes', 'leadNames',
+                    'conversationMetadata', 'ownerActiveChats'];
+    for (const field of fields) {
+      const map = data[field];
+      if (!map || typeof map !== 'object') continue;
+      for (const variant of allVariants) {
+        if (map[variant] !== undefined) {
+          delete map[variant];
+          deletedKeys[field].push(variant);
+          mutated = true;
         }
-        if ((data.contactTypes || {})[jid] !== undefined) {
-          update[`contactTypes.${jid}`] = FieldValue ? FieldValue.delete() : null;
-          deletedKeys.contactTypes.push(jid);
-        }
-        if ((data.leadNames || {})[jid] !== undefined) {
-          update[`leadNames.${jid}`] = FieldValue ? FieldValue.delete() : null;
-          deletedKeys.leadNames.push(jid);
-        }
-        if ((data.conversationMetadata || {})[jid] !== undefined) {
-          update[`conversationMetadata.${jid}`] = FieldValue ? FieldValue.delete() : null;
-          deletedKeys.conversationMetadata.push(jid);
-        }
-        if ((data.ownerActiveChats || {})[jid] !== undefined) {
-          update[`ownerActiveChats.${jid}`] = FieldValue ? FieldValue.delete() : null;
-          deletedKeys.ownerActiveChats.push(jid);
-        }
-      }
-      if (Object.keys(update).length > 0) {
-        await tcRef.update(update);
       }
     }
-  } catch (_) { /* idempotente */ }
+    if (mutated) {
+      try {
+        // set overwrite - mutamos el doc completo en memoria.
+        // Riesgo race: si otro proceso escribe entre get/set, perdemos cambio.
+        // Para cleanup admin one-shot OK (no concurrencia).
+        await tcRef.set(data);
+      } catch (e) {
+        throw new Error(`tenant_conversations.set failed: ${e.message}`);
+      }
+    }
+  }
 
   // 2. miia_memory — borrar episodios donde contactPhone match
   let deletedEpisodes = 0;
+  const memCol = dbFs.collection('users').doc(ownerUid).collection('miia_memory');
+  let memSnap;
   try {
-    const memCol = dbFs.collection('users').doc(ownerUid).collection('miia_memory');
-    const memSnap = await memCol.get();
+    memSnap = await memCol.get();
+  } catch (e) {
+    throw new Error(`miia_memory.get failed: ${e.message}`);
+  }
+  if (memSnap) {
     for (const ep of memSnap.docs) {
       const epData = ep.data() || {};
-      if (targetJids.includes(epData.contactPhone)) {
+      if (allVariants.includes(epData.contactPhone)) {
         await memCol.doc(ep.id).delete();
         deletedEpisodes += 1;
       }
     }
-  } catch (_) { /* miia_memory puede no existir */ }
+  }
 
   return { deletedKeys, deletedEpisodes };
 }
