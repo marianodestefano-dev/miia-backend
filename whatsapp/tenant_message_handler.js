@@ -75,6 +75,8 @@ const { resolveV2ChatType, loadVoiceDNAForGroup, isV2EligibleUid } = require('..
 const mmcDetector = require('../core/mmc/episode_detector');
 // C-446-FIX-ADN §C — Re-engagement detector + auditor (Bug 1)
 const reEngagement = require('../core/re_engagement');
+// C-446-FIX-ADN §B.2 — Probadita REAL detector + opt-in (Bug 2 v3 conceptual)
+const probaditaReal = require('../core/probadita_real');
 const { splitBySubregistro } = require('../core/split_smart_heuristic');
 const { injectInBubbleArray } = require('../core/emoji_injector');
 const { auditV2Response, auditSafetyRules, getFallbackByChatType: getV2FallbackByChatType } = require('../core/v2_auditor');
@@ -3182,6 +3184,30 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       });
       // NO re-throw — flujo Gemini sigue.
     }
+  }
+
+  // C-446-FIX-ADN §B.2 — Probadita REAL detector (Bug 2 v3).
+  // Detectar preferencia/necesidad concreta del lead → inyectar opt-in
+  // prompt para que MIIA pregunte si quiere demo (en lugar de tirar
+  // imagen marketing eliminada en §B.1).
+  // SOLO aplica a leads MIIA CENTER (isV2EligibleUid + miia_lead/lead).
+  try {
+    if (!isSelfChat && messageBody && contactType && reEngagement.LEAD_LIKE_TYPES.has(contactType) && isV2EligibleUid(uid)) {
+      const detectedFeatures = probaditaReal.detectProbaditaFeatures(messageBody);
+      if (detectedFeatures.length > 0) {
+        const probaditaBlock = probaditaReal.buildProbaditaPromptContext(detectedFeatures);
+        if (probaditaBlock) {
+          fullPrompt += probaditaBlock;
+          console.log(`${logPrefix} [C-446][§B.2][PROBADITA-REAL] features=${detectedFeatures.map((d) => d.feature).join(',')} injected at prompt`);
+        }
+      }
+    }
+  } catch (probErr) {
+    console.error('[V2-ALERT][PROBADITA-REAL-WIRE-IN]', {
+      phone: (phone || '').substring(0, 12) + '...',
+      error: probErr.message,
+    });
+    // NO re-throw — flujo Gemini sigue.
   }
 
   // C-446-FIX-ADN §C — Re-engagement context inyección (Bug 1).
