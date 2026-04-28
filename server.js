@@ -217,7 +217,8 @@ const tenantMessageHandler = require('./whatsapp/tenant_message_handler');
 const taskScheduler = require('./core/task_scheduler');
 const { runPreprocess } = require('./core/miia_preprocess');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_postprocess');
-const salesAssets = require('./core/sales_assets');
+// C-446-FIX-ADN §B.1 — sales_assets ELIMINADO (Mariano: "imagen/gif es mierda").
+// const salesAssets = require('./core/sales_assets'); // DEPRECATED
 const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
 const integrityGuards = require('./core/integrity_guards');
 const healthMonitor = require('./core/health_monitor');
@@ -8999,26 +9000,12 @@ REGLAS:
       const isMiiaSalesLead = conversationMetadata[phone]?.contactType === 'miia_lead';
       const isMiiaSupportClient = conversationMetadata[phone]?.contactType === 'miia_client' || contactTypes[phone] === 'miia_client';
 
-      // ═══ MIIA SALES: Enviar imagen/banner ilustrativo (30% de las probaditas) ═══
-      if (isMiiaSalesLead && !isSelfChat) {
-        const currentProbadita = (conversations[phone] || []).filter(m => m.role === 'assistant').length;
-        if (currentProbadita <= 10 && salesAssets.shouldSendImage(currentProbadita)) {
-          const topic = salesAssets.detectSalesTopic(aiMessage);
-          if (topic) {
-            try {
-              const asset = await salesAssets.getSalesAsset(topic);
-              if (asset) {
-                // Enviar imagen primero (ilustrativa), luego el texto con datos reales
-                await safeSendMessage(phone, { mimetype: 'image/png', data: asset.buffer.toString('base64') }, { caption: asset.caption, isMiiaSalesLead: true });
-                console.log(`[SALES-IMAGE] 🖼️ Imagen "${topic}" enviada a ${basePhone} (probadita #${currentProbadita})`);
-                await new Promise(r => setTimeout(r, 1500)); // Pausa entre imagen y texto
-              }
-            } catch (imgErr) {
-              console.warn(`[SALES-IMAGE] ⚠️ Error enviando imagen: ${imgErr.message}`);
-            }
-          }
-        }
-      }
+      // ═══ C-446-FIX-ADN §B.1 — sales-image bastardo ELIMINADO ═══
+      // Mariano firma 2026-04-28: "probadita es probar usar MIIA, NO enviar imagen
+      // o gif... eso es mierda podrida". Sales-image visual marketing
+      // contradice MIIA_SALES_PROFILE REGLA #1 ("DEMOS REALES, HACELO").
+      // Probadita real (recordatorios + búsquedas + agendamientos via MIIA real)
+      // se implementa en §B.2 — queda pendiente firma scope §B.2.
 
       // ═══ ANTI-MENTIRA: Validar que MIIA no confirme acciones que no ejecutó (LOG-ONLY Etapa A) ═══
       const _postChatType = conversationMetadata[phone]?.contactType || (isSelfChat ? 'owner' : 'lead');
