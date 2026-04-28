@@ -78,6 +78,17 @@ const privacyReportRequestSchema = z.object({
   userId: z.string().min(20).max(128),
 }).strict();
 
+// C-444 — forget-me request body (POST /api/privacy/forget-me)
+const forgetMeRequestSchema = z.object({
+  userId: z.string().min(20).max(128),
+}).strict();
+
+// C-444 — forget-me confirm body (POST /api/privacy/forget-me/confirm)
+const forgetMeConfirmSchema = z.object({
+  userId: z.string().min(20).max(128),
+  token: z.string().length(6).regex(/^\d{6}$/),
+}).strict();
+
 module.exports = {
   profileSchema,
   conversationsSummarySchema,
@@ -88,4 +99,6 @@ module.exports = {
   auditLogSchema,
   privacyReportSchema,
   privacyReportRequestSchema,
+  forgetMeRequestSchema,
+  forgetMeConfirmSchema,
 };

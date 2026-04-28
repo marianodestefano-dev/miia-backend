@@ -253,6 +253,8 @@ const publicSchemas = require('./core/validation/public_schemas');
 // C-442 — privacy report builder + schemas
 const privacyReportBuilder = require('./core/privacy/report_builder');
 const privacyReportSchemas = require('./core/privacy/report_schema');
+// C-444 — privacy forget-me helper
+const privacyForgetMe = require('./core/privacy/forget_me');
 const waGateway = require('./whatsapp/whatsapp_gateway');
 const aiGateway = require('./ai/ai_gateway');
 const promptCache = require('./ai/prompt_cache');
@@ -11098,6 +11100,78 @@ app.get(
         userId_prefix: (req.query.userId || '').substring(0, 12) + '...',
       });
       res.status(500).json({ error: 'Privacy export failed', detail: e.message });
+    }
+  }
+);
+
+// C-444 — Privacy Forget-Me request (genera OTP, marca flag pending)
+// NO ejecuta delete inmediato — caller debe enviar OTP por mail al owner
+// y owner confirma vía endpoint /confirm. Cron diario procesa flags
+// confirmed.
+app.post(
+  '/api/privacy/forget-me',
+  rrRequireAuth,
+  rrRequireOwnerOfResource('userId', 'body'),
+  express.json(),
+  publicSchemas.validate(privacyReportSchemas.forgetMeRequestSchema),
+  async (req, res) => {
+    try {
+      const { userId } = req.body;
+      const { token, expiresAt } = await privacyForgetMe.requestForgetMe(userId);
+      console.log(`[PRIVACY-FORGETME] Owner ${userId.substring(0, 12)}... request issued`);
+      // OTP token NO se incluye en response — solo se envía por mail
+      // (caller frontend muestra mensaje "revisá tu email").
+      // En implementación real, enviar mail aquí. Por ahora solo log.
+      console.log(`[PRIVACY-FORGETME] OTP for ${userId.substring(0, 12)}...: <REDACTED>`);
+      res.json({ success: true, expiresAt, ttlHours: 24 });
+    } catch (e) {
+      console.error('[V2-ALERT][PRIVACY-FORGETME-FAIL]', {
+        error: e.message,
+        userId_prefix: (req.body.userId || '').substring(0, 12) + '...',
+      });
+      res.status(400).json({ error: 'Forget-me request failed', detail: e.message });
+    }
+  }
+);
+
+// C-444 — Privacy Forget-Me confirm (valida OTP, marca confirmed=true)
+app.post(
+  '/api/privacy/forget-me/confirm',
+  rrRequireAuth,
+  rrRequireOwnerOfResource('userId', 'body'),
+  express.json(),
+  publicSchemas.validate(privacyReportSchemas.forgetMeConfirmSchema),
+  async (req, res) => {
+    try {
+      const { userId, token } = req.body;
+      await privacyForgetMe.confirmForgetMe(userId, token);
+      console.log(`[PRIVACY-FORGETME] Owner ${userId.substring(0, 12)}... confirmed`);
+      res.json({ success: true, message: 'Confirmación recibida. Tus datos serán eliminados en próximo ciclo cron diario.' });
+    } catch (e) {
+      console.error('[V2-ALERT][PRIVACY-FORGETME-CONFIRM-FAIL]', {
+        error: e.message,
+        userId_prefix: (req.body.userId || '').substring(0, 12) + '...',
+      });
+      res.status(400).json({ error: 'Forget-me confirm failed', detail: e.message });
+    }
+  }
+);
+
+// C-444 — Privacy Forget-Me cancel (owner cambió de opinión)
+app.post(
+  '/api/privacy/forget-me/cancel',
+  rrRequireAuth,
+  rrRequireOwnerOfResource('userId', 'body'),
+  express.json(),
+  publicSchemas.validate(privacyReportSchemas.forgetMeRequestSchema),
+  async (req, res) => {
+    try {
+      const { userId } = req.body;
+      await privacyForgetMe.cancelForgetMe(userId);
+      console.log(`[PRIVACY-FORGETME] Owner ${userId.substring(0, 12)}... cancelled`);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(400).json({ error: 'Forget-me cancel failed', detail: e.message });
     }
   }
 );
