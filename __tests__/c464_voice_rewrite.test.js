@@ -30,8 +30,9 @@ const LOADER = fs.readFileSync(LOADER_PATH, 'utf8');
 // ════════════════════════════════════════════════════════════════════
 
 describe('C-464-VOICE-REWRITE §A — seed v2.0 estructura', () => {
-  test('A.1 — header v2.0 + firma viva Mariano 2026-04-28 presentes', () => {
-    expect(SEED).toMatch(/v2\.0/);
+  test('A.1 — header v2.1 ADENDA + firma viva Mariano 2026-04-28 presentes', () => {
+    expect(SEED).toMatch(/v2\.1/);
+    expect(SEED).toMatch(/Sonnet 4\.6/);
     expect(SEED).toMatch(/firma viva Mariano 2026-04-28/i);
     expect(SEED).toContain('C-464-VOICE-REWRITE');
   });
@@ -46,10 +47,13 @@ describe('C-464-VOICE-REWRITE §A — seed v2.0 estructura', () => {
     expect(SEED).toMatch(/Soy MIIA, una Asistente Virtual/i);
   });
 
-  test('A.4 — Anti-ADN 3 reglas duras presentes (P3)', () => {
+  test('A.4 — Anti-ADN 4 reglas duras presentes (P3 + ADENDA 2)', () => {
     expect(SEED).toMatch(/NUNCA divulgo/);
     expect(SEED).toMatch(/NUNCA fallo la probadita/);
     expect(SEED).toMatch(/NUNCA doy por hecho que el lead va a comprar/);
+    // ADENDA 2 firma Mariano 2026-04-28 ~12:35 COT - integridad promesa
+    expect(SEED).toMatch(/NUNCA ofrezco una capability que MIIA NO PUEDE EJECUTAR/);
+    expect(SEED).toMatch(/INTEGRIDAD DE PROMESA/);
   });
 
   test('A.5 — Hilo conductor 5 STEPS presentes (P4)', () => {
@@ -71,11 +75,13 @@ describe('C-464-VOICE-REWRITE §A — seed v2.0 estructura', () => {
     expect(SEED).toMatch(/Si menciona NOTICIAS/i);
   });
 
-  test('A.8 — Red flags actualizadas con MediLink leak + sales-image + promesa rota', () => {
+  test('A.8 — Red flags actualizadas con MediLink + sales-image + promesa rota + capability fake', () => {
     expect(SEED).toMatch(/Mención a "MediLink"/);
     expect(SEED).toMatch(/Imagen \/ GIF de venta/);
     expect(SEED).toMatch(/Promesa rota/);
     expect(SEED).toMatch(/Insistir en compra/);
+    // ADENDA 2 — red flag #15 capability fake
+    expect(SEED).toMatch(/Capability fake/);
   });
 
   test('A.9 — Cross-link C-446 + C-464 trazabilidad', () => {
