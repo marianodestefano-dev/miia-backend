@@ -71,6 +71,8 @@ const { fetchOfficialTRM } = require('../core/financial_verify');
 // Doctrina §2-bis CLAUDE.md: pruebas en CENTER → migración a Personal → CENTER reduce a 4 subregistros pro.
 // Cada bloque envuelto en try/catch — si V2 falla, V1 sigue como hoy.
 const { resolveV2ChatType, loadVoiceDNAForGroup, isV2EligibleUid } = require('../core/voice_v2_loader');
+// C-440 — MMC wire-in (etapa 1 §2-bis: solo MIIA CENTER por isV2EligibleUid)
+const mmcDetector = require('../core/mmc/episode_detector');
 const { splitBySubregistro } = require('../core/split_smart_heuristic');
 const { injectInBubbleArray } = require('../core/emoji_injector');
 const { auditV2Response, auditSafetyRules, getFallbackByChatType: getV2FallbackByChatType } = require('../core/v2_auditor');
@@ -3156,6 +3158,28 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       return; // bail out — no llamar Gemini, no responder al contacto
     }
     recordInput(ctx, phone, messageBody);
+  }
+
+  // C-440 — MMC wire-in (etapa 1 §2-bis estricta: SOLO MIIA CENTER).
+  // Tracking de episodios conversacionales para Piso 1 (memoria episódica).
+  // Reusa isV2EligibleUid (whitelist UID = A5pMESWlfmPWCoCPRbwy85EzUzy2).
+  // Defensivo: try/catch — falla MMC NO bloquea flujo Gemini.
+  // SKIP self-chat (Mariano consigo mismo, sin valor episódico aún).
+  if (!isSelfChat && messageBody && phone && isV2EligibleUid(uid)) {
+    try {
+      const mmcMsgId = `msg_${Date.now()}_${phone.slice(-8)}`;
+      const result = await mmcDetector.autoAssignMessageToEpisode(
+        uid, phone, mmcMsgId, Date.now()
+      );
+      console.log(`${logPrefix} [C-440][MMC] ${result.action} episode=${result.episodeId.substring(0, 12)}...`);
+    } catch (mmcErr) {
+      console.error('[V2-ALERT][MMC-WIRE-IN]', {
+        uid: uid.substring(0, 12) + '...',
+        phone: phone.substring(0, 12) + '...',
+        error: mmcErr.message,
+      });
+      // NO re-throw — flujo Gemini sigue.
+    }
   }
 
   // Determinar contexto de IA para router inteligente
