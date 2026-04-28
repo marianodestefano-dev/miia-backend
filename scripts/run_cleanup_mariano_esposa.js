@@ -36,10 +36,10 @@ const cleanup = require('../core/admin/cleanup_lead_data');
 
 const MIIA_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
 
-// Phones target firmados por Mariano (esposa pendiente confirmacion).
+// Phones target firmados por Mariano (firma viva chat 2026-04-28 ~10:55 COT).
 const PHONES_TARGET = [
   '573163937365', // Mariano Personal (firmado)
-  // '<esposa>',  // ← AGREGAR cuando Mariano confirme via mail.
+  '573137501884', // Esposa Mariano (firmado 2026-04-28 ~10:55 COT)
 ];
 
 async function _firestoreInit() {
