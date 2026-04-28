@@ -178,7 +178,8 @@ function selfTest() {
 
   const fixtures = [
     'Anthropic key: sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-    'Google key: AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI',
+    // C-441-SEC: fixture FAKE matchea regex pero NO es key productiva (GitHub Secret Scanning false-positive)
+    'Google key: AIzaSyFAKE_TEST_FIXTURE_DO_NOT_USE_aa01',
     'OpenAI key: sk-proj-abc123abc123abc123abc123abc123abc123abc123',
     'Stripe live: sk_live_51HnXXXXXXXXXXXXXXXXXX',
     'JWT auth: eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWxpY2UifQ.signaturepart123',
@@ -215,7 +216,7 @@ function selfTest() {
   // Assertions: críticas no aparecen en output
   const criticals = [
     'sk-ant-api03',
-    'AIzaSyDdI0hCZtE6vySjMm',
+    'AIzaSyFAKE_TEST_FIXTURE',
     'sk-proj-abc123',
     'sk_live_51Hn',
     'eyJhbGciOiJIUzI1NiJ9',

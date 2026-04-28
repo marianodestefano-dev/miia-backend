@@ -555,7 +555,7 @@ b662507  docs: update CLAUDE.md to reflect Baileys architecture
 FIREBASE_PROJECT_ID=miia-app-8cbd0
 FIREBASE_CLIENT_EMAIL=firebase-adminsdk-fbsvc@miia-app-8cbd0.iam.gserviceaccount.com
 FIREBASE_PRIVATE_KEY=[1734 chars]
-GEMINI_API_KEY=AIzaSyAnmgNUtrP1YhAXNiOf25J1U2uxObQuk28
+GEMINI_API_KEY=[REDACTED-C-441-SEC-rotated-2026-04-27]
 PADDLE_API_KEY=[69 chars]
 PADDLE_WEBHOOK_SECRET=[33 chars]
 PADDLE_ENV=production
