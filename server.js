@@ -16554,6 +16554,9 @@ app.post('/api/auth/send-otp', express.json(), async (req, res) => {
  * Agente verifica OTP y recibe custom token de Firebase para login.
  * Body: { email, otpCode }
  */
+// C-457-OTP-VERIFY-RACE: atomic verify helper extraído a core/auth/otp_verify.js
+const otpVerify = require('./core/auth/otp_verify');
+
 app.post('/api/auth/verify-otp', express.json(), async (req, res) => {
   try {
     const { email, otpCode } = req.body;
@@ -16572,58 +16575,44 @@ app.post('/api/auth/verify-otp', express.json(), async (req, res) => {
       return res.status(404).json({ error: 'No existe una cuenta con ese email. Contacta a tu jefe para que te invite.' });
     }
 
-    // 2. Verificar OTP en Firestore
-    const otpDoc = await admin.firestore().collection('users').doc(agentUid).collection('auth').doc('otp').get();
-    if (!otpDoc.exists) {
-      console.log(`[OTP] ❌ No hay OTP pendiente para ${normalizedEmail}`);
-      return res.status(400).json({ error: 'No hay código pendiente. Pide a tu jefe que genere uno nuevo.' });
+    // 2. Verificación atómica vía transaction (C-457-OTP-VERIFY-RACE).
+    // Lógica extracted en core/auth/otp_verify.js para test aislado.
+    let txResult;
+    try {
+      txResult = await otpVerify.verifyOtpAtomic(admin.firestore(), agentUid, otpCode);
+    } catch (txErr) {
+      switch (txErr.code) {
+        case 'OTP_NOT_FOUND':
+          console.log(`[OTP] ❌ No hay OTP pendiente para ${normalizedEmail}`);
+          return res.status(400).json({ error: 'No hay código pendiente. Pide a tu jefe que genere uno nuevo.' });
+        case 'OTP_ATTEMPTS_EXCEEDED':
+          console.log(`[OTP] 🚫 Demasiados intentos para ${normalizedEmail}`);
+          return res.status(429).json({ error: 'Demasiados intentos fallidos. Pide un código nuevo.' });
+        case 'OTP_EXPIRED':
+          console.log(`[OTP] ⏰ OTP expirado para ${normalizedEmail}`);
+          return res.status(400).json({ error: 'El código expiró. Pide a tu jefe que genere uno nuevo.' });
+        case 'OTP_ALREADY_USED':
+          console.log(`[OTP] ⚠️ OTP ya usado para ${normalizedEmail}`);
+          return res.status(400).json({ error: 'Este código ya fue usado. Pide uno nuevo.' });
+        case 'OTP_CODE_MISMATCH': {
+          const remaining = typeof txErr.remaining === 'number' ? txErr.remaining : 0;
+          console.log(`[OTP] ❌ Código incorrecto para ${normalizedEmail}. Intentos restantes: ${remaining}`);
+          return res.status(400).json({ error: `Código incorrecto. Te quedan ${remaining} intentos.` });
+        }
+        default:
+          console.error(`[OTP] ❌ Error tx verify-otp:`, txErr.message);
+          return res.status(500).json({ error: 'Error interno: ' + txErr.message });
+      }
     }
 
-    const otpData = otpDoc.data();
-
-    // Verificar intentos (max 5)
-    if (otpData.attempts >= 5) {
-      console.log(`[OTP] 🚫 Demasiados intentos para ${normalizedEmail}`);
-      return res.status(429).json({ error: 'Demasiados intentos fallidos. Pide un código nuevo.' });
-    }
-
-    // Verificar expiración
-    if (new Date(otpData.expiresAt) < new Date()) {
-      console.log(`[OTP] ⏰ OTP expirado para ${normalizedEmail}`);
-      return res.status(400).json({ error: 'El código expiró. Pide a tu jefe que genere uno nuevo.' });
-    }
-
-    // Verificar si ya fue usado
-    if (otpData.used) {
-      console.log(`[OTP] ⚠️ OTP ya usado para ${normalizedEmail}`);
-      return res.status(400).json({ error: 'Este código ya fue usado. Pide uno nuevo.' });
-    }
-
-    // Verificar código
-    if (otpData.code !== otpCode.trim()) {
-      // Incrementar intentos
-      await admin.firestore().collection('users').doc(agentUid).collection('auth').doc('otp').update({
-        attempts: (otpData.attempts || 0) + 1
-      });
-      const remaining = 5 - (otpData.attempts || 0) - 1;
-      console.log(`[OTP] ❌ Código incorrecto para ${normalizedEmail}. Intentos restantes: ${remaining}`);
-      return res.status(400).json({ error: `Código incorrecto. Te quedan ${remaining} intentos.` });
-    }
-
-    // 3. OTP válido — marcar como usado
-    await admin.firestore().collection('users').doc(agentUid).collection('auth').doc('otp').update({
-      used: true,
-      usedAt: new Date().toISOString()
-    });
-
-    // Actualizar estado del agente
+    // 3. Post-tx: actualizar estado del agente (idempotente).
     await admin.firestore().collection('users').doc(agentUid).update({
       otp_pending: false,
       otp_verified: true,
-      last_login: new Date().toISOString()
+      last_login: new Date().toISOString(),
     });
 
-    // 4. Generar custom token de Firebase para login
+    // 4. Generar custom token de Firebase para login (no toca Firestore).
     const customToken = await admin.auth().createCustomToken(agentUid);
     console.log(`[OTP] ✅ OTP verificado para ${normalizedEmail} — custom token generado`);
 
@@ -16632,7 +16621,7 @@ app.post('/api/auth/verify-otp', express.json(), async (req, res) => {
       customToken,
       uid: agentUid,
       email: normalizedEmail,
-      message: 'Código verificado. Bienvenido!'
+      message: 'Código verificado. Bienvenido!',
     });
   } catch (e) {
     console.error(`[OTP] ❌ Error en verify-otp:`, e.message);
