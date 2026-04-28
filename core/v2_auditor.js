@@ -249,6 +249,36 @@ function detectIALeak(text, chatType, aiDisclosureEnabled = false) {
 }
 
 /**
+ * C-446-FIX-ADN §A — Detect leak de "MediLink" en respuesta MIIA CENTER a leads.
+ *
+ * Bug 4 root cause: voice_seed_center.md tiene subregistros legacy MediLink
+ * (leads_medilink, etc.) — MIIA CENTER mezcla identidad MediLink (vertical
+ * médico de Mariano) con MIIA producto (vertical-agnóstico).
+ *
+ * Doctrina §2 / §2-bis CLAUDE.md: MIIA CENTER vende MIIA producto, NO
+ * MediLink. Si respuesta a lead contiene 'medilink' → leak doctrinal.
+ *
+ * Cierra hasta que voice_seed_center.md sea reescrito ADN-completo por
+ * Mariano (escalado en C-446-FIX-ADN §A reporte).
+ *
+ * Aplicable a: chatType='lead' / 'miia_lead' / 'client' / 'miia_client'.
+ * NO aplica a: medilink_team (subregistro propio MediLink legítimo) ni
+ * owner_selfchat (Mariano consigo).
+ */
+function detectMedilinkLeak(text, chatType) {
+  if (!text) return null;
+  if (chatType === 'medilink_team') return null;     // legítimo
+  if (chatType === 'owner_selfchat') return null;    // Mariano consigo
+  if (FAMILY_LIKE.has(chatType)) return null;        // familia
+  // Permitir 'medilink' solo en chatType medilink_team. Resto = leak.
+  const m = text.match(/\bmedilink\b/i);
+  if (m) {
+    return { match: m[0], position: text.indexOf(m[0]) };
+  }
+  return null;
+}
+
+/**
  * RF#9 — cambio_registro_inter_conversacional
  * Vocativo informal en chat formal (lead/client/medilink_team).
  * NO regenera automáticamente — solo WARN.
@@ -379,6 +409,16 @@ function auditV2Response(candidate, chatType, ctx = {}) {
       code: 'RF8_no_ia_con_leads',
       label: '⚠️ CRÍTICO: respuesta a lead/client revela IA o expone mecánica',
       detail: iaLeak,
+    });
+  }
+
+  // C-446-FIX-ADN §A — RF11 medilink leak en MIIA CENTER lead/client
+  const medilinkLeak = detectMedilinkLeak(candidate, chatType);
+  if (medilinkLeak) {
+    criticalFlags.push({
+      code: 'RF11_medilink_leak_center',
+      label: '⚠️ CRÍTICO: MIIA CENTER lead/client menciona "MediLink" (Bug 4 C-446)',
+      detail: medilinkLeak,
     });
   }
 
@@ -549,6 +589,16 @@ function auditSafetyRules(candidate, chatType, ctx = {}) {
     });
   }
 
+  // C-446-FIX-ADN §A — RF11 medilink leak en MIIA CENTER lead/client
+  const medilinkLeak = detectMedilinkLeak(candidate, chatType);
+  if (medilinkLeak) {
+    criticalFlags.push({
+      code: 'RF11_medilink_leak_center',
+      label: '⚠️ CRÍTICO: MIIA CENTER lead/client menciona "MediLink" (Bug 4 C-446)',
+      detail: medilinkLeak,
+    });
+  }
+
   const flagged = criticalFlags.length > 0;
   let shouldRegenerate = false;
   let shouldUseFallback = false;
@@ -665,6 +715,7 @@ module.exports = {
   detectDiminutivos,
   detectAleLeak,
   detectIALeak,
+  detectMedilinkLeak,
   detectCambioRegistro,
   detectExcesoMayusculas,
   detectTerceraPersonaFactual,
