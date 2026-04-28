@@ -3171,7 +3171,13 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   // SKIP self-chat (Mariano consigo mismo, sin valor episódico aún).
   if (!isSelfChat && messageBody && phone && isV2EligibleUid(uid)) {
     try {
-      const mmcMsgId = `msg_${Date.now()}_${phone.slice(-8)}`;
+      // C-447-MSGID-RACE: random suffix evita colision si 2 mensajes
+      // llegan en mismo ms desde mismo phone (edge case bot loop externo).
+      // C-446-FIX-ADN §B.1 nota: ctx.conversations[phone] previo a §B.1
+      // puede tener referencias residuales a probaditas viejas (sales-
+      // image marketing eliminado). Datos viejos se purgan via
+      // derecho-al-olvido C-444. Wire-in MMC lee timestamps correctos.
+      const mmcMsgId = `msg_${Date.now()}_${phone.slice(-8)}_${Math.random().toString(36).slice(2, 6)}`;
       const result = await mmcDetector.autoAssignMessageToEpisode(
         uid, phone, mmcMsgId, Date.now()
       );
