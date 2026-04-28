@@ -58,6 +58,20 @@ const auditLogSchema = z.object({
 }).strict();
 
 // ════════════════════════════════════════════════════════════════════
+// C-462-PRIVACY-REPORT-LOUD-FAIL — Diagnostic field opcional para
+// reportar partial errors cuando algun helper falla (UNAUTHENTICATED,
+// permission denied, etc.). UI puede mostrar mensaje "algunas
+// secciones no se pudieron cargar" en vez de exito engañoso.
+// ════════════════════════════════════════════════════════════════════
+
+const reportDiagnosticSchema = z.object({
+  partial_errors: z.array(z.object({
+    section: z.string(),
+    error: z.string(),
+  })).default([]),
+}).strict();
+
+// ════════════════════════════════════════════════════════════════════
 // Privacy report root schema
 // ════════════════════════════════════════════════════════════════════
 
@@ -71,6 +85,8 @@ const privacyReportSchema = z.object({
   quotes: quotesSchema,
   configFlags: configFlagsSchema,
   auditLog: auditLogSchema,
+  // C-462: optional - solo presente si hubo partial errors.
+  _diagnostic: reportDiagnosticSchema.optional(),
 }).strict();
 
 // Request schema (validate query string of GET /api/privacy/report)
@@ -101,4 +117,5 @@ module.exports = {
   privacyReportRequestSchema,
   forgetMeRequestSchema,
   forgetMeConfirmSchema,
+  reportDiagnosticSchema,
 };
