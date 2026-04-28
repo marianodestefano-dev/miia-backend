@@ -11,15 +11,15 @@
  *   - SOLO MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2, +573054169969).
  *   - MIIA Personal (UID bq2BbtCVF8cZo30tum584zrGATJ3) corre V1 puro hasta etapa 2.
  *
- * Subregistros activos en MIIA CENTER (etapa 1):
- *   - 'lead'                  → §2.1 leads_medilink (vendedor Mariano para leads MIIA-producto)
- *   - 'client'                → §2.2 clientes_medilink (atención clientes pagantes MIIA-producto)
- *   - 'follow_up_cold'        → §2.3 follow_up_cold_medilink (leads cold MIIA-producto)
+ * Subregistros activos en MIIA CENTER (etapa 1) — post C-464-VOICE-REWRITE:
+ *   - 'lead'                  → §2.1 leads_miia (lead nuevo MIIA producto vertical-agnóstico)
+ *   - 'client'                → §2.2 clientes_miia (atención clientes pagantes MIIA producto)
+ *   - 'follow_up_cold'        → §2.3 follow_up_cold_miia (leads cold MIIA producto)
  *   - 'owner_selfchat'        → snapshot completo (cuando Mariano usa "PRESENTATE CONMIGO" desde self-chat MIIA CENTER)
  *
  * Subregistros INACTIVOS en MIIA CENTER (etapa 1):
  *   - family / friend_argentino / friend_colombiano / ale_pareja / medilink_team
- *   - Razón: MIIA CENTER no habla con familia/amigos/Ale/Vivi — esos contactos viven en MIIA Personal (etapa 2/3).
+ *   - Razón: MIIA CENTER no habla con familia/amigos/Ale/equipo — esos contactos viven en MIIA Personal (etapa 2/3).
  *   - Resolución: retornan 'unknown' → caller usa V1.
  *
  * Comportamiento de fallback (try/catch a nivel caller):
@@ -62,13 +62,16 @@ const SUBREGISTRO_HEADERS = {
   medilink_team: '### 2.8 (PARCIAL) `vivi_team_medilink`'
 };
 
-// C-397 §5 — Mapping chatType → header en voice_seed_center.md (MIIA CENTER)
-// CENTER solo tiene subregistros de producto (venta + soporte). No hay familia/amigos/ale.
+// C-397 §5 + C-464-VOICE-REWRITE 2026-04-28 — Mapping chatType → header
+// en voice_seed_center.md (MIIA CENTER, voz producto vertical-agnóstico).
+// CENTER solo tiene subregistros de producto (venta + soporte). No hay
+// familia/amigos/ale. Headers usan `leads_miia` (NO `leads_medilink`)
+// post C-464 ADN MIIA producto.
 const SUBREGISTRO_HEADERS_CENTER = {
-  lead: '### 2.1 `leads_medilink`',
-  client: '### 2.2 `clientes_medilink`',
-  follow_up_cold: '### 2.3 `follow_up_cold_medilink`',
-  soporte_producto_miia: '### 2.4 `soporte_producto_miia`'
+  lead: '### §2.1 `leads_miia`',
+  client: '### §2.2 `clientes_miia`',
+  follow_up_cold: '### §2.3 `follow_up_cold_miia`',
+  soporte_miia: '### §2.4 `soporte_miia`'
 };
 
 /**
@@ -286,10 +289,11 @@ ${baseIdentidad ? baseIdentidad + '\n\n' : ''}${subSection}`;
 }
 
 /**
- * C-397 §5 — Función paralela a loadVoiceDNAForGroup pero lee voice_seed_center.md.
+ * C-397 §5 + C-464-VOICE-REWRITE — Función paralela a loadVoiceDNAForGroup
+ * pero lee voice_seed_center.md (ADN MIIA producto vertical-agnóstico).
  *
  * Uso: MIIA CENTER en cualquiera de sus 4 subregistros de producto
- * (leads_medilink, clientes_medilink, follow_up_cold_medilink, soporte_producto_miia).
+ * (leads_miia, clientes_miia, follow_up_cold_miia, soporte_miia).
  *
  * Comportamiento:
  *   - chatType='owner_selfchat' → snapshot completo del voice_seed_center.md
