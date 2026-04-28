@@ -250,6 +250,9 @@ const privacyReport = require('./core/privacy_report');
 const auditLogger = require('./core/audit_logger');
 // C-435 §B — Zod validation para 5 endpoints públicos (Iter 4 Top 5)
 const publicSchemas = require('./core/validation/public_schemas');
+// C-442 — privacy report builder + schemas
+const privacyReportBuilder = require('./core/privacy/report_builder');
+const privacyReportSchemas = require('./core/privacy/report_schema');
 const waGateway = require('./whatsapp/whatsapp_gateway');
 const aiGateway = require('./ai/ai_gateway');
 const promptCache = require('./ai/prompt_cache');
@@ -11047,6 +11050,31 @@ app.post('/api/owner/ai-disclosure', express.json(), async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// C-442 — Privacy Report endpoint (Piso 1 P1.2)
+// Continuidad C-435 doctrina: rrRequireAuth + rrRequireOwnerOfResource +
+// validate(privacyReportRequestSchema) middleware.
+// Counts y summaries solamente — NO raw content sensible.
+app.get(
+  '/api/privacy/report',
+  rrRequireAuth,
+  rrRequireOwnerOfResource('userId', 'query'),
+  publicSchemas.validate(privacyReportSchemas.privacyReportRequestSchema, { source: 'query' }),
+  async (req, res) => {
+    try {
+      const { userId } = req.query;
+      const report = await privacyReportBuilder.buildPrivacyReport(userId);
+      console.log(`[PRIVACY-REPORT] Owner ${userId.substring(0, 12)}... report generated`);
+      res.json(report);
+    } catch (e) {
+      console.error('[V2-ALERT][PRIVACY-REPORT-FAIL]', {
+        error: e.message,
+        userId_prefix: (req.query.userId || '').substring(0, 12) + '...',
+      });
+      res.status(500).json({ error: 'Privacy report build failed', detail: e.message });
+    }
+  }
+);
 
 app.get('/api/status', async (req, res) => {
   const uid = req.query.uid;
