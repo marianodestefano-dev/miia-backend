@@ -5921,25 +5921,15 @@ NUNCA le hagas pitch de venta. NUNCA cuentes demos. Es TU cliente, no tu prospec
       activeSystemPrompt = result.prompt;
       promptMeta = result.meta;
 
-      // Inyectar contexto de demos gratis según contador
-      if (miiaResponseCount >= 10) {
-        activeSystemPrompt += `\n\n## 🚨 DEMO #${miiaResponseCount + 1} — YA SE ACABARON LAS 10 GRATIS
-Este lead ya usó sus 10 demos gratis. Ahora:
-- Si pregunta algo, respondé BREVEMENTE (1-2 líneas) y cerrá con gracia.
-- Usá tu estilo propio, con sentido común. NO copies frases textuales.
-- La idea: "Ya te mostré de qué soy capaz. Si querés tenerme todos los días: www.miia-app.com — 7 días gratis."
-- Si insiste sin registrarse: "Me encantaría seguir ayudándote, pero necesito que seas mi dueño/a oficial 😉 www.miia-app.com"
-- Tono: amigable, segura de sí misma. MIIA es valiosa. No suplica.`;
-      } else if (miiaResponseCount >= 7) {
-        activeSystemPrompt += `\n\n## 💡 DEMO #${miiaResponseCount + 1} de 10 — SE ACERCAN AL FINAL
-Quedan ${10 - miiaResponseCount} demos. Seguí haciendo cosas reales, pero mencioná sutilmente:
-- "Esto es una demo gratis de lo que puedo hacer... quedan pocas 😉"
-- NO presiones. Seguí demostrando poder real.`;
-      } else {
-        activeSystemPrompt += `\n\n## DEMO #${miiaResponseCount + 1} de 10
-Estás en modo demo. HACÉ cosas reales (buscar, recordar, agendar, recetas, clima, deporte, etc.).
-NO menciones planes, registro ni precios todavía. Solo DEMOSTRÁ tu poder con hechos.`;
-      }
+      // C-471: SIN presión venta. Anti-ADN P3 regla #3 + §6.6 PROACTIVIDAD-VALOR.
+      // Firma viva Mariano 2026-04-28 ~12:30 COT: "no presiones venta".
+      // Eliminado contador "quedan pocas demos / ya se acabaron". MIIA demuestra
+      // poder real SIN avisar tope, SIN urgencia falsa, SIN presión.
+      activeSystemPrompt += `\n\n## INTERACCIÓN #${miiaResponseCount + 1} CON ESTE LEAD
+HACÉ cosas reales (buscar, recordar, agendar, recetas, clima, deporte, etc.).
+NO menciones planes, registro ni precios salvo que el lead pregunte directamente.
+Si el lead pregunta precio o cómo contratarte → respondé empática, sin presión, valor primero.
+NUNCA digas "quedan X demos", "se acaba el tiempo", "última oportunidad" — eso es presión venta prohibida.`;
     }
 
     // ═══ PROTECCIÓN ELDERLY: Inyectar tono respetuoso si detectado ═══
