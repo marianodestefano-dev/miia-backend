@@ -95,6 +95,18 @@ function makeMockFirestore() {
         },
       };
     },
+    // C-450-FIRESTORE-TX-AUDIT: runTransaction agregado para soportar
+    // lock distribuido per-episodio en runNightlyDistillation.
+    async runTransaction(cb) {
+      const tx = {
+        async get(ref) { return ref.get(); },
+        update(ref, data) {
+          const cur = store.get(ref.path) || {};
+          store.set(ref.path, { ...cur, ...JSON.parse(JSON.stringify(data)) });
+        },
+      };
+      return cb(tx);
+    },
   };
 }
 

@@ -163,15 +163,34 @@ async function runNightlyDistillation(ownerUid, geminiClient, opts) {
 
   const processedList = [];
   const errors = [];
+  const skippedLocked = [];
   for (const ep of candidates) {
     if (processedList.length >= limit) break;
     if (ep.summary || ep.status !== 'closed') continue;
+    // C-450-FIRESTORE-TX-AUDIT: lock atómico per-episodio antes de
+    // llamar Gemini. Previene 2 cron runners paralelos consumiendo
+    // costo Gemini duplicado sobre el mismo episode + double-write
+    // race. Si otro runner ya tiene el lock, skipear silenciosamente.
+    let lockAcquired = false;
+    try {
+      await _acquireDistillLock(ownerUid, ep.episodeId);
+      lockAcquired = true;
+    } catch (lockErr) {
+      skippedLocked.push({ episodeId: ep.episodeId, reason: lockErr.message });
+      continue;
+    }
     try {
       const { topic, summary } = await distillEpisode(ep, geminiClient);
       await _markDistilled(ownerUid, ep.episodeId, topic, summary);
       processedList.push(ep.episodeId);
     } catch (e) {
       errors.push({ episodeId: ep.episodeId, error: e.message });
+      // Liberar lock para retry sano del proximo cron tick.
+      if (lockAcquired) {
+        try {
+          await _releaseDistillLock(ownerUid, ep.episodeId);
+        } catch (_) { /* best effort */ }
+      }
     }
   }
 
@@ -180,9 +199,10 @@ async function runNightlyDistillation(ownerUid, geminiClient, opts) {
       ownerUid,
       processed: processedList.length,
       errors: errors.length,
+      skipped_locked: skippedLocked.length,
     });
   }
-  return { processed: processedList.length, errors };
+  return { processed: processedList.length, errors, skippedLocked };
 }
 
 async function _defaultGetClosedPending(ownerUid, limit) {
@@ -194,6 +214,7 @@ async function _defaultGetClosedPending(ownerUid, limit) {
 }
 
 async function _markDistilled(ownerUid, episodeId, topic, summary) {
+  // C-450-FIRESTORE-TX-AUDIT: limpia el flag distilling al completar.
   await _getFirestore()
     .collection('users')
     .doc(ownerUid)
@@ -203,7 +224,49 @@ async function _markDistilled(ownerUid, episodeId, topic, summary) {
       status: 'distilled',
       topic,
       summary,
+      distilling: false,
     });
+}
+
+/**
+ * C-450-FIRESTORE-TX-AUDIT — Adquiere lock atómico para distillar un
+ * episodio. Si otro runner ya lo tiene (distilling=true) o ya esta
+ * distilled (summary set), throws. El llamador debe skipear este
+ * episode y continuar con el siguiente.
+ */
+async function _acquireDistillLock(ownerUid, episodeId) {
+  const fs = _getFirestore();
+  const ref = fs
+    .collection('users')
+    .doc(ownerUid)
+    .collection('miia_memory')
+    .doc(episodeId);
+  await fs.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new Error('episode missing');
+    const data = snap.data() || {};
+    if (data.summary) throw new Error('already distilled');
+    if (data.status !== 'closed') throw new Error('not closed');
+    if (data.distilling) throw new Error('locked by another runner');
+    tx.update(ref, {
+      distilling: true,
+      distilling_started_at: Date.now(),
+    });
+  });
+}
+
+/**
+ * C-450-FIRESTORE-TX-AUDIT — Libera el lock distilling (best effort) si
+ * runNightlyDistillation falla a mitad. Sin esto el flag queda pegado y
+ * el episode no se procesa nunca mas.
+ */
+async function _releaseDistillLock(ownerUid, episodeId) {
+  await _getFirestore()
+    .collection('users')
+    .doc(ownerUid)
+    .collection('miia_memory')
+    .doc(episodeId)
+    .update({ distilling: false });
 }
 
 // ════════════════════════════════════════════════════════════════════
