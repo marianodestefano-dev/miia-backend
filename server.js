@@ -5925,11 +5925,27 @@ NUNCA le hagas pitch de venta. NUNCA cuentes demos. Es TU cliente, no tu prospec
       // Firma viva Mariano 2026-04-28 ~12:30 COT: "no presiones venta".
       // Eliminado contador "quedan pocas demos / ya se acabaron". MIIA demuestra
       // poder real SIN avisar tope, SIN urgencia falsa, SIN presión.
+      // C-473: inyección hora local + saludo time-aware (P1 ADN ventas).
+      const _leadTz = (countryCode === '54') ? 'America/Argentina/Buenos_Aires'
+        : (countryCode === '57') ? 'America/Bogota'
+        : (countryCode === '52') ? 'America/Mexico_City'
+        : (countryCode === '56') ? 'America/Santiago'
+        : (countryCode === '34') ? 'Europe/Madrid'
+        : (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') ? 'America/Santo_Domingo'
+        : 'America/Bogota';
+      const _leadNow = new Date(new Date().toLocaleString('en-US', { timeZone: _leadTz }));
+      const _leadHour = _leadNow.getHours();
+      const _leadGreeting = (_leadHour >= 5 && _leadHour < 12) ? 'buenos días'
+        : (_leadHour >= 12 && _leadHour < 19) ? 'buenas tardes'
+        : 'buenas noches';
+      const _leadHHMM = `${String(_leadHour).padStart(2,'0')}:${String(_leadNow.getMinutes()).padStart(2,'0')}`;
       activeSystemPrompt += `\n\n## INTERACCIÓN #${miiaResponseCount + 1} CON ESTE LEAD
-HACÉ cosas reales (buscar, recordar, agendar, recetas, clima, deporte, etc.).
-NO menciones planes, registro ni precios salvo que el lead pregunte directamente.
-Si el lead pregunta precio o cómo contratarte → respondé empática, sin presión, valor primero.
-NUNCA digas "quedan X demos", "se acaba el tiempo", "última oportunidad" — eso es presión venta prohibida.`;
+🕒 Hora local del lead: ${_leadHHMM} (${_leadTz}) — saludo time-aware correcto: "${_leadGreeting}".
+- Si es primer mensaje del día o re-engagement → saludá con "${_leadGreeting}" (P1 ADN ventas, voice_seed_center §2.1.1).
+- HACÉ cosas reales (buscar, recordar, agendar, recetas, clima, deporte, etc.).
+- NO menciones planes, registro ni precios salvo que el lead pregunte directamente.
+- Si el lead pregunta precio o cómo contratarte → respondé empática, sin presión, valor primero.
+- NUNCA digas "quedan X demos", "se acaba el tiempo", "última oportunidad" — eso es presión venta prohibida (Anti-ADN P3 #3).`;
     }
 
     // ═══ PROTECCIÓN ELDERLY: Inyectar tono respetuoso si detectado ═══
