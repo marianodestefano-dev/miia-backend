@@ -73,6 +73,8 @@ const { fetchOfficialTRM } = require('../core/financial_verify');
 const { resolveV2ChatType, loadVoiceDNAForGroup, isV2EligibleUid } = require('../core/voice_v2_loader');
 // C-440 — MMC wire-in (etapa 1 §2-bis: solo MIIA CENTER por isV2EligibleUid)
 const mmcDetector = require('../core/mmc/episode_detector');
+// C-446-FIX-ADN §C — Re-engagement detector + auditor (Bug 1)
+const reEngagement = require('../core/re_engagement');
 const { splitBySubregistro } = require('../core/split_smart_heuristic');
 const { injectInBubbleArray } = require('../core/emoji_injector');
 const { auditV2Response, auditSafetyRules, getFallbackByChatType: getV2FallbackByChatType } = require('../core/v2_auditor');
@@ -3182,6 +3184,31 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
   }
 
+  // C-446-FIX-ADN §C — Re-engagement context inyección (Bug 1).
+  // Detectar gap >24h y inyectar instrucción humana al prompt para evitar
+  // que MIIA tire cotización al lead que vuelve después de días.
+  let _reEngagementResult = { isReEngagement: false, gapMs: 0 };
+  try {
+    if (!isSelfChat && contactType && reEngagement.LEAD_LIKE_TYPES.has(contactType)) {
+      const conv = (ctx.conversations && ctx.conversations[phone]) || [];
+      _reEngagementResult = reEngagement.detectReEngagement(conv, contactType, Date.now());
+      if (_reEngagementResult.isReEngagement) {
+        const reBlock = reEngagement.buildReEngagementContext(_reEngagementResult);
+        if (reBlock) {
+          fullPrompt += reBlock;
+          console.log(`${logPrefix} [C-446][§C][RE-ENGAGEMENT] gap=${_reEngagementResult.gapDays}d injected at prompt`);
+        }
+      }
+    }
+  } catch (reErr) {
+    console.error('[V2-ALERT][RE-ENGAGEMENT-WIRE-IN]', {
+      phone: (phone || '').substring(0, 12) + '...',
+      contactType,
+      error: reErr.message,
+    });
+    // NO re-throw — flujo Gemini sigue.
+  }
+
   // Determinar contexto de IA para router inteligente
   const aiContext = isSelfChat
     ? aiGateway.CONTEXTS.OWNER_CHAT
@@ -3260,6 +3287,30 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   }
 
   console.log(`${logPrefix} ✅ Respuesta IA recibida via ${aiResult.provider} (${aiMessage.length} chars, ${aiResult.latencyMs}ms) para ${basePhone}`);
+
+  // C-446-FIX-ADN §C — Auditor postprocess re-engagement (Bug 1).
+  // Si el lead vuelve después de gap >24h y MIIA respondió tirando precio/
+  // cotización sin que el lead lo pida → veto + regenerar saludo cálido.
+  if (_reEngagementResult.isReEngagement && aiMessage) {
+    try {
+      const reAudit = reEngagement.auditReEngagementResponse(aiMessage, _reEngagementResult, messageBody);
+      if (reAudit.shouldVeto) {
+        console.warn(`${logPrefix} [C-446][§C][RE-ENG VETO] ${reAudit.reason}`);
+        try {
+          const reHint = `\n\n⚠️ CORRECCIÓN RE-ENGAGEMENT: ${reAudit.reason}. Saludá cálidamente, preguntá cómo está, NO menciones precio/cotización en este turno (el lead solo saludó). Generá nueva respuesta humana.`;
+          const reRegenResult = await aiGateway.smartCall(aiContext, fullPrompt + reHint, { aiProvider, aiApiKey }, { enableSearch });
+          if (reRegenResult.text?.trim()) {
+            aiMessage = reRegenResult.text;
+            console.log(`${logPrefix} [C-446][§C] Regeneración re-engagement exitosa (${reRegenResult.latencyMs}ms)`);
+          }
+        } catch (regErr) {
+          console.error(`${logPrefix} [C-446][§C] Regeneración re-engagement falló: ${regErr.message}`);
+        }
+      }
+    } catch (auditErr) {
+      console.error('[V2-ALERT][RE-ENGAGEMENT-AUDIT]', { error: auditErr.message });
+    }
+  }
 
   // ── PASO 10b: AUDITORÍA (Regex + IA Sonnet) ──
   // PASO 1: Regex rápida (6 auditors, ~0ms)
