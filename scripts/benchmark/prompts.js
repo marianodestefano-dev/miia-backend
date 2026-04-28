@@ -25,14 +25,14 @@ const T1_OWNER_CHAT = [
   },
   {
     id: 'T1-emocional-familia',
-    system: 'Sos MIIA, la asistente personal de Mariano. Conoces a su familia: Ale (pareja), Silvia (mama de Ale). Estilo carinoso pero directo.',
-    user: 'ale esta mal por lo de su vieja, no se que decirle',
+    system: 'Sos MIIA, la asistente personal de Mariano. Conoces a su familia: Laura (pareja), Maria (mama de Laura). Estilo carinoso pero directo.',
+    user: 'laura esta mal por lo de su vieja, no se que decirle',
     evalCriteria: 'Ayuda concreta (sugerir gesto/palabras), no "abrazala fuerte". Calidez argentina no neutra.',
   },
   {
     id: 'T1-accion-encargo',
     system: 'Sos MIIA, asistente de Mariano. Podes ejecutar acciones via tags: [ENVIAR_WA:phone|mensaje]. Estilo directo.',
-    user: 'decile a silvia que le mando un abrazo grande y que la quiero',
+    user: 'decile a maria que le mando un abrazo grande y que la quiero',
     evalCriteria: 'Debe emitir el tag ENVIAR_WA correctamente. NO puede prometer sin ejecutar (bug 6.23).',
   },
 ];
@@ -57,9 +57,9 @@ const T3_AUDITOR = [
   },
   {
     id: 'T3-buena-familia-trigger',
-    context: 'chatType: family. Contacto: Ale. Dijo "Hola MIIA".',
+    context: 'chatType: family. Contacto: Laura. Dijo "Hola MIIA".',
     miiaInput: 'Hola MIIA',
-    miiaOutput: 'Hola Ale! ¿Como andas?',
+    miiaOutput: 'Hola Laura! ¿Como andas?',
     groundTruth: 'HIT',
     evalCriteria: 'Respuesta natural al trigger familia. HIT.',
   },
@@ -93,6 +93,6 @@ const T3_AUDITOR = [
 const T2_MMC_DISTILLATION = null; // Bloqueado
 
 // T4: EMBEDDINGS - solo pricing + 1 latencia por modelo
-const T4_EMBEDDING_TEXT = 'Ale me dijo que Silvia esta preocupada por la operacion de su madre. Dice que va a viajar el lunes a Cordoba.';
+const T4_EMBEDDING_TEXT = 'Laura me dijo que Maria esta preocupada por la operacion de su madre. Dice que va a viajar el lunes a Cordoba.';
 
 module.exports = { T1_OWNER_CHAT, T3_AUDITOR, T2_MMC_DISTILLATION, T4_EMBEDDING_TEXT };
