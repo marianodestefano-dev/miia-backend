@@ -149,7 +149,9 @@ async function createCheckpoint(name, note = '') {
     moduleVersions[m.id] = m.version;
   }
 
-  const checkpointId = `${name}_${Date.now()}`;
+  // C-449-IDS-RACE-FIX: random suffix evita colision si 2 checkpoints
+  // con mismo name se crean en mismo ms (extension principio C-447).
+  const checkpointId = `${name}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   await db.collection(COLLECTION).doc('checkpoints').collection('items').doc(checkpointId).set({
     name,
     note,

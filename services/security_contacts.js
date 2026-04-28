@@ -143,7 +143,9 @@ async function requestProtection(protectorUid, protectedUid, level, opts = {}) {
 
   // Crear en ambos lados (bidireccional)
   const batch = db().batch();
-  const relationId = `sec_${pairKey}_${Date.now()}`;
+  // C-449-IDS-RACE-FIX: random suffix evita colision si 2 requests
+  // con mismo pairKey se crean en mismo ms (extension principio C-447).
+  const relationId = `sec_${pairKey}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
   // Lado del protector
   const protectorRef = db().collection('users').doc(protectorUid)
