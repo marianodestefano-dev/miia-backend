@@ -76,6 +76,49 @@ function _allKeyVariants(phone) {
 }
 
 /**
+ * C-474: detecta keys de LIDs huerfanos (NNN@lid) cuyo ultimo bloque
+ * de 8-10 digitos podria corresponder al phone target. Usado en modo
+ * agresivo para limpiar rastro completo del lead cuando WhatsApp guardo
+ * un LID distinto del phone (ej: 264355287441550@lid pero phone es
+ * 573163937365).
+ *
+ * Anchor: cleanup C-459 fue parcial porque LIDs como "264355287441550@lid"
+ * y "2937808003122@lid" sobrevivieron en tenant_conversations Mariano
+ * post-limpieza C-459 (Firma viva Mariano 2026-04-28 pegada en mensajes
+ * literales).
+ *
+ * Estrategia: matchear LID por suffix de los ultimos 8 digitos del phone
+ * target. Falsa positiva tolerable (admin one-shot, hay backup JSON).
+ *
+ * @param {object} mapData - map field (conversations, contactTypes, etc.)
+ * @param {string[]} phones - phones target
+ * @returns {string[]} keys que matchean LID por suffix
+ */
+function _findLidMatchesBySuffix(mapData, phones) {
+  if (!mapData || typeof mapData !== 'object') return [];
+  if (!Array.isArray(phones) || !phones.length) return [];
+  const matches = new Set();
+  // Suffix de los ultimos 8 digitos de cada phone target
+  const suffixes = phones
+    .map((p) => (p.includes('@') ? p.split('@')[0] : p))
+    .filter((p) => /^\d+$/.test(p))
+    .map((p) => p.slice(-8))
+    .filter((s) => s.length === 8);
+  if (!suffixes.length) return [];
+
+  for (const key of Object.keys(mapData)) {
+    if (!key.endsWith('@lid')) continue;
+    const numericPart = key.split('@')[0];
+    if (!/^\d+$/.test(numericPart)) continue;
+    const lidSuffix = numericPart.slice(-8);
+    if (suffixes.includes(lidSuffix)) {
+      matches.add(key);
+    }
+  }
+  return Array.from(matches);
+}
+
+/**
  * Lista todos los rastros de los phones target en el tenant.
  * NO borra nada. Solo retorna snapshot para auditoria.
  *
@@ -83,13 +126,15 @@ function _allKeyVariants(phone) {
  * @param {string[]} phones - Array de phones (con o sin @s.whatsapp.net).
  * @returns {Promise<{tenantConversations: object, miiaMemory: array}>}
  */
-async function inspectLeadData(ownerUid, phones) {
+async function inspectLeadData(ownerUid, phones, opts) {
   if (typeof ownerUid !== 'string' || ownerUid.length < 20) {
     throw new Error('ownerUid invalid');
   }
   if (!Array.isArray(phones) || phones.length === 0) {
     throw new Error('phones array required');
   }
+  // C-474: opcion agresiva para detectar LIDs huerfanos por suffix-match
+  const aggressiveLidScan = !!(opts && opts.aggressiveLidScan);
   // Generar TODAS las variantes de key (raw + @s.whatsapp.net + @lid).
   // Anchor C-459 ejecucion: prod tiene mismas data en ambos formatos.
   const allVariants = phones.flatMap(_allKeyVariants);
@@ -97,6 +142,7 @@ async function inspectLeadData(ownerUid, phones) {
   const result = {
     tenantConversations: {},
     miiaMemory: [],
+    lidMatches: [], // C-474: LIDs huerfanos detectados
   };
 
   // 1. tenant_conversations — leer doc + extraer subkeys por phone variant
@@ -110,7 +156,20 @@ async function inspectLeadData(ownerUid, phones) {
   }
   if (tcDoc && tcDoc.exists) {
     const data = tcDoc.data() || {};
-    for (const variant of allVariants) {
+    // C-474: extender variants con LIDs detectados por suffix-match
+    let extendedVariants = allVariants;
+    if (aggressiveLidScan) {
+      const fields = ['conversations', 'contactTypes', 'leadNames',
+                      'conversationMetadata', 'ownerActiveChats'];
+      const lidSet = new Set();
+      for (const field of fields) {
+        const lids = _findLidMatchesBySuffix(data[field], phones);
+        for (const lid of lids) lidSet.add(lid);
+      }
+      result.lidMatches = Array.from(lidSet);
+      extendedVariants = Array.from(new Set([...allVariants, ...lidSet]));
+    }
+    for (const variant of extendedVariants) {
       const slot = {
         conversations: (data.conversations || {})[variant] || null,
         contactTypes: (data.contactTypes || {})[variant] || null,
@@ -190,13 +249,15 @@ function writeBackup(snapshot, backupPath) {
  * @param {string[]} phones
  * @returns {Promise<{deletedKeys: object, deletedEpisodes: number}>}
  */
-async function deleteLeadData(ownerUid, phones) {
+async function deleteLeadData(ownerUid, phones, opts) {
   if (typeof ownerUid !== 'string' || ownerUid.length < 20) {
     throw new Error('ownerUid invalid');
   }
   if (!Array.isArray(phones) || phones.length === 0) {
     throw new Error('phones array required');
   }
+  // C-474: opcion agresiva para borrar LIDs huerfanos por suffix-match
+  const aggressiveLidScan = !!(opts && opts.aggressiveLidScan);
   // Generar TODAS las variantes de key (anchor C-459: prod tiene tanto
   // raw como @s.whatsapp.net en contactTypes).
   const allVariants = phones.flatMap(_allKeyVariants);
@@ -236,10 +297,22 @@ async function deleteLeadData(ownerUid, phones) {
     let mutated = false;
     const fields = ['conversations', 'contactTypes', 'leadNames',
                     'conversationMetadata', 'ownerActiveChats'];
+    // C-474: si aggressiveLidScan, agregar LIDs huerfanos a las variants
+    let extendedVariants = allVariants;
+    if (aggressiveLidScan) {
+      const lidSet = new Set();
+      for (const field of fields) {
+        const lids = _findLidMatchesBySuffix(data[field], phones);
+        for (const lid of lids) lidSet.add(lid);
+      }
+      if (lidSet.size > 0) {
+        extendedVariants = Array.from(new Set([...allVariants, ...lidSet]));
+      }
+    }
     for (const field of fields) {
       const map = data[field];
       if (!map || typeof map !== 'object') continue;
-      for (const variant of allVariants) {
+      for (const variant of extendedVariants) {
         if (map[variant] !== undefined) {
           delete map[variant];
           deletedKeys[field].push(variant);
@@ -269,9 +342,24 @@ async function deleteLeadData(ownerUid, phones) {
     throw new Error(`miia_memory.get failed: ${e.message}`);
   }
   if (memSnap) {
+    // C-474: si aggressiveLidScan, tambien borrar episodios con contactPhone
+    // que sea un LID con suffix-match a phones target.
+    const phoneSuffixes = phones
+      .map((p) => (p.includes('@') ? p.split('@')[0] : p))
+      .filter((p) => /^\d+$/.test(p))
+      .map((p) => p.slice(-8));
     for (const ep of memSnap.docs) {
       const epData = ep.data() || {};
-      if (allVariants.includes(epData.contactPhone)) {
+      const cp = epData.contactPhone;
+      let shouldDelete = allVariants.includes(cp);
+      if (!shouldDelete && aggressiveLidScan && typeof cp === 'string'
+          && cp.endsWith('@lid')) {
+        const cpNum = cp.split('@')[0];
+        if (/^\d+$/.test(cpNum) && phoneSuffixes.includes(cpNum.slice(-8))) {
+          shouldDelete = true;
+        }
+      }
+      if (shouldDelete) {
         await memCol.doc(ep.id).delete();
         deletedEpisodes += 1;
       }
@@ -287,4 +375,5 @@ module.exports = {
   deleteLeadData,
   __setFirestoreForTests,
   _toJid,
+  _findLidMatchesBySuffix,
 };
