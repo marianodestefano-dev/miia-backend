@@ -33,7 +33,36 @@ const _metrics = {
   failures: 0,
   retriesUsed: 0,
   avgDurationMs: {},
+  skippedConcurrent: 0, // C-461: tasks skipeadas por mutex
 };
+
+// C-461-AGENDA-MUTEX: mutex per-task in-memory.
+// Origen: C-458 audit §B CONDICIONAL #2. runAgendaEngine es invocado
+// tanto por setInterval (5min) como setTimeout (3min post-startup). Si
+// setTimeout demora >2 min y setInterval dispara mientras tanto -> 2
+// invocaciones concurrentes -> 2 reads de pending events query -> doble
+// envio de recordatorios al owner self-chat.
+//
+// Fix: Map<taskName, isRunning>. Si task ya runs, skipear silenciosamente
+// (log debug). Set true al arrancar, false en finally (release garantizado
+// incluso si task throws).
+const _runningTasks = new Map();
+
+function _isTaskRunning(taskName) {
+  return _runningTasks.get(taskName) === true;
+}
+
+function _markTaskRunning(taskName) {
+  _runningTasks.set(taskName, true);
+}
+
+function _markTaskFinished(taskName) {
+  _runningTasks.delete(taskName);
+}
+
+function _resetRunningTasksForTests() {
+  _runningTasks.clear();
+}
 
 // Dependencias inyectadas
 let _notifyOwner = null;
@@ -66,15 +95,36 @@ async function executeWithConcentration(level, taskName, taskFn, opts = {}) {
   let retriesUsed = 0;
   let result = null;
 
+  const logPrefix = `[TASK-L${level}:${lvl.name}]`;
+
+  // C-461-AGENDA-MUTEX: skip silencioso si task ya esta corriendo.
+  // Previene race entre setInterval + setTimeout en setUpAgendaEngine
+  // u otros cron paralelos que invocan misma taskName. Lock per-task
+  // por nombre — tasks con nombre distinto pueden correr en paralelo.
+  if (_isTaskRunning(taskName)) {
+    _metrics.skippedConcurrent++;
+    if (level >= 3) {
+      console.log(`${logPrefix} ⏸️ ${taskName} skipped (ya corriendo) — C-461 mutex`);
+    }
+    return {
+      success: false,
+      skipped: true,
+      reason: 'already_running',
+      duration: 0,
+      retries: 0,
+    };
+  }
+  _markTaskRunning(taskName);
+
   _metrics.totalTasks++;
   _metrics.byLevel[level] = (_metrics.byLevel[level] || 0) + 1;
-
-  const logPrefix = `[TASK-L${level}:${lvl.name}]`;
 
   if (level >= 3) {
     console.log(`${logPrefix} ▶ Iniciando: ${taskName}${opts.context ? ` (${opts.context})` : ''}`);
   }
 
+  // C-461: try/finally garantiza release del lock incluso si task throws.
+  try {
   // Intentos = 1 base + retries del nivel
   const maxAttempts = 1 + lvl.retries;
 
@@ -180,6 +230,12 @@ async function executeWithConcentration(level, taskName, taskFn, opts = {}) {
   }
 
   return { success: false, error: lastError?.message, duration, retries: retriesUsed };
+  } finally {
+    // C-461-AGENDA-MUTEX: liberar lock SIEMPRE (incluso si task throws
+    // o todos los retries fallan). Sin esto el lock queda pegado y la
+    // task NUNCA mas se ejecuta.
+    _markTaskFinished(taskName);
+  }
 }
 
 // Tracking de fallos silenciosos para aprendizaje
@@ -277,4 +333,7 @@ module.exports = {
   getTaskMetrics,
   getSilentFailures,
   LEVELS,
+  // C-461-AGENDA-MUTEX: helpers expuestos para tests aislados.
+  _isTaskRunning,
+  _resetRunningTasksForTests,
 };
