@@ -97,6 +97,9 @@ async function confirmForgetMe(ownerUid, token) {
   if (!snap.exists) throw new Error('owner not found');
   const data = snap.data() || {};
   if (!data.forgetme_pending) throw new Error('no forgetme pending');
+  // C-448-FORGETME-RACE: bloquear confirm si execute ya inició/terminó
+  if (data.forgetme_executing) throw new Error('forgetme already executing');
+  if (data.forgetme_executed_at) throw new Error('forgetme already executed');
   if (Date.now() > (data.forgetme_expires_at || 0)) {
     throw new Error('token expired');
   }
@@ -128,6 +131,9 @@ async function cancelForgetMe(ownerUid) {
   if (!snap.exists) throw new Error('owner not found');
   const data = snap.data() || {};
   if (!data.forgetme_pending) throw new Error('no forgetme pending');
+  // C-448-FORGETME-RACE: bloquear cancel si execute ya inició/terminó
+  if (data.forgetme_executing) throw new Error('cannot cancel: forgetme is executing');
+  if (data.forgetme_executed_at) throw new Error('cannot cancel: forgetme already executed');
   await ref.set({
     forgetme_pending: false,
     forgetme_token_hash: null,
@@ -150,12 +156,30 @@ async function executeForgetMe(ownerUid) {
   }
   const fs = _getFirestore();
   const ref = fs.collection('users').doc(ownerUid);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('owner not found');
-  const data = snap.data() || {};
-  if (!data.forgetme_confirmed) {
-    throw new Error('forgetme not confirmed');
-  }
+
+  // C-448-FORGETME-RACE: lock distribuido vía Firestore transaction.
+  // Previene: (a) doble cron tick simultáneo borrando 2x + audit log
+  // duplicado, (b) cancelForgetMe concurrente que llegue tarde.
+  // Marca forgetme_executing=true atómicamente. Si otro proceso ya
+  // tiene el lock o el forgetme ya se ejecutó, falla rápido.
+  await fs.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new Error('owner not found');
+    const data = snap.data() || {};
+    if (!data.forgetme_confirmed) {
+      throw new Error('forgetme not confirmed');
+    }
+    if (data.forgetme_executing) {
+      throw new Error('forgetme already executing');
+    }
+    if (data.forgetme_executed_at) {
+      throw new Error('forgetme already executed');
+    }
+    tx.update(ref, {
+      forgetme_executing: true,
+      forgetme_executing_started_at: Date.now(),
+    });
+  });
 
   const subcolsToDelete = [
     'miia_memory',
@@ -165,40 +189,51 @@ async function executeForgetMe(ownerUid) {
     'miia_state',
   ];
   const deleted = [];
-  for (const sub of subcolsToDelete) {
-    try {
-      const subSnap = await ref.collection(sub).get();
-      for (const doc of subSnap.docs) {
-        await ref.collection(sub).doc(doc.id).delete();
+  try {
+    for (const sub of subcolsToDelete) {
+      try {
+        const subSnap = await ref.collection(sub).get();
+        for (const doc of subSnap.docs) {
+          await ref.collection(sub).doc(doc.id).delete();
+        }
+        deleted.push(sub);
+      } catch (_) {
+        // continúa con las demás
       }
-      deleted.push(sub);
-    } catch (_) {
-      // continúa con las demás
     }
+
+    // Marcar profile como anonymized (preserva uid + audit pero borra PII).
+    // C-448-FORGETME-RACE: clear forgetme_executing flag (lock release).
+    await ref.set({
+      email: null,
+      name: null,
+      whatsapp_number: null,
+      aiDisclosureEnabled: null,
+      weekendModeEnabled: null,
+      forgetme_pending: false,
+      forgetme_executing: false,
+      forgetme_executed_at: Date.now(),
+      forgetme_anonymized: true,
+      forgetme_token_hash: null,
+    }, { merge: true });
+
+    // Audit log preserved (anonymized entry)
+    await fs.collection('audit_logs').add({
+      type: 'forgetme_executed',
+      ownerUid_hash: crypto.createHash('sha256').update(ownerUid).digest('hex').slice(0, 16),
+      timestamp: Date.now(),
+      deleted_subcollections: deleted,
+    }).catch(() => {});
+
+    return { deleted, preservedAudit: 1 };
+  } catch (err) {
+    // C-448-FORGETME-RACE: si algo falla post-lock, liberar el flag
+    // para permitir retry del cron. Sin esto el lock queda pegado.
+    try {
+      await ref.set({ forgetme_executing: false }, { merge: true });
+    } catch (_) { /* best effort */ }
+    throw err;
   }
-
-  // Marcar profile como anonymized (preserva uid + audit pero borra PII)
-  await ref.set({
-    email: null,
-    name: null,
-    whatsapp_number: null,
-    aiDisclosureEnabled: null,
-    weekendModeEnabled: null,
-    forgetme_pending: false,
-    forgetme_executed_at: Date.now(),
-    forgetme_anonymized: true,
-    forgetme_token_hash: null,
-  }, { merge: true });
-
-  // Audit log preserved (anonymized entry)
-  await fs.collection('audit_logs').add({
-    type: 'forgetme_executed',
-    ownerUid_hash: crypto.createHash('sha256').update(ownerUid).digest('hex').slice(0, 16),
-    timestamp: Date.now(),
-    deleted_subcollections: deleted,
-  }).catch(() => {});
-
-  return { deleted, preservedAudit: 1 };
 }
 
 module.exports = {

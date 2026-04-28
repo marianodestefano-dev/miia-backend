@@ -117,15 +117,15 @@ function makeMockFs() {
     collection(name) {
       return {
         doc(id) {
+          const path = `${name}/${id}`;
           return {
+            path,
             collection(sub) { return makeColRef([name, id, sub]); },
             async get() {
-              const path = `${name}/${id}`;
               const data = store.get(path);
               return { exists: data !== undefined, data: () => data };
             },
             async set(d, opts) {
-              const path = `${name}/${id}`;
               if (opts && opts.merge) {
                 const cur = store.get(path) || {};
                 store.set(path, { ...cur, ...JSON.parse(JSON.stringify(d)) });
@@ -162,6 +162,18 @@ function makeMockFs() {
           return { id };
         },
       };
+    },
+    // C-448-FORGETME-RACE: runTransaction añadido para soportar lock
+    // distribuido en executeForgetMe.
+    async runTransaction(cb) {
+      const tx = {
+        async get(ref) { return ref.get(); },
+        update(ref, data) {
+          const cur = store.get(ref.path) || {};
+          store.set(ref.path, { ...cur, ...JSON.parse(JSON.stringify(data)) });
+        },
+      };
+      return cb(tx);
     },
   };
 }
