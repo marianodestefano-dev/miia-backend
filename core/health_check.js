@@ -224,8 +224,12 @@ async function runFullCheck({ tenants = {}, aiGateway = null } = {}) {
     }
   }
   if (!results.firestore || baileysDown.length > 0 || upsertWarn) {
+    const hasRealFailure = !results.firestore || baileysDown.length > 0;
     const icon = (!results.firestore || (upsert.count10min === 0 && upsert.count20min === 0 && uptimeSec >= 900 && hasConnected)) ? '🚨 CRITICAL' : '⚠️ WARN';
-    console.error(`[HEALTH] ${icon} — Firestore: ${results.firestore ? '✅' : '❌'}, Baileys down: [${baileysDown.join(', ')}], AI: ${results.aiGateway ? '✅' : '⚠️'} | ${upsertTag}`);
+    // T11-FIX: ZOMBIE solo (upserts=0 con todos servicios sanos) → console.warn, no console.error.
+    // En Railway, console.error genera severity=error — falso positivo cuando no hay falla real.
+    const logFn = hasRealFailure ? console.error : console.warn;
+    logFn(`[HEALTH] ${icon} — Firestore: ${results.firestore ? '✅' : '❌'}, Baileys down: [${baileysDown.join(', ')}], AI: ${results.aiGateway ? '✅' : '⚠️'} | ${upsertTag}`);
   } else {
     console.log(`[HEALTH] ✅ ALL HEALTHY — Firestore: ✅, Baileys: ${Object.keys(results.baileys).length} tenants ✅, AI: ${results.aiGateway ? '✅' : '⚠️'} | ${upsertTag}`);
   }
