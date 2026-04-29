@@ -13681,8 +13681,18 @@ app.post('/api/tenant/:uid/contact-groups', express.json(), async (req, res) => 
     const { name, icon, tone, autoRespond, proactiveEnabled } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'name es requerido' });
 
+    // C-419b GUARD: Unicidad por nombre — previene grupos duplicados.
+    // Bug activo: Mariano veía grupos dobles en dashboard (T8 D.5).
+    const nameTrimmed = name.trim();
+    const existing = await db.collection('users').doc(uid).collection('contact_groups')
+      .where('name', '==', nameTrimmed).limit(1).get();
+    if (!existing.empty) {
+      console.warn(`[GROUPS] ⚠️ Grupo "${nameTrimmed}" ya existe para ${uid.substring(0, 8)}... — rechazado (C-419b guard)`);
+      return res.status(409).json({ error: `Ya existe un grupo con el nombre "${nameTrimmed}"`, existingId: existing.docs[0].id });
+    }
+
     const groupData = {
-      name: name.trim(),
+      name: nameTrimmed,
       icon: icon || '👥',
       tone: (tone || '').trim(),
       autoRespond: autoRespond === true ? true : false,
@@ -13691,7 +13701,7 @@ app.post('/api/tenant/:uid/contact-groups', express.json(), async (req, res) => 
     };
 
     const docRef = await db.collection('users').doc(uid).collection('contact_groups').add(groupData);
-    console.log(`[GROUPS] ✅ Grupo "${name}" creado (${docRef.id}) para ${uid}`);
+    console.log(`[GROUPS] ✅ Grupo "${nameTrimmed}" creado (${docRef.id}) para ${uid.substring(0, 8)}...`);
     res.json({ success: true, id: docRef.id, group: { id: docRef.id, ...groupData } });
   } catch (e) {
     console.error(`[GROUPS] ❌ Error creando grupo:`, e.message);
