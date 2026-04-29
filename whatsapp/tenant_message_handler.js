@@ -65,6 +65,8 @@ const weekendMode = require('../core/weekend_mode');
 const { runPostprocess, runAIAudit, getFallbackMessage } = require('../core/miia_postprocess');
 const { validatePreSend } = require('../core/miia_validator');
 const { fetchOfficialTRM } = require('../core/financial_verify');
+// T10 C-464: PII mask — slog.msgContent() para garantizar hash de cuerpos de mensaje en hot paths
+const { slog } = require('../core/log_sanitizer');
 
 // === V2 (C-388 corrección de scope C-386) — wire-in voice_seed + mode_detectors + splitter + emoji injector ===
 // Scope ETAPA 1: SOLO MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2). MIIA Personal (bq2...) NO usa V2.
@@ -2048,7 +2050,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       // ¿El owner le habla a MIIA? (menciona "miia" en cualquier forma)
       const ownerTalksToMiia = /\bmiia\b/i.test(messageBody);
       if (ownerTalksToMiia) {
-        console.log(`${logPrefix} 🎤 OWNER HABLA CON MIIA en 3-way con ${basePhone} — MIIA responde. Msg: "${messageBody.substring(0, 60)}"`);
+        slog.msgContent(`${logPrefix} 🎤 OWNER HABLA CON MIIA en 3-way con ${basePhone} — MIIA responde. Msg:`, messageBody);
         // NO return — dejar que fluya al pipeline, MIIA responde al owner
         // NO setear ownerActiveChats — MIIA no se silencia
       } else {

@@ -384,3 +384,78 @@ describe('log_sanitizer — slog.msgContent()', () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// §6 — T10 C-464: WhatsApp JID format + maskUid()
+// ═══════════════════════════════════════════════════════════════
+
+describe('log_sanitizer T10 — sanitizePhone WA format (C-464)', () => {
+  const PROD_ENV = { NODE_ENV: 'production', MIIA_DEBUG_VERBOSE: undefined };
+
+  test('WA JID 573054169969@s.whatsapp.net → ***9969@s.whatsapp.net', () => {
+    withEnv(PROD_ENV, () => {
+      const out = sanitizer.sanitizePhone('573054169969@s.whatsapp.net');
+      expect(out).toBe('***9969@s.whatsapp.net');
+      expect(out).not.toContain('573054169969');
+    });
+  });
+
+  test('WA JID con device suffix :94 → ***9969@s.whatsapp.net', () => {
+    withEnv(PROD_ENV, () => {
+      const out = sanitizer.sanitizePhone('573054169969:94@s.whatsapp.net');
+      expect(out).toBe('***9969@s.whatsapp.net');
+      expect(out).not.toContain('573054169969');
+    });
+  });
+
+  test('WA JID dentro de string de log → masked', () => {
+    withEnv(PROD_ENV, () => {
+      const out = sanitizer.sanitize('[TMH] 📤 Mensaje enviado a 573163937365@s.whatsapp.net (80 chars)');
+      expect(out).toMatch(/\*\*\*7365@s\.whatsapp\.net/);
+      expect(out).not.toContain('573163937365');
+    });
+  });
+
+  test('E.164 + WA JID en mismo string → ambos masked', () => {
+    withEnv(PROD_ENV, () => {
+      const out = sanitizer.sanitize('owner +573054169969 → lead 573163937365@s.whatsapp.net');
+      expect(out).toMatch(/\+57\*\*\*9969/);
+      expect(out).toMatch(/\*\*\*7365@s\.whatsapp\.net/);
+      expect(out).not.toContain('573054169969');
+      expect(out).not.toContain('573163937365');
+    });
+  });
+});
+
+describe('log_sanitizer T10 — maskUid() (C-464)', () => {
+  const PROD_ENV = { NODE_ENV: 'production', MIIA_DEBUG_VERBOSE: undefined };
+  const DEV_ENV = { NODE_ENV: 'development', MIIA_DEBUG_VERBOSE: undefined };
+  const UID = 'bq2BbtCVF8cZo30tum584zrGATJ3';
+
+  test('maskUid en producción → primeros 8 chars + ...', () => {
+    withEnv(PROD_ENV, () => {
+      const out = sanitizer.maskUid(UID);
+      expect(out).toBe('bq2BbtCV...');
+      expect(out).not.toContain('um584zrGATJ3');
+    });
+  });
+
+  test('maskUid en dev → UID completo (no-op)', () => {
+    withEnv(DEV_ENV, () => {
+      expect(sanitizer.maskUid(UID)).toBe(UID);
+    });
+  });
+
+  test('maskUid con string vacío → devuelve string vacío sin error', () => {
+    withEnv(PROD_ENV, () => {
+      expect(sanitizer.maskUid('')).toBe('');
+    });
+  });
+
+  test('maskUid con non-string → devuelve el valor tal cual', () => {
+    withEnv(PROD_ENV, () => {
+      expect(sanitizer.maskUid(null)).toBeNull();
+      expect(sanitizer.maskUid(undefined)).toBeUndefined();
+    });
+  });
+});

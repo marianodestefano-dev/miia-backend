@@ -54,29 +54,52 @@ function isActive() {
 // ═══ HELPERS ═══
 
 /**
- * Sanitiza teléfonos E.164 `+<código><dígitos>`.
- * Preserva primeros 3 chars (+ código 2 dígitos) + *** + últimos 4.
- * Ejemplo: `+573054169969` → `+57***9969`.
- * Edge US/CA (+1): `+12025551234` → `+12***1234` (acepta v1 para simplicidad;
- * v2 puede refinar con tabla de códigos país).
+ * Sanitiza teléfonos E.164 `+<código><dígitos>` y formato WhatsApp.
+ * E.164: `+573054169969` → `+57***9969` (preserva 3 chars prefijo + últimos 4).
+ * WhatsApp JID: `573054169969@s.whatsapp.net` → `***9969@s.whatsapp.net`.
+ *   Variante con device: `573054169969:94@s.whatsapp.net` → `***9969@s.whatsapp.net`.
+ * T10 C-464: WA format añadido para cubrir exposiciones en TMH/server logs.
  */
 function sanitizePhone(str) {
   if (typeof str !== 'string') return str;
-  return str.replace(/\+\d{7,15}(?!\d)/g, (match) => {
+  // E.164 format (+573054169969)
+  let out = str.replace(/\+\d{7,15}(?!\d)/g, (match) => {
     const last4 = match.slice(-4);
     const prefix = match.slice(0, 3); // "+" + 2 dígitos
     return `${prefix}***${last4}`;
   });
+  // WhatsApp JID format (573054169969@s.whatsapp.net o :94@s.whatsapp.net)
+  out = out.replace(/\b(\d{7,15})(?::\d+)?(@[gs]\.whatsapp\.net)\b/g, (_m, digits, domain) => {
+    const last4 = digits.slice(-4);
+    return `***${last4}${domain}`;
+  });
+  return out;
+}
+
+/**
+ * Enmascara un UID de Firebase (28 chars base62) para logs.
+ * En producción: retorna los primeros 8 chars + '...' para trazabilidad sin exponer el UID completo.
+ * En dev/debug: retorna el UID completo para observabilidad.
+ * T10 C-464: helper explícito para uso en hot paths donde el UID aparece como dato standalone.
+ */
+function maskUid(uid) {
+  if (typeof uid !== 'string' || uid.length === 0) return uid;
+  if (!isSanitizerActive()) return uid;
+  return `${uid.slice(0, 8)}...`;
 }
 
 /**
  * Sanitiza emails. `mariano@gmail.com` → `m***@***.com`.
  * Preserva solo primera letra del local-part + TLD.
+ * Excluye dominios WhatsApp (s.whatsapp.net, g.us) — esos son JIDs, no emails, y
+ * los maneja sanitizePhone (que corre antes en el pipeline de sanitize()).
  */
 function sanitizeEmail(str) {
   if (typeof str !== 'string') return str;
-  return str.replace(/([a-zA-Z0-9._+-])[a-zA-Z0-9._+-]*@[a-zA-Z0-9.-]+\.([a-zA-Z]{2,})/g,
-    (_match, firstChar, tld) => `${firstChar}***@***.${tld}`);
+  return str.replace(
+    /([a-zA-Z0-9._+-])[a-zA-Z0-9._+-]*@(?!s\.whatsapp\.net\b)(?!g\.us\b)[a-zA-Z0-9.-]+\.([a-zA-Z]{2,})/g,
+    (_match, firstChar, tld) => `${firstChar}***@***.${tld}`
+  );
 }
 
 /**
@@ -153,8 +176,10 @@ function sanitizeName(str) {
 // ═══ ENTRY PRINCIPAL ═══
 
 /**
- * Aplica todas las reglas de sanitización en orden: tokens → emails →
- * phones → names (skip) → messages (último porque consume string completo).
+ * Aplica todas las reglas de sanitización en orden: tokens → phones → emails →
+ * names (skip) → messages (último porque consume string completo).
+ * Phones corre ANTES de emails para que JIDs WhatsApp (ej: 573054169969@s.whatsapp.net)
+ * sean maskeados como phone antes de que el regex de email los capture.
  * Guards: NODE_ENV !== production o MIIA_DEBUG_VERBOSE=true → no-op.
  */
 function sanitize(value) {
@@ -163,8 +188,8 @@ function sanitize(value) {
 
   let out = value;
   out = sanitizeToken(out);
+  out = sanitizePhone(out);  // antes que email — WA JIDs primero
   out = sanitizeEmail(out);
-  out = sanitizePhone(out);
   out = sanitizeName(out); // no-op v1
   out = sanitizeMessage(out); // último — puede hashear string completo
   return out;
@@ -266,6 +291,7 @@ module.exports = {
   sanitizeToken,
   sanitizeMessage,
   sanitizeName,
+  maskUid,
   slog,
   installConsoleOverride,
   restoreConsoleOriginal,

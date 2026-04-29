@@ -3881,17 +3881,17 @@ Generá una respuesta breve (máx 2 renglones) explicándole que para hablar con
           // Procesar el feedback para la pregunta más reciente
           const question = pendingQuestions[pendingQuestions.length - 1];
 
-          console.log(`[LEARNING] 📥 Feedback de Mariano: "${feedback}" sobre: "${question.text.substring(0, 60)}..."`);
+          _logSanitizer.slog.msgContent(`[LEARNING] 📥 Feedback de Mariano: "${feedback}" sobre:`, question.text);
 
           if (feedback === 'yes') {
             // Guardar el aprendizaje
             cerebroAbsoluto.appendLearning(question.text, 'MIIA_AUTO');
             saveDB();
             await safeSendMessage(phone, `✅ Memorizando permanentemente: "${question.text.substring(0, 100)}${question.text.length > 100 ? '...' : ''}"`, { isSelfChat: true });
-            console.log(`[LEARNING] ✅ Guardado después de feedback sí: "${question.text.substring(0, 80)}..."`);
+            _logSanitizer.slog.msgContent('[LEARNING] ✅ Guardado después de feedback sí:', question.text);
           } else if (feedback === 'no') {
             await safeSendMessage(phone, '✅ Entendido, no lo memorizo.', { isSelfChat: true });
-            console.log(`[LEARNING] ⊘ Descartado por feedback no: "${question.text.substring(0, 80)}..."`);
+            _logSanitizer.slog.msgContent('[LEARNING] ⊘ Descartado por feedback no:', question.text);
           } else if (feedback === 'partial') {
             await safeSendMessage(phone, '✅ Anotado para revisión posterior.', { isSelfChat: true });
           }
@@ -6575,11 +6575,11 @@ REGLAS:
       savePersonalLearning: async (uid, text, source) => {
         // Admin personal: guardar en cerebro_absoluto con tag PERSONAL
         cerebroAbsoluto.appendLearning(`[PERSONAL] ${text}`, source);
-        console.log(`[LEARNING:PERSONAL] ✅ Guardado: "${text.substring(0, 80)}..."`);
+        _logSanitizer.slog.msgContent('[LEARNING:PERSONAL] ✅ Guardado:', text);
       },
       queueDubiousLearning: async (ownerUid, sourceUid, text) => {
         adminPendingQuestions.push({ text, source: sourceUid });
-        console.log(`[LEARNING:DUDOSO] ❓ Encolado para aprobación: "${text.substring(0, 80)}..."`);
+        _logSanitizer.slog.msgContent('[LEARNING:DUDOSO] ❓ Encolado para aprobación:', text);
       },
       notifyOwner: async (msg) => {
         try {
