@@ -1251,6 +1251,20 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     return;
   }
 
+  // ── RC-1 GUARD: Per-phone processing lock ──────────────────────────────────────────
+  // Previene race condition si dos mensajes del mismo phone llegan en paralelo antes
+  // de que el primero termine. Sin esto, dos llamadas concurrentes a Gemini para el
+  // mismo contacto pueden generar respuestas duplicadas o corrupciones de contexto.
+  // Equivalente al guard isProcessing[phone] que ya existe en server.js L10400-10412.
+  // Limpieza garantizada por el finally del TRY/CATCH GLOBAL abajo.
+  // (§T5 audit RC-1, 2026-04-29)
+  if (ctx._processingPhones?.has(phone)) {
+    console.warn(`${logPrefix} ⚡ [RC-1] ${phone.substring(0, 20)}... ya en procesamiento — mensaje descartado (concurrent drop)`);
+    return;
+  }
+  ctx._processingPhones = ctx._processingPhones ?? new Set();
+  ctx._processingPhones.add(phone);
+
   // ═══ TRY/CATCH GLOBAL — Protección contra crash silencioso ═══
   // Sin esto, un error no capturado en cualquier tag handler = MIIA se calla y el owner no sabe por qué
   let _responseSentOk = false; // Declarado fuera del try para que catch lo vea
@@ -5992,6 +6006,9 @@ REGLAS:
     } catch (sendErr) {
       console.error(`${logPrefix} 🔥 No pude ni enviar error al usuario: ${sendErr.message}`);
     }
+  } finally {
+    // RC-1 GUARD: Liberar lock — siempre, incluso si hubo throw o return temprano.
+    ctx._processingPhones?.delete(phone);
   }
 }
 
