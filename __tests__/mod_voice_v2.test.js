@@ -73,7 +73,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       expect(typeof out.block).toBe('string');
       expect(out.block.length).toBeGreaterThan(100);
       expect(out.block).toContain('VOICE DNA V2');
-      expect(out.block).toContain('leads_medilink');
+      expect(out.block).toContain('leads_miia');
       expect(out.meta).toMatchObject({
         chatType: 'miia_lead',
         owner: 'center',
@@ -108,8 +108,8 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       });
       // §1 debe incluir regla de delatar-IA
       expect(out.block).toMatch(/IDENTIDAD BASE/i);
-      // §2.1 leads_medilink debe estar incluido
-      expect(out.block).toContain('leads_medilink');
+      // §2.1 leads_miia debe estar incluido
+      expect(out.block).toContain('leads_miia');
     });
 
     test('CENTER delata-IA ("soy IA") está en el bloque (§1 identidad CENTER)', () => {
@@ -124,7 +124,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
 
   // ─────────────────────────────────────────────────────────────────────
   describe('buildVoiceV2Block() — chatType=miia_client + CENTER profile (COMMIT 4)', () => {
-    test('devuelve bloque §2.2 clientes_medilink + meta.chatType=miia_client', () => {
+    test('devuelve bloque §2.2 clientes_miia + meta.chatType=miia_client', () => {
       const out = buildVoiceV2Block({
         chatType: 'miia_client',
         ownerProfile: centerProfile,
@@ -132,7 +132,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       });
       expect(out).not.toBeNull();
       expect(out.block).toContain('VOICE DNA V2');
-      expect(out.block).toContain('clientes_medilink');
+      expect(out.block).toContain('clientes_miia');
       expect(out.meta).toMatchObject({
         chatType: 'miia_client',
         owner: 'center',
@@ -343,7 +343,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
         context: { uid: MIIA_CENTER_UID, contactName: 'Dr. Test' }
       });
       expect(result.prompt).toContain('VOICE DNA V2');
-      expect(result.prompt).toContain('leads_medilink');
+      expect(result.prompt).toContain('leads_miia');
       expect(result.meta.modulesLoaded).toContain('mod_voice_v2');
       expect(result.meta.v2).not.toBeNull();
       expect(result.meta.v2).toMatchObject({
@@ -411,7 +411,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
         context: { uid: MIIA_CENTER_UID }
       });
       expect(result.meta.modulesLoaded).toContain('mod_voice_v2');
-      expect(result.prompt).toContain('clientes_medilink');
+      expect(result.prompt).toContain('clientes_miia');
       expect(result.meta.v2).toMatchObject({
         chatType: 'miia_client',
         owner: 'center',

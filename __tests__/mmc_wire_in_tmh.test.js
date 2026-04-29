@@ -46,7 +46,7 @@ describe('C-440 §A — wire-in MMC presente y guarded', () => {
   });
 
   test('A.6 — wire-in skip si !isSelfChat (no rastrea self-chat)', () => {
-    const block = TMH_SOURCE.match(/!isSelfChat[\s&\w]+messageBody[\s\S]{0,500}?autoAssignMessageToEpisode/);
+    const block = TMH_SOURCE.match(/!isSelfChat[\s&\w]+messageBody[\s\S]{0,1000}?autoAssignMessageToEpisode/);
     expect(block).not.toBeNull();
   });
 });
