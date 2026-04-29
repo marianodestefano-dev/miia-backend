@@ -10629,6 +10629,14 @@ async function handleIncomingMessage(message) {
         if (pendingResponses[effectiveTarget]) {
           delete pendingResponses[effectiveTarget];
           setTimeout(async () => {
+            // RC-2 GUARD T15-FIX: ventana 1s entre delete (arriba) y este retry permite
+            // que un mensaje nuevo entrante pase el check L10610 (isProcessing=undefined)
+            // y agende su propio handler. Si ese handler ya seteó isProcessing, skip
+            // el retry — el nuevo handler procesará sin doble-call Gemini.
+            if (isProcessing[effectiveTarget]) {
+              console.log(`[WA] ⏭️ RC-2 skip retry — nuevo handler ya procesa ${effectiveTarget}`);
+              return;
+            }
             isProcessing[effectiveTarget] = Date.now();
             try { await processAndSendAIResponse(effectiveTarget, null, true); }
             finally { delete isProcessing[effectiveTarget]; }
