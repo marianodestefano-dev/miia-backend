@@ -1762,7 +1762,8 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
           .get();
 
         if (pendingSnap.empty) {
-          console.log(`${logPrefix} [CLASSIFY-CMD] ℹ️ Owner escribió "${messageBody.trim()}" pero no hay contactos pendientes de clasificación`);
+          // T49: hash garantizado del mensaje del owner
+          slog.msgContent(`${logPrefix} [CLASSIFY-CMD] ℹ️ Owner escribio (sin pendientes)`, messageBody.trim());
           // No consumir — dejar que pase a la IA (puede ser otra cosa)
         } else {
           // Ordenar por alertSentAt desc (client-side para evitar composite index)
@@ -2066,7 +2067,8 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     const classifyDirectMatch = (messageBody || '').trim().match(/^\s*(?:es\s+|marcar?\s+(?:como\s+)?|poner\s+(?:como\s+)?)?(lead|cliente|familia|equipo|ignorar|bloquear)[!.\s]*$/i);
     if (classifyDirectMatch) {
       const directCmd = classifyDirectMatch[1].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-      console.log(`${logPrefix} 🏷️ C-037: Owner escribió "${messageBody.trim()}" directo al lead — clasificando SIN activar cooldown`);
+      // T49: hash garantizado del comando del owner
+      slog.msgContent(`${logPrefix} 🏷️ C-037: Owner escribio directo al lead clasificando SIN cooldown`, messageBody.trim());
       try {
         let newType, newStatus;
         switch (directCmd) {
@@ -3131,7 +3133,9 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   const detectedTopics = REALTIME_PATTERNS.filter(p => p.rx.test(messageBody)).map(p => p.topic);
   if (detectedTopics.length > 0) {
     fullPrompt += `\n\n⚠️ [SISTEMA — BÚSQUEDA OBLIGATORIA]: El usuario preguntó sobre ${detectedTopics.join(', ')}. DEBÉS usar tu herramienta google_search para responder con datos reales. NO respondas sin buscar primero.`;
-    console.log(`${logPrefix} 🔍 SEARCH-HINT inyectado: topics=[${detectedTopics.join(',')}] msg="${messageBody.substring(0, 60)}"`);
+    // T49: structural log + body hasheado en linea separada
+    console.log(`${logPrefix} 🔍 SEARCH-HINT inyectado: topics=[${detectedTopics.join(',')}]`);
+    slog.msgContent(`${logPrefix} 🔍 SEARCH-HINT msg`, messageBody.substring(0, 60));
   }
 
   // ═══ FEAT-005: Verificación cruzada financiera — dato oficial antes de Gemini ═══
