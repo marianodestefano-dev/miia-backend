@@ -2344,10 +2344,12 @@ async function callGeminiAPI(messages, systemPrompt) {
     };
 
     console.log(`[GEMINI] Request: ${messages.length} msgs, prompt ${systemPrompt.length} chars, key #${(_geminiKeyIndex - 1) % GEMINI_KEYS.length + 1}`);
+    // T23-FIX: AbortSignal.timeout previene hang infinito (CLAUDE.md §6.18)
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(45000)
     });
 
     if (!response.ok) {
@@ -2361,10 +2363,12 @@ async function callGeminiAPI(messages, systemPrompt) {
       if ((response.status === 429 || response.status === 403) && GEMINI_KEYS.length > 1) {
         const fallbackKey = getGeminiFallbackKey(key);
         console.log(`[GEMINI] ♻️ Reintentando con key alternativa...`);
+        // T23-FIX: AbortSignal.timeout
         const retryResp = await fetch(`${GEMINI_URL}?key=${fallbackKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(45000)
         });
         if (retryResp.ok) {
           const retryData = await retryResp.json();
@@ -2413,10 +2417,12 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
   const RETRY_DELAYS = [8000, 20000, 45000]; // 8s, 20s, 45s
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // T23-FIX: AbortSignal.timeout (60s para queries con search)
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(enableSearch ? 60000 : 45000)
     });
     if (response.ok) {
       const data = await response.json();
@@ -2440,10 +2446,12 @@ async function generateAIContent(prompt, { enableSearch = false } = {}) {
       if (response.status === 429 && GEMINI_KEYS.length > 1) {
         const fallbackKey = getGeminiFallbackKey(key);
         console.warn(`[GEMINI] ♻️ 429 rate limit — probando key alternativa...`);
+        // T23-FIX: AbortSignal.timeout
         const retryResp = await fetch(`${GEMINI_URL}?key=${fallbackKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(enableSearch ? 60000 : 45000)
         });
         if (retryResp.ok) {
           const retryData = await retryResp.json();
@@ -2484,10 +2492,12 @@ async function generateAIContentEmergency(prompt, { enableSearch = false } = {})
   for (let i = 0; i < GEMINI_BACKUP_KEYS.length; i++) {
     const bkKey = GEMINI_BACKUP_KEYS[i].trim();
     try {
+      // T23-FIX: AbortSignal.timeout (emergency backup, 45s)
       const resp = await fetch(`${GEMINI_URL}?key=${bkKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(45000)
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -9238,11 +9248,12 @@ async function processMediaMessage(message) {
     }]
   };
 
+  // T23-FIX: AbortSignal.timeout (timeout option no funciona en Node fetch nativo)
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    timeout: MEDIA_TIMEOUT_MS
+    signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS)
   });
 
   if (!response.ok) {
@@ -9256,11 +9267,12 @@ async function processMediaMessage(message) {
       console.log(`[MEDIA] ♻️ Reintentando media con key alternativa...`);
       const retryUrl = `${GEMINI_FLASH_URL}?key=${fallbackKey}`;
       try {
+        // T23-FIX: AbortSignal.timeout (timeout option no funciona en Node fetch nativo)
         const retryResp = await fetch(retryUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
-          timeout: MEDIA_TIMEOUT_MS
+          signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS)
         });
         if (retryResp.ok) {
           const retryData = await retryResp.json();
@@ -11797,10 +11809,12 @@ app.post('/api/chat', rrRequireAuth, rrRequireOwnerOfResource('userId', 'body'),
     
     console.log('[API CHAT] 📦 Payload preparado, enviando fetch...');
     
+    // T23-FIX: AbortSignal.timeout
     const geminiResponse = await fetch(geminiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(45000)
     });
 
     console.log(`[API CHAT] 📡 Gemini response status: ${geminiResponse.status}`);
