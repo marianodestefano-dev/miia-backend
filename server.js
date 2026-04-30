@@ -15679,10 +15679,12 @@ const PAYPAL_BASE = process.env.PAYPAL_ENV === 'sandbox'
 
 async function getPayPalToken() {
   const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
+  // T33-FIX: AbortSignal.timeout (T29 E2 — antes hang infinito posible)
   const r = await fetch(`${PAYPAL_BASE}/v1/oauth2/token`, {
     method: 'POST',
     headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'grant_type=client_credentials'
+    body: 'grant_type=client_credentials',
+    signal: AbortSignal.timeout(15000)
   });
   const d = await r.json();
   return d.access_token;
@@ -15697,6 +15699,7 @@ app.post('/api/paypal/subscribe', express.json(), async (req, res) => {
     if (!price) return res.status(400).json({ error: 'plan inválido' });
 
     const token = await getPayPalToken();
+    // T33-FIX: AbortSignal.timeout
     const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -15707,7 +15710,8 @@ app.post('/api/paypal/subscribe', express.json(), async (req, res) => {
           return_url: `${FRONTEND_URL}/owner-dashboard.html?paypal_capture=1&plan=${plan}&uid=${uid}`,
           cancel_url: `${FRONTEND_URL}/owner-dashboard.html`
         }
-      })
+      }),
+      signal: AbortSignal.timeout(15000)
     });
     const order = await r.json();
     const approvalUrl = order.links?.find(l => l.rel === 'approve')?.href;
@@ -15715,6 +15719,14 @@ app.post('/api/paypal/subscribe', express.json(), async (req, res) => {
     res.json({ url: approvalUrl });
   } catch (e) {
     console.error('[PAYPAL] subscribe error:', e.message);
+    // T33-FIX: V2-ALERT structured log (paridad con Paddle/MP)
+    console.error('[V2-ALERT][PAYMENT-FAIL]', {
+      provider: 'paypal',
+      stage: 'subscribe',
+      error: e.message,
+      uid: req.body?.uid || 'unknown',
+      plan: req.body?.plan || 'unknown',
+    });
     res.status(500).json({ error: e.message });
   }
 });
@@ -15725,6 +15737,7 @@ app.post('/api/paypal/agent-checkout', express.json(), async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'uid requerido' });
 
     const token = await getPayPalToken();
+    // T33-FIX: AbortSignal.timeout
     const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -15735,7 +15748,8 @@ app.post('/api/paypal/agent-checkout', express.json(), async (req, res) => {
           return_url: `${FRONTEND_URL}/owner-dashboard.html?paypal_agent_capture=1&uid=${uid}`,
           cancel_url: `${FRONTEND_URL}/owner-dashboard.html`
         }
-      })
+      }),
+      signal: AbortSignal.timeout(15000)
     });
     const order = await r.json();
     const approvalUrl = order.links?.find(l => l.rel === 'approve')?.href;
@@ -15743,6 +15757,13 @@ app.post('/api/paypal/agent-checkout', express.json(), async (req, res) => {
     res.json({ url: approvalUrl });
   } catch (e) {
     console.error('[PAYPAL] agent-checkout error:', e.message);
+    // T33-FIX: V2-ALERT
+    console.error('[V2-ALERT][PAYMENT-FAIL]', {
+      provider: 'paypal',
+      stage: 'agent-checkout',
+      error: e.message,
+      uid: req.body?.uid || 'unknown',
+    });
     res.status(500).json({ error: e.message });
   }
 });
@@ -15753,9 +15774,11 @@ app.post('/api/paypal/capture', express.json(), async (req, res) => {
     if (!token || !plan || !uid) return res.status(400).json({ error: 'token, plan y uid requeridos' });
 
     const accessToken = await getPayPalToken();
+    // T33-FIX: AbortSignal.timeout
     const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${token}/capture`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(15000)
     });
     const capture = await r.json();
 
@@ -15771,10 +15794,27 @@ app.post('/api/paypal/capture', express.json(), async (req, res) => {
       res.json({ success: true });
     } else {
       console.error('[PAYPAL] capture status:', capture.status, capture);
+      // T33-FIX: V2-ALERT capture not COMPLETED
+      console.error('[V2-ALERT][PAYMENT-FAIL]', {
+        provider: 'paypal',
+        stage: 'capture',
+        error: 'capture_not_completed',
+        captureStatus: capture.status,
+        uid: req.body?.uid || 'unknown',
+        plan: req.body?.plan || 'unknown',
+      });
       res.status(400).json({ error: 'Pago no completado', status: capture.status });
     }
   } catch (e) {
     console.error('[PAYPAL] capture error:', e.message);
+    // T33-FIX: V2-ALERT
+    console.error('[V2-ALERT][PAYMENT-FAIL]', {
+      provider: 'paypal',
+      stage: 'capture',
+      error: e.message,
+      uid: req.body?.uid || 'unknown',
+      plan: req.body?.plan || 'unknown',
+    });
     res.status(500).json({ error: e.message });
   }
 });
@@ -15785,9 +15825,11 @@ app.post('/api/paypal/capture-agent', express.json(), async (req, res) => {
     if (!token || !uid) return res.status(400).json({ error: 'token y uid requeridos' });
 
     const accessToken = await getPayPalToken();
+    // T33-FIX: AbortSignal.timeout
     const r = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${token}/capture`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(15000)
     });
     const capture = await r.json();
 
@@ -15798,10 +15840,25 @@ app.post('/api/paypal/capture-agent', express.json(), async (req, res) => {
       console.log(`[PAYPAL] Agente extra comprado por ${uid}`);
       res.json({ success: true });
     } else {
+      // T33-FIX: V2-ALERT
+      console.error('[V2-ALERT][PAYMENT-FAIL]', {
+        provider: 'paypal',
+        stage: 'capture-agent',
+        error: 'capture_not_completed',
+        captureStatus: capture.status,
+        uid: req.body?.uid || 'unknown',
+      });
       res.status(400).json({ error: 'Pago no completado', status: capture.status });
     }
   } catch (e) {
     console.error('[PAYPAL] capture-agent error:', e.message);
+    // T33-FIX: V2-ALERT
+    console.error('[V2-ALERT][PAYMENT-FAIL]', {
+      provider: 'paypal',
+      stage: 'capture-agent',
+      error: e.message,
+      uid: req.body?.uid || 'unknown',
+    });
     res.status(500).json({ error: e.message });
   }
 });
