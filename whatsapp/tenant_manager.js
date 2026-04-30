@@ -29,6 +29,8 @@ const { sendSessionRecoveryEmail } = require('../services/mail_service');
 const { handleTenantMessage } = require('./tenant_message_handler');
 // C-410.b §1 Pieza A — safety filter para excluir info sensible del corpus ADN
 const safetyFilter = require('../core/safety_filter');
+// T43 C-464: slog.msgContent() para garantizar hash de cuerpos de mensaje en messages.upsert hot path
+const { slog } = require('../core/log_sanitizer');
 
 // ─── Tenant state ─────────────────────────────────────────────────────────────
 const tenants = new Map();
@@ -1594,7 +1596,8 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         const fm = msg.key.fromMe;
         const msgTs = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp
           : (msg.messageTimestamp?.low || parseInt(msg.messageTimestamp) || 0);
-        console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} body="${b.substring(0,50)}" msgId=${msg.key.id} ts=${msgTs}`);
+        console.log(`[TM:${uid}] 📥 messages.upsert type=${type} fromMe=${fm} from=${f} msgId=${msg.key.id} ts=${msgTs}`);
+        slog.msgContent(`[TM:${uid}] 📥 body`, b.substring(0, 50));
       }
       // type=notify son mensajes nuevos en tiempo real
       // type=append puede incluir self-chat reciente que Baileys clasifica mal
