@@ -20,6 +20,12 @@ const groqAdapter = require('./adapters/groq_adapter');
 const mistralAdapter = require('./adapters/mistral_adapter');
 const keyPool = require('./key_pool');
 
+// T46: structured AI pipeline logging (sin PII — solo metadata + lengths + latency)
+function _aiObs(event, data) {
+  // event: 'ai.call.start' | 'ai.call.ok' | 'ai.call.fail' | 'ai.chat.start' | 'ai.chat.ok' | 'ai.chat.fail'
+  console.log(`[AI-OBS] ${event} ${JSON.stringify(data)}`);
+}
+
 // Shield integration — loaded lazily to avoid circular deps
 let _shield = null;
 function getShield() {
@@ -63,24 +69,38 @@ function getAdapter(provider) {
  */
 async function callAI(provider, apiKey, prompt, opts = {}) {
   const shield = getShield();
+  const t0 = Date.now();
+  const promptChars = (prompt || '').length;
 
   if (shield?.isCircuitOpen(shield.SYSTEMS.GEMINI)) {
     console.warn(`[AI-CLIENT] 🔴 Circuit breaker ABIERTO para IA — request bloqueada (provider: ${provider})`);
+    _aiObs('ai.call.fail', { provider, model: opts.model || null, prompt_chars: promptChars, reason: 'circuit_open' });
     return null;
   }
 
+  _aiObs('ai.call.start', { provider, model: opts.model || null, prompt_chars: promptChars, has_search: !!opts.enableSearch, has_thinking: !!opts.thinkingBudget });
+
   // Si hay key pool para este provider, usar rotación con retry
   if (keyPool.hasKeys(provider)) {
-    return _callWithPool(provider, 'call', [prompt, opts], shield);
+    try {
+      const result = await _callWithPool(provider, 'call', [prompt, opts], shield);
+      _aiObs('ai.call.ok', { provider, model: opts.model || null, prompt_chars: promptChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'pool' });
+      return result;
+    } catch (err) {
+      _aiObs('ai.call.fail', { provider, model: opts.model || null, prompt_chars: promptChars, latency_ms: Date.now() - t0, via: 'pool', err_status: err.status || err.statusCode || null });
+      throw err;
+    }
   }
 
   try {
     const adapter = getAdapter(provider);
     const result = await adapter.call(apiKey, prompt, opts);
     if (shield) shield.recordSuccess(shield.SYSTEMS.GEMINI);
+    _aiObs('ai.call.ok', { provider, model: opts.model || null, prompt_chars: promptChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'direct' });
     return result;
   } catch (err) {
     if (shield) shield.recordFail(shield.SYSTEMS.GEMINI, `${provider}: ${err.message}`);
+    _aiObs('ai.call.fail', { provider, model: opts.model || null, prompt_chars: promptChars, latency_ms: Date.now() - t0, via: 'direct', err_status: err.status || err.statusCode || null });
     throw err;
   }
 }
@@ -96,23 +116,39 @@ async function callAI(provider, apiKey, prompt, opts = {}) {
  */
 async function callAIChat(provider, apiKey, messages, systemPrompt, opts = {}) {
   const shield = getShield();
+  const t0 = Date.now();
+  const msgCount = Array.isArray(messages) ? messages.length : 0;
+  const systemChars = (systemPrompt || '').length;
+  const totalMsgChars = Array.isArray(messages) ? messages.reduce((s, m) => s + ((m && m.content) || '').length, 0) : 0;
 
   if (shield?.isCircuitOpen(shield.SYSTEMS.GEMINI)) {
     console.warn(`[AI-CLIENT] 🔴 Circuit breaker ABIERTO para IA — chat bloqueada (provider: ${provider})`);
+    _aiObs('ai.chat.fail', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, total_msg_chars: totalMsgChars, reason: 'circuit_open' });
     return null;
   }
 
+  _aiObs('ai.chat.start', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, total_msg_chars: totalMsgChars });
+
   if (keyPool.hasKeys(provider)) {
-    return _callWithPool(provider, 'callChat', [messages, systemPrompt, opts], shield);
+    try {
+      const result = await _callWithPool(provider, 'callChat', [messages, systemPrompt, opts], shield);
+      _aiObs('ai.chat.ok', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'pool' });
+      return result;
+    } catch (err) {
+      _aiObs('ai.chat.fail', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, latency_ms: Date.now() - t0, via: 'pool', err_status: err.status || err.statusCode || null });
+      throw err;
+    }
   }
 
   try {
     const adapter = getAdapter(provider);
     const result = await adapter.callChat(apiKey, messages, systemPrompt, opts);
     if (shield) shield.recordSuccess(shield.SYSTEMS.GEMINI);
+    _aiObs('ai.chat.ok', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'direct' });
     return result;
   } catch (err) {
     if (shield) shield.recordFail(shield.SYSTEMS.GEMINI, `${provider}: ${err.message}`);
+    _aiObs('ai.chat.fail', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, latency_ms: Date.now() - t0, via: 'direct', err_status: err.status || err.statusCode || null });
     throw err;
   }
 }
