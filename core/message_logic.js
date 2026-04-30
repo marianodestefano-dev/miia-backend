@@ -247,6 +247,7 @@ function getCountryFromPhone(phone) {
   if (num.startsWith('55')) return 'BR';  // Brasil (T40 multilang)
   if (num.startsWith('44')) return 'GB';  // Reino Unido (T40 multilang)
   if (num.startsWith('61')) return 'AU';  // Australia (T40 multilang)
+  if (/^1(809|829|849)/.test(num)) return 'DO'; // T44 fix: DO antes de US (paridad C-342 B.2)
   if (num.startsWith('1')) return 'US';
   if (num.startsWith('34')) return 'ES';
   return 'CO'; // default Colombia
@@ -261,6 +262,7 @@ function getTimezoneForCountry(country) {
     CL: 'America/Santiago', PE: 'America/Lima', EC: 'America/Guayaquil',
     US: 'America/New_York', ES: 'Europe/Madrid',
     BR: 'America/Sao_Paulo', GB: 'Europe/London', AU: 'Australia/Sydney', // T40 multilang
+    DO: 'America/Santo_Domingo', // T44 fix
   };
   return tzMap[country] || 'America/Bogota';
 }
@@ -291,6 +293,7 @@ function getLangFromCountry(cc) {
     CL: { lang: 'es', dialect: 'es_cl', greeting: 'Hola', tuteo: 'tu' },
     PE: { lang: 'es', dialect: 'es_pe', greeting: 'Hola', tuteo: 'tu' },
     EC: { lang: 'es', dialect: 'es_ec', greeting: 'Hola', tuteo: 'tu' },
+    DO: { lang: 'es', dialect: 'es_do', greeting: 'Hola', tuteo: 'tu' }, // T44 fix
   };
   return map[cc] || { lang: 'es', dialect: 'es_co', greeting: 'Hola', tuteo: 'tu' };
 }
@@ -326,13 +329,24 @@ function getCountryContext(basePhone) {
   const countryCode = basePhone.substring(0, 2);
   const countryCode3 = basePhone.substring(0, 3);
 
-  if (countryCode === '57') return '🌍 El contacto es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el contacto los trae; si tiene SIIGO + Titanium → facturador electrónico $0. 🗣️ DIALECTO: Usá TÚ (tuteo colombiano). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "listo", "dale", "claro que sí", "con mucho gusto".';
-  if (countryCode === '52') return '🌍 El contacto es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo mexicano). Decí "cuéntame", "platícame", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "órale", "sale", "claro", "con gusto".';
-  if (countryCode === '56') return '🌍 El contacto es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo chileno). Decí "cuéntame", "dime". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "dale", "ya", "perfecto".';
-  if (countryCode === '54') return '🌍 El contacto es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el contacto es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá VOS (voseo rioplatense). Decí "contame", "decime", "mirá", "fijate". Expresiones: "dale", "genial", "bárbaro".';
-  if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') return '🌍 El contacto es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo caribeño). Decí "cuéntame", "dime". NUNCA "contame" ni "decime". Expresiones: "claro", "perfecto", "con gusto".';
-  if (countryCode === '34') return '🌍 El contacto es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo español). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). NUNCA usar "vos". Expresiones: "vale", "genial", "perfecto", "estupendo".';
-  return '🌍 El contacto es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (español neutro). Decí "cuéntame", "dime". NUNCA "contame" ni "decime" (eso es argentino). Tono profesional neutro.';
+  // T44 Capa B: prepend lang instruction si lead no es ES (BR/US/GB/AU/CA → EN/PT).
+  const cc = getCountryFromPhone(basePhone);
+  const langInstr = buildLangInstruction(getLangFromCountry(cc));
+
+  if (countryCode === '57') return langInstr + '🌍 El contacto es de COLOMBIA (pais:"COLOMBIA", moneda:"COP"). SIIGO/BOLD: mencionar SOLO si el contacto los trae; si tiene SIIGO + Titanium → facturador electrónico $0. 🗣️ DIALECTO: Usá TÚ (tuteo colombiano). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "listo", "dale", "claro que sí", "con mucho gusto".';
+  if (countryCode === '52') return langInstr + '🌍 El contacto es de MÉXICO (pais:"MEXICO", moneda:"MXN"). IVA 16% se calcula automáticamente. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo mexicano). Decí "cuéntame", "platícame", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "órale", "sale", "claro", "con gusto".';
+  if (countryCode === '56') return langInstr + '🌍 El contacto es de CHILE (pais:"CHILE", moneda:"CLP"). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo chileno). Decí "cuéntame", "dime". NUNCA "contame", "decime", "mirá" (eso es argentino). Expresiones: "dale", "ya", "perfecto".';
+  if (countryCode === '54') return langInstr + '🌍 El contacto es de ARGENTINA (pais:"ARGENTINA", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. Si el contacto es médico, ofrecer Receta Digital AR ($3 USD, incluirRecetaAR:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá VOS (voseo rioplatense). Decí "contame", "decime", "mirá", "fijate". Expresiones: "dale", "genial", "bárbaro".';
+  if (countryCode3 === '180' || countryCode3 === '182' || countryCode3 === '184') return langInstr + '🌍 El contacto es de REPÚBLICA DOMINICANA (pais:"REPUBLICA_DOMINICANA", moneda:"USD"). Tiene factura electrónica (incluirFactura:true). PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo caribeño). Decí "cuéntame", "dime". NUNCA "contame" ni "decime". Expresiones: "claro", "perfecto", "con gusto".';
+  if (countryCode === '34') return langInstr + '🌍 El contacto es de ESPAÑA (pais:"ESPAÑA", moneda:"EUR"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (tuteo español). Decí "cuéntame", "dime", "mira". NUNCA "contame", "decime", "mirá" (eso es argentino). NUNCA usar "vos". Expresiones: "vale", "genial", "perfecto", "estupendo".';
+
+  // T44 Capa B: branches multilang (PT/EN) — texto en idioma local + langInstr ya prefijada.
+  if (cc === 'BR') return langInstr + '🌍 O contato e do BRASIL (pais:"BRASIL", moeda:"BRL R$"). PROIBIDO faturamento eletronico. PROIBIDO mencionar SIIGO ou BOLD. 🗣️ DIALETO: Use VOCE (portugues brasileiro coloquial). Diga "tudo bem", "otimo", "perfeito", "claro", "com certeza", "show". NUNCA misturar com espanhol.';
+  if (cc === 'US' || cc === 'CA') return langInstr + '🌍 The contact is from ' + (cc === 'US' ? 'USA' : 'CANADA') + ' (country:"' + (cc === 'US' ? 'USA' : 'CANADA') + '", currency:"USD"). PROHIBITED: e-invoicing, SIIGO, BOLD. 🗣️ DIALECT: Use natural conversational English. Friendly, professional tone.';
+  if (cc === 'GB') return langInstr + '🌍 The contact is from UK (country:"UK", currency:"GBP"). PROHIBITED: e-invoicing, SIIGO, BOLD. 🗣️ DIALECT: Use British English. Polite, professional tone. Greetings: "Hello", "Hi there".';
+  if (cc === 'AU') return langInstr + '🌍 The contact is from AUSTRALIA (country:"AUSTRALIA", currency:"AUD"). PROHIBITED: e-invoicing, SIIGO, BOLD. 🗣️ DIALECT: Use Australian English. Friendly, casual professional tone.';
+
+  return langInstr + '🌍 El contacto es INTERNACIONAL (pais:"INTERNACIONAL", moneda:"USD"). PROHIBIDO factura electrónica — usar incluirFactura:false. PROHIBIDO mencionar SIIGO o BOLD. 🗣️ DIALECTO: Usá TÚ (español neutro). Decí "cuéntame", "dime". NUNCA "contame" ni "decime" (eso es argentino). Tono profesional neutro.';
 }
 
 /**
