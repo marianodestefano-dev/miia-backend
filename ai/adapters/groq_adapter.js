@@ -7,6 +7,10 @@ const API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MAX_RETRIES = 2;
 const RETRY_DELAYS = [5000, 15000];
 
+// T16-FIX HIGH-1 — patrón gemini_client.js (CLAUDE.md §6.18)
+const FETCH_TIMEOUT_MS = 45000;
+const FETCH_WARNING_MS = 40000;
+
 async function call(apiKey, prompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
   const payload = {
@@ -15,7 +19,15 @@ async function call(apiKey, prompt, opts = {}) {
     max_tokens: opts.maxTokens || 4096
   };
 
+  const timeoutMs = opts.timeout || FETCH_TIMEOUT_MS;
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // T16-FIX HIGH-1: AbortController (CLAUDE.md §6.18)
+    const controller = new AbortController();
+    const warningTimer = setTimeout(() => {
+      console.warn(`[GROQ] ⚠️ fetch lleva ${FETCH_WARNING_MS/1000}s sin respuesta (timeout en ${(timeoutMs - FETCH_WARNING_MS)/1000}s más)`);
+    }, FETCH_WARNING_MS);
+    const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(API_URL, {
         method: 'POST',
@@ -23,8 +35,11 @@ async function call(apiKey, prompt, opts = {}) {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: controller.signal
       });
+      clearTimeout(warningTimer);
+      clearTimeout(abortTimer);
 
       if (response.ok) {
         const data = await response.json();
@@ -44,6 +59,11 @@ async function call(apiKey, prompt, opts = {}) {
       const errText = await response.text();
       throw new Error(`Groq API error: ${response.status} - ${errText.substring(0, 200)}`);
     } catch (err) {
+      clearTimeout(warningTimer);
+      clearTimeout(abortTimer);
+      if (err.name === 'AbortError') {
+        console.error(`[GROQ] ⏱️ TIMEOUT ${timeoutMs/1000}s — abort attempt ${attempt + 1}/${MAX_RETRIES}`);
+      }
       if (attempt === MAX_RETRIES) throw err;
       if (err.message.includes('Groq API error')) throw err;
       console.warn(`[GROQ] Network error — retry in 3s (${attempt + 1}/${MAX_RETRIES}): ${err.message}`);
@@ -64,6 +84,13 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
     }))
   ];
 
+  // T16-FIX HIGH-1: AbortController
+  const timeoutMs = opts.timeout || FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  const warningTimer = setTimeout(() => {
+    console.warn(`[GROQ] ⚠️ chat fetch lleva ${FETCH_WARNING_MS/1000}s sin respuesta (timeout en ${(timeoutMs - FETCH_WARNING_MS)/1000}s más)`);
+  }, FETCH_WARNING_MS);
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     console.log(`[GROQ] Chat request: ${messages.length} msgs, model ${model}`);
     const response = await fetch(API_URL, {
@@ -76,8 +103,11 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
         model,
         messages: groqMessages,
         max_tokens: opts.maxTokens || 4096
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(warningTimer);
+    clearTimeout(abortTimer);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -97,6 +127,11 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
     console.log(`[GROQ] OK: ${text.length} chars`);
     return text;
   } catch (error) {
+    clearTimeout(warningTimer);
+    clearTimeout(abortTimer);
+    if (error.name === 'AbortError') {
+      console.error(`[GROQ] ⏱️ TIMEOUT ${timeoutMs/1000}s — chat aborted`);
+    }
     console.error('[GROQ] CRITICAL ERROR:', error.message);
     return null;
   }

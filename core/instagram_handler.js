@@ -120,6 +120,7 @@ async function exchangeCodeForToken(code, redirectUri, appId, appSecret) {
 
   // Paso 1: Code → short-lived token
   const tokenUrl = `${IG_GRAPH_BASE}/oauth/access_token`;
+  // T16-FIX HIGH-2: AbortSignal.timeout (CLAUDE.md §6.18)
   const tokenResp = await fetch(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -129,7 +130,8 @@ async function exchangeCodeForToken(code, redirectUri, appId, appSecret) {
       grant_type: 'authorization_code',
       redirect_uri: redirectUri,
       code: code
-    })
+    }),
+    signal: AbortSignal.timeout(15000)
   });
 
   if (!tokenResp.ok) {
@@ -143,7 +145,7 @@ async function exchangeCodeForToken(code, redirectUri, appId, appSecret) {
 
   // Paso 2: Short-lived → long-lived token (60 días)
   const longUrl = `${IG_GRAPH_BASE}/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortToken}`;
-  const longResp = await fetch(longUrl);
+  const longResp = await fetch(longUrl, { signal: AbortSignal.timeout(15000) });
 
   if (!longResp.ok) {
     const err = await longResp.text();
@@ -157,7 +159,7 @@ async function exchangeCodeForToken(code, redirectUri, appId, appSecret) {
   console.log(`[INSTAGRAM] ✅ Long-lived token obtenido (expira en ${Math.round(expiresIn / 86400)} días)`);
 
   // Paso 3: Obtener Instagram User ID y Page ID
-  const meResp = await fetch(`${IG_GRAPH_BASE}/me/accounts?access_token=${longToken}`);
+  const meResp = await fetch(`${IG_GRAPH_BASE}/me/accounts?access_token=${longToken}`, { signal: AbortSignal.timeout(15000) });
   const meData = await meResp.json();
   const page = meData.data?.[0];
 
@@ -169,7 +171,7 @@ async function exchangeCodeForToken(code, redirectUri, appId, appSecret) {
   const pageAccessToken = page.access_token;
 
   // Paso 4: Obtener Instagram Business Account ID desde la Page
-  const igResp = await fetch(`${IG_GRAPH_BASE}/${pageId}?fields=instagram_business_account&access_token=${pageAccessToken}`);
+  const igResp = await fetch(`${IG_GRAPH_BASE}/${pageId}?fields=instagram_business_account&access_token=${pageAccessToken}`, { signal: AbortSignal.timeout(15000) });
   const igData = await igResp.json();
   const igUserId = igData.instagram_business_account?.id;
 
@@ -205,7 +207,7 @@ async function refreshLongLivedToken(uid, currentToken) {
     }
 
     const url = `${IG_GRAPH_BASE}/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${currentToken}`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
 
     if (!resp.ok) {
       console.error(`[INSTAGRAM] ❌ Token refresh failed: ${await resp.text()}`);
@@ -307,7 +309,8 @@ async function sendInstagramMessage(recipientId, text, pageAccessToken) {
         body: JSON.stringify({
           recipient: { id: recipientId },
           message: { text: chunk }
-        })
+        }),
+        signal: AbortSignal.timeout(15000)
       });
 
       if (!resp.ok) {
@@ -348,7 +351,8 @@ async function sendInstagramImage(recipientId, imageUrl, pageAccessToken) {
             payload: { url: imageUrl }
           }
         }
-      })
+      }),
+      signal: AbortSignal.timeout(15000)
     });
 
     if (!resp.ok) {
@@ -427,7 +431,7 @@ function parseWebhookMessages(body) {
  */
 async function getInstagramProfile(userId, accessToken) {
   try {
-    const resp = await fetch(`${IG_GRAPH_BASE}/${userId}?fields=name,username,profile_pic&access_token=${accessToken}`);
+    const resp = await fetch(`${IG_GRAPH_BASE}/${userId}?fields=name,username,profile_pic&access_token=${accessToken}`, { signal: AbortSignal.timeout(15000) });
     if (!resp.ok) return null;
     const data = await resp.json();
     return {

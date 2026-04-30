@@ -7,6 +7,11 @@ const MAX_RETRIES = 3;
 const RETRY_DELAYS = [8000, 20000, 45000];
 const API_VERSION = '2023-06-01'; // Versión estable — extended thinking funciona con este header
 
+// T16-FIX HIGH-1 — patrón gemini_client.js (CLAUDE.md §6.18 fetch sin AbortController hang)
+const FETCH_TIMEOUT_MS = 45000;
+const FETCH_TIMEOUT_HEAVY_MS = 60000; // thinking enabled
+const FETCH_WARNING_MS = 40000;
+
 async function call(apiKey, prompt, opts = {}) {
   const model = opts.model || DEFAULT_MODEL;
   const url = 'https://api.anthropic.com/v1/messages';
@@ -30,7 +35,15 @@ async function call(apiKey, prompt, opts = {}) {
     console.log(`[CLAUDE] 🧠 Thinking habilitado: ${opts.thinking} tokens budget`);
   }
 
+  const timeoutMs = opts.timeout || (useThinking ? FETCH_TIMEOUT_HEAVY_MS : FETCH_TIMEOUT_MS);
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // T16-FIX HIGH-1: AbortController para evitar hang infinito (CLAUDE.md §6.18)
+    const controller = new AbortController();
+    const warningTimer = setTimeout(() => {
+      console.warn(`[CLAUDE] ⚠️ fetch lleva ${FETCH_WARNING_MS/1000}s sin respuesta (timeout en ${(timeoutMs - FETCH_WARNING_MS)/1000}s más)`);
+    }, FETCH_WARNING_MS);
+    const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -39,8 +52,11 @@ async function call(apiKey, prompt, opts = {}) {
           'x-api-key': apiKey,
           'anthropic-version': API_VERSION
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: controller.signal
       });
+      clearTimeout(warningTimer);
+      clearTimeout(abortTimer);
 
       if (response.ok) {
         const data = await response.json();
@@ -67,6 +83,11 @@ async function call(apiKey, prompt, opts = {}) {
       const errText = await response.text();
       throw new Error(`Claude API error: ${response.status} - ${errText.substring(0, 200)}`);
     } catch (err) {
+      clearTimeout(warningTimer);
+      clearTimeout(abortTimer);
+      if (err.name === 'AbortError') {
+        console.error(`[CLAUDE] ⏱️ TIMEOUT ${timeoutMs/1000}s — abort attempt ${attempt + 1}/${MAX_RETRIES}`);
+      }
       if (attempt === MAX_RETRIES) throw err;
       if (err.message.includes('Claude API error')) throw err;
       console.warn(`[CLAUDE] Network error — retry in 5s (${attempt + 1}/${MAX_RETRIES}): ${err.message}`);
@@ -86,6 +107,13 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
     content: m.content
   }));
 
+  // T16-FIX HIGH-1: AbortController (CLAUDE.md §6.18)
+  const timeoutMs = opts.timeout || (useThinking ? FETCH_TIMEOUT_HEAVY_MS : FETCH_TIMEOUT_MS);
+  const controller = new AbortController();
+  const warningTimer = setTimeout(() => {
+    console.warn(`[CLAUDE] ⚠️ chat fetch lleva ${FETCH_WARNING_MS/1000}s sin respuesta (timeout en ${(timeoutMs - FETCH_WARNING_MS)/1000}s más)`);
+  }, FETCH_WARNING_MS);
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     console.log(`[CLAUDE] Chat request: ${messages.length} msgs, prompt ${systemPrompt.length} chars${useThinking ? ` 🧠thinking:${opts.thinking}` : ''}`);
     const response = await fetch(url, {
@@ -105,8 +133,11 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
         ...(useThinking && {
           thinking: { type: 'enabled', budget_tokens: Math.max(opts.thinking, 1024) }
         })
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(warningTimer);
+    clearTimeout(abortTimer);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -130,6 +161,11 @@ async function callChat(apiKey, messages, systemPrompt, opts = {}) {
     console.log(`[CLAUDE] OK: ${text.length} chars`);
     return text;
   } catch (error) {
+    clearTimeout(warningTimer);
+    clearTimeout(abortTimer);
+    if (error.name === 'AbortError') {
+      console.error(`[CLAUDE] ⏱️ TIMEOUT ${timeoutMs/1000}s — chat aborted`);
+    }
     console.error('[CLAUDE] CRITICAL ERROR:', error.message);
     return null;
   }

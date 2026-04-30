@@ -31,7 +31,8 @@ class SpotifyIntegration extends BaseIntegration {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
         },
-        body: `grant_type=refresh_token&refresh_token=${prefs.refreshToken}`
+        body: `grant_type=refresh_token&refresh_token=${prefs.refreshToken}`,
+        signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
       });
 
       if (!resp.ok) return null;
@@ -78,7 +79,8 @@ class SpotifyIntegration extends BaseIntegration {
       try {
         // Obtener últimos álbumes/singles
         const resp = await fetch(`${SPOTIFY_API}/artists/${artist.id}/albums?include_groups=album,single&limit=5&market=AR`, {
-          headers: { 'Authorization': `Bearer ${token}` }
+          headers: { 'Authorization': `Bearer ${token}` },
+          signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
         });
         if (!resp.ok) continue;
         const data = await resp.json();

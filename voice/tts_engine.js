@@ -116,6 +116,7 @@ async function _googleTTS(text, config) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
   });
 
   if (!response.ok) {
@@ -165,6 +166,7 @@ async function _openaiTTS(text, config) {
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
   });
 
   if (!response.ok) {
@@ -214,6 +216,7 @@ async function _elevenlabsTTS(text, config) {
       'Accept': 'audio/mpeg',
     },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
   });
 
   if (!response.ok) {

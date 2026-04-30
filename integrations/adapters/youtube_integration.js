@@ -30,7 +30,7 @@ class YouTubeIntegration extends BaseIntegration {
     for (const channel of prefs.channels.slice(0, 10)) { // Max 10 canales
       try {
         const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channel.id}&order=date&publishedAfter=${publishedAfter}&maxResults=3&type=video&key=${apiKey}`;
-        const resp = await fetch(url);
+        const resp = await fetch(url, { signal: AbortSignal.timeout(15000) }); // T16-FIX HIGH-2
         if (!resp.ok) {
           this._error(`API error para ${channel.name}`, { message: `${resp.status}` });
           continue;

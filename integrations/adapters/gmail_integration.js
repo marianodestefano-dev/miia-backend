@@ -29,7 +29,8 @@ class GmailIntegration extends BaseIntegration {
       const resp = await fetch(GOOGLE_TOKEN_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `client_id=${clientId}&client_secret=${clientSecret}&refresh_token=${prefs.refreshToken}&grant_type=refresh_token`
+        body: `client_id=${clientId}&client_secret=${clientSecret}&refresh_token=${prefs.refreshToken}&grant_type=refresh_token`,
+        signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
       });
 
       if (!resp.ok) {
@@ -86,7 +87,8 @@ class GmailIntegration extends BaseIntegration {
       const query = `is:unread after:${after}${prefs.importantSenders?.length ? ` from:(${prefs.importantSenders.join(' OR ')})` : ' is:important'}`;
 
       const listResp = await fetch(`${GMAIL_API}/messages?q=${encodeURIComponent(query)}&maxResults=10`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { 'Authorization': `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
       });
 
       if (!listResp.ok) {
@@ -107,7 +109,8 @@ class GmailIntegration extends BaseIntegration {
       for (const msg of messageIds.slice(0, 5)) {
         try {
           const msgResp = await fetch(`${GMAIL_API}/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`, {
-            headers: { 'Authorization': `Bearer ${token}` }
+            headers: { 'Authorization': `Bearer ${token}` },
+            signal: AbortSignal.timeout(15000) // T16-FIX HIGH-2
           });
           if (!msgResp.ok) continue;
           const msgData = await msgResp.json();

@@ -26,7 +26,7 @@ class F1Adapter extends BaseSportAdapter {
   async getSchedule(date) {
     try {
       const url = `${OPENF1_BASE}/sessions?date_start>=${date}&date_start<=${date}T23:59:59`;
-      const resp = await fetch(url, { timeout: 10000 });
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) }); // T16-FIX HIGH-3
       if (!resp.ok) return [];
 
       const sessions = await resp.json();
@@ -245,7 +245,7 @@ class F1Adapter extends BaseSportAdapter {
 
   async _fetch(path) {
     try {
-      const resp = await fetch(`${OPENF1_BASE}${path}`, { timeout: 10000 });
+      const resp = await fetch(`${OPENF1_BASE}${path}`, { signal: AbortSignal.timeout(10000) }); // T16-FIX HIGH-3
       if (!resp.ok) return [];
       return await resp.json();
     } catch (err) {

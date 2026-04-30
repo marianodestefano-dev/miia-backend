@@ -24,7 +24,7 @@ class MLBAdapter extends BaseSportAdapter {
   async getSchedule(date) {
     try {
       const url = `${MLB_BASE}/api/v1/schedule?sportId=1&date=${date}`;
-      const resp = await fetch(url, { timeout: 10000 });
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) }); // T16-FIX HIGH-3
       if (!resp.ok) return [];
       const data = await resp.json();
 
@@ -49,7 +49,7 @@ class MLBAdapter extends BaseSportAdapter {
   async getLiveState(matchId) {
     try {
       const url = `${MLB_BASE}/api/v1.1/game/${matchId}/feed/live`;
-      const resp = await fetch(url, { timeout: 10000 });
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) }); // T16-FIX HIGH-3
       if (!resp.ok) return null;
       const data = await resp.json();
 
