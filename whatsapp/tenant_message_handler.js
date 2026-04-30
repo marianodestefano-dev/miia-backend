@@ -2027,7 +2027,8 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
   // Enriquecer con contexto de quoted reply o forwarded
   if (messageContext.quotedText) {
     msgEntry.quotedText = messageContext.quotedText;
-    console.log(`${logPrefix} 💬 Mensaje cita: "${messageContext.quotedText.substring(0, 80)}..."`);
+    // T52: hash garantizado del texto citado (puede contener PII del contacto)
+    slog.msgContent(`${logPrefix} 💬 Mensaje cita`, messageContext.quotedText.substring(0, 80));
   }
   if (messageContext.isForwarded) {
     msgEntry.isForwarded = true;
@@ -3493,7 +3494,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         try {
           if (tagCallbacks.saveBusinessLearning) {
             await tagCallbacks.saveBusinessLearning(ownerUid, instruction, 'SERVER_SAFETY_NET');
-            console.log(`${logPrefix} [LEARNING:SAFETY-NET] 🛡️ Instrucción del owner guardada automáticamente: "${instruction.substring(0, 80)}..."`);
+            // T52: hash garantizado de la instruccion del owner (puede contener PII negocio)
+            slog.msgContent(`${logPrefix} [LEARNING:SAFETY-NET] 🛡️ Instrucción del owner guardada automáticamente`, instruction.substring(0, 80));
           }
         } catch (e) {
           console.error(`${logPrefix} [LEARNING:SAFETY-NET] ❌ Error:`, e.message);
@@ -3659,7 +3661,8 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         let textoAntes = aiMessage.substring(0, cotizTagIdx).trim();
         // FIX COT-1b (C-113): si hay texto con promesas redundantes, eliminar
         if (/te\s+confirm|en\s+un\s+momento|ya\s+te\s+env|en\s+breve|ahora\s+te|dame\s+un/i.test(textoAntes)) {
-          console.log(`${logPrefix} [COTIZ-TMH] 🧹 Texto promesa eliminado pre-PDF: "${textoAntes.substring(0, 80)}..."`);
+          // T52: hash garantizado del texto promesa eliminado (contenido de IA al lead)
+          slog.msgContent(`${logPrefix} [COTIZ-TMH] 🧹 Texto promesa eliminado pre-PDF`, textoAntes.substring(0, 80));
           textoAntes = '';
         }
         // Enviar texto introductorio ANTES del link
@@ -3861,7 +3864,9 @@ REGLAS:
         const msgText = responseResult?.text || '';
         if (msgText) {
           await tenantState.sock.sendMessage(contactJid, { text: msgText });
-          console.log(`${logPrefix} [RESPONDELE-TAG] ✅ Mensaje enviado a ${contactJid}: "${msgText.substring(0, 60)}..."`);
+          // T52: structural log + body hasheado (msg de MIIA al contacto)
+          console.log(`${logPrefix} [RESPONDELE-TAG] ✅ Mensaje enviado a ${contactJid}`);
+          slog.msgContent(`${logPrefix} [RESPONDELE-TAG] body`, msgText.substring(0, 60));
         }
       } else if (!contactJid && !/^FAMILIA$|^EQUIPO$/i.test(destinatario)) {
         console.warn(`${logPrefix} [RESPONDELE-TAG] ⚠️ No se encontró contacto para "${destinatario}"`);
