@@ -74,3 +74,23 @@ logs_incidente_*.txt
 server.js.bak_*
 *.bak_c*
 *.bak_bug*
+
+# T50: corpus ADN intermediate outputs (prompt_engine_v0) — trabajo de Camino D pre-V2
+# JSON/MD generados por sampler/distiller, se regeneran. NO versionar (contienen
+# fragmentos de conversaciones reales).
+backups/prompt_engine_v0/
+/scripts/camino_d_pase1_sampler*.js
+/scripts/reclasificar_*.js
+/scripts/paso2_apply_reclasificacion_*.js
+/scripts/inventario_celular_personal*.js
+/scripts/verificar_chunks_y_resto.js
+/scripts/verificar_training_data.js
+/scripts/inspect_smoke_convs.js
+/scripts/check_agenda_boca.js
+/scripts/fix_agenda_boca*.js
+/scripts/test_presentate_broadcast_dryrun.js
+/scripts/add_flako_edi_to_familia.js
+/scripts/create_contact_group_amigos.js
+/scripts/backup_prompt_engine_v0.js
+/scripts/admin/
+/scripts/benchmark/run_estudio_300_batch2.js
