@@ -244,6 +244,9 @@ function getCountryFromPhone(phone) {
   if (num.startsWith('56')) return 'CL';
   if (num.startsWith('51')) return 'PE';
   if (num.startsWith('593')) return 'EC';
+  if (num.startsWith('55')) return 'BR';  // Brasil (T40 multilang)
+  if (num.startsWith('44')) return 'GB';  // Reino Unido (T40 multilang)
+  if (num.startsWith('61')) return 'AU';  // Australia (T40 multilang)
   if (num.startsWith('1')) return 'US';
   if (num.startsWith('34')) return 'ES';
   return 'CO'; // default Colombia
@@ -256,9 +259,62 @@ function getTimezoneForCountry(country) {
   const tzMap = {
     CO: 'America/Bogota', AR: 'America/Argentina/Buenos_Aires', MX: 'America/Mexico_City',
     CL: 'America/Santiago', PE: 'America/Lima', EC: 'America/Guayaquil',
-    US: 'America/New_York', ES: 'Europe/Madrid'
+    US: 'America/New_York', ES: 'Europe/Madrid',
+    BR: 'America/Sao_Paulo', GB: 'Europe/London', AU: 'Australia/Sydney', // T40 multilang
   };
   return tzMap[country] || 'America/Bogota';
+}
+
+/**
+ * Retorna info de idioma y dialecto para un código de país.
+ * Detecta automáticamente si el lead escribe desde BR/US/GB/AU → idioma EN/PT.
+ * Leads ES → retorna lang='es' (comportamiento por defecto, sin cambio).
+ *
+ * @param {string} cc - Código de país ('CO', 'AR', 'BR', 'US', 'GB', etc.)
+ * @returns {{ lang: string, dialect: string, greeting: string, tuteo: string }}
+ */
+function getLangFromCountry(cc) {
+  const map = {
+    // English
+    US: { lang: 'en', dialect: 'en_us', greeting: 'Hey', tuteo: 'you' },
+    CA: { lang: 'en', dialect: 'en_ca', greeting: 'Hey', tuteo: 'you' },
+    AU: { lang: 'en', dialect: 'en_au', greeting: 'Hey', tuteo: 'you' },
+    GB: { lang: 'en', dialect: 'en_gb', greeting: 'Hello', tuteo: 'you' },
+    // Portugues
+    BR: { lang: 'pt', dialect: 'pt_br', greeting: 'Oi', tuteo: 'voce' },
+    PT: { lang: 'pt', dialect: 'pt_pt', greeting: 'Ola', tuteo: 'voce' },
+    // Espanol dialectos
+    AR: { lang: 'es', dialect: 'es_ar', greeting: 'Hola', tuteo: 'vos' },
+    MX: { lang: 'es', dialect: 'es_mx', greeting: 'Hola', tuteo: 'tu' },
+    ES: { lang: 'es', dialect: 'es_es', greeting: 'Hola', tuteo: 'tu' },
+    CO: { lang: 'es', dialect: 'es_co', greeting: 'Hola', tuteo: 'tu' },
+    CL: { lang: 'es', dialect: 'es_cl', greeting: 'Hola', tuteo: 'tu' },
+    PE: { lang: 'es', dialect: 'es_pe', greeting: 'Hola', tuteo: 'tu' },
+    EC: { lang: 'es', dialect: 'es_ec', greeting: 'Hola', tuteo: 'tu' },
+  };
+  return map[cc] || { lang: 'es', dialect: 'es_co', greeting: 'Hola', tuteo: 'tu' };
+}
+
+/**
+ * Genera instrucción de idioma para inyectar al inicio del prompt de Gemini.
+ * Para leads EN/PT: instrucción MANDATORY obligando el idioma.
+ * Para leads ES: retorna '' (Gemini ya responde en español por defecto).
+ *
+ * Capa B (wire-in a prompts) requiere decisión Wi sobre política §6.27 US.
+ * Esta función es Capa A: solo la definición, sin wire-in aún.
+ *
+ * @param {{ lang: string }} langInfo - Objeto retornado por getLangFromCountry
+ * @returns {string} Instrucción a prepender al prompt, o '' si lang=es
+ */
+function buildLangInstruction(langInfo) {
+  if (!langInfo || langInfo.lang === 'es') return '';
+  if (langInfo.lang === 'en') {
+    return 'MANDATORY LANGUAGE: Respond ONLY in English. Never switch to Spanish or any other language. Use natural conversational English.\n\n';
+  }
+  if (langInfo.lang === 'pt') {
+    return 'IDIOMA OBRIGATORIO: Responda APENAS em Portugues Brasileiro. Nunca mude para Espanhol. Portugues coloquial natural.\n\n';
+  }
+  return '';
 }
 
 /**
@@ -763,6 +819,8 @@ module.exports = {
   getCountryFromPhone,
   getTimezoneForCountry,
   getCountryContext,
+  getLangFromCountry,       // T40 multilang Capa A
+  buildLangInstruction,     // T40 multilang Capa A
   isFollowUpBlocked,
   calcBusinessDaysMs,
 

@@ -1,0 +1,87 @@
+{
+  "code": "BR",
+  "name": "Brasil",
+  "flag": "🇧🇷",
+  "phonePrefix": ["55"],
+  "pais_tag": "BRASIL",
+  "timezone": "America/Sao_Paulo",
+  "normalizedPricing": "INTL",
+  "lang": "pt",
+  "dialect_code": "pt_br",
+  "_note": "Pricing BR pendiente firma Mariano (T40/T41). Fallback a INTL.json. Wire-in prompt Gemini pendiente decision Wi sobre politica US (§6.27 review).",
+  "currency": {
+    "code": "BRL",
+    "symbol": "R$",
+    "display": "BRL R$",
+    "thousandSep": ".",
+    "decimals": 2
+  },
+  "pricing": {
+    "_status": "pending_firma_mariano",
+    "_fallback": "INTL",
+    "plans": {
+      "esencial": { "base": null, "adic": null },
+      "pro":      { "base": null, "adic": null },
+      "titanium": { "base": null, "adic": null }
+    },
+    "adicEscalonado": false
+  },
+  "bolsas": {
+    "wa":    { "_fallback": "INTL", "ranges": [], "prices": [] },
+    "firma": { "_fallback": "INTL", "ranges": [], "prices": [] }
+  },
+  "modules": {
+    "wa": {
+      "available": true,
+      "name": "WhatsApp — Lembretes automáticos",
+      "desc": "Envios automáticos de lembretes e confirmações de consultas."
+    },
+    "firma": {
+      "available": true,
+      "name": "Assinatura Eletrônica",
+      "desc": "Para termos de consentimento e documentos clínicos."
+    },
+    "factura": { "available": false },
+    "receta":  { "available": false }
+  },
+  "rules": {
+    "iva": {
+      "rate": 0,
+      "appliesTo": null,
+      "note": "Precos em BRL/USD — tributacao BR pendiente definicion Mariano"
+    },
+    "anualOnly": false,
+    "modalidades": ["mensual", "semestral", "anual"],
+    "descuentos": {
+      "mensual":   { "rate": 0.3,  "months": 3    },
+      "semestral": { "rate": 0.15, "months": null  },
+      "anual":     { "rate": 0.2,  "months": null  }
+    },
+    "promoMensual": "3 meses com desconto 30%, a partir do mês 4 preço regular",
+    "siigo": null
+  },
+  "norms": [
+    { "title": "LGPD — Lei Geral de Proteção de Dados (Brasil)", "countryOnly": true },
+    { "title": "CFM — Conselho Federal de Medicina (telemedicina)", "countryOnly": true },
+    { "title": "ISO 27001 — Segurança certificada", "countryOnly": false }
+  ],
+  "includedFeatures": [],
+  "videos": { "countrySpecific": [] },
+  "dialect": {
+    "style": "portugues_brasileiro",
+    "pronouns": "você",
+    "expressions": ["tudo bem", "ótimo", "perfeito", "claro", "com certeza", "show"],
+    "avoid": ["tú", "vos", "contame", "decime", "órale", "vale", "genial"],
+    "toneNote": "Português brasileiro coloquial mas profissional. Cálido e direto. NUNCA misturar com espanhol."
+  },
+  "salesDna": {
+    "approach": "Discovery padrão em português. Perguntar naturalmente sobre o negócio. Destacar IA + WhatsApp + tudo-em-um.",
+    "objections": {
+      "caro": "Preços competitivos mesmo com câmbio BRL/USD. Mostrar ROI em consultas recuperadas.",
+      "ja_tenho_sistema": "Destacar IA conversacional + WhatsApp integrado — diferencial único no mercado BR.",
+      "lo_pienso": "Fase 2: melhorar desconto ou oferecer demonstração gratuita."
+    },
+    "closingTips": "Mercado BR muito grande. Enfatizar suporte em português. Não mencionar SIIGO nem BOLD.",
+    "culturalNotes": "Brasileiro é informal e caloroso. 'Você' é o padrão. Evitar formalismo excessivo. Confirmar cidade/estado pode ajudar a personalizar."
+  }
+}
