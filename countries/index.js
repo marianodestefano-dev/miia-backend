@@ -60,7 +60,59 @@ console.log(`[COUNTRIES] ✅ ${Object.keys(COUNTRIES).length} países cargados: 
 function getCountryConfig(code) {
   if (!code) return FALLBACK;
   const normalized = code.toUpperCase().trim();
-  return COUNTRIES[normalized] || FALLBACK;
+  const cfg = COUNTRIES[normalized] || FALLBACK;
+  if (!cfg) return null;
+
+  // T75 (CLAUDE.md §6.27 area): resolver _fallback declarado en pricing/bolsas.
+  // Si el JSON del pais marca pricing._fallback = 'INTL' y los precios estan
+  // null (pendiente firma Mariano), devolver merge sintetico con precios INTL
+  // para que el resto del sistema no reciba nulls. NO inventa precios — solo
+  // cumple lo declarado en el JSON. Caso real BR.json post-T41.
+  return _resolveFallbacks(cfg);
+}
+
+/**
+ * Si pricing/bolsas declaran _fallback: 'XXX', y los precios actuales son null,
+ * merge sintetico con XXX (default INTL). NO mutate el config original.
+ * Pure function — retorna copia con merge aplicado solo donde haga falta.
+ *
+ * @param {object} cfg - country config crudo
+ * @returns {object} config con fallback resuelto
+ */
+function _resolveFallbacks(cfg) {
+  if (!cfg || typeof cfg !== 'object') return cfg;
+  const pricing = cfg.pricing || {};
+  const fallbackKey = pricing._fallback;
+  // Solo aplicar fallback si declarado + no es self-reference
+  if (!fallbackKey || fallbackKey === cfg.code) return cfg;
+  const source = COUNTRIES[fallbackKey];
+  if (!source) return cfg;
+
+  // Detectar si los plans tienen al menos un null → activa merge
+  const plansAreNull = pricing.plans && Object.values(pricing.plans).some(
+    p => p && (p.base === null || p.adic === null)
+  );
+  if (!plansAreNull) return cfg;
+
+  // Build merged copy (shallow but suficiente para precios)
+  return {
+    ...cfg,
+    pricing: {
+      ...pricing,
+      _fallbackResolved: true,
+      _fallbackSource: fallbackKey,
+      plans: source.pricing && source.pricing.plans ? source.pricing.plans : pricing.plans,
+      adicEscalonado: source.pricing && source.pricing.adicEscalonado != null
+        ? source.pricing.adicEscalonado : pricing.adicEscalonado,
+    },
+    bolsas: {
+      ...(cfg.bolsas || {}),
+      wa: cfg.bolsas && cfg.bolsas.wa && cfg.bolsas.wa._fallback === fallbackKey && source.bolsas
+        ? source.bolsas.wa : (cfg.bolsas && cfg.bolsas.wa) || {},
+      firma: cfg.bolsas && cfg.bolsas.firma && cfg.bolsas.firma._fallback === fallbackKey && source.bolsas
+        ? source.bolsas.firma : (cfg.bolsas && cfg.bolsas.firma) || {},
+    },
+  };
 }
 
 /**
