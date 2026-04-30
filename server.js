@@ -388,6 +388,10 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   // Paddle webhook necesita req.body como Buffer crudo para verificar firma
   if (req.path === '/api/paddle/webhook') return next();
+  // T32-FIX: Instagram webhook tambien necesita raw body para HMAC SHA256
+  if (req.path === '/api/instagram/webhook' && req.method === 'POST') {
+    return express.raw({ type: 'application/json' })(req, res, next);
+  }
   express.json()(req, res, next);
 });
 
@@ -17013,7 +17017,61 @@ app.get('/api/instagram/webhook', (req, res) => {
 });
 
 // Recibir mensajes entrantes de Instagram DMs
-app.post('/api/instagram/webhook', express.json(), publicSchemas.validate(publicSchemas.instagramWebhookSchema), async (req, res) => {
+// T32-FIX: HMAC SHA256 signature validation (Meta x-hub-signature-256) +
+// raw body parsing antes de Zod schema. Bloqueo MEDIO-ALTO de inyeccion
+// de mensajes fake al historial conversaciones del owner + consumo AI por
+// adversario remoto identificado en T22 audit.
+app.post('/api/instagram/webhook', async (req, res) => {
+  // T32-FIX: HMAC verify antes de procesar
+  const META_APP_SECRET = process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET || '';
+  const xHubSig = req.headers['x-hub-signature-256'];
+  if (META_APP_SECRET) {
+    if (!xHubSig || !xHubSig.startsWith('sha256=')) {
+      console.warn('[INSTAGRAM] ❌ x-hub-signature-256 ausente o invalido — webhook rechazado (T32 HMAC)');
+      return res.status(401).send('Invalid signature');
+    }
+    const crypto = require('crypto');
+    const expected = 'sha256=' + crypto
+      .createHmac('sha256', META_APP_SECRET)
+      .update(req.body) // req.body es Buffer crudo gracias a express.raw
+      .digest('hex');
+    let valid = false;
+    try {
+      valid = crypto.timingSafeEqual(Buffer.from(xHubSig), Buffer.from(expected));
+    } catch (_) {
+      valid = false;
+    }
+    if (!valid) {
+      console.warn('[INSTAGRAM] ❌ HMAC mismatch — webhook rechazado (T32 HMAC)');
+      console.error('[V2-ALERT][WEBHOOK-HMAC-FAIL]', {
+        provider: 'instagram',
+        stage: 'hmac_verify',
+        signature_present: true,
+        body_len: req.body ? req.body.length : 0,
+      });
+      return res.status(401).send('Invalid signature');
+    }
+  } else {
+    console.warn('[INSTAGRAM] ⚠️ INSTAGRAM_APP_SECRET no configurado — HMAC verify SKIPPED (legacy mode)');
+  }
+
+  // Parse JSON manual post-HMAC
+  let parsedBody;
+  try {
+    parsedBody = JSON.parse(req.body.toString('utf8'));
+  } catch (_) {
+    return res.status(400).send('Invalid JSON');
+  }
+
+  // Zod schema validation (logica existente)
+  const _zParse = publicSchemas.instagramWebhookSchema.safeParse(parsedBody);
+  if (!_zParse.success) {
+    console.warn('[INSTAGRAM] webhook schema fail', _zParse.error.issues.slice(0, 3));
+    return res.status(400).json({ error: 'Validation failed', details: _zParse.error.issues.slice(0, 5).map(i => ({ path: i.path.join('.'), message: i.message })) });
+  }
+  // Reasignar req.body con payload validado para reusar logica downstream
+  req.body = _zParse.data;
+
   // Responder 200 inmediatamente (Meta requiere respuesta rápida)
   res.sendStatus(200);
 
