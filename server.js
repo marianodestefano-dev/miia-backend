@@ -70,7 +70,8 @@ const tokenEncryption = require('./core/token_encryption');
 // Middleware centralizado para validar Firebase ID token + role-based access.
 // Aplicado inicialmente a endpoints críticos SIN auth previo (export/import,
 // admin-chat, admin/support-chat, admin/migrate-email). Endpoints que ya usan
-// verifyTenantAuth/verifyAdminToken inline conservan su auth (deuda C-406.b).
+// verifyAdminToken: deuda C-406.b saldada en T38 bloque1c (12 endpoints migrados).
+// verifyTenantAuth inline conserva su auth (scope T38 excluido por diseño).
 const {
   requireAuth: rrRequireAuth,
   requireAdmin: rrRequireAdmin,
@@ -14859,7 +14860,7 @@ app.post('/api/tenant/:uid/import', rrRequireAuth, rrRequireOwnerOfResource('uid
 });
 
 // GET /api/admin/imports — List all imports for admin dashboard
-app.get('/api/admin/imports', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/imports', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const snap = await admin.firestore().collection('imports').orderBy('imported_at', 'desc').limit(50).get();
     const imports = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -14950,7 +14951,7 @@ ${productsText}
 
 // ── Admin User Management ───────────────────────────────────────────────────
 
-app.post('/api/admin/user', express.json(), verifyAdminToken, async (req, res) => {
+app.post('/api/admin/user', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
 
   try {
     const { email, name, plan } = req.body;
@@ -14994,7 +14995,7 @@ app.post('/api/admin/user', express.json(), verifyAdminToken, async (req, res) =
   }
 });
 
-app.post('/api/admin/user/:uid/reset-password', verifyAdminToken, async (req, res) => {
+app.post('/api/admin/user/:uid/reset-password', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const { uid } = req.params;
     // Generate a random 10-char password — guaranteed to have letters, digit, and special char
@@ -15017,7 +15018,7 @@ app.post('/api/admin/user/:uid/reset-password', verifyAdminToken, async (req, re
   }
 });
 
-app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
+app.delete('/api/admin/user/:uid', rrRequireAuth, rrRequireAdmin, async (req, res) => {
 
   try {
     const { uid } = req.params;
@@ -15052,7 +15053,7 @@ app.delete('/api/admin/user/:uid', verifyAdminToken, async (req, res) => {
 });
 
 // ── Admin Privacy Stats (contadores agregados, sin leer mensajes) ────────
-app.get('/api/admin/privacy-stats/:uid', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/privacy-stats/:uid', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const counters = await privacyCounters.getCounters(req.params.uid);
     res.json(counters);
@@ -15061,7 +15062,7 @@ app.get('/api/admin/privacy-stats/:uid', verifyAdminToken, async (req, res) => {
   }
 });
 
-app.get('/api/admin/privacy-stats', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/privacy-stats', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const usersSnap = await admin.firestore().collection('users').get();
     const results = [];
@@ -15083,7 +15084,7 @@ app.get('/api/admin/privacy-stats', verifyAdminToken, async (req, res) => {
 });
 
 // ── Tenant Health — Semáforo por cliente ─────────────────────────────────
-app.get('/api/admin/tenant-health', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/tenant-health', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const health = tenantLogger.getAllTenantsHealth();
     res.json({ tenants: health, timestamp: Date.now() });
@@ -15092,7 +15093,7 @@ app.get('/api/admin/tenant-health', verifyAdminToken, async (req, res) => {
   }
 });
 
-app.get('/api/admin/tenant-health/:uid', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/tenant-health/:uid', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   try {
     const health = tenantLogger.getTenantHealth(req.params.uid);
     if (!health) return res.status(404).json({ error: 'Tenant no encontrado o sin métricas' });
@@ -15104,7 +15105,7 @@ app.get('/api/admin/tenant-health/:uid', verifyAdminToken, async (req, res) => {
 });
 
 // ── TAREA 1 C-100: Dump training data desde tenant en memoria → Firestore backup ──
-app.get('/api/admin/tenant/:uid/dump-training-data', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/tenant/:uid/dump-training-data', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   const { uid } = req.params;
   console.log(`[ADMIN] dump-training-data solicitado para uid=${uid}`);
   try {
@@ -15203,7 +15204,7 @@ app.get('/api/admin/tenant/:uid/dump-training-data', verifyAdminToken, async (re
 
 // ── Railway Logs Proxy (admin only) ──────────────────────────────────────
 // Usa Railway GraphQL API para obtener logs de deploy/build/http sin exponer el token
-app.get('/api/admin/railway-logs', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/railway-logs', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   const railwayToken = process.env.RAILWAY_API_TOKEN;
   if (!railwayToken) {
     return res.status(503).json({ error: 'RAILWAY_API_TOKEN no configurado en variables de entorno' });
@@ -15268,7 +15269,7 @@ app.get('/api/admin/railway-logs', verifyAdminToken, async (req, res) => {
 });
 
 // Listar deployments recientes (para selector en el dashboard)
-app.get('/api/admin/railway-deployments', verifyAdminToken, async (req, res) => {
+app.get('/api/admin/railway-deployments', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   const railwayToken = process.env.RAILWAY_API_TOKEN;
   if (!railwayToken) {
     return res.status(503).json({ error: 'RAILWAY_API_TOKEN no configurado' });
@@ -16764,7 +16765,7 @@ app.post('/api/auth/set-password', express.json(), async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // NEW REGISTRATION — Welcome email + admin notification
 // ═══════════════════════════════════════════════════════════════════════════════
-app.post('/api/admin/new-registration', express.json(), async (req, res) => {
+app.post('/api/admin/new-registration', rrRequireAuth, rrRequireAdmin, express.json(), async (req, res) => {
   const { uid, name, email, whatsapp, plan } = req.body;
   if (!uid || !email) return res.status(400).json({ error: 'uid y email son requeridos' });
 

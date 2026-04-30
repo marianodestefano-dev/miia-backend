@@ -60,14 +60,14 @@ function classifyLeadState(lastUserMsg, lastMiiaMsg, metadata = {}) {
     return { state: 'referral_given', signal: 'referral', suggestedDelayHours: 72 };
   }
 
+  // ¿Lead está frío? (ANTES de INTEREST — "no me interesa" contiene "me interesa" como substring)
+  if (COLD_SIGNALS.some(s => msgLower.includes(s))) {
+    return { state: 'cold', signal: 'cold', suggestedDelayHours: Infinity };
+  }
+
   // ¿Lead mostró interés activo?
   if (INTEREST_SIGNALS.some(s => msgLower.includes(s))) {
     return { state: 'interested', signal: 'interest', suggestedDelayHours: 4 };
-  }
-
-  // ¿Lead está frío?
-  if (COLD_SIGNALS.some(s => msgLower.includes(s))) {
-    return { state: 'cold', signal: 'cold', suggestedDelayHours: Infinity };
   }
 
   // Default: sin respuesta al último mensaje de MIIA

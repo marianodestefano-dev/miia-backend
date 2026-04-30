@@ -55,12 +55,24 @@ describe('T36 §A — classifyLeadState', () => {
   });
 
   test('A.7 — cold: "estoy bien así" → Infinity', () => {
-    // "no me interesa" tiene substring "me interesa" que matchea INTEREST_SIGNALS
-    // ANTES de COLD_SIGNALS por orden de checks. Bug productivo documentado en
-    // cierre T36 (no se corrige aqui — scope solo coverage). Usar frase clean.
     const r = bc.classifyLeadState('estoy bien así, gracias', '', {});
     expect(r.state).toBe('cold');
     expect(r.suggestedDelayHours).toBe(Infinity);
+  });
+
+  test('A.7b — cold: "no me interesa" NO matchea INTEREST (fix T37 orden COLD>INTEREST)', () => {
+    // Bug T36: "no me interesa" contenia "me interesa" como substring → matcheaba INTEREST antes que COLD.
+    // Fix T37: COLD_SIGNALS se evalua ANTES que INTEREST_SIGNALS en classifyLeadState().
+    const r = bc.classifyLeadState('no me interesa', '', {});
+    expect(r.state).toBe('cold');
+    expect(r.signal).toBe('cold');
+    expect(r.suggestedDelayHours).toBe(Infinity);
+  });
+
+  test('A.7c — interest: "me interesa" sin negacion → interested (no regresion)', () => {
+    const r = bc.classifyLeadState('me interesa', '', {});
+    expect(r.state).toBe('interested');
+    expect(r.signal).toBe('interest');
   });
 
   test('A.8 — cold: "no me escribas" tambien dispara', () => {
