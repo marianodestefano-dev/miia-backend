@@ -71,7 +71,7 @@ const tokenEncryption = require('./core/token_encryption');
 // Aplicado inicialmente a endpoints críticos SIN auth previo (export/import,
 // admin-chat, admin/support-chat, admin/migrate-email). Endpoints que ya usan
 // verifyAdminToken: deuda C-406.b saldada en T38 bloque1c (12 endpoints migrados).
-// verifyTenantAuth inline conserva su auth (scope T38 excluido por diseño).
+// verifyTenantAuth/verifyFirebaseToken: T42 bloque4 saldado (10 rutas → rrRequireAuth).
 const {
   requireAuth: rrRequireAuth,
   requireAdmin: rrRequireAdmin,
@@ -11680,13 +11680,13 @@ app.post('/api/send-message', express.json(), async (req, res) => {
 });
 
 // POST /api/tenant/:uid/logout — Disconnect tenant WhatsApp
-app.post('/api/tenant/:uid/logout', verifyTenantAuth, async (req, res) => {
+app.post('/api/tenant/:uid/logout', rrRequireAuth, rrRequireOwnerOfResource('uid'), async (req, res) => {
   const result = await tenantManager.destroyTenant(req.params.uid);
   res.json(result);
 });
 
 // POST /api/tenant/:uid/clean-session — Clean corrupted Baileys session (MessageCounterError recovery)
-app.post('/api/tenant/:uid/clean-session', verifyTenantAuth, express.json(), async (req, res) => {
+app.post('/api/tenant/:uid/clean-session', rrRequireAuth, rrRequireOwnerOfResource('uid'), express.json(), async (req, res) => {
   const uid = req.params.uid;
   try {
     console.log(`[CLEAN-SESSION] 🔧 Limpiando sesión corrupta para ${uid}...`);
@@ -14221,7 +14221,7 @@ async function getPendingApprovals(ownerUid) {
 }
 
 // GET /api/tenant/:uid/learning-approvals — Ver aprobaciones pendientes
-app.get('/api/tenant/:uid/learning-approvals', verifyTenantAuth, async (req, res) => {
+app.get('/api/tenant/:uid/learning-approvals', rrRequireAuth, rrRequireOwnerOfResource('uid'), async (req, res) => {
   try {
     const pending = await getPendingApprovals(req.params.uid);
     res.json({ approvals: pending });
@@ -14486,7 +14486,7 @@ app.delete('/api/tenant/:uid/ai-config', async (req, res) => {
 
 // ═══ DELETE /api/tenant/:uid/account — Owner elimina su propia cuenta ═══
 // Requiere confirmación: body.confirm === 'ELIMINAR MI CUENTA'
-app.delete('/api/tenant/:uid/account', verifyTenantAuth, auditLogger.auditMiddleware(auditLogger.ACCESS_TYPES.DELETE_ACCOUNT), express.json(), async (req, res) => {
+app.delete('/api/tenant/:uid/account', rrRequireAuth, rrRequireOwnerOfResource('uid'), auditLogger.auditMiddleware(auditLogger.ACCESS_TYPES.DELETE_ACCOUNT), express.json(), async (req, res) => {
   try {
     const { uid } = req.params;
     const { confirm: confirmation } = req.body || {};
@@ -16170,7 +16170,7 @@ app.post('/api/health/diagnostics/run', async (req, res) => {
 // ═══ MINI APP / PWA — Endpoints de Protección ═══
 
 // POST /api/miniapp/location — GPS desde la Mini App (background tracking)
-app.post('/api/miniapp/location', verifyFirebaseToken, async (req, res) => {
+app.post('/api/miniapp/location', rrRequireAuth, async (req, res) => {
   try {
     const uid = req.user.uid;
     const { latitude, longitude, accuracy, battery, timestamp } = req.body;
@@ -16197,7 +16197,7 @@ app.post('/api/miniapp/location', verifyFirebaseToken, async (req, res) => {
 });
 
 // POST /api/miniapp/sos — Botón SOS desde la Mini App
-app.post('/api/miniapp/sos', verifyFirebaseToken, async (req, res) => {
+app.post('/api/miniapp/sos', rrRequireAuth, async (req, res) => {
   try {
     const uid = req.user.uid;
     const { latitude, longitude, message } = req.body;
@@ -16246,7 +16246,7 @@ app.post('/api/miniapp/sos', verifyFirebaseToken, async (req, res) => {
 });
 
 // POST /api/miniapp/heartbeat — Heartbeat desde la Mini App (la app sigue viva)
-app.post('/api/miniapp/heartbeat', verifyFirebaseToken, async (req, res) => {
+app.post('/api/miniapp/heartbeat', rrRequireAuth, async (req, res) => {
   try {
     const uid = req.user.uid;
     const { battery, isCharging, networkType } = req.body;
@@ -16278,7 +16278,7 @@ app.post('/api/miniapp/heartbeat', verifyFirebaseToken, async (req, res) => {
 });
 
 // POST /api/miniapp/fall-detected — Detección de caída (acelerómetro)
-app.post('/api/miniapp/fall-detected', verifyFirebaseToken, async (req, res) => {
+app.post('/api/miniapp/fall-detected', rrRequireAuth, async (req, res) => {
   try {
     const uid = req.user.uid;
     const { latitude, longitude, accelerometerData, confirmed } = req.body;
@@ -16334,7 +16334,7 @@ app.post('/api/miniapp/fall-detected', verifyFirebaseToken, async (req, res) => 
 });
 
 // GET /api/miniapp/emergency-info — Info de emergencia para la app
-app.get('/api/miniapp/emergency-info', verifyFirebaseToken, async (req, res) => {
+app.get('/api/miniapp/emergency-info', rrRequireAuth, async (req, res) => {
   try {
     const uid = req.user.uid;
     const level1 = await protectionManager.getEmergencyLevel1(uid, conversations, []);
@@ -16345,7 +16345,7 @@ app.get('/api/miniapp/emergency-info', verifyFirebaseToken, async (req, res) => 
 });
 
 // GET /api/miniapp/config — Config de la Mini App para este usuario
-app.get('/api/miniapp/config', verifyFirebaseToken, async (req, res) => {
+app.get('/api/miniapp/config', rrRequireAuth, async (req, res) => {
   try {
     const uid = req.user.uid;
     const configDoc = await admin.firestore().collection('users').doc(uid)
