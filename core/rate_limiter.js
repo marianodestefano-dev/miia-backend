@@ -384,6 +384,7 @@ module.exports = {
   getCount24h,
   getLevel,
   shouldRespond,
+  getLevelChangeMessage,
   checkLevelChange,
   getMetrics,
   LEVELS,
@@ -395,6 +396,7 @@ module.exports = {
   getCircuitStatus,
   CB_FAILURE_THRESHOLD,
   CB_COOLDOWN_MS,
+  CB_SUCCESS_TO_CLOSE,
   // Per-contact limit (ajuste C-019: ventana 30s, familia=10, resto=5)
   contactAllows,
   contactRecord,
