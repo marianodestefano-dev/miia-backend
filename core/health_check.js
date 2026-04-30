@@ -24,9 +24,9 @@ const { getUpsertStats } = require('../whatsapp/tenant_manager');
 // ═══════════════════════════════════════════════════════════════
 
 const _health = {
-  firestore: { status: 'unknown', lastCheck: null, lastError: null, consecutiveFailures: 0 },
+  firestore: { status: 'unknown', lastCheck: null, lastError: null, consecutiveFailures: 0, latencyHistory: [] },
   baileys: {},    // { [uid]: { status, lastCheck, lastError, consecutiveFailures } }
-  aiGateway: { status: 'unknown', lastCheck: null, lastError: null, consecutiveFailures: 0 },
+  aiGateway: { status: 'unknown', lastCheck: null, lastError: null, consecutiveFailures: 0, latencyHistory: [] },
   startedAt: new Date().toISOString(),
   lastFullCheck: null,
 };
@@ -34,6 +34,47 @@ const _health = {
 const MAX_CONSECUTIVE_FAILURES = 3;
 const CHECK_INTERVAL_MS = 60_000; // 60 segundos
 const RECOVERY_COOLDOWN_MS = 30_000; // 30s entre intentos de recovery
+
+// T24-FIX: latency rolling buffer para percentiles p50/p95/p99 (E2 propuesta T20)
+const LATENCY_BUFFER_SIZE = 100; // ultimos 100 checks
+const LATENCY_DEGRADATION_FACTOR = 2; // p95 > 2x baseline → degradacion
+
+/**
+ * Agrega un sample de latencia al buffer rolling (max 100 entries).
+ */
+function recordLatency(component, latencyMs) {
+  if (typeof latencyMs !== 'number' || latencyMs < 0) return;
+  if (!_health[component]) return;
+  if (!Array.isArray(_health[component].latencyHistory)) {
+    _health[component].latencyHistory = [];
+  }
+  _health[component].latencyHistory.push(latencyMs);
+  if (_health[component].latencyHistory.length > LATENCY_BUFFER_SIZE) {
+    _health[component].latencyHistory.shift();
+  }
+}
+
+/**
+ * Calcula percentiles p50, p95, p99 + min/max/avg sobre el buffer rolling.
+ * Retorna null si no hay suficientes samples (< 5).
+ */
+function computePercentiles(component) {
+  const history = _health[component]?.latencyHistory;
+  if (!Array.isArray(history) || history.length < 5) return null;
+  const sorted = [...history].sort((a, b) => a - b);
+  const n = sorted.length;
+  const pct = (p) => sorted[Math.min(n - 1, Math.floor(p * n))];
+  const sum = sorted.reduce((s, v) => s + v, 0);
+  return {
+    samples: n,
+    min: sorted[0],
+    max: sorted[n - 1],
+    avg: Math.round(sum / n),
+    p50: pct(0.50),
+    p95: pct(0.95),
+    p99: pct(0.99),
+  };
+}
 
 // Callbacks registrados por server.js / tenant_manager.js
 const _recoveryCallbacks = {
@@ -54,13 +95,17 @@ async function checkFirestore() {
       source: 'health_check'
     });
     const latency = Date.now() - start;
+    // T24-FIX: preservar latencyHistory entre updates (no clobber)
+    const prevHistory = _health.firestore?.latencyHistory || [];
     _health.firestore = {
       status: 'healthy',
       lastCheck: new Date().toISOString(),
       latencyMs: latency,
       lastError: null,
-      consecutiveFailures: 0
+      consecutiveFailures: 0,
+      latencyHistory: prevHistory,
     };
+    recordLatency('firestore', latency);
     return true;
   } catch (e) {
     _health.firestore.consecutiveFailures++;
@@ -123,13 +168,17 @@ async function checkAIGateway(aiGateway) {
     }
     const result = await aiGateway.healthCheck();
     const latency = Date.now() - start;
+    // T24-FIX: preservar latencyHistory entre updates
+    const prevHistory = _health.aiGateway?.latencyHistory || [];
     _health.aiGateway = {
       status: result ? 'healthy' : 'degraded',
       lastCheck: new Date().toISOString(),
       latencyMs: latency,
       lastError: null,
-      consecutiveFailures: result ? 0 : _health.aiGateway.consecutiveFailures + 1
+      consecutiveFailures: result ? 0 : _health.aiGateway.consecutiveFailures + 1,
+      latencyHistory: prevHistory,
     };
+    if (result) recordLatency('aiGateway', latency); // solo samples healthy
     return result;
   } catch (e) {
     _health.aiGateway.consecutiveFailures++;
@@ -304,6 +353,10 @@ function getHealthStatus() {
     baileysStatuses.some(b => b.status === 'disconnected') ? 'degraded' :
     _health.firestore.status === 'healthy' ? 'healthy' : 'unknown';
 
+  // T24-FIX: percentiles latency rolling para Firestore + AI Gateway
+  const firestorePct = computePercentiles('firestore');
+  const aiGatewayPct = computePercentiles('aiGateway');
+
   return {
     status: overallStatus,
     uptime: uptimeSeconds,
@@ -314,14 +367,16 @@ function getHealthStatus() {
         status: _health.firestore.status,
         latencyMs: _health.firestore.latencyMs,
         lastCheck: _health.firestore.lastCheck,
-        failures: _health.firestore.consecutiveFailures
+        failures: _health.firestore.consecutiveFailures,
+        latency: firestorePct, // T24: { samples, min, max, avg, p50, p95, p99 } | null
       },
       baileys: baileysStatuses,
       aiGateway: {
         status: _health.aiGateway.status,
         latencyMs: _health.aiGateway.latencyMs,
         lastCheck: _health.aiGateway.lastCheck,
-        failures: _health.aiGateway.consecutiveFailures
+        failures: _health.aiGateway.consecutiveFailures,
+        latency: aiGatewayPct, // T24
       },
       messagesUpsert: {
         count10min: upsertStats.count10min,
@@ -342,6 +397,11 @@ module.exports = {
   stopHealthChecks,
   runFullCheck,
   getHealthStatus,
+  // T24-FIX: helpers latency percentiles (exposicion para tests)
+  recordLatency,
+  computePercentiles,
+  _health, // exposicion estado interno para tests T24
+  LATENCY_BUFFER_SIZE,
   checkFirestore,
   checkBaileys,
   checkAIGateway,
