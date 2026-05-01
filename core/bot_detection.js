@@ -49,7 +49,7 @@ function calculateBotScore(messages) {
   }
   const maxRepeat = Math.max(0, ...Object.values(textCounts));
   if (maxRepeat >= BOT_REPEAT_THRESHOLD) {
-    score += Math.min(maxRepeat * 15, 40);
+    score += Math.min(maxRepeat * 15, 60);
     signals.push(`repeated_messages:${maxRepeat}`);
   }
 
