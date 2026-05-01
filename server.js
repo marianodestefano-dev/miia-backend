@@ -270,6 +270,8 @@ const businessesRouter = require('./routes/businesses');
 const createConsentRoutes = require('./routes/consent');
 // T92 — Consent manager (getOwnerConsent / setOwnerConsent / hasOwnerConsented)
 const consentManager = require('./core/consent_manager');
+// T93 — Key rotation scheduler (checkAndRotateKeys cada 24h)
+const keyRotationScheduler = require('./core/key_rotation_scheduler');
 const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
@@ -2020,6 +2022,17 @@ setInterval(() => {
     persistTenantConversations().catch(e => console.warn(`[TMH-PERSIST] ⚠️ ${e.message}`));
   } catch (_) {}
 }, 2 * 60 * 1000);
+
+// T93 — Key rotation cron: cada 24h para todos los UIDs activos
+keyRotationScheduler.startKeyRotationCron(() => {
+  try {
+    const { getActiveTenantUids } = require('./whatsapp/tenant_manager');
+    const uids = typeof getActiveTenantUids === 'function' ? getActiveTenantUids() : [];
+    return Array.isArray(uids) ? uids : [];
+  } catch (_) {
+    return OWNER_UID ? [OWNER_UID] : [];
+  }
+});
 
 // ============================================
 // HELPERS GENERALES
