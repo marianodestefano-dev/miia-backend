@@ -1,182 +1,225 @@
 'use strict';
 
-/**
- * MIIA â€” Webhook Dispatcher (T148)
- */
-
-const crypto = require('crypto');
-
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() {
-  if (_db) return _db;
-  return require('firebase-admin').firestore();
+function db() { return _db || require('firebase-admin').firestore(); }
+
+const DISPATCH_STATUSES = Object.freeze(['pending', 'success', 'failed', 'retrying', 'exhausted']);
+const MAX_RETRY_ATTEMPTS = 3;
+const INITIAL_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+const WEBHOOK_TIMEOUT_MS = 15000;
+
+function isValidStatus(s) { return DISPATCH_STATUSES.includes(s); }
+
+function computeBackoffMs(attempt) {
+  // Exponential backoff: 1s, 2s, 4s, capped at MAX_BACKOFF_MS
+  return Math.min(INITIAL_BACKOFF_MS * Math.pow(2, attempt), MAX_BACKOFF_MS);
 }
 
-let _fetchFn = null;
-function __setFetchForTests(fn) { _fetchFn = fn; }
-function getFetch() { return _fetchFn || fetch; }
-
-const WEBHOOK_EVENTS = Object.freeze([
-  'message.received', 'message.sent', 'contact.classified',
-  'appointment.created', 'appointment.cancelled',
-  'broadcast.completed', 'followup.sent', 'consent.updated',
-]);
-
-const DISPATCH_DEFAULTS = Object.freeze({
-  timeoutMs: 10000,
-  maxRetries: 3,
-  baseDelayMs: 1000,
-});
-
-const MAX_URL_LENGTH = 2048;
-const MAX_PAYLOAD_BYTES = 65536;
-
-async function registerWebhook(uid, { url, events, secret } = {}) {
-  if (!uid) throw new Error('uid requerido');
-  if (!url || typeof url !== 'string') throw new Error('url requerida');
-  if (url.length > MAX_URL_LENGTH) throw new Error('url demasiado larga');
-  if (!url.startsWith('https://')) throw new Error('url debe ser HTTPS');
-
-  const eventsArr = Array.isArray(events) ? events : WEBHOOK_EVENTS.slice();
-  const invalidEvents = eventsArr.filter(e => !WEBHOOK_EVENTS.includes(e));
-  if (invalidEvents.length > 0) throw new Error('eventos invalidos: ' + invalidEvents.join(', '));
-
-  const webhookId = 'wh_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  const payload = {
-    webhookId, uid, url, events: eventsArr,
-    secret: secret || null, active: true,
-    createdAt: new Date().toISOString(),
-    lastTriggeredAt: null, totalDispatched: 0, totalFailed: 0,
+function buildDispatchRecord(integrationId, eventId, data) {
+  data = data || {};
+  const now = Date.now();
+  const dispatchId = integrationId.slice(0, 10) + '_dsp_' + eventId.slice(0, 10) + '_' + now.toString(36);
+  return {
+    dispatchId,
+    integrationId,
+    eventId,
+    webhookUrl: typeof data.webhookUrl === 'string' ? data.webhookUrl.trim() : '',
+    webhookMethod: data.webhookMethod || 'POST',
+    webhookHeaders: data.webhookHeaders && typeof data.webhookHeaders === 'object' ? { ...data.webhookHeaders } : {},
+    payload: data.payload && typeof data.payload === 'object' ? data.payload : {},
+    status: 'pending',
+    attempts: 0,
+    maxAttempts: typeof data.maxAttempts === 'number' ? data.maxAttempts : MAX_RETRY_ATTEMPTS,
+    lastAttemptAt: null,
+    lastError: null,
+    responseCode: null,
+    responseBody: null,
+    nextRetryAt: null,
+    succeededAt: null,
+    exhaustedAt: null,
+    createdAt: now,
+    updatedAt: now,
   };
-
-  await db().collection('webhooks').doc(uid).collection('configs').doc(webhookId).set(payload);
-  console.log('[WEBHOOK] Registered uid=' + uid.substring(0,8) + ' id=' + webhookId);
-  return { webhookId, url, events: eventsArr };
 }
 
-async function dispatchEvent(uid, event, data, opts) {
-  if (!opts) opts = {};
-  if (!uid) throw new Error('uid requerido');
-  if (!WEBHOOK_EVENTS.includes(event)) throw new Error('evento invalido: ' + event);
+function buildDispatchResult(ok, statusCode, body, errorMsg) {
+  return {
+    ok: !!ok,
+    statusCode: statusCode || null,
+    body: typeof body === 'string' ? body.slice(0, 500) : null,
+    errorMsg: typeof errorMsg === 'string' ? errorMsg : null,
+    timestamp: Date.now(),
+  };
+}
 
-  let webhooks = [];
-  try {
-    const snap = await db().collection('webhooks').doc(uid).collection('configs')
-      .where('active', '==', true).get();
-    snap.forEach(doc => webhooks.push(doc.data()));
-  } catch (e) {
-    console.error('[WEBHOOK] Error leyendo configs uid=' + uid.substring(0,8) + ': ' + e.message);
-    return { dispatched: 0, failed: 0, skipped: 0 };
-  }
+function shouldRetry(record) {
+  if (!record) return false;
+  if (record.status === 'success' || record.status === 'exhausted') return false;
+  return record.attempts < record.maxAttempts;
+}
 
-  const relevant = webhooks.filter(wh => wh.events.includes(event));
-  if (relevant.length === 0) return { dispatched: 0, failed: 0, skipped: webhooks.length };
-
-  const payloadObj = { event, uid, timestamp: new Date().toISOString(), data };
-  const payloadStr = JSON.stringify(payloadObj);
-  if (Buffer.byteLength(payloadStr, 'utf8') > MAX_PAYLOAD_BYTES) {
-    console.warn('[WEBHOOK] Payload demasiado grande para evento ' + event);
-    return { dispatched: 0, failed: 0, skipped: relevant.length };
-  }
-
-  let dispatched = 0, failed = 0;
-  for (const wh of relevant) {
-    const ok = await _sendWithRetry(wh, payloadStr, opts);
-    if (ok) {
-      dispatched++;
-      _updateStats(uid, wh.webhookId, true).catch(() => {});
+function applyDispatchResult(record, result) {
+  const now = Date.now();
+  const updated = { ...record, updatedAt: now, lastAttemptAt: now, attempts: record.attempts + 1 };
+  if (result.ok) {
+    updated.status = 'success';
+    updated.responseCode = result.statusCode;
+    updated.responseBody = result.body;
+    updated.succeededAt = now;
+    updated.nextRetryAt = null;
+    updated.lastError = null;
+  } else {
+    updated.lastError = result.errorMsg || ('HTTP ' + result.statusCode);
+    updated.responseCode = result.statusCode;
+    if (updated.attempts >= updated.maxAttempts) {
+      updated.status = 'exhausted';
+      updated.exhaustedAt = now;
+      updated.nextRetryAt = null;
     } else {
-      failed++;
-      _updateStats(uid, wh.webhookId, false).catch(() => {});
+      updated.status = 'retrying';
+      updated.nextRetryAt = now + computeBackoffMs(updated.attempts);
     }
   }
-
-  const skipped = webhooks.length - relevant.length;
-  console.log('[WEBHOOK] Event=' + event + ' uid=' + uid.substring(0,8) +
-    ': dispatched=' + dispatched + ' failed=' + failed + ' skipped=' + skipped);
-  return { dispatched, failed, skipped };
+  return updated;
 }
 
-async function _sendWithRetry(wh, payloadStr, opts) {
-  const timeoutMs = opts.timeoutMs !== undefined ? opts.timeoutMs : DISPATCH_DEFAULTS.timeoutMs;
-  const maxRetries = opts.maxRetries !== undefined ? opts.maxRetries : DISPATCH_DEFAULTS.maxRetries;
-  const baseDelayMs = opts.baseDelayMs !== undefined ? opts.baseDelayMs : DISPATCH_DEFAULTS.baseDelayMs;
-
-  const headers = { 'Content-Type': 'application/json', 'X-Miia-Event': 'webhook' };
-  if (wh.secret) headers['X-Miia-Signature'] = signPayload(payloadStr, wh.secret);
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    if (attempt > 0) {
-      const delay = baseDelayMs * Math.pow(2, attempt - 1);
-      await new Promise(r => setTimeout(r, delay));
-    }
-    let timer;
-    try {
-      const controller = new AbortController();
-      timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await getFetch()(wh.url, {
-        method: 'POST', headers, body: payloadStr, signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (res.ok) return true;
-      console.warn('[WEBHOOK] HTTP ' + res.status + ' de ' + wh.url.substring(0,40) + ' intento ' + (attempt+1));
-    } catch (e) {
-      clearTimeout(timer);
-      console.warn('[WEBHOOK] Error enviando intento ' + (attempt+1) + ': ' + e.message);
-    }
-  }
-  return false;
+function buildDispatchSummaryText(dispatch) {
+  if (!dispatch) return 'Despacho no encontrado.';
+  const parts = [];
+  const icons = { pending: '\u{23F3}', success: '\u{2705}', failed: '\u{274C}', retrying: '\u{1F504}', exhausted: '\u{1F6AB}' };
+  const icon = icons[dispatch.status] || '\u{1F517}';
+  parts.push(icon + ' Despacho: ' + dispatch.dispatchId.slice(0, 20) + '...');
+  parts.push('Estado: ' + dispatch.status + ' | Intentos: ' + dispatch.attempts + '/' + dispatch.maxAttempts);
+  if (dispatch.webhookUrl) parts.push('URL: ' + dispatch.webhookUrl.slice(0, 60) + (dispatch.webhookUrl.length > 60 ? '...' : ''));
+  if (dispatch.responseCode) parts.push('HTTP: ' + dispatch.responseCode);
+  if (dispatch.lastError) parts.push('Error: ' + dispatch.lastError.slice(0, 80));
+  if (dispatch.succeededAt) parts.push('OK en: ' + new Date(dispatch.succeededAt).toISOString().slice(0, 16));
+  return parts.join('\n');
 }
 
-function signPayload(payloadStr, secret) {
-  return 'sha256=' + crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
-}
-
-async function _updateStats(uid, webhookId, success) {
-  const update = { lastTriggeredAt: new Date().toISOString() };
-  const admin = require('firebase-admin');
-  if (success) update.totalDispatched = admin.firestore.FieldValue.increment(1);
-  else update.totalFailed = admin.firestore.FieldValue.increment(1);
+async function saveDispatch(uid, dispatch) {
+  console.log('[WEBHOOK] Guardando despacho id=' + dispatch.dispatchId + ' integId=' + dispatch.integrationId);
   try {
-    await db().collection('webhooks').doc(uid).collection('configs').doc(webhookId).set(update, { merge: true });
-  } catch (e) {
-    console.warn('[WEBHOOK] Error actualizando stats ' + webhookId + ': ' + e.message);
+    await db().collection('owners').doc(uid)
+      .collection('webhook_dispatches').doc(dispatch.dispatchId)
+      .set(dispatch, { merge: false });
+    return dispatch.dispatchId;
+  } catch (err) {
+    console.error('[WEBHOOK] Error guardando despacho:', err.message);
+    throw err;
   }
 }
 
-async function deactivateWebhook(uid, webhookId) {
-  if (!uid) throw new Error('uid requerido');
-  if (!webhookId) throw new Error('webhookId requerido');
+async function getDispatch(uid, dispatchId) {
   try {
-    await db().collection('webhooks').doc(uid).collection('configs').doc(webhookId).set(
-      { active: false, deactivatedAt: new Date().toISOString() }, { merge: true }
-    );
-    console.log('[WEBHOOK] Deactivated uid=' + uid.substring(0,8) + ' id=' + webhookId);
-  } catch (e) {
-    console.error('[WEBHOOK] Error desactivando ' + webhookId + ': ' + e.message);
-    throw e;
+    const snap = await db().collection('owners').doc(uid)
+      .collection('webhook_dispatches').doc(dispatchId).get();
+    if (!snap.exists) return null;
+    return snap.data();
+  } catch (err) {
+    console.error('[WEBHOOK] Error obteniendo despacho:', err.message);
+    return null;
   }
 }
 
-async function listWebhooks(uid) {
-  if (!uid) throw new Error('uid requerido');
+async function updateDispatch(uid, dispatchId, fields) {
+  const update = { ...fields, updatedAt: Date.now() };
+  console.log('[WEBHOOK] Actualizando despacho id=' + dispatchId + ' status=' + (fields.status || '?'));
   try {
-    const snap = await db().collection('webhooks').doc(uid).collection('configs').get();
-    const result = [];
-    snap.forEach(doc => {
-      const d = doc.data();
-      result.push({ webhookId: d.webhookId, url: d.url, events: d.events, active: d.active });
+    await db().collection('owners').doc(uid)
+      .collection('webhook_dispatches').doc(dispatchId)
+      .set(update, { merge: true });
+    return dispatchId;
+  } catch (err) {
+    console.error('[WEBHOOK] Error actualizando despacho:', err.message);
+    throw err;
+  }
+}
+
+async function listPendingDispatches(uid, opts) {
+  opts = opts || {};
+  try {
+    const snap = await db().collection('owners').doc(uid)
+      .collection('webhook_dispatches')
+      .where('status', '==', 'pending').get();
+    const retrySnap = await db().collection('owners').doc(uid)
+      .collection('webhook_dispatches')
+      .where('status', '==', 'retrying').get();
+    const results = [];
+    const now = Date.now();
+    snap.forEach(d => results.push(d.data()));
+    retrySnap.forEach(d => {
+      const rec = d.data();
+      if (!rec.nextRetryAt || rec.nextRetryAt <= now) results.push(rec);
     });
-    return result;
-  } catch (e) {
-    console.error('[WEBHOOK] Error listando webhooks uid=' + uid.substring(0,8) + ': ' + e.message);
+    if (opts.integrationId) return results.filter(r => r.integrationId === opts.integrationId);
+    return results;
+  } catch (err) {
+    console.error('[WEBHOOK] Error listando despachos pendientes:', err.message);
     return [];
   }
 }
 
+async function listDispatchesByEvent(uid, eventId) {
+  try {
+    const snap = await db().collection('owners').doc(uid)
+      .collection('webhook_dispatches')
+      .where('eventId', '==', eventId).get();
+    if (snap.empty) return [];
+    const results = [];
+    snap.forEach(d => results.push(d.data()));
+    return results;
+  } catch (err) {
+    console.error('[WEBHOOK] Error listando despachos por evento:', err.message);
+    return [];
+  }
+}
+
+// Simula despacho HTTP (en tests se reemplaza con mock)
+// En producción, usar fetch con AbortController (regla 6.18)
+async function dispatchWebhook(dispatch, fetchFn) {
+  if (!dispatch.webhookUrl) {
+    return buildDispatchResult(false, null, null, 'webhookUrl vacia');
+  }
+  const fn = typeof fetchFn === 'function' ? fetchFn : null;
+  if (!fn) {
+    // En tests sin fetchFn real, retornar error controlado
+    return buildDispatchResult(false, null, null, 'fetchFn no provisto');
+  }
+  try {
+    const response = await fn(dispatch.webhookUrl, {
+      method: dispatch.webhookMethod || 'POST',
+      headers: { 'Content-Type': 'application/json', ...dispatch.webhookHeaders },
+      body: JSON.stringify(dispatch.payload),
+      timeout: WEBHOOK_TIMEOUT_MS,
+    });
+    const ok = response.status >= 200 && response.status < 300;
+    const body = typeof response.text === 'function' ? await response.text() : String(response.body || '');
+    return buildDispatchResult(ok, response.status, body, ok ? null : 'HTTP error ' + response.status);
+  } catch (err) {
+    return buildDispatchResult(false, null, null, err.message || 'Network error');
+  }
+}
+
 module.exports = {
-  registerWebhook, dispatchEvent, deactivateWebhook,
-  listWebhooks, signPayload, WEBHOOK_EVENTS, DISPATCH_DEFAULTS,
-  __setFirestoreForTests, __setFetchForTests,
+  buildDispatchRecord,
+  buildDispatchResult,
+  shouldRetry,
+  applyDispatchResult,
+  buildDispatchSummaryText,
+  saveDispatch,
+  getDispatch,
+  updateDispatch,
+  listPendingDispatches,
+  listDispatchesByEvent,
+  dispatchWebhook,
+  computeBackoffMs,
+  DISPATCH_STATUSES,
+  MAX_RETRY_ATTEMPTS,
+  INITIAL_BACKOFF_MS,
+  MAX_BACKOFF_MS,
+  WEBHOOK_TIMEOUT_MS,
+  __setFirestoreForTests,
 };
