@@ -96,6 +96,8 @@ const safetyFilter = require('../core/safety_filter');
 const consentRoutes = require('../routes/consent');
 // T92 — consent_manager: hasOwnerConsented() para guard antes de responder leads
 const consentManager = require('../core/consent_manager');
+// T95 — similarity: Jaccard ratio para detectar input repetido (§6.21 fix)
+const { similarityRatio } = require('../core/similarity');
 // T79 — §6.19 cache TTL extraído a módulo reutilizable (C-434 §A inline → lib)
 const {
   TTL_DAYS: CONTACT_TYPE_TTL_DAYS,
@@ -3334,6 +3336,27 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   const enableSearch = true;
   console.log(`${logPrefix} 🔍 Google Search activo — ${isSelfChat ? 'self-chat' : contactType}`);
 
+  // ── T95 — Anti-spam V2: detectar repeticion de INPUT (§6.21 fix) ──
+  // Si el contacto envio input >= 95% similar al anterior en < 5 min -> no regenerar
+  const ANTI_SPAM_SIMILARITY_THRESHOLD = 0.95;
+  const ANTI_SPAM_WINDOW_MS = 5 * 60 * 1000; // 5 minutos
+  if (!isSelfChat && messageBody) {
+    if (!ctx._lastReceivedMsg) ctx._lastReceivedMsg = {};
+    if (!ctx._lastSentMsg) ctx._lastSentMsg = {};
+    const prev = ctx._lastReceivedMsg[phone];
+    if (prev && prev.text && prev.ts) {
+      const elapsed = Date.now() - prev.ts;
+      const ratio = similarityRatio(messageBody, prev.text);
+      if (ratio >= ANTI_SPAM_SIMILARITY_THRESHOLD && elapsed < ANTI_SPAM_WINDOW_MS) {
+        const cachedReply = ctx._lastSentMsg[phone] || 'Un momento por favor.';
+        console.log(`${logPrefix} [ANTI-SPAM-V2] similarity=${ratio.toFixed(2)} elapsed=${Math.round(elapsed/1000)}s — skip regen, reusing last reply`);
+        await sendTenantMessage(tenantState, phone, cachedReply);
+        return;
+      }
+    }
+    ctx._lastReceivedMsg[phone] = { text: messageBody, ts: Date.now() };
+  }
+
   let aiMessage;
   const aiResult = await aiGateway.smartCall(
     aiContext,
@@ -5973,6 +5996,8 @@ REGLAS:
     await sendTenantMessage(tenantState, phone, maybeAddTypo(aiMessage));
   }
   _responseSentOk = true; // Respuesta enviada — si algo posterior falla, NO mandar error al contacto
+  // T95 — guardar ultimo mensaje enviado para anti-spam V2
+  if (!isSelfChat && ctx._lastSentMsg) ctx._lastSentMsg[phone] = aiMessage;
 
   // ═══ FIX SALUDO: Tracking de saludos enviados ═══
   if (isSelfChat) {
