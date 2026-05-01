@@ -180,5 +180,36 @@ module.exports = function createF1Routes({ verifyToken }) {
     }
   });
 
+
+  // F1.19: Circuit map endpoints
+  const { generateCircuitSVG, getCircuitIds, getCircuit } = require('../sports/f1_dashboard/circuit_maps');
+  const { renderAllDriversOnCircuit } = require('../sports/f1_dashboard/circuit_overlay');
+
+  router.get('/circuit/:circuit_id', (req, res) => {
+    const svg = generateCircuitSVG(req.params.circuit_id);
+    if (!svg) return res.status(404).json({ error: 'Circuito no encontrado' });
+    res.set('Content-Type', 'image/svg+xml').send(svg);
+  });
+
+  router.get('/circuits', (req, res) => {
+    const ids = getCircuitIds();
+    const list = ids.map(id => { const c = getCircuit(id); return { id, name: c.name, country: c.country, laps: c.laps }; });
+    res.json({ circuits: list, total: list.length });
+  });
+
+  router.get('/circuit/:circuit_id/live', auth, async (req, res) => {
+    try {
+      const cache = getLiveCache();
+      const positions = await cache.getAllPositions();
+      const uid = req.user && req.user.uid;
+      let adoptedDriver = null;
+      if (uid) { const prefDoc = await db().doc('owners/' + uid + '/f1_prefs/current').get(); if (prefDoc.exists) adoptedDriver = prefDoc.data().adopted_driver; }
+      const drivers = (positions || []).map(p => ({ name: p.driverName || '#' + p.number, team_color: p.teamColor || '#888', x: p.x || 0, y: p.y || 0, driver_id: p.driverId }));
+      const svg = renderAllDriversOnCircuit(req.params.circuit_id, drivers, adoptedDriver);
+      if (!svg) return res.status(404).json({ error: 'Circuito no encontrado' });
+      res.set('Content-Type', 'image/svg+xml').send(svg);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   return router;
 };
