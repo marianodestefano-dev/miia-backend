@@ -3201,6 +3201,21 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     }
   }
 
+
+  // === F1.14: Enriquecimiento de contexto F1 en queries deportivas ===
+  if (detectedTopics.includes('deportes')) {
+    try {
+      const { enrichF1Prompt } = require('../sports/f1_dashboard/f1_query_detector');
+      const f1Context = await enrichF1Prompt(messageBody);
+      if (f1Context) {
+        fullPrompt += f1Context;
+        console.log(logPrefix + ' F1-CONTEXT inyectado en prompt');
+      }
+    } catch (f1Err) {
+      console.warn(logPrefix + ' F1-CONTEXT fallo (no bloquea): ' + f1Err.message);
+    }
+  }
+
   // ── PASO 10: Llamar a la IA via AI Gateway (P5.3 — failover cross-provider) ──
   // aiProvider: null = dejar que AI Gateway use CONTEXT_CONFIG (owner_chat→claude, leads→gemini, etc.)
   const aiProvider = ctx.ownerProfile.aiProvider || null;
