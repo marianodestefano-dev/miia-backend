@@ -12997,7 +12997,7 @@ app.get('/api/tenant/:uid/migrate-number/status', (req, res) => {
 // ── Privacy report (P3.7) ──
 app.get('/api/tenant/:uid/privacy-report', async (req, res) => {
   try {
-    const report = await privacyReport.generateReport(req.params.uid);
+    const report = await privacyReport.buildPrivacyReport(req.params.uid);
     res.json(report);
   } catch (e) {
     console.error(`[PRIVACY-REPORT] ❌ API error:`, e.message);

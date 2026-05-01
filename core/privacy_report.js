@@ -225,8 +225,98 @@ async function listReports(ownerUid) {
   }
 }
 
+
+// ── T91 (Wi mapa) ── __setFirestoreForTests para tests ──
+function __setFirestoreForTests(fs) { _db = fs; }
+
+/**
+ * T91 — Informe rapido de datos almacenados por owner.
+ * Campos: conversationsCount, oldestConversationDate, contactTypesCount,
+ *         staleCacheCount, trainingDataSize, personalBrainSize, generatedAt.
+ * @param {string} uid
+ * @returns {Promise<object>}
+ */
+async function buildPrivacyReport(uid) {
+  if (!uid || typeof uid !== 'string') throw new Error('uid requerido');
+
+  const dbInst = db();
+  const now = new Date();
+  const result = {
+    uid,
+    conversationsCount: 0,
+    oldestConversationDate: null,
+    contactTypesCount: 0,
+    staleCacheCount: 0,
+    trainingDataSize: 0,
+    personalBrainSize: 0,
+    generatedAt: now.toISOString()
+  };
+
+  // 1. tenant_conversations
+  try {
+    const convDoc = await dbInst.collection('users').doc(uid)
+      .collection('miia_persistent').doc('tenant_conversations').get();
+    if (convDoc.exists) {
+      const data = convDoc.data();
+      const conversations = data.conversations || {};
+      result.conversationsCount = Object.keys(conversations).length;
+      result.contactTypesCount = Object.keys(data.contactTypes || {}).length;
+
+      let oldest = null;
+      for (const msgs of Object.values(conversations)) {
+        if (!Array.isArray(msgs)) continue;
+        for (const msg of msgs) {
+          const ts = msg.timestamp || msg.ts;
+          if (ts && (!oldest || ts < oldest)) oldest = ts;
+        }
+      }
+      result.oldestConversationDate = oldest || null;
+    }
+  } catch (e) {
+    console.warn(`[PRIVACY-REPORT] Error leyendo tenant_conversations ${uid.substring(0, 8)}: ${e.message}`);
+  }
+
+  // 2. staleCacheCount (si contact_classification_cache.getStats existe)
+  try {
+    const classCache = require('../lib/contact_classification_cache');
+    if (typeof classCache.getStats === 'function') {
+      const stats = classCache.getStats(uid);
+      result.staleCacheCount = stats.staleCount || 0;
+    }
+  } catch (_) {}
+
+  // 3. training_data size
+  try {
+    const tdDoc = await dbInst.collection('users').doc(uid)
+      .collection('miia_persistent').doc('training_data').get();
+    if (tdDoc.exists) {
+      const content = tdDoc.data().content || '';
+      result.trainingDataSize = Buffer.byteLength(content, 'utf8');
+    }
+  } catch (e) {
+    console.warn(`[PRIVACY-REPORT] Error leyendo training_data ${uid.substring(0, 8)}: ${e.message}`);
+  }
+
+  // 4. personal_brain size
+  try {
+    const pbDoc = await dbInst.collection('users').doc(uid)
+      .collection('personal').doc('personal_brain').get();
+    if (pbDoc.exists) {
+      const content = JSON.stringify(pbDoc.data());
+      result.personalBrainSize = Buffer.byteLength(content, 'utf8');
+    }
+  } catch (e) {
+    console.warn(`[PRIVACY-REPORT] Error leyendo personal_brain ${uid.substring(0, 8)}: ${e.message}`);
+  }
+
+  console.log(`[PRIVACY-REPORT] buildPrivacyReport ${uid.substring(0, 8)}: ${result.conversationsCount} convs, td=${result.trainingDataSize}B, pb=${result.personalBrainSize}B`);
+  return result;
+}
+
 module.exports = {
   generateReport,
+  buildPrivacyReport,
+  __setFirestoreForTests,
   formatForWhatsApp,
   shouldSendReport,
   listReports
