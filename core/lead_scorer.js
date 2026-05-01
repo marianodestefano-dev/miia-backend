@@ -1,177 +1,179 @@
 'use strict';
 
 /**
- * MIIA - Lead Scorer V2 (T164/T165)
- * Modelo de scoring de leads basado en historial de interacciones.
- * Alerta al owner cuando un lead supera el umbral de interes.
+ * MIIA - Lead Scorer (T249)
+ * P4.5 ROADMAP (Wi Bloque5 T232): scoring 0-100 de leads por comportamiento.
+ * 0=spam/bot, 25=frio, 50=interesado, 75=caliente, 100=listo_para_cerrar.
  */
+
+const SCORE_LABELS = Object.freeze({
+  spam: { min: 0, max: 10, label: 'Spam/Bot', emoji: '🚫' },
+  cold: { min: 11, max: 30, label: 'Frío', emoji: '🔵' },
+  warm: { min: 31, max: 60, label: 'Interesado', emoji: '🟡' },
+  hot: { min: 61, max: 85, label: 'Caliente', emoji: '🔴' },
+  ready: { min: 86, max: 100, label: 'Listo para cerrar', emoji: '✅' },
+});
+
+const SCORING_SIGNALS = Object.freeze([
+  'message_count', 'question_asked', 'price_inquired', 'name_provided',
+  'contact_info_shared', 'appointment_requested', 'replied_quickly',
+  'multiple_sessions', 'catalog_viewed', 'objection_raised',
+]);
+
+const MAX_SCORE = 100;
+const MIN_SCORE = 0;
+const SCORE_COLLECTION = 'lead_scores';
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() {
-  if (_db) return _db;
-  return require('firebase-admin').firestore();
-}
+function db() { return _db || require('firebase-admin').firestore(); }
 
-const INTERACTION_WEIGHTS = Object.freeze({
-  message_sent: 1,
-  catalog_view: 2,
-  price_inquiry: 4,
-  appointment_request: 8,
-  payment_initiated: 15,
-  catalog_purchase: 20,
-  repeated_visit: 3,
-  referral: 5,
-});
-
-const DEFAULT_ALERT_THRESHOLD = 20;
-const MAX_SCORE = 100;
-const SCORE_DECAY_DAYS = 30;
-
-/**
- * Calcula el score de un lead basado en su historial.
- * @param {Array<object>} interactions - lista de interacciones { type, timestamp, weight? }
- * @param {number} [nowMs]
- * @returns {{ score, level, interactions: number }}
- */
-function calculateScore(interactions, nowMs) {
-  if (!Array.isArray(interactions)) throw new Error('interactions debe ser array');
-
-  const now = nowMs ? new Date(nowMs) : new Date();
-  let rawScore = 0;
-
-  for (const interaction of interactions) {
-    const weight = interaction.weight !== undefined
-      ? interaction.weight
-      : (INTERACTION_WEIGHTS[interaction.type] || 1);
-
-    const ts = interaction.timestamp ? new Date(interaction.timestamp) : now;
-    const daysDiff = (now - ts) / (1000 * 60 * 60 * 24);
-    const decayFactor = Math.max(0, 1 - daysDiff / SCORE_DECAY_DAYS);
-
-    rawScore += weight * decayFactor;
+function getScoreLabel(score) {
+  if (typeof score !== 'number') return null;
+  var clamped = Math.max(MIN_SCORE, Math.min(MAX_SCORE, Math.round(score)));
+  var keys = Object.keys(SCORE_LABELS);
+  for (var i = 0; i < keys.length; i++) {
+    var range = SCORE_LABELS[keys[i]];
+    if (clamped >= range.min && clamped <= range.max) return { ...range, score: clamped };
   }
-
-  const score = Math.min(Math.round(rawScore), MAX_SCORE);
-  const level = _scoreToLevel(score);
-
-  return { score, level, interactions: interactions.length };
+  return null;
 }
 
-/**
- * Registra una interaccion de un lead.
- * @param {string} uid - tenant
- * @param {string} phone - lead phone
- * @param {string} type - tipo de interaccion
- * @param {object} [opts] - { nowMs, extra }
- */
-async function recordInteraction(uid, phone, type, opts) {
-  if (!uid) throw new Error('uid requerido');
-  if (!phone) throw new Error('phone requerido');
-  if (!type || !INTERACTION_WEIGHTS.hasOwnProperty(type)) throw new Error('tipo invalido: ' + type);
+function computeLeadScore(signals) {
+  if (!signals || typeof signals !== 'object') return 0;
+  var score = 10;
 
-  const nowMs = (opts && opts.nowMs) ? opts.nowMs : Date.now();
-  const payload = {
-    type,
-    timestamp: new Date(nowMs).toISOString(),
-    weight: INTERACTION_WEIGHTS[type],
-    extra: (opts && opts.extra) ? opts.extra : null,
-  };
+  var msgCount = signals.message_count || 0;
+  if (msgCount >= 3) score += 10;
+  if (msgCount >= 7) score += 10;
+  if (msgCount >= 15) score += 5;
 
-  try {
-    const coll = db().collection('lead_scores').doc(uid).collection('leads').doc(phone)
-      .collection('interactions');
-    await coll.doc(type + '_' + nowMs).set(payload);
-    console.log('[LEAD_SCORE] interaccion uid=' + uid.substring(0, 8) + ' phone=***' + phone.slice(-4) + ' type=' + type);
-  } catch (e) {
-    console.error('[LEAD_SCORE] Error registrando interaccion: ' + e.message);
-    throw e;
-  }
+  if (signals.question_asked) score += 10;
+  if (signals.price_inquired) score += 20;
+  if (signals.name_provided) score += 5;
+  if (signals.contact_info_shared) score += 10;
+  if (signals.appointment_requested) score += 20;
+  if (signals.replied_quickly) score += 5;
+  if (signals.multiple_sessions) score += 5;
+  if (signals.catalog_viewed) score += 5;
+  if (signals.objection_raised) score -= 10;
+
+  if (signals.is_spam || signals.is_bot) return 5;
+
+  return Math.max(MIN_SCORE, Math.min(MAX_SCORE, Math.round(score)));
 }
 
-/**
- * Obtiene el historial de interacciones de un lead.
- * @param {string} uid
- * @param {string} phone
- * @returns {Promise<Array<object>>}
- */
-async function getLeadInteractions(uid, phone) {
-  if (!uid) throw new Error('uid requerido');
-  if (!phone) throw new Error('phone requerido');
-  try {
-    const snap = await db().collection('lead_scores').doc(uid)
-      .collection('leads').doc(phone).collection('interactions').get();
-    const items = [];
-    snap.forEach(doc => items.push(doc.data()));
-    return items;
-  } catch (e) {
-    console.error('[LEAD_SCORE] Error leyendo interacciones: ' + e.message);
-    return [];
-  }
-}
-
-/**
- * Verifica si el score supera el umbral y crea alerta si aplica.
- * @param {string} uid
- * @param {string} phone
- * @param {number} score
- * @param {number} [threshold]
- * @returns {Promise<{shouldAlert, score, level}>}
- */
-async function checkAlertThreshold(uid, phone, score, threshold) {
+function buildScoreRecord(uid, phone, score, signals, opts) {
   if (!uid) throw new Error('uid requerido');
   if (!phone) throw new Error('phone requerido');
   if (typeof score !== 'number') throw new Error('score debe ser numero');
-
-  const alertAt = threshold !== undefined ? threshold : DEFAULT_ALERT_THRESHOLD;
-  const shouldAlert = score >= alertAt;
-  const level = _scoreToLevel(score);
-
-  if (shouldAlert) {
-    try {
-      await db().collection('lead_alerts').doc(uid).collection('alerts')
-        .doc(phone + '_' + Date.now()).set({
-          uid, phone, score, level,
-          alertAt, triggeredAt: new Date().toISOString(), sent: false,
-        });
-      console.log('[LEAD_SCORE] ALERTA generada uid=' + uid.substring(0, 8) + ' score=' + score + ' level=' + level);
-    } catch (e) {
-      console.error('[LEAD_SCORE] Error creando alerta: ' + e.message);
-    }
-  }
-
-  return { shouldAlert, score, level };
+  var clamped = Math.max(MIN_SCORE, Math.min(MAX_SCORE, Math.round(score)));
+  var label = getScoreLabel(clamped);
+  return {
+    uid,
+    phone,
+    score: clamped,
+    label: label ? label.label : 'Unknown',
+    category: label ? Object.keys(SCORE_LABELS).find(function(k) { return SCORE_LABELS[k].label === label.label; }) : null,
+    signals: signals || {},
+    notes: (opts && opts.notes) ? String(opts.notes) : null,
+    scoredAt: new Date().toISOString(),
+    previousScore: (opts && typeof opts.previousScore === 'number') ? opts.previousScore : null,
+    trend: null,
+  };
 }
 
-/**
- * Obtiene alertas pendientes de envio para un owner.
- * @param {string} uid
- * @returns {Promise<Array<object>>}
- */
-async function getPendingAlerts(uid) {
+function computeScoreTrend(currentScore, previousScore) {
+  if (typeof previousScore !== 'number') return 'new';
+  var diff = currentScore - previousScore;
+  if (diff > 10) return 'rising';
+  if (diff < -10) return 'falling';
+  return 'stable';
+}
+
+async function saveLeadScore(uid, record) {
+  if (!uid) throw new Error('uid requerido');
+  if (!record || !record.phone) throw new Error('record invalido');
+  var docId = record.phone.replace(/\D/g, '').slice(-10);
+  await db().collection('tenants').doc(uid).collection(SCORE_COLLECTION).doc(docId).set(record, { merge: true });
+  console.log('[SCORER] Guardado uid=' + uid + ' phone=' + record.phone + ' score=' + record.score + ' (' + record.label + ')');
+  return docId;
+}
+
+async function getLeadScore(uid, phone) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+  try {
+    var docId = phone.replace(/\D/g, '').slice(-10);
+    var snap = await db().collection('tenants').doc(uid).collection(SCORE_COLLECTION).doc(docId).get();
+    if (!snap || !snap.exists) return null;
+    return snap.data();
+  } catch (e) {
+    console.error('[SCORER] Error leyendo score: ' + e.message);
+    return null;
+  }
+}
+
+async function scoreAndSaveLead(uid, phone, signals, opts) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+  var previous = await getLeadScore(uid, phone);
+  var previousScore = previous ? previous.score : null;
+  var score = computeLeadScore(signals);
+  var trend = computeScoreTrend(score, previousScore);
+  var record = buildScoreRecord(uid, phone, score, signals, { ...opts, previousScore });
+  record.trend = trend;
+  await saveLeadScore(uid, record);
+  return record;
+}
+
+async function getAllLeadScores(uid, opts) {
   if (!uid) throw new Error('uid requerido');
   try {
-    const snap = await db().collection('lead_alerts').doc(uid)
-      .collection('alerts').where('sent', '==', false).get();
-    const items = [];
-    snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-    return items;
+    var snap = await db().collection('tenants').doc(uid).collection(SCORE_COLLECTION).get();
+    var scores = [];
+    snap.forEach(function(doc) { scores.push(doc.data()); });
+    if (opts && opts.minScore) scores = scores.filter(function(s) { return s.score >= opts.minScore; });
+    if (opts && opts.category) scores = scores.filter(function(s) { return s.category === opts.category; });
+    scores.sort(function(a, b) { return (b.score || 0) - (a.score || 0); });
+    return scores;
   } catch (e) {
-    console.error('[LEAD_SCORE] Error leyendo alertas: ' + e.message);
+    console.error('[SCORER] Error leyendo scores: ' + e.message);
     return [];
   }
 }
 
-function _scoreToLevel(score) {
-  if (score >= 70) return 'hot';
-  if (score >= 40) return 'warm';
-  if (score >= 15) return 'interested';
-  return 'cold';
+function buildScoreText(record) {
+  if (!record) return '';
+  var label = getScoreLabel(record.score);
+  var emoji = label ? label.emoji : '❓';
+  var lines = [
+    emoji + ' *Lead Score: ' + record.phone + '*',
+    'Puntuación: ' + record.score + '/100 — ' + record.label,
+    'Tendencia: ' + (record.trend || 'nueva'),
+  ];
+  if (record.signals) {
+    var activeSignals = Object.entries(record.signals)
+      .filter(function(e) { return e[1] === true || (typeof e[1] === 'number' && e[1] > 0); })
+      .map(function(e) { return e[0]; });
+    if (activeSignals.length > 0) lines.push('Señales: ' + activeSignals.join(', '));
+  }
+  return lines.join('\n');
 }
 
 module.exports = {
-  calculateScore, recordInteraction, getLeadInteractions,
-  checkAlertThreshold, getPendingAlerts,
-  INTERACTION_WEIGHTS, DEFAULT_ALERT_THRESHOLD, MAX_SCORE, SCORE_DECAY_DAYS,
+  computeLeadScore,
+  buildScoreRecord,
+  computeScoreTrend,
+  saveLeadScore,
+  getLeadScore,
+  scoreAndSaveLead,
+  getAllLeadScores,
+  buildScoreText,
+  getScoreLabel,
+  SCORE_LABELS,
+  SCORING_SIGNALS,
+  MAX_SCORE,
+  MIN_SCORE,
   __setFirestoreForTests,
 };
