@@ -29,6 +29,7 @@ function _ensure(uid) {
       messagesOut: [],
       errors: [],
       aiCalls: [],
+      regenerations: [], // T91
     };
   }
   return _state[uid];
@@ -96,6 +97,8 @@ function recordAICall(uid, opts = {}) {
     provider: opts.provider || 'unknown',
     latencyMs: typeof opts.latencyMs === 'number' ? opts.latencyMs : 0,
     success: opts.success !== false,
+    timeout: opts.timeout === true, // T91
+    model: opts.model || 'unknown', // T91
   });
   _pruneOld(t.aiCalls);
 }
@@ -130,6 +133,10 @@ function getTenantStats(uid) {
       ai_avg_latency_ms: 0,
       out_p50_latency_ms: 0,
       out_p95_latency_ms: 0,
+      ai_p95_latency_ms: 0,
+      ai_timeout_count: 0,
+      ai_timeout_rate: '0%',
+      ai_regen_count: 0,
       contact_type_breakdown: {},
     };
   }
@@ -138,6 +145,7 @@ function getTenantStats(uid) {
   _pruneOld(t.messagesOut);
   _pruneOld(t.errors);
   _pruneOld(t.aiCalls);
+  if (t.regenerations) _pruneOld(t.regenerations); // T91
 
   const inCount = t.messagesIn.length;
   const outCount = t.messagesOut.length;
@@ -156,6 +164,11 @@ function getTenantStats(uid) {
   const p50 = _percentile(outLatencies, 50);
   const p95 = _percentile(outLatencies, 95);
 
+  // T91: Gemini observability
+  const aiTimeouts = t.aiCalls.filter(c => c.timeout).length;
+  const aiP95 = _percentile(t.aiCalls.filter(c => c.success).map(c => c.latencyMs), 95);
+  const aiRegenCount = (t.regenerations || []).length;
+
   const breakdown = {};
   for (const m of t.messagesIn) breakdown[m.contactType] = (breakdown[m.contactType] || 0) + 1;
 
@@ -171,6 +184,10 @@ function getTenantStats(uid) {
     ai_avg_latency_ms: aiAvgLatency,
     out_p50_latency_ms: p50,
     out_p95_latency_ms: p95,
+    ai_p95_latency_ms: aiP95,
+    ai_timeout_count: aiTimeouts,
+    ai_timeout_rate: aiCount > 0 ? `${Math.round((aiTimeouts / aiCount) * 100)}%` : '0%',
+    ai_regen_count: aiRegenCount,
     contact_type_breakdown: breakdown,
   };
 }
@@ -188,6 +205,8 @@ function aggregateAll() {
   const totalOut = tenants.reduce((s, t) => s + t.messages_out, 0);
   const totalErr = tenants.reduce((s, t) => s + t.errors, 0);
   const totalAI = tenants.reduce((s, t) => s + t.ai_calls, 0);
+  const totalTimeouts = tenants.reduce((s, t) => s + (t.ai_timeout_count || 0), 0); // T91
+  const totalRegens = tenants.reduce((s, t) => s + (t.ai_regen_count || 0), 0); // T91
   const totalMsg = totalIn + totalOut;
   const globalErrorRate = totalMsg > 0 ? Math.round((totalErr / totalMsg) * 100) : 0;
 
@@ -200,6 +219,8 @@ function aggregateAll() {
       errors: totalErr,
       error_rate: `${globalErrorRate}%`,
       ai_calls: totalAI,
+      ai_timeouts: totalTimeouts,
+      ai_regens: totalRegens,
       window_ms: WINDOW_MS,
       timestamp: new Date().toISOString(),
     },
@@ -213,12 +234,29 @@ function _resetState() {
   for (const k of Object.keys(_state)) delete _state[k];
 }
 
+/**
+ * Registrar regeneracion de respuesta IA. (T91)
+ * @param {string} uid
+ * @param {object} opts - { reason?: string, context?: string }
+ */
+function recordRegeneration(uid, opts = {}) {
+  if (!uid) return;
+  const t = _ensure(uid);
+  t.regenerations.push({
+    ts: Date.now(),
+    reason: opts.reason || 'unknown',
+    context: opts.context || 'unknown',
+  });
+  _pruneOld(t.regenerations);
+}
+
 module.exports = {
   recordIncoming,
   recordOutgoing,
   recordError,
   recordAICall,
   getTenantStats,
+  recordRegeneration,
   aggregateAll,
   WINDOW_MS,
   // Test-only

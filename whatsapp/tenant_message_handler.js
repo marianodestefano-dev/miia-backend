@@ -69,6 +69,7 @@ const { fetchOfficialTRM } = require('../core/financial_verify');
 // T86: maskUid agregado para ocultar UID en logPrefix en produccion
 const { slog, maskUid } = require('../core/log_sanitizer');
 const { randomUUID } = require('crypto'); // T87: request_id por mensaje
+const tenantMetrics = require('../core/tenant_metrics'); // T91: AI observability
 
 // === V2 (C-388 corrección de scope C-386) — wire-in voice_seed + mode_detectors + splitter + emoji injector ===
 // Scope ETAPA 1: SOLO MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2). MIIA Personal (bq2...) NO usa V2.
@@ -3314,7 +3315,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
     aiContext,
     fullPrompt,
     { aiProvider, aiApiKey },
-    { enableSearch }
+    { enableSearch, uid } // T91: uid para metricas
   );
 
   aiMessage = aiResult.text;
@@ -3399,6 +3400,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
       aiMessage = getFallbackMessage(regexAudit.vetoReason, postChatType);
     } else if (regexAudit.action === 'regenerate') {
       console.warn(`${logPrefix} ♻️ REGEX: regeneración requerida — ${regexAudit.vetoReason}`);
+      tenantMetrics.recordRegeneration(uid, { reason: "REGEX", context: regexAudit.vetoReason.substring(0, 80) }); // T91
       // Intentar regenerar con hint del auditor
       try {
         const hint = `\n\n⚠️ CORRECCIÓN: ${regexAudit.vetoReason}. Corregí esto en tu nueva respuesta.`;
@@ -3429,6 +3431,7 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
         aiMessage = getFallbackMessage(aiAuditResult.issues[0] || 'AUDITOR', postChatType);
       } else if (aiAuditResult.action === 'regenerate') {
         console.warn(`${logPrefix} ♻️ AI AUDITOR: regeneración — ${aiAuditResult.issues.join('; ')}`);
+      tenantMetrics.recordRegeneration(uid, { reason: "AI_AUDITOR", context: (aiAuditResult.issues[0] || "").substring(0, 80) }); // T91
         try {
           const hint = `\n\n⚠️ CORRECCIÓN DEL AUDITOR: ${aiAuditResult.issues.join('. ')}. Corregí estos problemas.`;
           const regenResult = await aiGateway.smartCall(aiContext, fullPrompt + hint, { aiProvider, aiApiKey }, { enableSearch });
@@ -5578,6 +5581,7 @@ REGLAS:
 
       if (v2Audit.shouldRegenerate) {
         console.warn(`${logPrefix} [V2][AUDIT] CRÍTICO flagged: ${v2Audit.criticalFlags.map(f => f.code).join(',')} — regenerando UNA vez`);
+        tenantMetrics.recordRegeneration(uid, { reason: "V2_CRITICAL", context: v2Audit.criticalFlags.map(f => f.code).join(",") }); // T91
         const retryPrompt = `${fullPrompt}\n\n${v2Audit.hint}`;
         let retryMessage = aiMessage;
         try {
@@ -5665,6 +5669,7 @@ REGLAS:
 
       if (safetyAudit.shouldRegenerate) {
         console.warn(`${logPrefix} [V1][SAFETY-AUDIT] CRÍTICO flagged: ${safetyAudit.criticalFlags.map(f => f.code).join(',')} — regenerando UNA vez`);
+        tenantMetrics.recordRegeneration(uid, { reason: "V1_SAFETY", context: safetyAudit.criticalFlags.map(f => f.code).join(",") }); // T91
         const retryPrompt = `${fullPrompt}\n\n${safetyAudit.hint}`;
         let retryMessage = aiMessage;
         try {

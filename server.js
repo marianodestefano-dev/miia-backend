@@ -241,6 +241,7 @@ const miiaGifs = require('./core/miia_gifs');
 const googleServices = require('./integrations/google_services_integration');
 const webScraperCore = require('./core/web_scraper');
 const rateLimiter = require('./core/rate_limiter');
+const tenantMetrics = require('./core/tenant_metrics'); // T91: AI observability
 const loopWatcher = require('./core/loop_watcher');
 const privacyCounters = require('./core/privacy_counters');
 const contactClassifier = require('./core/contact_classifier');
@@ -12909,6 +12910,20 @@ app.get('/api/tenant/:uid/rate-limits', (req, res) => {
     res.json(dashboard);
   } catch (err) {
     console.error(`[RATE-DASHBOARD] Error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// T91 -- AI metrics (Observabilidad V2: latencia Gemini, timeouts, regeneraciones)
+// GET /api/tenant/:uid/ai-metrics
+app.get('/api/tenant/:uid/ai-metrics', (req, res) => {
+  const uid = req.params.uid;
+  try {
+    const stats = tenantMetrics.getTenantStats(uid);
+    console.log(`[AI-METRICS] Stats para ${uid.slice(0, 8)}... -- AI calls: ${stats.ai_calls}, timeouts: ${stats.ai_timeout_count}, regens: ${stats.ai_regen_count}`);
+    res.json(stats);
+  } catch (err) {
+    console.error(`[AI-METRICS] Error: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });

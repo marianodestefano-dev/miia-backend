@@ -35,6 +35,15 @@ function getShield() {
   return _shield;
 }
 
+// T91: tenant_metrics lazy (sin circular deps)
+let _metrics = null;
+function getMetrics() {
+  if (!_metrics) {
+    try { _metrics = require('../core/tenant_metrics'); } catch (_) {}
+  }
+  return _metrics;
+}
+
 const adapters = {
   gemini: geminiAdapter,
   openai: openaiAdapter,
@@ -85,9 +94,11 @@ async function callAI(provider, apiKey, prompt, opts = {}) {
     try {
       const result = await _callWithPool(provider, 'call', [prompt, opts], shield);
       _aiObs('ai.call.ok', { provider, model: opts.model || null, prompt_chars: promptChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'pool' });
+      if (opts.uid) { const m = getMetrics(); if (m) m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: true, timeout: false, model: opts.model || null }); } // T91
       return result;
     } catch (err) {
       _aiObs('ai.call.fail', { provider, model: opts.model || null, prompt_chars: promptChars, latency_ms: Date.now() - t0, via: 'pool', err_status: err.status || err.statusCode || null });
+      if (opts.uid) { const m = getMetrics(); if (m) { const _isTo = !!(err.message && err.message.includes("timeout") || err.name === "AbortError"); m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: false, timeout: _isTo, model: opts.model || null }); } } // T91
       throw err;
     }
   }
@@ -97,10 +108,12 @@ async function callAI(provider, apiKey, prompt, opts = {}) {
     const result = await adapter.call(apiKey, prompt, opts);
     if (shield) shield.recordSuccess(shield.SYSTEMS.GEMINI);
     _aiObs('ai.call.ok', { provider, model: opts.model || null, prompt_chars: promptChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'direct' });
+    if (opts.uid) { const m = getMetrics(); if (m) m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: true, timeout: false, model: opts.model || null }); } // T91
     return result;
   } catch (err) {
     if (shield) shield.recordFail(shield.SYSTEMS.GEMINI, `${provider}: ${err.message}`);
     _aiObs('ai.call.fail', { provider, model: opts.model || null, prompt_chars: promptChars, latency_ms: Date.now() - t0, via: 'direct', err_status: err.status || err.statusCode || null });
+    if (opts.uid) { const m = getMetrics(); if (m) { const _isTo = !!(err.message && err.message.includes("timeout") || err.name === "AbortError"); m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: false, timeout: _isTo, model: opts.model || null }); } } // T91
     throw err;
   }
 }
@@ -133,9 +146,11 @@ async function callAIChat(provider, apiKey, messages, systemPrompt, opts = {}) {
     try {
       const result = await _callWithPool(provider, 'callChat', [messages, systemPrompt, opts], shield);
       _aiObs('ai.chat.ok', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'pool' });
+      if (opts.uid) { const m = getMetrics(); if (m) m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: true, timeout: false, model: opts.model || null }); } // T91
       return result;
     } catch (err) {
       _aiObs('ai.chat.fail', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, latency_ms: Date.now() - t0, via: 'pool', err_status: err.status || err.statusCode || null });
+      if (opts.uid) { const m = getMetrics(); if (m) { const _isTo = !!(err.message && err.message.includes("timeout") || err.name === "AbortError"); m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: false, timeout: _isTo, model: opts.model || null }); } } // T91
       throw err;
     }
   }
@@ -145,10 +160,12 @@ async function callAIChat(provider, apiKey, messages, systemPrompt, opts = {}) {
     const result = await adapter.callChat(apiKey, messages, systemPrompt, opts);
     if (shield) shield.recordSuccess(shield.SYSTEMS.GEMINI);
     _aiObs('ai.chat.ok', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, response_chars: (result || '').length, latency_ms: Date.now() - t0, via: 'direct' });
+    if (opts.uid) { const m = getMetrics(); if (m) m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: true, timeout: false, model: opts.model || null }); } // T91
     return result;
   } catch (err) {
     if (shield) shield.recordFail(shield.SYSTEMS.GEMINI, `${provider}: ${err.message}`);
     _aiObs('ai.chat.fail', { provider, model: opts.model || null, msg_count: msgCount, system_chars: systemChars, latency_ms: Date.now() - t0, via: 'direct', err_status: err.status || err.statusCode || null });
+    if (opts.uid) { const m = getMetrics(); if (m) { const _isTo = !!(err.message && err.message.includes("timeout") || err.name === "AbortError"); m.recordAICall(opts.uid, { provider, latencyMs: Date.now() - t0, success: false, timeout: _isTo, model: opts.model || null }); } } // T91
     throw err;
   }
 }
