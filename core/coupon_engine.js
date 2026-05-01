@@ -1,202 +1,264 @@
 'use strict';
 
-const COUPON_TYPES = Object.freeze(['percentage', 'fixed', 'free_item', 'buy_x_get_y']);
-const COUPON_STATUSES = Object.freeze(['active', 'expired', 'depleted', 'disabled']);
-const COUPON_CURRENCIES = Object.freeze(['USD', 'ARS', 'COP', 'MXN', 'CLP', 'PEN', 'BRL']);
-
-const MAX_COUPON_CODE_LENGTH = 20;
-const MIN_DISCOUNT_VALUE = 0.01;
-const MAX_DISCOUNT_PERCENTAGE = 100;
-const MAX_USES_DEFAULT = 100;
-const COUPON_COLLECTION = 'coupons';
-const COUPON_USAGE_COLLECTION = 'coupon_usages';
-
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
 function db() { return _db || require('firebase-admin').firestore(); }
 
+const COUPON_TYPES = Object.freeze(['percent', 'fixed', 'free_shipping', 'bogo', 'custom']);
+const COUPON_STATUSES = Object.freeze(['active', 'inactive', 'expired', 'exhausted', 'scheduled']);
+const REDEMPTION_STATUSES = Object.freeze(['applied', 'validated', 'used', 'reversed', 'expired']);
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin O, 0, I, 1
+
+const MAX_CODE_LENGTH = 12;
+const MIN_CODE_LENGTH = 4;
+const MAX_DISCOUNT_PERCENT = 100;
+const MAX_USES_DEFAULT = 1000;
+const EXPIRY_DAYS_DEFAULT = 30;
+
 function isValidType(t) { return COUPON_TYPES.includes(t); }
 function isValidStatus(s) { return COUPON_STATUSES.includes(s); }
 
-function isValidCouponCode(code) {
-  if (!code || typeof code !== 'string') return false;
-  if (code.length > MAX_COUPON_CODE_LENGTH) return false;
-  return /^[A-Z0-9_-]{2,20}$/.test(code);
+function generateCouponCode(length, seed) {
+  length = typeof length === 'number' ? Math.min(MAX_CODE_LENGTH, Math.max(MIN_CODE_LENGTH, length)) : 8;
+  let code = '';
+  let hash = seed ? String(seed).split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) : Math.random() * 99999;
+  for (let i = 0; i < length; i++) {
+    hash = (hash * 1664525 + 1013904223) & 0xFFFFFFFF;
+    code += CODE_CHARS[Math.abs(hash) % CODE_CHARS.length];
+  }
+  return code;
 }
 
-function buildCouponRecord(uid, code, type, value, opts = {}) {
-  if (!uid) throw new Error('uid requerido');
-  if (!isValidCouponCode(code)) throw new Error('codigo invalido (A-Z0-9_-, 2-20 chars)');
-  if (!isValidType(type)) throw new Error('type invalido');
-  if (typeof value !== 'number' || value < MIN_DISCOUNT_VALUE) {
-    throw new Error('value debe ser numero >= ' + MIN_DISCOUNT_VALUE);
-  }
-  if (type === 'percentage' && value > MAX_DISCOUNT_PERCENTAGE) {
-    throw new Error('porcentaje no puede superar 100');
-  }
-  const currency = COUPON_CURRENCIES.includes(opts.currency) ? opts.currency : 'USD';
+function buildCouponId(uid, code) {
+  return uid.slice(0, 8) + '_coup_' + code.toUpperCase();
+}
+
+function buildCouponRecord(uid, data) {
+  data = data || {};
   const now = Date.now();
+  const type = isValidType(data.type) ? data.type : 'percent';
+  const code = typeof data.code === 'string' && data.code.trim().length >= MIN_CODE_LENGTH
+    ? data.code.trim().toUpperCase().slice(0, MAX_CODE_LENGTH)
+    : generateCouponCode(8, data.codeSeed);
+  const couponId = data.couponId || buildCouponId(uid, code);
+  const discountPercent = type === 'percent'
+    ? Math.min(MAX_DISCOUNT_PERCENT, Math.max(0, typeof data.discountPercent === 'number' ? data.discountPercent : 0))
+    : 0;
+  const discountAmount = type === 'fixed'
+    ? Math.max(0, typeof data.discountAmount === 'number' ? data.discountAmount : 0)
+    : 0;
+  const scheduledAt = typeof data.scheduledAt === 'number' && data.scheduledAt > now
+    ? data.scheduledAt : null;
+  const status = scheduledAt ? 'scheduled' : (isValidStatus(data.status) ? data.status : 'active');
   return {
-    couponId: uid.slice(0, 8) + '_' + code,
+    couponId,
     uid,
     code,
     type,
-    value,
-    currency,
-    status: 'active',
-    maxUses: typeof opts.maxUses === 'number' && opts.maxUses > 0 ? opts.maxUses : MAX_USES_DEFAULT,
-    usedCount: 0,
-    minOrderAmount: typeof opts.minOrderAmount === 'number' ? opts.minOrderAmount : 0,
-    expiresAt: opts.expiresAt || null,
-    description: opts.description || null,
-    applicableItems: Array.isArray(opts.applicableItems) ? opts.applicableItems : [],
-    createdAt: opts.createdAt || now,
+    status,
+    name: typeof data.name === 'string' ? data.name.trim().slice(0, 100) : 'Cupon ' + code,
+    description: typeof data.description === 'string' ? data.description.slice(0, 300) : '',
+    discountPercent,
+    discountAmount,
+    minOrderAmount: typeof data.minOrderAmount === 'number' ? Math.max(0, data.minOrderAmount) : 0,
+    maxDiscountAmount: typeof data.maxDiscountAmount === 'number' ? data.maxDiscountAmount : null,
+    currency: typeof data.currency === 'string' ? data.currency.toUpperCase().slice(0, 3) : 'ARS',
+    maxUses: typeof data.maxUses === 'number' ? data.maxUses : MAX_USES_DEFAULT,
+    usesPerContact: typeof data.usesPerContact === 'number' ? data.usesPerContact : 1,
+    currentUses: 0,
+    scheduledAt,
+    expiresAt: typeof data.expiresAt === 'number' ? data.expiresAt : (now + EXPIRY_DAYS_DEFAULT * 24 * 60 * 60 * 1000),
+    applicableProducts: Array.isArray(data.applicableProducts) ? data.applicableProducts.slice(0, 50) : [],
+    excludedProducts: Array.isArray(data.excludedProducts) ? data.excludedProducts.slice(0, 50) : [],
+    metadata: data.metadata && typeof data.metadata === 'object' ? { ...data.metadata } : {},
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
-async function saveCoupon(uid, record) {
-  if (!uid) throw new Error('uid requerido');
-  if (!record || !record.couponId) throw new Error('record invalido');
-  await db()
-    .collection('owners').doc(uid)
-    .collection(COUPON_COLLECTION).doc(record.couponId)
-    .set(record, { merge: true });
-  console.log('[COUPON] Guardado uid=' + uid + ' code=' + record.code + ' type=' + record.type);
-  return record.couponId;
-}
-
-async function getCoupon(uid, code) {
-  if (!uid) throw new Error('uid requerido');
-  if (!code) throw new Error('code requerido');
-  try {
-    const couponId = uid.slice(0, 8) + '_' + code;
-    const snap = await db()
-      .collection('owners').doc(uid)
-      .collection(COUPON_COLLECTION).doc(couponId)
-      .get();
-    if (!snap.exists) return null;
-    return snap.data();
-  } catch (e) {
-    console.error('[COUPON] Error getCoupon: ' + e.message);
-    return null;
+function validateCoupon(coupon, orderAmount, opts) {
+  opts = opts || {};
+  const now = Date.now();
+  const errors = [];
+  if (!coupon) { errors.push('coupon_not_found'); return { valid: false, errors }; }
+  if (coupon.status === 'expired' || coupon.expiresAt < now) errors.push('coupon_expired');
+  if (coupon.status === 'inactive') errors.push('coupon_inactive');
+  if (coupon.status === 'exhausted' || coupon.currentUses >= coupon.maxUses) errors.push('coupon_exhausted');
+  if (coupon.status === 'scheduled' && coupon.scheduledAt > now) errors.push('coupon_not_yet_active');
+  if (typeof orderAmount === 'number' && coupon.minOrderAmount > 0 && orderAmount < coupon.minOrderAmount) {
+    errors.push('order_below_minimum');
   }
+  if (typeof opts.contactUses === 'number' && opts.contactUses >= coupon.usesPerContact) {
+    errors.push('contact_use_limit_reached');
+  }
+  return { valid: errors.length === 0, errors };
 }
 
 function computeDiscount(coupon, orderAmount) {
   if (!coupon || typeof orderAmount !== 'number' || orderAmount <= 0) return 0;
-  if (coupon.minOrderAmount && orderAmount < coupon.minOrderAmount) return 0;
-  if (coupon.type === 'percentage') {
-    return Math.round((orderAmount * coupon.value / 100) * 100) / 100;
+  let discount = 0;
+  if (coupon.type === 'percent') {
+    discount = Math.round(orderAmount * coupon.discountPercent / 100 * 100) / 100;
+    if (coupon.maxDiscountAmount !== null && discount > coupon.maxDiscountAmount) {
+      discount = coupon.maxDiscountAmount;
+    }
+  } else if (coupon.type === 'fixed') {
+    discount = Math.min(coupon.discountAmount, orderAmount);
+  } else if (coupon.type === 'free_shipping') {
+    discount = typeof orderAmount === 'number' ? 0 : 0; // shipping se calcula externamente
   }
-  if (coupon.type === 'fixed') {
-    return Math.min(coupon.value, orderAmount);
-  }
-  if (coupon.type === 'free_item') {
-    return coupon.value;
-  }
-  return 0;
+  return Math.max(0, Math.round(discount * 100) / 100);
 }
 
-async function validateCoupon(uid, code, orderAmount, now) {
-  if (!uid) throw new Error('uid requerido');
-  if (!code) throw new Error('code requerido');
-  const coupon = await getCoupon(uid, code);
-  if (!coupon) return { valid: false, reason: 'coupon_not_found', discount: 0 };
-  if (coupon.status !== 'active') return { valid: false, reason: 'coupon_' + coupon.status, discount: 0 };
-  if (coupon.expiresAt && (now || Date.now()) > coupon.expiresAt) {
-    return { valid: false, reason: 'coupon_expired', discount: 0 };
-  }
-  if (coupon.usedCount >= coupon.maxUses) {
-    return { valid: false, reason: 'coupon_depleted', discount: 0 };
-  }
-  if (typeof orderAmount === 'number' && coupon.minOrderAmount && orderAmount < coupon.minOrderAmount) {
-    return { valid: false, reason: 'order_below_minimum', discount: 0, minOrderAmount: coupon.minOrderAmount };
-  }
-  const discount = computeDiscount(coupon, orderAmount || 0);
-  return { valid: true, discount, coupon };
+function applyRedemption(coupon) {
+  const newUses = coupon.currentUses + 1;
+  const now = Date.now();
+  const status = newUses >= coupon.maxUses ? 'exhausted' : coupon.status;
+  return {
+    ...coupon,
+    currentUses: newUses,
+    status,
+    updatedAt: now,
+  };
 }
 
-async function redeemCoupon(uid, code, phone) {
-  if (!uid) throw new Error('uid requerido');
-  if (!code) throw new Error('code requerido');
-  if (!phone) throw new Error('phone requerido');
-  const couponId = uid.slice(0, 8) + '_' + code;
-  const snap = await db()
-    .collection('owners').doc(uid)
-    .collection(COUPON_COLLECTION).doc(couponId)
-    .get();
-  if (!snap.exists) throw new Error('coupon no encontrado');
-  const coupon = snap.data();
-  const newCount = (coupon.usedCount || 0) + 1;
-  const newStatus = newCount >= coupon.maxUses ? 'depleted' : 'active';
-  await db()
-    .collection('owners').doc(uid)
-    .collection(COUPON_COLLECTION).doc(couponId)
-    .set({ usedCount: newCount, status: newStatus, updatedAt: Date.now() }, { merge: true });
-  const usageId = couponId + '_' + phone.replace(/\D/g, '').slice(-8) + '_' + Date.now();
-  await db()
-    .collection('owners').doc(uid)
-    .collection(COUPON_USAGE_COLLECTION).doc(usageId)
-    .set({ couponId, code, phone, redeemedAt: Date.now(), uid });
-  console.log('[COUPON] Canjeado uid=' + uid + ' code=' + code + ' phone=' + phone + ' count=' + newCount);
-  return { usageId, newCount, newStatus };
+function buildRedemptionRecord(uid, couponId, data) {
+  data = data || {};
+  const now = Date.now();
+  const redemptionId = uid.slice(0, 8) + '_red_' + couponId.slice(0, 8) + '_' + now.toString(36) + '_' + Math.random().toString(36).slice(2, 4);
+  return {
+    redemptionId,
+    uid,
+    couponId,
+    contactPhone: typeof data.contactPhone === 'string' ? data.contactPhone.trim() : null,
+    contactName: typeof data.contactName === 'string' ? data.contactName.trim() : null,
+    orderId: data.orderId || null,
+    orderAmount: typeof data.orderAmount === 'number' ? data.orderAmount : 0,
+    discountApplied: typeof data.discountApplied === 'number' ? data.discountApplied : 0,
+    finalAmount: typeof data.finalAmount === 'number' ? data.finalAmount : 0,
+    status: 'applied',
+    appliedAt: now,
+    usedAt: null,
+    reversedAt: null,
+    metadata: data.metadata && typeof data.metadata === 'object' ? { ...data.metadata } : {},
+    createdAt: now,
+  };
+}
+
+function buildCouponSummaryText(coupon) {
+  if (!coupon) return 'Cupon no encontrado.';
+  const lines = [];
+  const icon = coupon.status === 'active' ? '\u{1F3F7}\u{FE0F}' : coupon.status === 'expired' ? '\u{274C}' : '\u{1F4AC}';
+  lines.push(icon + ' *' + coupon.code + '* — ' + coupon.name);
+  lines.push('Tipo: ' + coupon.type + ' | Estado: ' + coupon.status);
+  if (coupon.type === 'percent') {
+    lines.push('Descuento: ' + coupon.discountPercent + '%');
+    if (coupon.maxDiscountAmount) lines.push('Maximo: ' + coupon.currency + ' ' + coupon.maxDiscountAmount);
+  } else if (coupon.type === 'fixed') {
+    lines.push('Descuento: ' + coupon.currency + ' ' + coupon.discountAmount);
+  } else {
+    lines.push('Tipo especial: ' + coupon.type);
+  }
+  if (coupon.minOrderAmount > 0) lines.push('Pedido minimo: ' + coupon.currency + ' ' + coupon.minOrderAmount);
+  lines.push('Usos: ' + coupon.currentUses + '/' + coupon.maxUses);
+  lines.push('Vence: ' + new Date(coupon.expiresAt).toISOString().slice(0, 10));
+  return lines.join('\n');
+}
+
+async function saveCoupon(uid, coupon) {
+  console.log('[COUPON] Guardando uid=' + uid + ' code=' + coupon.code + ' status=' + coupon.status);
+  try {
+    await db().collection('owners').doc(uid)
+      .collection('coupons').doc(coupon.couponId)
+      .set(coupon, { merge: false });
+    return coupon.couponId;
+  } catch (err) {
+    console.error('[COUPON] Error guardando cupon:', err.message);
+    throw err;
+  }
+}
+
+async function getCoupon(uid, couponId) {
+  try {
+    const snap = await db().collection('owners').doc(uid)
+      .collection('coupons').doc(couponId).get();
+    if (!snap.exists) return null;
+    return snap.data();
+  } catch (err) {
+    console.error('[COUPON] Error obteniendo cupon:', err.message);
+    return null;
+  }
+}
+
+async function getCouponByCode(uid, code) {
+  try {
+    const couponId = uid.slice(0, 8) + '_coup_' + code.toUpperCase();
+    return await getCoupon(uid, couponId);
+  } catch (err) {
+    console.error('[COUPON] Error buscando cupon por codigo:', err.message);
+    return null;
+  }
+}
+
+async function updateCoupon(uid, couponId, fields) {
+  const update = { ...fields, updatedAt: Date.now() };
+  try {
+    await db().collection('owners').doc(uid)
+      .collection('coupons').doc(couponId)
+      .set(update, { merge: true });
+    return couponId;
+  } catch (err) {
+    console.error('[COUPON] Error actualizando cupon:', err.message);
+    throw err;
+  }
+}
+
+async function saveRedemption(uid, redemption) {
+  console.log('[COUPON] Guardando redemption id=' + redemption.redemptionId);
+  try {
+    await db().collection('owners').doc(uid)
+      .collection('coupon_redemptions').doc(redemption.redemptionId)
+      .set(redemption, { merge: false });
+    return redemption.redemptionId;
+  } catch (err) {
+    console.error('[COUPON] Error guardando redemption:', err.message);
+    throw err;
+  }
 }
 
 async function listActiveCoupons(uid) {
-  if (!uid) throw new Error('uid requerido');
   try {
-    const snap = await db()
-      .collection('owners').doc(uid)
-      .collection(COUPON_COLLECTION)
-      .where('status', '==', 'active')
-      .get();
-    const docs = [];
-    snap.forEach(d => docs.push(d.data()));
-    return docs;
-  } catch (e) {
-    console.error('[COUPON] Error listActiveCoupons: ' + e.message);
+    const snap = await db().collection('owners').doc(uid).collection('coupons')
+      .where('status', '==', 'active').get();
+    if (snap.empty) return [];
+    const results = [];
+    snap.forEach(d => results.push(d.data()));
+    return results;
+  } catch (err) {
+    console.error('[COUPON] Error listando cupones activos:', err.message);
     return [];
   }
 }
 
-async function disableCoupon(uid, code) {
-  if (!uid) throw new Error('uid requerido');
-  if (!code) throw new Error('code requerido');
-  const couponId = uid.slice(0, 8) + '_' + code;
-  await db()
-    .collection('owners').doc(uid)
-    .collection(COUPON_COLLECTION).doc(couponId)
-    .set({ status: 'disabled', updatedAt: Date.now() }, { merge: true });
-  console.log('[COUPON] Desactivado uid=' + uid + ' code=' + code);
-  return couponId;
-}
-
-function buildCouponText(coupon) {
-  if (!coupon) return '';
-  const typeLabel = {
-    percentage: coupon.value + '% de descuento',
-    fixed: coupon.value + ' ' + coupon.currency + ' de descuento',
-    free_item: 'Item gratis (valor: ' + coupon.value + ' ' + coupon.currency + ')',
-    buy_x_get_y: 'Promo especial',
-  };
-  const label = typeLabel[coupon.type] || '';
-  const expiry = coupon.expiresAt
-    ? '\nVence: ' + new Date(coupon.expiresAt).toISOString().slice(0, 10)
-    : '';
-  const min = coupon.minOrderAmount > 0
-    ? '\nCompra minima: ' + coupon.minOrderAmount + ' ' + coupon.currency
-    : '';
-  const uses = '\nUsos: ' + (coupon.usedCount || 0) + '/' + coupon.maxUses;
-  return '\u{1F3AB} *Cupon: ' + coupon.code + '*\n' + label + min + expiry + uses;
-}
-
 module.exports = {
-  buildCouponRecord, saveCoupon, getCoupon,
-  validateCoupon, redeemCoupon, listActiveCoupons,
-  disableCoupon, computeDiscount, buildCouponText,
-  isValidType, isValidStatus, isValidCouponCode,
-  COUPON_TYPES, COUPON_STATUSES, COUPON_CURRENCIES,
-  MAX_COUPON_CODE_LENGTH, MIN_DISCOUNT_VALUE,
-  MAX_DISCOUNT_PERCENTAGE, MAX_USES_DEFAULT,
+  buildCouponRecord,
+  validateCoupon,
+  computeDiscount,
+  applyRedemption,
+  buildRedemptionRecord,
+  generateCouponCode,
+  buildCouponSummaryText,
+  saveCoupon,
+  getCoupon,
+  getCouponByCode,
+  updateCoupon,
+  saveRedemption,
+  listActiveCoupons,
+  COUPON_TYPES,
+  COUPON_STATUSES,
+  REDEMPTION_STATUSES,
+  MAX_DISCOUNT_PERCENT,
+  MAX_USES_DEFAULT,
+  EXPIRY_DAYS_DEFAULT,
   __setFirestoreForTests,
 };
