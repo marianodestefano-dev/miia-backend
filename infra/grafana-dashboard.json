@@ -1,0 +1,108 @@
+{
+  "title": "MIIA Backend \u2014 Metrics Dashboard",
+  "uid": "miia-backend-v1",
+  "version": 1,
+  "schemaVersion": 36,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Requests Total",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "miia_requests_total",
+          "legendFormat": "Total Requests"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Error Rate",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "miia_error_rate",
+          "legendFormat": "Error Rate"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      }
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "P95 Response Time (ms)",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "miia_response_time_ms{quantile=\"0.95\"}",
+          "legendFormat": "P95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 2000
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "id": 4,
+      "type": "graph",
+      "title": "Response Time P50/P95/P99",
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "miia_response_time_ms{quantile=\"0.5\"}",
+          "legendFormat": "P50"
+        },
+        {
+          "expr": "miia_response_time_ms{quantile=\"0.95\"}",
+          "legendFormat": "P95"
+        },
+        {
+          "expr": "miia_response_time_ms{quantile=\"0.99\"}",
+          "legendFormat": "P99"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      }
+    }
+  ]
+}

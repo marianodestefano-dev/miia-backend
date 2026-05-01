@@ -1,0 +1,98 @@
+openapi: 3.0.3
+info:
+  title: MIIA Backend API
+  version: 2.0.0
+  description: API para el sistema MIIA - Asistente de WhatsApp con IA
+  contact:
+    name: MIIA Support
+    email: hola@miia-app.com
+servers:
+  - url: https://miia-backend.railway.app
+    description: Production
+  - url: http://localhost:3000
+    description: Development
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded, error] }
+        uptime: { type: number }
+        timestamp: { type: string, format: date-time }
+paths:
+  /health:
+    get:
+      summary: Basic health check
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema: { : "#/components/schemas/HealthResponse" }
+  /api/health/deep:
+    get:
+      summary: Deep health check (Firestore, Baileys)
+      tags: [Health]
+      responses:
+        "200":
+          description: All subsystems healthy
+  /api/metrics:
+    get:
+      summary: Prometheus metrics endpoint
+      tags: [Observability]
+      security: []
+      responses:
+        "200":
+          description: Prometheus text format metrics
+          content:
+            text/plain:
+              schema: { type: string }
+  /api/cotizacion/paises:
+    get:
+      summary: Lista de paises disponibles para cotizacion
+      tags: [Cotizaciones]
+      responses:
+        "200":
+          description: Lista de paises
+  /api/f1/calendar:
+    get:
+      summary: Calendario F1 temporada 2025
+      tags: [F1 Dashboard]
+      responses:
+        "200":
+          description: Lista de GPs temporada 2025
+  /api/f1/standings:
+    get:
+      summary: Clasificacion pilotos F1
+      tags: [F1 Dashboard]
+      responses:
+        "200":
+          description: Tabla de posiciones
+  /api/f1/results/{gpId}:
+    get:
+      summary: Resultados de un GP
+      tags: [F1 Dashboard]
+      parameters:
+        - in: path
+          name: gpId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Resultados del GP
+        "404":
+          description: GP not found

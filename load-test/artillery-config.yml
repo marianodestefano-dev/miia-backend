@@ -1,0 +1,32 @@
+config:
+  target: http://localhost:3000
+  phases:
+    - duration: 60
+      arrivalRate: 1
+      name: Warm up
+    - duration: 540
+      arrivalRate: 10
+      rampTo: 100
+      name: Ramp up to 100 users
+  plugins:
+    expect: {}
+
+scenarios:
+  - name: Health Check
+    flow:
+      - get:
+          url: /health
+          expect:
+            - statusCode: 200
+  - name: Metrics Endpoint
+    flow:
+      - get:
+          url: /api/metrics
+          expect:
+            - statusCode: 200
+  - name: API Health Deep
+    flow:
+      - get:
+          url: /api/health/deep
+          expect:
+            - statusCode: 200

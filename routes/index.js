@@ -66,6 +66,17 @@ function mountRoutes(app, deps = {}) {
     failed.push('f1');
   }
 
+
+  // === PROMETHEUS METRICS ===
+  try {
+    const createMetricsRoutes = require('./metrics');
+    app.use('/api', createMetricsRoutes());
+    mounted.push('metrics');
+  } catch (e) {
+    console.error('[ROUTES] Error montando metrics routes:', e.message);
+    failed.push('metrics');
+  }
+
   // Resumen
   console.log(`[ROUTES] ✅ Rutas montadas: [${mounted.join(', ')}]${failed.length ? ` ❌ Fallaron: [${failed.join(', ')}]` : ''}`);
   return { mounted, failed };
