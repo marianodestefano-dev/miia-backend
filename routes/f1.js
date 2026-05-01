@@ -60,11 +60,13 @@ module.exports = function createF1Routes({ verifyToken }) {
       const snap = await db().collection(`f1_data/${season}/drivers`).get();
       const teams = {};
       snap.docs.forEach(d => {
-        const { team, team_color } = d.data();
+        const { team, team_color, points } = d.data();
         if (!teams[team]) teams[team] = { team, team_color: team_color || '#888', points: 0, drivers: [] };
+        teams[team].points += (points || 0);
         teams[team].drivers.push(d.id);
       });
-      res.json({ season, constructors: Object.values(teams) });
+      const sorted = Object.values(teams).sort((a, b) => b.points - a.points);
+      res.json({ season, constructors: sorted });
     } catch (err) {
       console.error(`[F1-ROUTES] GET standings/constructors: ${err.message}`);
       res.status(500).json({ error: err.message });
