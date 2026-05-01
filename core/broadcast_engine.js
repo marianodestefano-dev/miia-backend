@@ -1,203 +1,255 @@
 'use strict';
 
-/**
- * MIIA - Broadcast Engine (T242)
- * P3.4 ROADMAP: motor de broadcast y campañas masivas a contactos.
- * Envio programado con rate limiting, filtros por tags, estadisticas.
- */
-
-const BROADCAST_STATUSES = Object.freeze([
-  'draft', 'scheduled', 'running', 'paused', 'completed', 'cancelled', 'failed',
-]);
-
-const AUDIENCE_FILTERS = Object.freeze([
-  'all', 'leads', 'clients', 'tagged', 'inactive', 'custom',
-]);
-
-const MAX_BATCH_SIZE = 50;
-const MAX_BROADCASTS_PER_DAY = 3;
-const MIN_INTERVAL_MS = 30 * 1000;
-const DEFAULT_BATCH_DELAY_MS = 2000;
-const BROADCAST_COLLECTION = 'broadcasts';
-
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
 function db() { return _db || require('firebase-admin').firestore(); }
 
-function isValidStatus(status) {
-  return BROADCAST_STATUSES.includes(status);
+const BROADCAST_STATUSES = Object.freeze(['draft', 'scheduled', 'sending', 'sent', 'cancelled', 'failed']);
+const BROADCAST_TYPES = Object.freeze(['promotional', 'reminder', 'announcement', 'follow_up', 'reactivation', 'custom']);
+const RECIPIENT_STATUSES = Object.freeze(['pending', 'sent', 'failed', 'bounced', 'opted_out']);
+
+const MAX_RECIPIENTS_PER_BROADCAST = 1000;
+const MAX_MESSAGE_LENGTH = 4096;
+const MAX_BROADCAST_NAME_LENGTH = 120;
+const MIN_INTERVAL_BETWEEN_SENDS_MS = 1500;
+const BROADCAST_VERSION = '1.0';
+
+function isValidStatus(s) { return BROADCAST_STATUSES.includes(s); }
+function isValidType(t) { return BROADCAST_TYPES.includes(t); }
+function isValidRecipientStatus(s) { return RECIPIENT_STATUSES.includes(s); }
+
+function isValidPhone(phone) {
+  return typeof phone === 'string' && /^\+[1-9]\d{6,14}$/.test(phone.trim());
 }
 
-function isValidAudienceFilter(filter) {
-  return AUDIENCE_FILTERS.includes(filter);
+function buildBroadcastId(uid, name) {
+  const slug = (name || '').toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 20);
+  const ts = Date.now().toString(36);
+  return uid.slice(0, 8) + '_bc_' + slug + '_' + ts;
 }
 
-function buildBroadcastRecord(uid, messageTemplate, opts) {
-  if (!uid) throw new Error('uid requerido');
-  if (!messageTemplate || typeof messageTemplate !== 'string') throw new Error('messageTemplate requerido');
-  if (messageTemplate.trim().length === 0) throw new Error('messageTemplate no puede estar vacio');
-  var audienceFilter = (opts && opts.audienceFilter && isValidAudienceFilter(opts.audienceFilter))
-    ? opts.audienceFilter : 'all';
-  var broadcastId = 'bcast_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5);
+function buildBroadcastRecord(uid, data) {
+  data = data || {};
+  const now = Date.now();
+  const name = typeof data.name === 'string' ? data.name.trim().slice(0, MAX_BROADCAST_NAME_LENGTH) : '';
+  const broadcastId = data.broadcastId || buildBroadcastId(uid, name);
+  const message = typeof data.message === 'string' ? data.message.slice(0, MAX_MESSAGE_LENGTH) : '';
+  const recipients = Array.isArray(data.recipients)
+    ? [...new Set(data.recipients.filter(isValidPhone))]
+    : [];
   return {
     broadcastId,
     uid,
-    messageTemplate: messageTemplate.trim(),
-    audienceFilter,
-    tags: (opts && Array.isArray(opts.tags)) ? opts.tags : [],
-    scheduledFor: (opts && opts.scheduledFor) ? opts.scheduledFor : null,
-    batchSize: (opts && opts.batchSize) ? Math.min(opts.batchSize, MAX_BATCH_SIZE) : MAX_BATCH_SIZE,
-    batchDelayMs: (opts && opts.batchDelayMs) ? opts.batchDelayMs : DEFAULT_BATCH_DELAY_MS,
-    status: 'draft',
-    createdAt: new Date().toISOString(),
-    startedAt: null,
-    completedAt: null,
-    stats: {
-      total: 0,
-      sent: 0,
-      failed: 0,
-      skipped: 0,
-    },
-    name: (opts && opts.name) ? String(opts.name) : 'Broadcast ' + new Date().toLocaleDateString('es'),
+    version: BROADCAST_VERSION,
+    name,
+    message,
+    type: isValidType(data.type) ? data.type : 'custom',
+    status: isValidStatus(data.status) ? data.status : 'draft',
+    recipients,
+    recipientCount: recipients.length,
+    scheduledAt: typeof data.scheduledAt === 'number' ? data.scheduledAt : null,
+    sentCount: 0,
+    failedCount: 0,
+    optedOutCount: 0,
+    results: {},
+    metadata: data.metadata && typeof data.metadata === 'object' ? data.metadata : {},
+    createdAt: data.createdAt || now,
+    updatedAt: now,
+    sentAt: null,
   };
 }
 
-async function saveBroadcast(uid, record) {
-  if (!uid) throw new Error('uid requerido');
-  if (!record || !record.broadcastId) throw new Error('record invalido');
-  await db().collection('tenants').doc(uid).collection(BROADCAST_COLLECTION).doc(record.broadcastId).set(record);
-  console.log('[BROADCAST] Guardado uid=' + uid + ' id=' + record.broadcastId + ' filter=' + record.audienceFilter);
-  return record.broadcastId;
+function validateBroadcastContent(data) {
+  const errors = [];
+  if (!data.name || (typeof data.name === 'string' && data.name.trim().length === 0)) {
+    errors.push('name es requerido');
+  }
+  if (!data.message || (typeof data.message === 'string' && data.message.trim().length === 0)) {
+    errors.push('message es requerido');
+  }
+  if (data.message && data.message.length > MAX_MESSAGE_LENGTH) {
+    errors.push('message excede MAX_MESSAGE_LENGTH (' + MAX_MESSAGE_LENGTH + ')');
+  }
+  if (!data.recipients || !Array.isArray(data.recipients) || data.recipients.length === 0) {
+    errors.push('recipients no puede estar vacio');
+  }
+  if (data.recipients && data.recipients.length > MAX_RECIPIENTS_PER_BROADCAST) {
+    errors.push('recipients excede MAX_RECIPIENTS_PER_BROADCAST (' + MAX_RECIPIENTS_PER_BROADCAST + ')');
+  }
+  return { valid: errors.length === 0, errors };
 }
 
-async function updateBroadcastStatus(uid, broadcastId, status, opts) {
-  if (!uid) throw new Error('uid requerido');
-  if (!broadcastId) throw new Error('broadcastId requerido');
-  if (!isValidStatus(status)) throw new Error('status invalido: ' + status);
-  var update = { status, updatedAt: new Date().toISOString() };
-  if (status === 'running') update.startedAt = new Date().toISOString();
-  if (status === 'completed' || status === 'cancelled' || status === 'failed') {
-    update.completedAt = new Date().toISOString();
+function addRecipients(broadcast, phones) {
+  if (!Array.isArray(phones)) return broadcast;
+  const validPhones = phones.filter(isValidPhone);
+  const existing = new Set(broadcast.recipients);
+  validPhones.forEach(p => existing.add(p));
+  const newRecipients = [...existing];
+  if (newRecipients.length > MAX_RECIPIENTS_PER_BROADCAST) {
+    throw new Error('recipients excede MAX_RECIPIENTS_PER_BROADCAST (' + MAX_RECIPIENTS_PER_BROADCAST + ')');
   }
-  if (opts && opts.stats) {
-    update.stats = opts.stats;
+  return {
+    ...broadcast,
+    recipients: newRecipients,
+    recipientCount: newRecipients.length,
+    updatedAt: Date.now(),
+  };
+}
+
+function removeRecipient(broadcast, phone) {
+  const filtered = broadcast.recipients.filter(p => p !== phone);
+  return {
+    ...broadcast,
+    recipients: filtered,
+    recipientCount: filtered.length,
+    updatedAt: Date.now(),
+  };
+}
+
+function scheduleBroadcast(broadcast, scheduledAt) {
+  if (typeof scheduledAt !== 'number' || scheduledAt <= Date.now()) {
+    throw new Error('scheduledAt debe ser timestamp futuro');
   }
-  await db().collection('tenants').doc(uid).collection(BROADCAST_COLLECTION).doc(broadcastId).set(update, { merge: true });
-  console.log('[BROADCAST] Status actualizado uid=' + uid + ' id=' + broadcastId + ' status=' + status);
+  if (broadcast.status !== 'draft') {
+    throw new Error('solo se puede agendar un broadcast en estado draft');
+  }
+  return {
+    ...broadcast,
+    scheduledAt,
+    status: 'scheduled',
+    updatedAt: Date.now(),
+  };
+}
+
+function computeBroadcastStats(results) {
+  if (!results || typeof results !== 'object') {
+    return { sentCount: 0, failedCount: 0, optedOutCount: 0, pendingCount: 0, deliveryRate: 0 };
+  }
+  const values = Object.values(results);
+  const sentCount = values.filter(r => r === 'sent').length;
+  const failedCount = values.filter(r => r === 'failed' || r === 'bounced').length;
+  const optedOutCount = values.filter(r => r === 'opted_out').length;
+  const pendingCount = values.filter(r => r === 'pending').length;
+  const total = values.length;
+  const deliveryRate = total > 0 ? Math.round((sentCount / total) * 100) : 0;
+  return { sentCount, failedCount, optedOutCount, pendingCount, deliveryRate };
+}
+
+function buildBroadcastSummaryText(broadcast) {
+  if (!broadcast) return 'Broadcast no encontrado.';
+  const stats = computeBroadcastStats(broadcast.results);
+  const parts = [];
+  parts.push('\u{1F4E2} *Broadcast: ' + (broadcast.name || 'Sin nombre') + '*');
+  parts.push('Estado: ' + broadcast.status);
+  parts.push('Tipo: ' + broadcast.type);
+  parts.push('Destinatarios: ' + broadcast.recipientCount);
+  if (broadcast.scheduledAt) {
+    parts.push('Agendado: ' + new Date(broadcast.scheduledAt).toISOString().slice(0, 16).replace('T', ' '));
+  }
+  if (broadcast.status === 'sent' || broadcast.status === 'sending') {
+    parts.push('Enviados: ' + stats.sentCount + ' / Fallidos: ' + stats.failedCount);
+    parts.push('Tasa de entrega: ' + stats.deliveryRate + '%');
+  }
+  return parts.join('\n');
+}
+
+async function saveBroadcast(uid, broadcast) {
+  console.log('[BROADCAST] Guardando uid=' + uid + ' id=' + broadcast.broadcastId + ' status=' + broadcast.status);
+  try {
+    await db().collection('owners').doc(uid)
+      .collection('broadcasts').doc(broadcast.broadcastId)
+      .set(broadcast, { merge: false });
+    return broadcast.broadcastId;
+  } catch (err) {
+    console.error('[BROADCAST] Error guardando:', err.message);
+    throw err;
+  }
 }
 
 async function getBroadcast(uid, broadcastId) {
-  if (!uid) throw new Error('uid requerido');
-  if (!broadcastId) throw new Error('broadcastId requerido');
   try {
-    var snap = await db().collection('tenants').doc(uid).collection(BROADCAST_COLLECTION).doc(broadcastId).get();
-    if (!snap || !snap.exists) return null;
+    const snap = await db().collection('owners').doc(uid)
+      .collection('broadcasts').doc(broadcastId).get();
+    if (!snap.exists) return null;
     return snap.data();
-  } catch (e) {
-    console.error('[BROADCAST] Error leyendo broadcast: ' + e.message);
+  } catch (err) {
+    console.error('[BROADCAST] Error obteniendo:', err.message);
     return null;
   }
 }
 
-async function getBroadcasts(uid, opts) {
-  if (!uid) throw new Error('uid requerido');
+async function updateBroadcastStatus(uid, broadcastId, status, extraFields) {
+  if (!isValidStatus(status)) throw new Error('status invalido: ' + status);
+  const update = { status, updatedAt: Date.now(), ...(extraFields || {}) };
+  if (status === 'sent') update.sentAt = Date.now();
+  console.log('[BROADCAST] Actualizando status uid=' + uid + ' id=' + broadcastId + ' -> ' + status);
   try {
-    var snap = await db().collection('tenants').doc(uid).collection(BROADCAST_COLLECTION).get();
-    var broadcasts = [];
-    snap.forEach(function(doc) { broadcasts.push(doc.data()); });
-    if (opts && opts.status) {
-      broadcasts = broadcasts.filter(function(b) { return b.status === opts.status; });
+    await db().collection('owners').doc(uid)
+      .collection('broadcasts').doc(broadcastId)
+      .set(update, { merge: true });
+    return broadcastId;
+  } catch (err) {
+    console.error('[BROADCAST] Error actualizando status:', err.message);
+    throw err;
+  }
+}
+
+async function recordRecipientResult(uid, broadcastId, phone, result) {
+  if (!isValidRecipientStatus(result)) throw new Error('result invalido: ' + result);
+  const update = {
+    ['results.' + phone.replace(/\+/g, '_plus_')]: result,
+    updatedAt: Date.now(),
+  };
+  try {
+    await db().collection('owners').doc(uid)
+      .collection('broadcasts').doc(broadcastId)
+      .set(update, { merge: true });
+    return true;
+  } catch (err) {
+    console.error('[BROADCAST] Error guardando resultado:', err.message);
+    return false;
+  }
+}
+
+async function listBroadcasts(uid, opts) {
+  opts = opts || {};
+  try {
+    let q = db().collection('owners').doc(uid).collection('broadcasts');
+    if (opts.status && isValidStatus(opts.status)) {
+      q = q.where('status', '==', opts.status);
     }
-    broadcasts.sort(function(a, b) { return (b.createdAt || '').localeCompare(a.createdAt || ''); });
-    return broadcasts.slice(0, opts && opts.limit ? opts.limit : 50);
-  } catch (e) {
-    console.error('[BROADCAST] Error leyendo broadcasts: ' + e.message);
+    const snap = await q.get();
+    if (snap.empty) return [];
+    const results = [];
+    snap.forEach(d => results.push(d.data()));
+    results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const limit = opts.limit && opts.limit > 0 ? opts.limit : 20;
+    return results.slice(0, limit);
+  } catch (err) {
+    console.error('[BROADCAST] Error listando:', err.message);
     return [];
   }
 }
 
-async function countTodayBroadcasts(uid) {
-  if (!uid) throw new Error('uid requerido');
-  try {
-    var today = new Date().toISOString().slice(0, 10);
-    var broadcasts = await getBroadcasts(uid, { limit: 100 });
-    return broadcasts.filter(function(b) {
-      return (b.createdAt || '').startsWith(today) && b.status !== 'draft' && b.status !== 'cancelled';
-    }).length;
-  } catch (e) {
-    return 0;
-  }
-}
-
-function filterAudience(contacts, filter, tags) {
-  if (!Array.isArray(contacts)) return [];
-  if (filter === 'all') return contacts;
-  if (filter === 'leads') return contacts.filter(function(c) { return c.type === 'lead' || c.contactType === 'lead'; });
-  if (filter === 'clients') return contacts.filter(function(c) { return c.type === 'client' || c.contactType === 'client'; });
-  if (filter === 'inactive') {
-    var cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    return contacts.filter(function(c) { return !c.lastMessageAt || c.lastMessageAt < cutoff; });
-  }
-  if (filter === 'tagged' && Array.isArray(tags) && tags.length > 0) {
-    return contacts.filter(function(c) {
-      return Array.isArray(c.tags) && tags.some(function(t) { return c.tags.includes(t); });
-    });
-  }
-  return contacts;
-}
-
-function buildBatches(contacts, batchSize) {
-  if (!Array.isArray(contacts) || contacts.length === 0) return [];
-  var size = batchSize || MAX_BATCH_SIZE;
-  var batches = [];
-  for (var i = 0; i < contacts.length; i += size) {
-    batches.push(contacts.slice(i, i + size));
-  }
-  return batches;
-}
-
-function personalizeMessage(template, contact) {
-  if (!template) return '';
-  var name = contact.name || contact.phone || 'Cliente';
-  return template
-    .replace(/\{nombre\}/gi, name)
-    .replace(/\{phone\}/gi, contact.phone || '')
-    .replace(/\{negocio\}/gi, contact.businessName || '');
-}
-
-function buildBroadcastSummaryText(record) {
-  if (!record) return '';
-  var stats = record.stats || {};
-  var lines = [
-    '📢 *Broadcast: ' + (record.name || record.broadcastId) + '*',
-    'Estado: ' + record.status,
-    'Audiencia: ' + record.audienceFilter,
-    'Total: ' + (stats.total || 0) + ' | Enviados: ' + (stats.sent || 0) +
-      ' | Fallidos: ' + (stats.failed || 0) + ' | Saltados: ' + (stats.skipped || 0),
-  ];
-  if (record.completedAt) lines.push('Completado: ' + new Date(record.completedAt).toLocaleString('es'));
-  return lines.join('\n');
-}
-
 module.exports = {
   buildBroadcastRecord,
-  saveBroadcast,
-  updateBroadcastStatus,
-  getBroadcast,
-  getBroadcasts,
-  countTodayBroadcasts,
-  filterAudience,
-  buildBatches,
-  personalizeMessage,
+  validateBroadcastContent,
+  addRecipients,
+  removeRecipient,
+  scheduleBroadcast,
+  computeBroadcastStats,
   buildBroadcastSummaryText,
-  isValidStatus,
-  isValidAudienceFilter,
+  saveBroadcast,
+  getBroadcast,
+  updateBroadcastStatus,
+  recordRecipientResult,
+  listBroadcasts,
+  isValidPhone,
   BROADCAST_STATUSES,
-  AUDIENCE_FILTERS,
-  MAX_BATCH_SIZE,
-  MAX_BROADCASTS_PER_DAY,
-  MIN_INTERVAL_MS,
-  DEFAULT_BATCH_DELAY_MS,
-  BROADCAST_COLLECTION,
+  BROADCAST_TYPES,
+  RECIPIENT_STATUSES,
+  MAX_RECIPIENTS_PER_BROADCAST,
+  MAX_MESSAGE_LENGTH,
+  MIN_INTERVAL_BETWEEN_SENDS_MS,
   __setFirestoreForTests,
 };
