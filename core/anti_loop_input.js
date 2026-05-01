@@ -138,6 +138,7 @@ function shouldRegenerate(uid, phone, currentInput) {
   }
 
   if (bestSim >= SIMILARITY_THRESHOLD && bestEntry) {
+    console.log(`[ANTI-LOOP] 🔄 ${uid.slice(0,8)}... ***${phone.slice(-4)} repeat detectado — similarity: ${Math.round(bestSim*100)}% (${bestSim === 1 ? 'exact_repeat' : 'high_sim'}) | descartando regeneracion`); // T90: log critico para troubleshooting
     return {
       regenerate: false,
       reason: bestSim === 1 ? 'exact_repeat' : 'high_similarity',
