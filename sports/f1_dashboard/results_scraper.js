@@ -169,10 +169,13 @@ async function getConstructorStandings(season) {
 }
 
 // Exportar para uso en cron y endpoints
+function _resetThrottle() { _lastRequestAt = 0; }
+
 module.exports = {
   getCalendar,
   getGPResults,
   getDriverStandings,
   getConstructorStandings,
-  _throttledGet, // exportado para tests
+  _throttledGet,
+  _resetThrottle,
 };

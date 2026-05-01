@@ -35,8 +35,7 @@ describe('F1.2 — Scraper resultados post-carrera', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    // reset throttle
-    scraper._lastRequestAt = 0;
+    scraper._resetThrottle();
   });
 
   // ─── getDriverStandings ───
