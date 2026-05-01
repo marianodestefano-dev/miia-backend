@@ -1,121 +1,201 @@
 'use strict';
 
 /**
- * MIIA — Webhook Outbound (T108)
- * registerWebhook, fireWebhook (con retry 3 intentos exp backoff), deleteWebhook.
- * Firestore: owners/{uid}/webhooks/{webhookId}
- * Seguridad: envia HMAC-SHA256 en header X-MIIA-Signature.
+ * MIIA - Webhook Manager (T244)
+ * P4.1 ROADMAP: integraciones externas via webhooks entrantes y salientes.
+ * Registro, validacion HMAC, cola de reintentos, auditoria de eventos.
  */
 
 const crypto = require('crypto');
-const admin = require('firebase-admin');
+
+const WEBHOOK_DIRECTIONS = Object.freeze(['inbound', 'outbound']);
+const WEBHOOK_STATUSES = Object.freeze(['active', 'inactive', 'failed', 'suspended']);
+const WEBHOOK_EVENT_TYPES = Object.freeze([
+  'new_message', 'new_lead', 'handoff', 'broadcast_done',
+  'payment_received', 'form_submitted', 'catalog_order', 'custom',
+]);
+
+const MAX_WEBHOOKS_PER_TENANT = 10;
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 5 * 60 * 1000;
+const WEBHOOK_TIMEOUT_MS = 10 * 1000;
+const HMAC_ALGORITHM = 'sha256';
+const WEBHOOK_COLLECTION = 'webhooks';
+const WEBHOOK_LOG_COLLECTION = 'webhook_logs';
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() { return _db || admin.firestore(); }
+function db() { return _db || require('firebase-admin').firestore(); }
 
-let _fetchFn = null;
-function __setFetchForTests(fn) { _fetchFn = fn; }
-function getFetch() { return _fetchFn || fetch; }
-
-const ALLOWED_EVENTS = Object.freeze(['message_received', 'lead_classified', 'broadcast_sent', 'consent_changed']);
-const MAX_RETRIES = 3;
-const RETRY_BASE_MS = 500; // base para backoff exponencial
-
-/**
- * Registra un webhook para un owner.
- */
-async function registerWebhook(uid, { url, events, secret }) {
-  if (!uid || typeof uid !== 'string') throw new Error('uid requerido');
-  if (!url || typeof url !== 'string') throw new Error('url requerida');
-  if (!Array.isArray(events) || events.length === 0) throw new Error('events es requerido (array no vacio)');
-  const invalidEvents = events.filter(e => !ALLOWED_EVENTS.includes(e));
-  if (invalidEvents.length > 0) throw new Error(`Eventos no permitidos: ${invalidEvents.join(', ')}`);
-
-  const webhookId = `wh_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-  const payload = {
-    webhookId, uid, url, events,
-    secret: secret || null,
-    createdAt: new Date().toISOString(),
-    active: true,
-    lastFiredAt: null,
-    failCount: 0,
-  };
-
-  await db().collection('owners').doc(uid).collection('webhooks').doc(webhookId).set(payload);
-  console.log(`[WEBHOOK] Registered uid=${uid.substring(0,8)} id=${webhookId} events=${events.join(',')}`);
-  return payload;
+function isValidDirection(dir) {
+  return WEBHOOK_DIRECTIONS.includes(dir);
 }
 
-/**
- * Dispara un webhook a todos los endpoints del owner que escuchan el evento.
- * Con retry 3 veces, backoff exponencial.
- */
-async function fireWebhook(uid, event, data) {
-  if (!uid || !event) throw new Error('uid y event requeridos');
+function isValidStatus(status) {
+  return WEBHOOK_STATUSES.includes(status);
+}
 
-  // Buscar webhooks activos que escuchan este evento
-  const snap = await db().collection('owners').doc(uid).collection('webhooks').get();
-  const webhooks = snap.docs
-    .map(d => d.data())
-    .filter(w => w.active && Array.isArray(w.events) && w.events.includes(event));
+function isValidEventType(type) {
+  return WEBHOOK_EVENT_TYPES.includes(type);
+}
 
-  const results = [];
-  for (const wh of webhooks) {
-    const body = JSON.stringify({ event, uid, data, firedAt: new Date().toISOString() });
-    const headers = { 'Content-Type': 'application/json' };
-    if (wh.secret) {
-      headers['X-MIIA-Signature'] = 'sha256=' + crypto.createHmac('sha256', wh.secret).update(body).digest('hex');
-    }
+function generateWebhookSecret() {
+  return crypto.randomBytes(32).toString('hex');
+}
 
-    let success = false;
-    let lastError = null;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      try {
-        const fetchFn = getFetch();
-        const res = await fetchFn(wh.url, { method: 'POST', headers, body });
-        if (res.ok || res.status < 500) { success = true; break; }
-        lastError = `HTTP ${res.status}`;
-      } catch (e) {
-        lastError = e.message;
-      }
-      if (attempt < MAX_RETRIES - 1) {
-        await new Promise(r => setTimeout(r, RETRY_BASE_MS * Math.pow(2, attempt)));
-      }
-    }
+function signPayload(payload, secret) {
+  if (!payload || !secret) throw new Error('payload y secret requeridos');
+  var body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  return 'sha256=' + crypto.createHmac(HMAC_ALGORITHM, secret).update(body).digest('hex');
+}
 
-    const now = new Date().toISOString();
-    try {
-      await db().collection('owners').doc(uid).collection('webhooks').doc(wh.webhookId)
-        .set({ lastFiredAt: now, failCount: success ? 0 : (wh.failCount || 0) + 1 }, { merge: true });
-    } catch (e) {
-      console.warn(`[WEBHOOK] Error actualizando estado ${wh.webhookId}: ${e.message}`);
-    }
-
-    if (success) {
-      console.log(`[WEBHOOK] OK uid=${uid.substring(0,8)} event=${event} id=${wh.webhookId}`);
-    } else {
-      console.warn(`[WEBHOOK] FAILED uid=${uid.substring(0,8)} event=${event} id=${wh.webhookId} err=${lastError}`);
-    }
-    results.push({ webhookId: wh.webhookId, success, error: lastError });
+function verifySignature(payload, signature, secret) {
+  if (!payload || !signature || !secret) return false;
+  try {
+    var expected = signPayload(payload, secret);
+    var sigBuffer = Buffer.from(signature);
+    var expectedBuffer = Buffer.from(expected);
+    if (sigBuffer.length !== expectedBuffer.length) return false;
+    return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+  } catch (e) {
+    return false;
   }
-
-  return { event, firedCount: webhooks.length, results };
 }
 
-/**
- * Elimina (desactiva) un webhook.
- */
-async function deleteWebhook(uid, webhookId) {
-  if (!uid || !webhookId) throw new Error('uid y webhookId requeridos');
-  await db().collection('owners').doc(uid).collection('webhooks').doc(webhookId)
-    .set({ active: false, deletedAt: new Date().toISOString() }, { merge: true });
-  console.log(`[WEBHOOK] Deleted uid=${uid.substring(0,8)} id=${webhookId}`);
-  return { deleted: true, webhookId };
+function buildWebhookRecord(uid, url, opts) {
+  if (!uid) throw new Error('uid requerido');
+  if (!url || typeof url !== 'string') throw new Error('url requerido');
+  if (!url.startsWith('https://') && !url.startsWith('http://')) throw new Error('url debe ser http/https');
+  var direction = (opts && opts.direction && isValidDirection(opts.direction)) ? opts.direction : 'outbound';
+  var events = (opts && Array.isArray(opts.events))
+    ? opts.events.filter(isValidEventType)
+    : WEBHOOK_EVENT_TYPES.slice();
+  var webhookId = 'wh_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5);
+  return {
+    webhookId,
+    uid,
+    url,
+    direction,
+    events,
+    status: 'active',
+    secret: generateWebhookSecret(),
+    name: (opts && opts.name) ? String(opts.name) : 'Webhook ' + direction,
+    retryAttempts: 0,
+    lastTriggeredAt: null,
+    lastStatusCode: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function saveWebhook(uid, record) {
+  if (!uid) throw new Error('uid requerido');
+  if (!record || !record.webhookId) throw new Error('record invalido');
+  var existing = await getWebhooks(uid);
+  if (!record._isUpdate && existing.length >= MAX_WEBHOOKS_PER_TENANT) {
+    throw new Error('maximo de webhooks alcanzado: ' + MAX_WEBHOOKS_PER_TENANT);
+  }
+  await db().collection('tenants').doc(uid).collection(WEBHOOK_COLLECTION).doc(record.webhookId).set(record);
+  console.log('[WEBHOOK] Guardado uid=' + uid + ' id=' + record.webhookId + ' url=' + record.url);
+  return record.webhookId;
+}
+
+async function updateWebhookStatus(uid, webhookId, status, opts) {
+  if (!uid) throw new Error('uid requerido');
+  if (!webhookId) throw new Error('webhookId requerido');
+  if (!isValidStatus(status)) throw new Error('status invalido: ' + status);
+  var update = { status, updatedAt: new Date().toISOString() };
+  if (opts && typeof opts.lastStatusCode === 'number') update.lastStatusCode = opts.lastStatusCode;
+  if (opts && opts.incrementRetry) update.retryAttempts = (opts.currentRetries || 0) + 1;
+  if (opts && opts.lastTriggeredAt) update.lastTriggeredAt = opts.lastTriggeredAt;
+  await db().collection('tenants').doc(uid).collection(WEBHOOK_COLLECTION).doc(webhookId).set(update, { merge: true });
+}
+
+async function getWebhooks(uid, opts) {
+  if (!uid) throw new Error('uid requerido');
+  try {
+    var snap = await db().collection('tenants').doc(uid).collection(WEBHOOK_COLLECTION).get();
+    var webhooks = [];
+    snap.forEach(function(doc) { webhooks.push(doc.data()); });
+    if (opts && opts.status) webhooks = webhooks.filter(function(w) { return w.status === opts.status; });
+    if (opts && opts.direction) webhooks = webhooks.filter(function(w) { return w.direction === opts.direction; });
+    if (opts && opts.event) webhooks = webhooks.filter(function(w) { return w.events && w.events.includes(opts.event); });
+    return webhooks;
+  } catch (e) {
+    console.error('[WEBHOOK] Error leyendo webhooks: ' + e.message);
+    return [];
+  }
+}
+
+async function logWebhookEvent(uid, webhookId, eventType, payload, result) {
+  if (!uid) throw new Error('uid requerido');
+  if (!webhookId) throw new Error('webhookId requerido');
+  var logId = 'whlog_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5);
+  var record = {
+    logId,
+    webhookId,
+    eventType,
+    statusCode: result && result.statusCode,
+    success: !!(result && result.success),
+    durationMs: result && result.durationMs,
+    error: (result && result.error) ? String(result.error).slice(0, 200) : null,
+    payloadSize: payload ? JSON.stringify(payload).length : 0,
+    triggeredAt: new Date().toISOString(),
+  };
+  try {
+    await db().collection('tenants').doc(uid).collection(WEBHOOK_LOG_COLLECTION).doc(logId).set(record);
+    return logId;
+  } catch (e) {
+    console.error('[WEBHOOK] Error guardando log: ' + e.message);
+    return null;
+  }
+}
+
+function buildWebhookPayload(eventType, data, uid) {
+  if (!isValidEventType(eventType)) throw new Error('eventType invalido: ' + eventType);
+  return {
+    event: eventType,
+    uid,
+    timestamp: new Date().toISOString(),
+    data: data || {},
+    version: '1.0',
+  };
+}
+
+function getWebhooksForEvent(webhooks, eventType) {
+  if (!Array.isArray(webhooks)) return [];
+  return webhooks.filter(function(w) {
+    return w.status === 'active' && w.events && w.events.includes(eventType);
+  });
+}
+
+function shouldRetry(record) {
+  if (!record) return false;
+  return record.retryAttempts < MAX_RETRY_ATTEMPTS && record.status !== 'suspended';
 }
 
 module.exports = {
-  registerWebhook, fireWebhook, deleteWebhook,
-  ALLOWED_EVENTS, MAX_RETRIES,
-  __setFirestoreForTests, __setFetchForTests,
+  buildWebhookRecord,
+  saveWebhook,
+  updateWebhookStatus,
+  getWebhooks,
+  logWebhookEvent,
+  buildWebhookPayload,
+  getWebhooksForEvent,
+  shouldRetry,
+  signPayload,
+  verifySignature,
+  generateWebhookSecret,
+  isValidDirection,
+  isValidStatus,
+  isValidEventType,
+  WEBHOOK_DIRECTIONS,
+  WEBHOOK_STATUSES,
+  WEBHOOK_EVENT_TYPES,
+  MAX_WEBHOOKS_PER_TENANT,
+  MAX_RETRY_ATTEMPTS,
+  RETRY_DELAY_MS,
+  WEBHOOK_TIMEOUT_MS,
+  HMAC_ALGORITHM,
+  __setFirestoreForTests,
 };
