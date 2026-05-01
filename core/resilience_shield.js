@@ -69,8 +69,8 @@ function recordFail(system, reason, meta = {}) {
 
   // Auto-recovery: si hay un UID configurado, intentar recuperar automáticamente
   if (_activeOwnerUid && s.consecutiveFails >= 3) {
-    autoRecover(system, reason, _activeOwnerUid).catch(e =>
-      console.error(`[SHIELD] autoRecover error: ${e.message}`)
+    autoRecover(system, reason, _activeOwnerUid).catch((err) =>
+      console.error(`[SHIELD] autoRecover failed: ${err.message}`) // BUG-B: .catch() explicito
     );
   }
 
@@ -109,6 +109,7 @@ function recordSuccess(system) {
 function isCircuitOpen(system) {
   const s = healthState[system];
   if (!s || !s.circuitOpen) return false;
+  if (!s.circuitOpenedAt) return false; // BUG-A fix: evita NaN si circuitOpenedAt es null
 
   // Auto-close después del cooldown (half-open: permite re-intentar)
   if (Date.now() - s.circuitOpenedAt > CIRCUIT_BREAKER_COOLDOWN_MS) {

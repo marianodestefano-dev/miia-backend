@@ -59,11 +59,11 @@ function _getNextResetCOT() {
   const COT_OFFSET_MS = 5 * 3600_000; // UTC-5
   // Hora actual en COT
   const nowCOT = new Date(now - COT_OFFSET_MS);
-  // Siguiente 00:00 COT = inicio del dia siguiente en COT
-  const nextMidnightCOT = new Date(nowCOT);
-  nextMidnightCOT.setUTCHours(24, 0, 0, 0); // medianoche siguiente en "COT time"
-  // Convertir de vuelta a UTC
-  return nextMidnightCOT.getTime() + COT_OFFSET_MS;
+  // BUG-C fix: evitar setUTCHours(24) (undefined behavior). Avanzar 1 dia en frame COT + midnight.
+  const d = new Date(now - COT_OFFSET_MS); // frame COT
+  d.setUTCDate(d.getUTCDate() + 1);        // dia siguiente en frame COT
+  d.setUTCHours(0, 0, 0, 0);               // midnight en frame COT
+  return d.getTime() + COT_OFFSET_MS;       // convertir de vuelta a UTC real
 }
 
 /**
