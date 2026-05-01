@@ -91,29 +91,13 @@ const V2_OWNER_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
 // quedan disabled hasta C-410.c con firma textual.
 const safetyFilter = require('../core/safety_filter');
 const consentRoutes = require('../routes/consent');
-
-// ═══════════════════════════════════════════════════════════════
-// C-434 — Helpers anti-bug Planta Baja (§6.19 cache TTL + §6.21 input loop)
-// ═══════════════════════════════════════════════════════════════
-
-// §A — Bug §6.19: cache contactTypes con TTL 30 días.
-// Doctrina: protecciones nuevas NUNCA bypasables por caché pre-existente.
-// Entries sin meta (legacy / migration) se tratan como stale → re-classify
-// en su próximo touch. Entries con timestamp se invalidan tras 30 días.
-const CONTACT_TYPE_TTL_DAYS = 30;
-const CONTACT_TYPE_TTL_MS = CONTACT_TYPE_TTL_DAYS * 24 * 60 * 60 * 1000;
-
-function isContactTypeStale(ctx, phone) {
-  if (!ctx.contactTypesMeta) return true; // Sin meta inicializada → forzar re-classify
-  const ts = ctx.contactTypesMeta[phone];
-  if (!ts || typeof ts !== 'number') return true; // Sin timestamp legacy → re-classify
-  return (Date.now() - ts) > CONTACT_TYPE_TTL_MS;
-}
-
-function recordContactTypeFresh(ctx, phone) {
-  if (!ctx.contactTypesMeta) ctx.contactTypesMeta = {};
-  ctx.contactTypesMeta[phone] = Date.now();
-}
+// T79 — §6.19 cache TTL extraído a módulo reutilizable (C-434 §A inline → lib)
+const {
+  TTL_DAYS: CONTACT_TYPE_TTL_DAYS,
+  TTL_MS: CONTACT_TYPE_TTL_MS,
+  isContactTypeStale,
+  recordContactTypeFresh,
+} = require('../lib/contact_classification_cache');
 
 // §B — Bug §6.21: anti-loop por similarity input contacto.
 // Buffer últimos 5 inputs por phone. Si nuevo input == identico O Jaccard
