@@ -1,97 +1,161 @@
 'use strict';
 
 /**
- * MIIA — Language Detector (T129)
- * Detecta idioma de un mensaje (es/en/pt) con score de confianza.
- * Usa diccionarios de tokens frecuentes por idioma.
+ * MIIA - Language Detector (T177)
+ * Detecta idioma del lead y permite que MIIA responda en ese idioma.
  */
 
-const LANG_TOKENS = Object.freeze({
-  es: new Set([
-    'hola','buenos','gracias','por','que','como','para','con','una','los',
-    'las','del','este','esta','esto','quiero','puedo','tiene','tengo','hacer',
-    'donde','cuando','cuanto','cual','todo','algo','bien','muy','tambien','pero',
-    'si','no','ya','mas','hay','ser','estar','tener','me','te','le','se','su',
-    'mi','tu','el','ella','nosotros','ellos','vamos','favor','necesito','informacion',
-  ]),
-  en: new Set([
-    'hello','hi','thanks','thank','you','the','and','for','with','that',
-    'this','what','how','when','where','which','have','has','can','could',
-    'would','should','will','want','need','good','great','please','more','also',
-    'but','yes','no','already','there','some','any','get','got','i','we','they',
-    'my','your','our','it','is','are','was','were','do','does','did','be','been',
-  ]),
-  pt: new Set([
-    'ola','bom','dia','tarde','noite','obrigado','obrigada','por','que','como',
-    'para','com','uma','os','as','do','da','este','esta','isso','quero','posso',
-    'tem','tenho','fazer','onde','quando','quanto','qual','tudo','algo','bem',
-    'muito','tambem','mas','sim','nao','ja','mais','ha','voce','eu','nos','eles',
-    'meu','seu','nosso','preciso','informacao','favor',
-  ]),
+let _db = null;
+function __setFirestoreForTests(fs) { _db = fs; }
+function db() { return _db || require('firebase-admin').firestore(); }
+
+const SUPPORTED_LANGUAGES = Object.freeze(['es', 'en', 'pt', 'fr', 'de', 'it']);
+const DEFAULT_LANGUAGE = 'es';
+const CONFIDENCE_THRESHOLD = 0.4;
+const MIN_WORDS_FOR_DETECTION = 3;
+
+const LANGUAGE_PATTERNS = Object.freeze({
+  es: {
+    words: ['hola','gracias','por','favor','como','estas','buenas','dias','tardes','noches','quiero','necesito','puedo','tiene','precio','cuanto','cuando','donde','ayuda','bien','mal','si','no','que','hay','para'],
+    chars: [],
+  },
+  en: {
+    words: ['hello','hi','thanks','please','how','are','you','good','morning','evening','want','need','can','have','price','when','where','help','yes','no','what','there','for','the','is'],
+    chars: [],
+  },
+  pt: {
+    words: ['ola','obrigado','bom','dia','tarde','noite','quero','preciso','posso','tem','preco','quanto','quando','onde','ajuda','sim','voce'],
+    chars: ['ã', 'õ', 'ç'],
+  },
+  fr: {
+    words: ['bonjour','merci','comment','allez','bonne','journee','veux','besoin','puis','avez','prix','combien','quand','aide','oui','non','quoi','pour','le','la','est'],
+    chars: ['é', 'è', 'ê', 'à', 'â', 'ç'],
+  },
+  de: {
+    words: ['hallo','danke','bitte','wie','geht','guten','morgen','abend','brauche','kann','haben','preis','wieviel','wann','wo','hilfe','ja','nein','was'],
+    chars: ['ä', 'ö', 'ü', 'ß'],
+  },
+  it: {
+    words: ['ciao','grazie','per','favore','come','stai','buongiorno','sera','voglio','bisogno','posso','avete','prezzo','quanto','quando','dove','aiuto','si','no','cosa'],
+    chars: ['à', 'è', 'ì', 'ò', 'ù'],
+  },
 });
 
-const SUPPORTED_LANGS = Object.freeze(Object.keys(LANG_TOKENS));
-const MIN_TOKENS_FOR_DETECTION = 2;
-
-/**
- * Tokeniza un texto en palabras lowercase normalizadas.
- */
-function tokenize(text) {
-  return text.toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove accents
-    .replace(/[^a-z\s]/g, ' ')
-    .split(/\s+/)
-    .filter(t => t.length >= 2);
-}
-
-/**
- * Detecta el idioma de un texto.
- * @param {string} text
- * @returns {{ lang: string|null, confidence: number, scores: object }}
- */
 function detectLanguage(text) {
-  if (!text || typeof text !== 'string' || text.trim().length === 0) {
-    return { lang: null, confidence: 0, scores: {} };
-  }
+  if (!text || typeof text !== 'string') throw new Error('text requerido');
 
-  const tokens = tokenize(text);
-  if (tokens.length < MIN_TOKENS_FOR_DETECTION) {
-    return { lang: null, confidence: 0, scores: {} };
+  const lower = text.toLowerCase().trim();
+  const words = lower.split(/\s+/);
+
+  if (words.length < MIN_WORDS_FOR_DETECTION) {
+    return { language: DEFAULT_LANGUAGE, confidence: 0, scores: {} };
   }
 
   const scores = {};
-  for (const [lang, dict] of Object.entries(LANG_TOKENS)) {
-    const matches = tokens.filter(t => dict.has(t)).length;
-    scores[lang] = matches / tokens.length;
+
+  for (const [lang, patterns] of Object.entries(LANGUAGE_PATTERNS)) {
+    let score = 0;
+    for (const word of patterns.words) {
+      if (words.includes(word)) score += 1;
+      else if (lower.includes(' ' + word + ' ')) score += 0.5;
+    }
+    for (const ch of patterns.chars) {
+      if (lower.includes(ch)) score += 2;
+    }
+    if (score > 0) scores[lang] = Math.round(score * 10) / 10;
+  }
+
+  if (Object.keys(scores).length === 0) {
+    return { language: DEFAULT_LANGUAGE, confidence: 0, scores: {} };
   }
 
   const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  const [topLang, topScore] = sorted[0];
-  const [, secondScore] = sorted[1] || [null, 0];
+  const topLang = sorted[0][0];
+  const topScore = sorted[0][1];
+  const totalScore = sorted.reduce((s, [, v]) => s + v, 0);
+  const confidence = Math.min(topScore / Math.max(totalScore, 1), 1);
 
-  if (topScore === 0) {
-    return { lang: null, confidence: 0, scores };
+  if (confidence < CONFIDENCE_THRESHOLD) {
+    return { language: DEFAULT_LANGUAGE, confidence, scores: Object.fromEntries(sorted) };
   }
 
-  // Confianza: diferencia entre el mejor y el segundo
-  const confidence = Math.min(1, topScore + (topScore - secondScore));
-  return { lang: topLang, confidence: parseFloat(confidence.toFixed(3)), scores };
+  return {
+    language: topLang,
+    confidence: Math.round(confidence * 100) / 100,
+    scores: Object.fromEntries(sorted),
+  };
 }
 
-/**
- * Detecta idioma de múltiples textos y retorna el dominante.
- */
-function detectDominantLanguage(texts) {
-  if (!Array.isArray(texts) || texts.length === 0) return { lang: null, confidence: 0 };
-  const counts = {};
-  for (const t of texts) {
-    const { lang } = detectLanguage(t);
-    if (lang) counts[lang] = (counts[lang] || 0) + 1;
+async function saveContactLanguage(uid, phone, language) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+  if (!language) throw new Error('language requerido');
+  if (!SUPPORTED_LANGUAGES.includes(language)) throw new Error('idioma no soportado: ' + language);
+
+  try {
+    await db()
+      .collection('tenants').doc(uid)
+      .collection('contact_languages').doc(phone)
+      .set({ uid, phone, language, updatedAt: new Date().toISOString() }, { merge: true });
+    console.log('[LANG] idioma guardado uid=' + uid.substring(0, 8) + ' lang=' + language);
+  } catch (e) {
+    console.error('[LANG] Error guardando idioma: ' + e.message);
+    throw e;
   }
-  if (Object.keys(counts).length === 0) return { lang: null, confidence: 0 };
-  const [dominant] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-  const confidence = counts[dominant] / texts.length;
-  return { lang: dominant, confidence: parseFloat(confidence.toFixed(3)) };
 }
 
-module.exports = { detectLanguage, detectDominantLanguage, tokenize, LANG_TOKENS, SUPPORTED_LANGS };
+async function getContactLanguage(uid, phone) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+  try {
+    const snap = await db()
+      .collection('tenants').doc(uid)
+      .collection('contact_languages').doc(phone)
+      .get();
+    if (!snap.exists) return DEFAULT_LANGUAGE;
+    return snap.data().language || DEFAULT_LANGUAGE;
+  } catch (e) {
+    console.error('[LANG] Error leyendo idioma: ' + e.message);
+    return DEFAULT_LANGUAGE;
+  }
+}
+
+async function detectAndSaveLanguage(uid, phone, message) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+  if (!message || typeof message !== 'string') throw new Error('message requerido');
+
+  const { language, confidence } = detectLanguage(message);
+  let saved = false;
+
+  if (confidence >= CONFIDENCE_THRESHOLD && SUPPORTED_LANGUAGES.includes(language)) {
+    try {
+      await saveContactLanguage(uid, phone, language);
+      saved = true;
+    } catch (e) {
+      console.error('[LANG] Error guardando idioma detectado: ' + e.message);
+    }
+  }
+
+  return { language, confidence, saved };
+}
+
+async function getResponseLanguage(uid, phone, currentMessage) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+
+  if (currentMessage) {
+    const { language, confidence } = detectLanguage(currentMessage);
+    if (confidence >= CONFIDENCE_THRESHOLD) return language;
+  }
+
+  return getContactLanguage(uid, phone);
+}
+
+module.exports = {
+  detectLanguage, saveContactLanguage, getContactLanguage,
+  detectAndSaveLanguage, getResponseLanguage,
+  SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE,
+  CONFIDENCE_THRESHOLD, MIN_WORDS_FOR_DETECTION,
+  __setFirestoreForTests,
+};
