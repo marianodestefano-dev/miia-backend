@@ -1,202 +1,238 @@
 'use strict';
 
-/**
- * MIIA - Analytics Engine (T248)
- * P4.4 ROADMAP: motor de analiticas y metricas del negocio para el owner.
- * Genera reportes de conversaciones, leads, respuesta, conversion y actividad.
- */
-
-const METRIC_TYPES = Object.freeze([
-  'messages_total', 'leads_new', 'leads_converted', 'response_time_avg',
-  'handoffs_total', 'broadcasts_sent', 'spam_blocked', 'active_contacts',
-  'revenue_total', 'sessions_daily',
-]);
-
-const REPORT_PERIODS = Object.freeze(['daily', 'weekly', 'monthly', 'custom']);
-
-const ANALYTICS_COLLECTION = 'analytics';
-const MAX_DATAPOINTS = 90;
-const CONVERSION_RATE_THRESHOLD = 0.05;
-
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
 function db() { return _db || require('firebase-admin').firestore(); }
 
-function isValidMetric(metric) {
-  return METRIC_TYPES.includes(metric);
+const METRIC_TYPES = Object.freeze([
+  'messages_received', 'messages_sent', 'leads_created', 'leads_converted',
+  'appointments_booked', 'appointments_cancelled', 'payments_received',
+  'coupons_redeemed', 'broadcasts_sent', 'follow_ups_sent',
+  'response_time_avg', 'conversation_duration_avg', 'revenue_total',
+]);
+
+const REPORT_TYPES = Object.freeze(['daily', 'weekly', 'monthly', 'custom']);
+const AGGREGATION_PERIODS = Object.freeze(['hour', 'day', 'week', 'month']);
+
+const MAX_DATA_POINTS = 1000;
+const MAX_REPORT_TITLE_LENGTH = 120;
+
+function isValidMetric(m) { return METRIC_TYPES.includes(m); }
+function isValidReportType(t) { return REPORT_TYPES.includes(t); }
+function isValidPeriod(p) { return AGGREGATION_PERIODS.includes(p); }
+
+function buildMetricId(uid, metricType, date) {
+  const d = date || new Date().toISOString().slice(0, 10);
+  return uid.slice(0, 8) + '_metric_' + metricType.replace(/_/g, '').slice(0, 10) + '_' + d.replace(/-/g, '');
 }
 
-function isValidPeriod(period) {
-  return REPORT_PERIODS.includes(period);
-}
-
-function buildMetricRecord(uid, metric, value, opts) {
-  if (!uid) throw new Error('uid requerido');
-  if (!isValidMetric(metric)) throw new Error('metric invalido: ' + metric);
-  if (typeof value !== 'number') throw new Error('value debe ser numero');
-  var date = (opts && opts.date) ? opts.date : new Date().toISOString().slice(0, 10);
-  var recordId = uid.slice(0, 8) + '_' + metric + '_' + date;
+function buildMetricRecord(uid, metricType, value, data) {
+  data = data || {};
+  if (!isValidMetric(metricType)) throw new Error('metricType invalido: ' + metricType);
+  if (typeof value !== 'number' || !isFinite(value)) throw new Error('value debe ser numero');
+  const date = data.date || new Date().toISOString().slice(0, 10);
   return {
-    recordId,
+    metricId: data.metricId || buildMetricId(uid, metricType, date),
     uid,
-    metric,
+    metricType,
     value,
     date,
-    period: (opts && opts.period && isValidPeriod(opts.period)) ? opts.period : 'daily',
-    metadata: (opts && opts.metadata) ? opts.metadata : {},
-    createdAt: new Date().toISOString(),
+    period: isValidPeriod(data.period) ? data.period : 'day',
+    tags: Array.isArray(data.tags) ? data.tags.filter(t => typeof t === 'string').slice(0, 10) : [],
+    metadata: data.metadata && typeof data.metadata === 'object' ? data.metadata : {},
+    createdAt: data.createdAt || Date.now(),
   };
 }
 
-async function saveMetric(uid, record) {
-  if (!uid) throw new Error('uid requerido');
-  if (!record || !record.recordId) throw new Error('record invalido');
-  await db().collection('tenants').doc(uid).collection(ANALYTICS_COLLECTION).doc(record.recordId).set(record, { merge: true });
-  console.log('[ANALYTICS] Guardado uid=' + uid + ' metric=' + record.metric + ' value=' + record.value);
-  return record.recordId;
+function buildReportId(uid, reportType, date) {
+  const d = date || new Date().toISOString().slice(0, 10);
+  return uid.slice(0, 8) + '_report_' + reportType + '_' + d.replace(/-/g, '');
 }
 
-async function incrementMetric(uid, metric, amount, opts) {
-  if (!uid) throw new Error('uid requerido');
-  if (!isValidMetric(metric)) throw new Error('metric invalido: ' + metric);
-  var inc = (typeof amount === 'number') ? amount : 1;
-  var date = (opts && opts.date) ? opts.date : new Date().toISOString().slice(0, 10);
-  var recordId = uid.slice(0, 8) + '_' + metric + '_' + date;
+function buildReportRecord(uid, reportType, data) {
+  data = data || {};
+  if (!isValidReportType(reportType)) throw new Error('reportType invalido: ' + reportType);
+  const now = Date.now();
+  const date = data.date || new Date().toISOString().slice(0, 10);
+  return {
+    reportId: data.reportId || buildReportId(uid, reportType, date),
+    uid,
+    reportType,
+    title: typeof data.title === 'string' ? data.title.trim().slice(0, MAX_REPORT_TITLE_LENGTH) : 'Reporte ' + reportType,
+    date,
+    fromDate: data.fromDate || null,
+    toDate: data.toDate || null,
+    metrics: data.metrics && typeof data.metrics === 'object' ? data.metrics : {},
+    summary: data.summary && typeof data.summary === 'object' ? data.summary : {},
+    insights: Array.isArray(data.insights) ? data.insights.slice(0, 20) : [],
+    generatedAt: now,
+    createdAt: data.createdAt || now,
+  };
+}
+
+function aggregateMetrics(metrics, opts) {
+  opts = opts || {};
+  if (!Array.isArray(metrics) || metrics.length === 0) {
+    return { sum: 0, avg: 0, min: 0, max: 0, count: 0, byType: {} };
+  }
+  const filtered = opts.type ? metrics.filter(m => m.metricType === opts.type) : metrics;
+  const values = filtered.map(m => m.value);
+  const sum = values.reduce((a, b) => a + b, 0);
+  const avg = values.length > 0 ? sum / values.length : 0;
+  const min = values.length > 0 ? Math.min(...values) : 0;
+  const max = values.length > 0 ? Math.max(...values) : 0;
+  const byType = {};
+  metrics.forEach(m => {
+    if (!byType[m.metricType]) byType[m.metricType] = { sum: 0, count: 0, avg: 0 };
+    byType[m.metricType].sum += m.value;
+    byType[m.metricType].count += 1;
+  });
+  Object.keys(byType).forEach(t => {
+    byType[t].avg = byType[t].sum / byType[t].count;
+  });
+  return { sum, avg: Math.round(avg * 100) / 100, min, max, count: filtered.length, byType };
+}
+
+function computeKPIs(data) {
+  data = data || {};
+  const leads = data.leads || 0;
+  const converted = data.converted || 0;
+  const revenue = data.revenue || 0;
+  const messages = data.messages || 0;
+  const appointments = data.appointments || 0;
+  const conversionRate = leads > 0 ? Math.round((converted / leads) * 100) : 0;
+  const revenuePerLead = leads > 0 ? Math.round(revenue / leads) : 0;
+  const revenuePerConversion = converted > 0 ? Math.round(revenue / converted) : 0;
+  const messagesPerLead = leads > 0 ? Math.round(messages / leads) : 0;
+  const appointmentsPerLead = leads > 0 ? Math.round((appointments / leads) * 100) / 100 : 0;
+  return {
+    leads, converted, revenue, messages, appointments,
+    conversionRate, revenuePerLead, revenuePerConversion,
+    messagesPerLead, appointmentsPerLead,
+  };
+}
+
+function buildInsights(kpis, thresholds) {
+  thresholds = thresholds || {};
+  const insights = [];
+  const minConvRate = thresholds.minConversionRate || 10;
+  const minRevPerLead = thresholds.minRevenuePerLead || 100;
+  if (kpis.conversionRate >= 30) {
+    insights.push({ type: 'positive', message: 'Tasa de conversion excelente (' + kpis.conversionRate + '%)' });
+  } else if (kpis.conversionRate >= minConvRate) {
+    insights.push({ type: 'neutral', message: 'Tasa de conversion aceptable (' + kpis.conversionRate + '%)' });
+  } else {
+    insights.push({ type: 'warning', message: 'Tasa de conversion baja (' + kpis.conversionRate + '%) — meta: ' + minConvRate + '%' });
+  }
+  if (kpis.revenuePerLead >= minRevPerLead) {
+    insights.push({ type: 'positive', message: 'Revenue por lead saludable: ' + kpis.revenuePerLead });
+  } else if (kpis.revenuePerLead > 0) {
+    insights.push({ type: 'warning', message: 'Revenue por lead bajo: ' + kpis.revenuePerLead + ' (meta: ' + minRevPerLead + ')' });
+  }
+  if (kpis.messagesPerLead > 20) {
+    insights.push({ type: 'warning', message: 'Alto numero de mensajes por lead: ' + kpis.messagesPerLead + ' (puede indicar friccion en el proceso)' });
+  }
+  return insights;
+}
+
+async function saveMetric(uid, metric) {
+  console.log('[ANALYTICS] Guardando metrica uid=' + uid + ' type=' + metric.metricType + ' value=' + metric.value);
   try {
-    var snap = await db().collection('tenants').doc(uid).collection(ANALYTICS_COLLECTION).doc(recordId).get();
-    var current = (snap && snap.exists && snap.data()) ? (snap.data().value || 0) : 0;
-    var record = buildMetricRecord(uid, metric, current + inc, opts);
-    await saveMetric(uid, record);
-    return record;
-  } catch (e) {
-    console.error('[ANALYTICS] Error incrementando: ' + e.message);
+    await db().collection('owners').doc(uid)
+      .collection('metrics').doc(metric.metricId)
+      .set(metric, { merge: false });
+    return metric.metricId;
+  } catch (err) {
+    console.error('[ANALYTICS] Error guardando metrica:', err.message);
+    throw err;
+  }
+}
+
+async function saveReport(uid, report) {
+  console.log('[ANALYTICS] Guardando reporte uid=' + uid + ' type=' + report.reportType + ' date=' + report.date);
+  try {
+    await db().collection('owners').doc(uid)
+      .collection('reports').doc(report.reportId)
+      .set(report, { merge: false });
+    return report.reportId;
+  } catch (err) {
+    console.error('[ANALYTICS] Error guardando reporte:', err.message);
+    throw err;
+  }
+}
+
+async function getReport(uid, reportId) {
+  try {
+    const snap = await db().collection('owners').doc(uid)
+      .collection('reports').doc(reportId).get();
+    if (!snap.exists) return null;
+    return snap.data();
+  } catch (err) {
+    console.error('[ANALYTICS] Error obteniendo reporte:', err.message);
     return null;
   }
 }
 
-async function getMetrics(uid, opts) {
-  if (!uid) throw new Error('uid requerido');
+async function listMetrics(uid, opts) {
+  opts = opts || {};
   try {
-    var snap = await db().collection('tenants').doc(uid).collection(ANALYTICS_COLLECTION).get();
-    var records = [];
-    snap.forEach(function(doc) { records.push(doc.data()); });
-    if (opts && opts.metric) records = records.filter(function(r) { return r.metric === opts.metric; });
-    if (opts && opts.period) records = records.filter(function(r) { return r.period === opts.period; });
-    if (opts && opts.dateFrom) records = records.filter(function(r) { return r.date >= opts.dateFrom; });
-    if (opts && opts.dateTo) records = records.filter(function(r) { return r.date <= opts.dateTo; });
-    records.sort(function(a, b) { return a.date.localeCompare(b.date); });
-    return records.slice(0, MAX_DATAPOINTS);
-  } catch (e) {
-    console.error('[ANALYTICS] Error leyendo metricas: ' + e.message);
+    let q = db().collection('owners').doc(uid).collection('metrics');
+    if (opts.metricType && isValidMetric(opts.metricType)) {
+      q = q.where('metricType', '==', opts.metricType);
+    }
+    const snap = await q.get();
+    if (snap.empty) return [];
+    const results = [];
+    snap.forEach(d => {
+      const rec = d.data();
+      if (opts.fromDate && rec.date < opts.fromDate) return;
+      if (opts.toDate && rec.date > opts.toDate) return;
+      results.push(rec);
+    });
+    results.sort((a, b) => (b.date > a.date ? 1 : -1));
+    return results.slice(0, opts.limit || MAX_DATA_POINTS);
+  } catch (err) {
+    console.error('[ANALYTICS] Error listando metricas:', err.message);
     return [];
   }
 }
 
-function computeConversionRate(leadsNew, leadsConverted) {
-  if (!leadsNew || leadsNew === 0) return 0;
-  return Math.round((leadsConverted / leadsNew) * 100) / 100;
-}
-
-function computeResponseTimeAvg(responseTimes) {
-  if (!Array.isArray(responseTimes) || responseTimes.length === 0) return 0;
-  var valid = responseTimes.filter(function(t) { return typeof t === 'number' && t >= 0; });
-  if (valid.length === 0) return 0;
-  return Math.round(valid.reduce(function(s, t) { return s + t; }, 0) / valid.length);
-}
-
-function buildDailyReport(uid, metrics, date) {
-  if (!uid) throw new Error('uid requerido');
-  var byMetric = {};
-  (metrics || []).forEach(function(r) {
-    if (r.date === date) byMetric[r.metric] = r.value;
-  });
-  return {
-    uid,
-    date: date || new Date().toISOString().slice(0, 10),
-    period: 'daily',
-    metrics: byMetric,
-    conversionRate: computeConversionRate(byMetric.leads_new || 0, byMetric.leads_converted || 0),
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-function buildWeeklyReport(uid, metrics, weekStart) {
-  if (!uid) throw new Error('uid requerido');
-  var start = weekStart || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  var inRange = (metrics || []).filter(function(r) { return r.date >= start; });
-  var totals = {};
-  METRIC_TYPES.forEach(function(m) { totals[m] = 0; });
-  inRange.forEach(function(r) {
-    if (METRIC_TYPES.includes(r.metric)) totals[r.metric] += r.value;
-  });
-  return {
-    uid,
-    weekStart: start,
-    period: 'weekly',
-    totals,
-    daysWithData: new Set(inRange.map(function(r) { return r.date; })).size,
-    conversionRate: computeConversionRate(totals.leads_new, totals.leads_converted),
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-function buildReportSummaryText(report) {
-  if (!report) return '';
-  var isWeekly = report.period === 'weekly';
-  var data = isWeekly ? report.totals : report.metrics;
-  if (!data) return '';
-  var lines = [
-    '📈 *Reporte ' + (isWeekly ? 'Semanal' : 'Diario') + '* — ' + (report.date || report.weekStart),
-    'Mensajes: ' + (data.messages_total || 0),
-    'Leads nuevos: ' + (data.leads_new || 0),
-    'Leads convertidos: ' + (data.leads_converted || 0),
-    'Tasa conversión: ' + (Math.round((report.conversionRate || 0) * 100)) + '%',
-  ];
-  if (data.handoffs_total) lines.push('Handoffs: ' + data.handoffs_total);
-  if (data.broadcasts_sent) lines.push('Broadcasts: ' + data.broadcasts_sent);
-  if (data.spam_blocked) lines.push('Spam bloqueado: ' + data.spam_blocked);
-  return lines.join('\n');
-}
-
-function detectAnomalies(currentMetrics, historicalAvg, thresholds) {
-  if (!currentMetrics || !historicalAvg) return [];
-  var anomalies = [];
-  var thresh = thresholds || {};
-  Object.keys(currentMetrics).forEach(function(metric) {
-    var current = currentMetrics[metric] || 0;
-    var avg = historicalAvg[metric] || 0;
-    if (avg === 0) return;
-    var deviation = Math.abs(current - avg) / avg;
-    var threshold = thresh[metric] || 2.0;
-    if (deviation > threshold) {
-      anomalies.push({
-        metric,
-        current,
-        average: avg,
-        deviation: Math.round(deviation * 100) / 100,
-        direction: current > avg ? 'spike' : 'drop',
-      });
-    }
-  });
-  return anomalies;
+function buildReportText(report) {
+  if (!report) return 'Reporte no encontrado.';
+  const parts = [];
+  parts.push('\u{1F4C8} *' + report.title + '*');
+  parts.push('Tipo: ' + report.reportType + ' | Fecha: ' + report.date);
+  if (report.summary) {
+    const s = report.summary;
+    if (s.leads !== undefined) parts.push('Leads: ' + s.leads + ' | Convertidos: ' + (s.converted || 0));
+    if (s.revenue !== undefined) parts.push('Revenue: ' + s.revenue + ' ' + (s.currency || 'ARS'));
+    if (s.conversionRate !== undefined) parts.push('Conversion: ' + s.conversionRate + '%');
+  }
+  if (report.insights && report.insights.length > 0) {
+    parts.push('');
+    parts.push('\u{1F4A1} Insights:');
+    report.insights.slice(0, 3).forEach(i => {
+      const icon = i.type === 'positive' ? '\u{2705}' : i.type === 'warning' ? '\u{26A0}\uFE0F' : '\u{1F538}';
+      parts.push(icon + ' ' + i.message);
+    });
+  }
+  return parts.join('\n');
 }
 
 module.exports = {
   buildMetricRecord,
+  buildReportRecord,
+  aggregateMetrics,
+  computeKPIs,
+  buildInsights,
   saveMetric,
-  incrementMetric,
-  getMetrics,
-  computeConversionRate,
-  computeResponseTimeAvg,
-  buildDailyReport,
-  buildWeeklyReport,
-  buildReportSummaryText,
-  detectAnomalies,
-  isValidMetric,
-  isValidPeriod,
+  saveReport,
+  getReport,
+  listMetrics,
+  buildReportText,
   METRIC_TYPES,
-  REPORT_PERIODS,
-  MAX_DATAPOINTS,
-  CONVERSION_RATE_THRESHOLD,
+  REPORT_TYPES,
+  AGGREGATION_PERIODS,
+  MAX_DATA_POINTS,
   __setFirestoreForTests,
 };
