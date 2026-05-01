@@ -183,13 +183,13 @@ describe('T43 — cobertura adicional sanitizePhone edge cases', () => {
     });
   });
 
-  test('phone sin + (solo dígitos) → no sanitiza (E.164 requiere +)', () => {
+  test('phone sin + (solo dígitos) → T86 sanitizado con patron standalone 10-15d', () => {
     withEnv(PROD, () => {
-      // Sin + no es E.164 → sanitizePhone no lo toca (pero JID WA sí si tiene @)
+      // T86: patron standalone \d{10,15} ahora cubre basePhone/rawPhone sin prefijo
       const out = sanitizer.sanitize('número: 573054169969 llamar');
-      // Nota: no tiene + ni @, así que E.164 regex no matchea.
-      // Si el WA JID regex tampoco matchea (falta @) → preservado.
-      expect(out).toBe('número: 573054169969 llamar');
+      // 573054169969 tiene 12 dígitos → masked por T86 standalone pattern
+      expect(out).toContain('***9969');
+      expect(out).not.toContain('573054169969');
     });
   });
 

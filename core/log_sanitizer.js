@@ -73,6 +73,9 @@ function sanitizePhone(str) {
     const last4 = digits.slice(-4);
     return `***${last4}${domain}`;
   });
+  // T86: standalone numeric phone (basePhone/rawPhone sin prefijo ni sufijo JID)
+  // Rango 10-15 digitos: cubre phones reales, evita codigos cortos (status 3d, puertos 4-5d)
+  out = out.replace(/\b(\d{10,15})\b/g, (match) => `***${match.slice(-4)}`);
   return out;
 }
 

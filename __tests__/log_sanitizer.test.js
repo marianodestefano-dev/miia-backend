@@ -459,3 +459,47 @@ describe('log_sanitizer T10 — maskUid() (C-464)', () => {
     });
   });
 });
+
+describe('log_sanitizer T86 — sanitizePhone standalone digits', () => {
+  const { sanitizePhone } = require('../core/log_sanitizer');
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.MIIA_DEBUG_VERBOSE;
+  });
+  afterEach(() => { delete process.env.NODE_ENV; });
+
+  test('basePhone 12 digits standalone → masked ***NNNN', () => {
+    const r = sanitizePhone('573054169969');
+    expect(r).toBe('***9969');
+  });
+
+  test('basePhone in log string → masked preservando contexto', () => {
+    const r = sanitizePhone('[TMH:abc] Contacto 573054169969 bloqueado');
+    expect(r).toContain('***9969');
+    expect(r).not.toContain('573054169969');
+  });
+
+  test('rawPhone 10 digits → masked', () => {
+    const r = sanitizePhone('3054169969');
+    expect(r).toBe('***9969');
+  });
+
+  test('short number 3 digits → NOT masked (no phone)', () => {
+    const r = sanitizePhone('msg #50 recibido, code 200');
+    expect(r).toBe('msg #50 recibido, code 200');
+  });
+
+  test('E.164 + standalone in same string → ambos masked', () => {
+    const r = sanitizePhone('+573054169969 y tambien 573163937365 en mismo log');
+    expect(r).not.toContain('3054169969');
+    expect(r).not.toContain('3163937365');
+  });
+
+  test('WA JID no duplica enmascarado con standalone pattern', () => {
+    // JID ya masked por patron anterior como ***9969@s.whatsapp.net
+    // El standalone pattern ya no debe re-matchear (masked string tiene menos de 10 digits)
+    const r = sanitizePhone('573054169969@s.whatsapp.net');
+    expect(r).toBe('***9969@s.whatsapp.net');
+  });
+});

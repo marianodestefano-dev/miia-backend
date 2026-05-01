@@ -66,7 +66,8 @@ const { runPostprocess, runAIAudit, getFallbackMessage } = require('../core/miia
 const { validatePreSend } = require('../core/miia_validator');
 const { fetchOfficialTRM } = require('../core/financial_verify');
 // T10 C-464: PII mask — slog.msgContent() para garantizar hash de cuerpos de mensaje en hot paths
-const { slog } = require('../core/log_sanitizer');
+// T86: maskUid agregado para ocultar UID en logPrefix en produccion
+const { slog, maskUid } = require('../core/log_sanitizer');
 
 // === V2 (C-388 corrección de scope C-386) — wire-in voice_seed + mode_detectors + splitter + emoji injector ===
 // Scope ETAPA 1: SOLO MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2). MIIA Personal (bq2...) NO usa V2.
@@ -832,7 +833,7 @@ function fuzzyPhoneLookup(contacts, basePhone) {
  */
 async function classifyContact(ctx, basePhone, messageBody, tenantState) {
   const ownerUid = ctx.ownerUid;
-  const logPrefix = `[TMH:${ctx.uid}]`;
+  const logPrefix = `[TMH:${maskUid(ctx.uid)}]`; // T86: UID masked en produccion
 
   // PASO 0: contact_index
   const cached = await lookupContactIndex(ownerUid, basePhone);
@@ -1225,7 +1226,7 @@ async function getOrCreateContext(uid, ownerUid, role) {
  * @param {Object} tenantState - Referencia al tenant en tenant_manager (para sock, io, isReady)
  */
 async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSelfChat, isFromMe, tenantState, messageContext = {}) {
-  const logPrefix = `[TMH:${uid}]`;
+  const logPrefix = `[TMH:${maskUid(uid)}]`; // T86: UID masked en produccion
   try { require('../core/privacy_counters').recordIncoming(uid); } catch (_) {}
 
   // ── PASO 1: Obtener contexto ──

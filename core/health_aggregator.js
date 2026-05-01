@@ -58,6 +58,7 @@ async function checkBaileys(tenantManager) {
     for (const t of tenantList) {
       if (!t) { offline++; continue; }
       const isReady = t.isReady === true || t.ready === true;
+      // cryptoErrorCount: interno Baileys, >5 indica sesion WhatsApp degradada por errores de cifrado
       const hasErr = t.lastError != null || t.cryptoErrorCount > 5;
       if (hasErr) errored++;
       else if (isReady) online++;
