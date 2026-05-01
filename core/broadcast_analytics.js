@@ -1,93 +1,99 @@
 'use strict';
 
 /**
- * MIIA - Broadcast Analytics (T170)
- * Tasa de apertura y respuesta por campana de difusion.
+ * MIIA - Broadcast Analytics (T205)
+ * Estadisticas de broadcast: entregados, leidos, replies.
  */
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
 function db() { return _db || require('firebase-admin').firestore(); }
 
-/**
- * Registra el envio de un mensaje de broadcast a un contacto.
- */
-async function recordSent(uid, broadcastId, phone, nowMs) {
+const EVENT_TYPES = Object.freeze(['delivered', 'read', 'replied', 'failed', 'opted_out']);
+
+async function recordBroadcastEvent(uid, broadcastId, phone, eventType, meta) {
   if (!uid) throw new Error('uid requerido');
   if (!broadcastId) throw new Error('broadcastId requerido');
   if (!phone) throw new Error('phone requerido');
-  const ts = new Date(nowMs || Date.now()).toISOString();
+  if (!EVENT_TYPES.includes(eventType)) throw new Error('eventType invalido: ' + eventType);
+  var docId = broadcastId + '_' + phone.replace('+', '') + '_' + eventType;
+  var data = {
+    uid, broadcastId, phone, eventType,
+    meta: meta || {},
+    recordedAt: new Date().toISOString(),
+  };
   try {
-    await db().collection('broadcast_analytics').doc(uid).collection(broadcastId)
-      .doc(phone).set({ phone, sentAt: ts, opened: false, replied: false, openedAt: null, repliedAt: null }, { merge: true });
+    await db().collection('broadcast_events').doc(uid).collection('events').doc(docId).set(data, { merge: true });
   } catch (e) {
-    console.error('[BC_ANALYTICS] Error recordSent: ' + e.message);
+    console.error('[BROADCAST_ANALYTICS] Error guardando evento: ' + e.message);
     throw e;
   }
 }
 
-/**
- * Registra que un contacto abrio / respondio al broadcast.
- */
-async function recordEvent(uid, broadcastId, phone, event, nowMs) {
-  if (!uid) throw new Error('uid requerido');
-  if (!broadcastId) throw new Error('broadcastId requerido');
-  if (!phone) throw new Error('phone requerido');
-  if (!['opened', 'replied'].includes(event)) throw new Error('event invalido: ' + event);
-  const ts = new Date(nowMs || Date.now()).toISOString();
-  const update = { [event]: true, [event + 'At']: ts };
-  try {
-    await db().collection('broadcast_analytics').doc(uid).collection(broadcastId)
-      .doc(phone).set(update, { merge: true });
-    console.log('[BC_ANALYTICS] event=' + event + ' bc=' + broadcastId + ' phone=***' + phone.slice(-4));
-  } catch (e) {
-    console.error('[BC_ANALYTICS] Error recordEvent: ' + e.message);
-    throw e;
-  }
-}
-
-/**
- * Calcula metricas de una campana.
- * @param {string} uid
- * @param {string} broadcastId
- * @returns {Promise<{sent, opened, replied, openRate, replyRate}>}
- */
-async function getCampaignMetrics(uid, broadcastId) {
+async function getBroadcastStats(uid, broadcastId) {
   if (!uid) throw new Error('uid requerido');
   if (!broadcastId) throw new Error('broadcastId requerido');
   try {
-    const snap = await db().collection('broadcast_analytics').doc(uid).collection(broadcastId).get();
-    let sent = 0, opened = 0, replied = 0;
-    snap.forEach(doc => {
-      const d = doc.data();
-      sent++;
-      if (d.opened) opened++;
-      if (d.replied) replied++;
+    var snap = await db().collection('broadcast_events').doc(uid).collection('events')
+      .where('broadcastId', '==', broadcastId).get();
+    var counts = {};
+    EVENT_TYPES.forEach(function(t) { counts[t] = 0; });
+    var phones = new Set();
+    snap.forEach(function(doc) {
+      var data = doc.data();
+      counts[data.eventType] = (counts[data.eventType] || 0) + 1;
+      phones.add(data.phone);
     });
-    const openRate = sent > 0 ? Math.round((opened / sent) * 100) / 100 : 0;
-    const replyRate = sent > 0 ? Math.round((replied / sent) * 100) / 100 : 0;
-    return { sent, opened, replied, openRate, replyRate };
+    var delivered = counts.delivered || 0;
+    var read = counts.read || 0;
+    var replied = counts.replied || 0;
+    return {
+      broadcastId,
+      counts,
+      uniqueContacts: phones.size,
+      deliveryRate: delivered > 0 ? Math.round((delivered / phones.size) * 100) : 0,
+      readRate: delivered > 0 ? Math.round((read / delivered) * 100) : 0,
+      replyRate: delivered > 0 ? Math.round((replied / delivered) * 100) : 0,
+    };
   } catch (e) {
-    console.error('[BC_ANALYTICS] Error getCampaignMetrics: ' + e.message);
-    return { sent: 0, opened: 0, replied: 0, openRate: 0, replyRate: 0 };
+    console.error('[BROADCAST_ANALYTICS] Error leyendo stats: ' + e.message);
+    var emptyCounts = {};
+    EVENT_TYPES.forEach(function(t) { emptyCounts[t] = 0; });
+    return { broadcastId, counts: emptyCounts, uniqueContacts: 0, deliveryRate: 0, readRate: 0, replyRate: 0 };
   }
 }
 
-/**
- * Retorna resumen de todas las campanas de un owner.
- */
-async function getAllCampaignsSummary(uid, broadcastIds) {
+async function getOwnerBroadcastSummary(uid, periodDays, nowMs) {
   if (!uid) throw new Error('uid requerido');
-  if (!Array.isArray(broadcastIds)) throw new Error('broadcastIds debe ser array');
-  const results = [];
-  for (const bcId of broadcastIds) {
-    const metrics = await getCampaignMetrics(uid, bcId);
-    results.push({ broadcastId: bcId, ...metrics });
+  var days = typeof periodDays === 'number' && periodDays > 0 ? periodDays : 30;
+  var now = typeof nowMs === 'number' ? nowMs : Date.now();
+  var fromDate = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+  try {
+    var snap = await db().collection('broadcast_events').doc(uid).collection('events')
+      .where('recordedAt', '>=', fromDate).get();
+    var totalEvents = 0;
+    var broadcasts = new Set();
+    var byType = {};
+    EVENT_TYPES.forEach(function(t) { byType[t] = 0; });
+    snap.forEach(function(doc) {
+      var data = doc.data();
+      totalEvents++;
+      broadcasts.add(data.broadcastId);
+      byType[data.eventType] = (byType[data.eventType] || 0) + 1;
+    });
+    return { totalEvents, broadcastCount: broadcasts.size, byType, periodDays: days };
+  } catch (e) {
+    console.error('[BROADCAST_ANALYTICS] Error leyendo summary: ' + e.message);
+    var emptyByType = {};
+    EVENT_TYPES.forEach(function(t) { emptyByType[t] = 0; });
+    return { totalEvents: 0, broadcastCount: 0, byType: emptyByType, periodDays: days };
   }
-  return results;
 }
 
 module.exports = {
-  recordSent, recordEvent, getCampaignMetrics, getAllCampaignsSummary,
+  recordBroadcastEvent,
+  getBroadcastStats,
+  getOwnerBroadcastSummary,
+  EVENT_TYPES,
   __setFirestoreForTests,
 };
