@@ -251,6 +251,7 @@ const probadita = require('./core/probadita');
 const instagramHandler = require('./core/instagram_handler');
 const numberMigration = require('./core/number_migration');
 const privacyReport = require('./core/privacy_report');
+const privacyDataMap = require('./core/privacy_data_map'); // T91: inventario datos
 const auditLogger = require('./core/audit_logger');
 // C-435 §B — Zod validation para 5 endpoints públicos (Iter 4 Top 5)
 const publicSchemas = require('./core/validation/public_schemas');
@@ -12924,6 +12925,20 @@ app.get('/api/tenant/:uid/ai-metrics', (req, res) => {
     res.json(stats);
   } catch (err) {
     console.error(`[AI-METRICS] Error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// T91 (Mariano mapa) -- Privacy data inventory
+// GET /api/tenant/:uid/privacy: inventario de datos que MIIA almacena
+app.get('/api/tenant/:uid/privacy', (req, res) => {
+  const uid = req.params.uid;
+  try {
+    const inventory = privacyDataMap.getDataInventory(uid);
+    console.log(`[PRIVACY-INVENTORY] Inventario generado para ${uid.slice(0, 8)}...`);
+    res.json(inventory);
+  } catch (err) {
+    console.error(`[PRIVACY-INVENTORY] Error: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
