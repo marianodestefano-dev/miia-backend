@@ -146,7 +146,7 @@ function buildFollowUpMessage(type, contactName, businessName) {
     day1_check:
       'Hola ' + name + ', te escribimos de ' + biz + '. \u00bfPodemos ayudarte con algo? \u{1F60A}',
     day3_reminder:
-      'Hola ' + name + '! Quisimos saber si pudimos darte la info que necesitabas. Estamos aqui. \u{1F64C}',
+      'Hola ' + name + '! Te escribimos de ' + biz + '. Quisimos saber si pudimos ayudarte. Estamos aqui. \u{1F64C}',
     week1_reconnect:
       'Hola ' + name + ', es ' + biz + '. Pasamos a saludarte y ver si tenes alguna consulta. \u{1F31F}',
     month1_winback:
