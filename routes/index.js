@@ -53,6 +53,19 @@ function mountRoutes(app, deps = {}) {
     failed.push('cotizaciones');
   }
 
+
+  // ═══ F1 DASHBOARD ═══
+  try {
+    const createF1Routes = require('./f1');
+    app.use('/api/f1', createF1Routes({
+      verifyToken: deps.verifyToken,
+    }));
+    mounted.push('f1');
+  } catch (e) {
+    console.error(`[ROUTES] ❌ Error montando f1 routes: ${e.message}`);
+    failed.push('f1');
+  }
+
   // Resumen
   console.log(`[ROUTES] ✅ Rutas montadas: [${mounted.join(', ')}]${failed.length ? ` ❌ Fallaron: [${failed.join(', ')}]` : ''}`);
   return { mounted, failed };
