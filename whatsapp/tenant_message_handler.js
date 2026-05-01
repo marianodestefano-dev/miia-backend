@@ -68,6 +68,7 @@ const { fetchOfficialTRM } = require('../core/financial_verify');
 // T10 C-464: PII mask — slog.msgContent() para garantizar hash de cuerpos de mensaje en hot paths
 // T86: maskUid agregado para ocultar UID en logPrefix en produccion
 const { slog, maskUid } = require('../core/log_sanitizer');
+const { randomUUID } = require('crypto'); // T87: request_id por mensaje
 
 // === V2 (C-388 corrección de scope C-386) — wire-in voice_seed + mode_detectors + splitter + emoji injector ===
 // Scope ETAPA 1: SOLO MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2). MIIA Personal (bq2...) NO usa V2.
@@ -831,9 +832,9 @@ function fuzzyPhoneLookup(contacts, basePhone) {
  *
  * @returns {{ type: string, groupId?: string, groupData?: Object, businessId?: string, businessName?: string }}
  */
-async function classifyContact(ctx, basePhone, messageBody, tenantState) {
+async function classifyContact(ctx, basePhone, messageBody, tenantState, callerLogPrefix = null) {
   const ownerUid = ctx.ownerUid;
-  const logPrefix = `[TMH:${maskUid(ctx.uid)}]`; // T86: UID masked en produccion
+  const logPrefix = callerLogPrefix ?? `[TMH:${maskUid(ctx.uid)}]`; // T87: hereda reqId del caller si disponible
 
   // PASO 0: contact_index
   const cached = await lookupContactIndex(ownerUid, basePhone);
@@ -1226,7 +1227,8 @@ async function getOrCreateContext(uid, ownerUid, role) {
  * @param {Object} tenantState - Referencia al tenant en tenant_manager (para sock, io, isReady)
  */
 async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSelfChat, isFromMe, tenantState, messageContext = {}) {
-  const logPrefix = `[TMH:${maskUid(uid)}]`; // T86: UID masked en produccion
+  const reqId = randomUUID().slice(0, 8); // T87: ID unico de trazabilidad por mensaje
+  const logPrefix = `[TMH:${maskUid(uid)}][REQ:${reqId}]`; // T86+T87: UID masked + request trace
   try { require('../core/privacy_counters').recordIncoming(uid); } catch (_) {}
 
   // ── PASO 1: Obtener contexto ──
@@ -2270,7 +2272,7 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       contactType = 'owner';
     } else {
       // Cascada de clasificación
-      classification = await classifyContact(ctx, basePhone, messageBody, tenantState);
+      classification = await classifyContact(ctx, basePhone, messageBody, tenantState, logPrefix);
 
       // BLOQUEO PRECAUTORIO: Si contact_index dice ignored/blocked → silencio total
       if (classification._blocked) {
