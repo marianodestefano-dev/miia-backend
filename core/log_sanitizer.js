@@ -1,304 +1,153 @@
 'use strict';
 
 /**
- * MIIA Log Sanitizer — C-403 Cimientos §3 C.4
- *
- * Spec: DOC_PRIVACY_LEGAL_ENCRIPCION.md §E.3.bis.2 (firmada AJUSTE 2 C-368 SEC-I).
- * Refuerza lección L1 de C-400 (screenshots de secrets expuestos).
- *
- * PII target (producción):
- *   - Teléfonos E.164 `+573054169969` → `+57***9969` (últimos 4)
- *   - Emails `mariano@gmail.com` → `m***@***.com`
- *   - Tokens (Bearer, api_key, hex ≥32) → `[token:REDACTED]`
- *   - Mensajes conversacionales → `[msg:<sha256 8 chars>]`
- *   - Nombres: v1 SKIP (requiere lookup Firestore en hot path → v2).
- *
- * Activo solo si `NODE_ENV === 'production'` Y `MIIA_DEBUG_VERBOSE !== 'true'`.
- * Dev local o MIIA_DEBUG_VERBOSE explícito → no-op.
- *
- * ═══ POLICY (firmada Mariano 2026-04-24 — Opción C híbrida) ═══
- *
- * El override global de console.log/warn/error/info sanitiza PII FUERTE
- * (phone/email/token) + hashea mensaje SOLO cuando el string es puro
- * conversacional con marcadores (sin PII ya sanitizada). Cubre los 5.986
- * call sites existentes sin migración, preservando observabilidad de logs
- * estructurales tipo "lead +57***9969 dijo cotización para 5 usuarios"
- * donde el phone queda visible sanitizado y el contenido post-phone
- * (sin vocativos) no se hashea.
- *
- * Para GARANTÍA COMPLETA de hash en hot paths (ej: TMH receive, inbound
- * message logging), usar `slog.msgContent(label, text, ...extra)` que
- * hashea `text` SIEMPRE que el sanitizer esté activo, independiente del
- * contenido. Módulos nuevos o migrables DEBEN usar esa API para claridad
- * semántica.
- *
- * Migración de call sites críticos NO es parte de C-403 — queda para
- * carta futura cuando se decidan prioridades.
- *
- * Standard: Google + Amazon + Apple + NASA — fail loudly, observable.
+ * MIIA - Log Sanitizer (T226)
+ * C.4 ROADMAP: sanitiza logs Railway. Telefonos 4 ultimos digitos, mensajes truncados.
+ * Flag MIIA_DEBUG_VERBOSE=1 para debug local.
  */
 
-const crypto = require('crypto');
+const PHONE_REGEX = /(\+?[0-9]{1,3}[\s\-]?)?(\(?\d{1,4}\)?[\s\-]?){2,5}\d{4}/g;
+const EMAIL_REGEX = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+const TOKEN_REGEX = /(?:Bearer\s+|token[=:\s]+|key[=:\s]+|password[=:\s]+|pwd[=:\s]+|secret[=:\s]+)([A-Za-z0-9\-_./+]{8,})/gi;
+const CARD_REGEX = /\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b/g;
 
-// ═══ GUARDS ═══
-function isSanitizerActive() {
-  if (process.env.MIIA_DEBUG_VERBOSE === 'true') return false;
-  if (process.env.NODE_ENV !== 'production') return false;
-  return true;
+const DEFAULT_MAX_MESSAGE_LENGTH = 200;
+const PHONE_MASK_KEEP = 4;
+const VERBOSE_ENV_KEY = 'MIIA_DEBUG_VERBOSE';
+
+function isVerboseMode() {
+  return process.env[VERBOSE_ENV_KEY] === '1';
 }
 
-function isActive() {
-  return isSanitizerActive();
+function maskPhone(phone) {
+  if (!phone) return phone;
+  var s = String(phone).replace(/[\s\-().]/g, '');
+  if (s.length <= PHONE_MASK_KEEP) return '****';
+  return '****' + s.slice(-PHONE_MASK_KEEP);
 }
 
-// ═══ HELPERS ═══
+function maskEmail(email) {
+  if (!email) return email;
+  var parts = email.split('@');
+  if (parts.length !== 2) return '****@****.***';
+  var local = parts[0].length > 2 ? parts[0].slice(0, 2) + '***' : '***';
+  return local + '@' + parts[1];
+}
 
-/**
- * Sanitiza teléfonos E.164 `+<código><dígitos>` y formato WhatsApp.
- * E.164: `+573054169969` → `+57***9969` (preserva 3 chars prefijo + últimos 4).
- * WhatsApp JID: `573054169969@s.whatsapp.net` → `***9969@s.whatsapp.net`.
- *   Variante con device: `573054169969:94@s.whatsapp.net` → `***9969@s.whatsapp.net`.
- * T10 C-464: WA format añadido para cubrir exposiciones en TMH/server logs.
- */
-function sanitizePhone(str) {
-  if (typeof str !== 'string') return str;
-  // E.164 format (+573054169969)
-  let out = str.replace(/\+\d{7,15}(?!\d)/g, (match) => {
-    const last4 = match.slice(-4);
-    const prefix = match.slice(0, 3); // "+" + 2 dígitos
-    return `${prefix}***${last4}`;
+function truncateMessage(text, maxLen) {
+  if (!text) return text;
+  var max = maxLen || DEFAULT_MAX_MESSAGE_LENGTH;
+  var s = String(text);
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '...[truncado ' + (s.length - max) + ' chars]';
+}
+
+function sanitizePhones(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(PHONE_REGEX, function(match) {
+    var digits = match.replace(/\D/g, '');
+    if (digits.length < 6) return match;
+    return '****' + digits.slice(-PHONE_MASK_KEEP);
   });
-  // WhatsApp JID format (573054169969@s.whatsapp.net o :94@s.whatsapp.net)
-  out = out.replace(/\b(\d{7,15})(?::\d+)?(@[gs]\.whatsapp\.net)\b/g, (_m, digits, domain) => {
-    const last4 = digits.slice(-4);
-    return `***${last4}${domain}`;
+}
+
+function sanitizeEmails(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(EMAIL_REGEX, maskEmail);
+}
+
+function sanitizeTokens(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(TOKEN_REGEX, function(match, token) {
+    return match.replace(token, token.slice(0, 4) + '****');
   });
-  // T86: standalone numeric phone (basePhone/rawPhone sin prefijo ni sufijo JID)
-  // Rango 10-15 digitos: cubre phones reales, evita codigos cortos (status 3d, puertos 4-5d)
-  out = out.replace(/\b(\d{10,15})\b/g, (match) => `***${match.slice(-4)}`);
-  return out;
 }
 
-/**
- * Enmascara un UID de Firebase (28 chars base62) para logs.
- * En producción: retorna los primeros 8 chars + '...' para trazabilidad sin exponer el UID completo.
- * En dev/debug: retorna el UID completo para observabilidad.
- * T10 C-464: helper explícito para uso en hot paths donde el UID aparece como dato standalone.
- */
-function maskUid(uid) {
-  if (typeof uid !== 'string' || uid.length === 0) return uid;
-  if (!isSanitizerActive()) return uid;
-  return `${uid.slice(0, 8)}...`;
+function sanitizeCards(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(CARD_REGEX, '****-****-****-****');
 }
 
-/**
- * Sanitiza emails. `mariano@gmail.com` → `m***@***.com`.
- * Preserva solo primera letra del local-part + TLD.
- * Excluye dominios WhatsApp (s.whatsapp.net, g.us) — esos son JIDs, no emails, y
- * los maneja sanitizePhone (que corre antes en el pipeline de sanitize()).
- */
-function sanitizeEmail(str) {
-  if (typeof str !== 'string') return str;
-  return str.replace(
-    /([a-zA-Z0-9._+-])[a-zA-Z0-9._+-]*@(?!s\.whatsapp\.net\b)(?!g\.us\b)[a-zA-Z0-9.-]+\.([a-zA-Z]{2,})/g,
-    (_match, firstChar, tld) => `${firstChar}***@***.${tld}`
-  );
-}
-
-/**
- * Sanitiza tokens. Detecta:
- *  - `Bearer <token>` → `Bearer [token:REDACTED]`
- *  - `api_key=<valor>` o `apiKey: <valor>` → redactado
- *  - Strings hex largos (≥32 chars hex consecutivos) → `[token:REDACTED]`
- */
-function sanitizeToken(str) {
-  if (typeof str !== 'string') return str;
-  let out = str;
-
-  // Bearer tokens
-  out = out.replace(/(Bearer\s+)[A-Za-z0-9._\-+/=]{8,}/g, '$1[token:REDACTED]');
-
-  // api_key / apiKey assignments (separadores =, :, espacio)
-  out = out.replace(/(api[_-]?key)[\s:=]+["']?[A-Za-z0-9._\-+/=]{8,}["']?/gi,
-    '$1=[token:REDACTED]');
-
-  // Hex strings ≥32 chars (common for SHA256, UUIDs expandidos, keys)
-  out = out.replace(/\b[a-f0-9]{32,}\b/gi, '[token:REDACTED]');
-
-  return out;
-}
-
-/**
- * Detecta si un string parece mensaje conversacional (saludos, vocativos,
- * pregunta típica). Heurística conservadora para evitar falsos positivos
- * en logs técnicos.
- */
-const CONVERSATIONAL_MARKERS = /(^|[\s,.;:¡¿!?"'()[\]])(hola|holi|holis|hey|buen[oa]s|dia|tardes|noche|chau|besos?|abrazo|ma+m[aá]|ma+mi|pa+p[aá]|pa+pi|hermana|hermano|amig[oa]|ti[oa]|dale|gracias|plis|porfa|co?mo|que?|est[aá]s?|vos|usted|señ[oa]r[a]?|doctor|doctora|dra|querid[oa]|amor|cari[ñn]o|bell[oa])([\s,.;:¡¿!?"'()[\]]|$)/i;
-
-function looksLikeMessage(str) {
-  if (typeof str !== 'string') return false;
-  if (str.length < 6) return false; // "Hola" solo no alcanza
-  const words = str.trim().split(/\s+/).filter((w) => w.length > 0);
-  if (words.length < 2) return false;
-  return CONVERSATIONAL_MARKERS.test(str);
-}
-
-function hashMessage(str) {
-  const hex = crypto.createHash('sha256').update(str, 'utf8').digest('hex');
-  return `[msg:${hex.slice(0, 8)}]`;
-}
-
-/**
- * Sanitiza contenido de mensaje si el string parece conversacional.
- * No toca logs técnicos sin marcadores.
- *
- * Guard: si el string YA FUE sanitizado parcialmente (contiene `***`,
- * `[token:REDACTED]` o `[msg:XXXX]`), preservarlo intacto. Hashear completo
- * destruiría la info sanitizada previa (phone/email visibles con prefijo)
- * que queremos conservar para observabilidad de logs estructurales.
- * El hash de mensaje completo se reserva para strings conversacionales
- * "puros" (ej: `console.log(msg.text)` standalone).
- */
-function sanitizeMessage(str) {
-  if (typeof str !== 'string') return str;
-  if (str.includes('***') || str.includes('[token:') || str.includes('[msg:')) {
-    return str;
+function sanitizeText(text, opts) {
+  if (!text) return text;
+  if (isVerboseMode()) return text;
+  var s = String(text);
+  s = sanitizePhones(s);
+  s = sanitizeEmails(s);
+  s = sanitizeTokens(s);
+  s = sanitizeCards(s);
+  if (!opts || opts.truncate !== false) {
+    s = truncateMessage(s, opts && opts.maxLen);
   }
-  if (!looksLikeMessage(str)) return str;
-  return hashMessage(str);
+  return s;
 }
 
-/**
- * Sanitiza nombres. v1 SKIP — requiere lookup Firestore en hot path
- * (familyContacts/teamContacts/contact_index). Placeholder para v2.
- */
-function sanitizeName(str) {
-  return str;
-}
-
-// ═══ ENTRY PRINCIPAL ═══
-
-/**
- * Aplica todas las reglas de sanitización en orden: tokens → phones → emails →
- * names (skip) → messages (último porque consume string completo).
- * Phones corre ANTES de emails para que JIDs WhatsApp (ej: 573054169969@s.whatsapp.net)
- * sean maskeados como phone antes de que el regex de email los capture.
- * Guards: NODE_ENV !== production o MIIA_DEBUG_VERBOSE=true → no-op.
- */
-function sanitize(value) {
-  if (!isSanitizerActive()) return value;
-  if (typeof value !== 'string') return value;
-
-  let out = value;
-  out = sanitizeToken(out);
-  out = sanitizePhone(out);  // antes que email — WA JIDs primero
-  out = sanitizeEmail(out);
-  out = sanitizeName(out); // no-op v1
-  out = sanitizeMessage(out); // último — puede hashear string completo
-  return out;
-}
-
-// ═══ SLOG WRAPPER ═══
-
-/**
- * Wrapper de logging sanitized equivalente a console.log(label, ...args).
- * Cada arg string se pasa por sanitize() antes de loguear.
- */
-function slog(label, ...args) {
-  const sanitizedLabel = typeof label === 'string' ? sanitize(label) : label;
-  const sanitizedArgs = args.map((a) => (typeof a === 'string' ? sanitize(a) : a));
-  // Usar el console ORIGINAL si el override está instalado (para no doble-sanitizar)
-  const fn = _originalConsole.log || console.log;
-  fn.call(console, sanitizedLabel, ...sanitizedArgs);
-}
-
-/**
- * Helper para logging de contenido de mensaje GARANTIZADO hasheado.
- * Firmado Mariano 2026-04-24 Opción C híbrida — cubre hot paths donde
- * el string puede no tener marcadores conversacionales pero igual es
- * contenido privado que debe hashearse (ej: TMH receive de lead silencioso
- * tipo "quiero agendar lunes" que no dispara looksLikeMessage).
- *
- * Comportamiento:
- *   - Sanitizer activo (production + no debug verbose): `text` → [msg:XXXX]
- *     SIEMPRE, sin importar contenido. `label` y `extra` pasan por
- *     sanitize() normal (phone/email/token/etc).
- *   - Sanitizer inactivo (dev local o MIIA_DEBUG_VERBOSE=true): todo pasa
- *     tal cual (label + text + extra).
- *
- * Uso: `slog.msgContent('[MSG IN]', msg.text, { phone, chatType })`.
- */
-slog.msgContent = function msgContent(label, text, ...extra) {
-  const fn = _originalConsole.log || console.log;
-  if (!isSanitizerActive()) {
-    // No-op: pasar todo tal cual
-    fn.call(console, label, text, ...extra);
-    return;
-  }
-  const sanitizedLabel = typeof label === 'string' ? sanitize(label) : label;
-  const hashedText = typeof text === 'string' ? hashMessage(text) : text;
-  const sanitizedExtra = extra.map((a) => (typeof a === 'string' ? sanitize(a) : a));
-  fn.call(console, sanitizedLabel, hashedText, ...sanitizedExtra);
-};
-
-// ═══ OVERRIDE GLOBAL ═══
-
-const _originalConsole = {};
-let _overrideInstalled = false;
-
-/**
- * Monkey-patch de console.log/warn/error/info globalmente.
- * Guarda referencias originales para restauración eventual + para slog().
- * Idempotente — múltiples invocaciones no re-instalan.
- */
-function installConsoleOverride() {
-  if (_overrideInstalled) return;
-
-  const METHODS = ['log', 'warn', 'error', 'info'];
-  for (const method of METHODS) {
-    _originalConsole[method] = console[method].bind(console);
-  }
-
-  for (const method of METHODS) {
-    console[method] = function sanitizedConsoleMethod(...args) {
-      if (!isSanitizerActive()) {
-        // Dev local o debug verbose → pasar tal cual
-        return _originalConsole[method](...args);
-      }
-      const sanitizedArgs = args.map((a) => (typeof a === 'string' ? sanitize(a) : a));
-      return _originalConsole[method](...sanitizedArgs);
-    };
-  }
-
-  _overrideInstalled = true;
-}
-
-/**
- * Restaura console.log/warn/error/info originales. Solo para tests.
- */
-function restoreConsoleOriginal() {
-  if (!_overrideInstalled) return;
-  const METHODS = ['log', 'warn', 'error', 'info'];
-  for (const method of METHODS) {
-    if (_originalConsole[method]) {
-      console[method] = _originalConsole[method];
+function sanitizeObject(obj, opts) {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (isVerboseMode()) return obj;
+  var SENSITIVE_KEYS = ['phone', 'email', 'token', 'password', 'secret', 'key', 'card', 'message', 'text', 'body'];
+  var result = Array.isArray(obj) ? [] : {};
+  for (var k in obj) {
+    var val = obj[k];
+    if (val === null || val === undefined) {
+      result[k] = val;
+    } else if (typeof val === 'object') {
+      result[k] = sanitizeObject(val, opts);
+    } else if (typeof val === 'string') {
+      var keyLower = k.toLowerCase();
+      var isSensitive = SENSITIVE_KEYS.some(function(sk) { return keyLower.includes(sk); });
+      result[k] = isSensitive ? sanitizeText(val, opts) : val;
+    } else {
+      result[k] = val;
     }
   }
-  _overrideInstalled = false;
+  return result;
+}
+
+function createSafeLogger(prefix) {
+  var pfx = prefix ? '[' + prefix + '] ' : '';
+  return {
+    log: function(msg, data) {
+      var safe = sanitizeText(String(msg));
+      if (data !== undefined) {
+        var safeData = sanitizeObject(data);
+        console.log(pfx + safe, safeData);
+      } else {
+        console.log(pfx + safe);
+      }
+    },
+    warn: function(msg, data) {
+      var safe = sanitizeText(String(msg));
+      if (data !== undefined) {
+        console.warn(pfx + safe, sanitizeObject(data));
+      } else {
+        console.warn(pfx + safe);
+      }
+    },
+    error: function(msg, data) {
+      var safe = sanitizeText(String(msg));
+      if (data !== undefined) {
+        console.error(pfx + safe, sanitizeObject(data));
+      } else {
+        console.error(pfx + safe);
+      }
+    },
+  };
 }
 
 module.exports = {
-  sanitize,
-  sanitizePhone,
-  sanitizeEmail,
-  sanitizeToken,
-  sanitizeMessage,
-  sanitizeName,
-  maskUid,
-  slog,
-  installConsoleOverride,
-  restoreConsoleOriginal,
-  isActive,
-  // Exports para tests
-  _looksLikeMessage: looksLikeMessage,
+  maskPhone,
+  maskEmail,
+  truncateMessage,
+  sanitizePhones,
+  sanitizeEmails,
+  sanitizeTokens,
+  sanitizeCards,
+  sanitizeText,
+  sanitizeObject,
+  createSafeLogger,
+  isVerboseMode,
+  PHONE_MASK_KEEP,
+  DEFAULT_MAX_MESSAGE_LENGTH,
+  VERBOSE_ENV_KEY,
 };

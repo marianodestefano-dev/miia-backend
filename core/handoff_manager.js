@@ -1,169 +1,157 @@
 'use strict';
 
 /**
- * MIIA - Handoff Manager (T187)
- * Traspaso de conversacion de MIIA al owner humano y vice versa.
+ * MIIA - Handoff Manager (T223)
+ * Gestiona el traspaso de conversaciones entre MIIA y un agente humano.
  */
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
 function db() { return _db || require('firebase-admin').firestore(); }
 
-const HANDOFF_MODES = Object.freeze(['auto', 'manual', 'escalation']);
+const HANDOFF_STATUSES = Object.freeze(['pending', 'active', 'resolved', 'cancelled', 'timeout']);
 const HANDOFF_REASONS = Object.freeze([
-  'high_value_lead', 'complaint', 'complex_query', 'owner_request',
-  'lead_request', 'appointment_confirmed', 'payment_issue',
+  'owner_request', 'lead_request', 'complex_query', 'complaint', 'payment', 'emergency', 'auto_escalation'
 ]);
-const HANDOFF_STATES = Object.freeze(['pending', 'active', 'resolved', 'timeout']);
-const DEFAULT_HANDOFF_TIMEOUT_MINS = 30;
-const MAX_ACTIVE_HANDOFFS = 10;
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const MAX_HANDOFFS_PER_QUERY = 100;
 
-
-/**
- * Inicia un traspaso de MIIA al owner.
- * @param {string} uid
- * @param {string} phone - teléfono del lead
- * @param {object} opts - {reason, mode, context, timeoutMins}
- * @returns {Promise<{handoffId, state, reason, createdAt, expiresAt}>}
- */
-async function initiateHandoff(uid, phone, opts) {
-  if (!uid) throw new Error('uid requerido');
-  if (!phone) throw new Error('phone requerido');
-
-  const options = opts || {};
-  const reason = options.reason && HANDOFF_REASONS.includes(options.reason) ? options.reason : 'complex_query';
-  const mode = options.mode && HANDOFF_MODES.includes(options.mode) ? options.mode : 'manual';
-  const timeoutMins = typeof options.timeoutMins === 'number' && options.timeoutMins > 0
-    ? options.timeoutMins
-    : DEFAULT_HANDOFF_TIMEOUT_MINS;
-
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + timeoutMins * 60 * 1000).toISOString();
-  const handoffId = uid.substring(0, 8) + '_' + phone.slice(-8) + '_' + Date.now();
-
-  const doc = {
-    uid, phone, handoffId, reason, mode,
-    state: 'pending',
-    context: options.context || {},
-    createdAt: now.toISOString(),
-    expiresAt,
-    resolvedAt: null,
-    timeoutMins,
-  };
-
-  try {
-    await db()
-      .collection('handoffs').doc(uid)
-      .collection('active').doc(handoffId)
-      .set(doc);
-    console.log('[HANDOFF] iniciado uid=' + uid.substring(0, 8) + ' phone=' + phone.slice(-6) + ' reason=' + reason);
-    return { handoffId, state: 'pending', reason, createdAt: doc.createdAt, expiresAt };
-  } catch (e) {
-    console.error('[HANDOFF] Error iniciando traspaso: ' + e.message);
-    throw e;
-  }
+function isValidStatus(status) {
+  return HANDOFF_STATUSES.includes(status);
 }
 
-/**
- * Actualiza el estado de un handoff.
- * @param {string} uid
- * @param {string} handoffId
- * @param {string} state
- */
-async function updateHandoffState(uid, handoffId, state) {
+function isValidReason(reason) {
+  return HANDOFF_REASONS.includes(reason);
+}
+
+function buildHandoffRecord(uid, phone, reason, opts) {
+  var now = new Date().toISOString();
+  var timeoutMs = (opts && opts.timeoutMs) ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
+  var expiresAt = new Date(Date.now() + timeoutMs).toISOString();
+  return {
+    uid,
+    phone,
+    reason,
+    status: 'pending',
+    createdAt: now,
+    updatedAt: now,
+    expiresAt,
+    agentId: (opts && opts.agentId) ? opts.agentId : null,
+    notes: (opts && opts.notes) ? String(opts.notes) : null,
+    resolvedAt: null,
+    resolutionNotes: null,
+  };
+}
+
+async function requestHandoff(uid, phone, reason, opts) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+  if (!reason) throw new Error('reason requerido');
+  if (!isValidReason(reason)) throw new Error('reason invalido: ' + reason);
+  var record = buildHandoffRecord(uid, phone, reason, opts);
+  var handoffId = uid.slice(0, 4) + '_' + phone.replace(/\D/g, '').slice(-6) + '_' + Date.now().toString(36);
+  await db().collection('tenants').doc(uid).collection('handoffs').doc(handoffId).set(record);
+  console.log('[HANDOFF] Traspaso solicitado uid=' + uid + ' phone=' + phone + ' reason=' + reason + ' id=' + handoffId);
+  return { handoffId, record };
+}
+
+async function updateHandoffStatus(uid, handoffId, status, opts) {
   if (!uid) throw new Error('uid requerido');
   if (!handoffId) throw new Error('handoffId requerido');
-  if (!state || !HANDOFF_STATES.includes(state)) throw new Error('state invalido: ' + state);
-
-  const updates = { state, updatedAt: new Date().toISOString() };
-  if (state === 'resolved' || state === 'timeout') {
-    updates.resolvedAt = new Date().toISOString();
-  }
-
-  try {
-    await db()
-      .collection('handoffs').doc(uid)
-      .collection('active').doc(handoffId)
-      .set(updates, { merge: true });
-    console.log('[HANDOFF] estado actualizado uid=' + uid.substring(0, 8) + ' id=' + handoffId + ' state=' + state);
-  } catch (e) {
-    console.error('[HANDOFF] Error actualizando estado: ' + e.message);
-    throw e;
-  }
+  if (!isValidStatus(status)) throw new Error('status invalido: ' + status);
+  var update = {
+    status,
+    updatedAt: new Date().toISOString(),
+  };
+  if (opts && opts.agentId) update.agentId = opts.agentId;
+  if (opts && opts.notes) update.resolutionNotes = String(opts.notes);
+  if (status === 'resolved' || status === 'cancelled') update.resolvedAt = new Date().toISOString();
+  await db().collection('tenants').doc(uid).collection('handoffs').doc(handoffId).set(update, { merge: true });
+  console.log('[HANDOFF] Status actualizado uid=' + uid + ' id=' + handoffId + ' status=' + status);
 }
 
-/**
- * Verifica si hay un handoff activo para un lead.
- * @param {string} uid
- * @param {string} phone
- * @returns {Promise<boolean>}
- */
-async function isHandoffActive(uid, phone) {
-  if (!uid) throw new Error('uid requerido');
-  if (!phone) throw new Error('phone requerido');
-
-  try {
-    const snap = await db()
-      .collection('handoffs').doc(uid)
-      .collection('active')
-      .where('phone', '==', phone)
-      .where('state', '==', 'active')
-      .get();
-
-    let hasActive = false;
-    snap.forEach(doc => {
-      const d = doc.data();
-      if (d.expiresAt && new Date(d.expiresAt).getTime() > Date.now()) {
-        hasActive = true;
-      }
-    });
-    return hasActive;
-  } catch (e) {
-    console.error('[HANDOFF] Error verificando handoff activo: ' + e.message);
-    return false;
-  }
-}
-
-/**
- * Obtiene los handoffs pendientes del owner.
- * @param {string} uid
- * @returns {Promise<object[]>}
- */
-async function getPendingHandoffs(uid) {
+async function getActiveHandoffs(uid) {
   if (!uid) throw new Error('uid requerido');
   try {
-    const snap = await db()
-      .collection('handoffs').doc(uid)
-      .collection('active')
-      .where('state', '==', 'pending')
+    var snap = await db().collection('tenants').doc(uid).collection('handoffs')
+      .where('status', 'in', ['pending', 'active'])
       .get();
-
-    const handoffs = [];
-    snap.forEach(doc => handoffs.push({ id: doc.id, ...doc.data() }));
-    return handoffs;
+    var results = [];
+    snap.forEach(function(doc) { results.push({ id: doc.id, ...doc.data() }); });
+    return results;
   } catch (e) {
-    console.error('[HANDOFF] Error leyendo pendientes: ' + e.message);
+    console.error('[HANDOFF] Error leyendo handoffs activos: ' + e.message);
     return [];
   }
 }
 
-/**
- * Verifica si MIIA debe responder o ceder al owner.
- * @param {string} uid
- * @param {string} phone
- * @returns {Promise<boolean>} true = MIIA puede responder
- */
-async function shouldMiiaRespond(uid, phone) {
+async function getHandoffsByPhone(uid, phone) {
   if (!uid) throw new Error('uid requerido');
   if (!phone) throw new Error('phone requerido');
-  const active = await isHandoffActive(uid, phone);
-  return !active;
+  try {
+    var snap = await db().collection('tenants').doc(uid).collection('handoffs')
+      .where('phone', '==', phone)
+      .get();
+    var results = [];
+    snap.forEach(function(doc) { results.push({ id: doc.id, ...doc.data() }); });
+    results.sort(function(a, b) { return new Date(b.createdAt) - new Date(a.createdAt); });
+    return results.slice(0, MAX_HANDOFFS_PER_QUERY);
+  } catch (e) {
+    console.error('[HANDOFF] Error leyendo handoffs por phone: ' + e.message);
+    return [];
+  }
+}
+
+function isHandoffExpired(record, nowMs) {
+  if (!record || !record.expiresAt) return false;
+  var now = nowMs !== undefined ? nowMs : Date.now();
+  return new Date(record.expiresAt).getTime() <= now;
+}
+
+async function timeoutExpiredHandoffs(uid, nowMs) {
+  if (!uid) throw new Error('uid requerido');
+  var active = await getActiveHandoffs(uid);
+  var expired = active.filter(function(h) { return isHandoffExpired(h, nowMs); });
+  var count = 0;
+  for (var h of expired) {
+    try {
+      await updateHandoffStatus(uid, h.id, 'timeout', { notes: 'Auto-timeout por inactividad' });
+      count++;
+    } catch (e) {
+      console.error('[HANDOFF] Error marcando timeout id=' + h.id + ': ' + e.message);
+    }
+  }
+  console.log('[HANDOFF] Timeouts procesados uid=' + uid + ' count=' + count);
+  return { timedOut: count, total: expired.length };
+}
+
+function buildHandoffNotificationText(phone, reason) {
+  var reasonLabels = {
+    owner_request: 'solicitud del owner',
+    lead_request: 'solicitud del lead',
+    complex_query: 'consulta compleja',
+    complaint: 'reclamo',
+    payment: 'consulta de pago',
+    emergency: 'emergencia',
+    auto_escalation: 'escalado automático',
+  };
+  var label = reasonLabels[reason] || reason;
+  return 'MIIA transfirió la conversación con ' + phone + ' por: ' + label + '. Por favor retomá la charla.';
 }
 
 module.exports = {
-  initiateHandoff, updateHandoffState, isHandoffActive,
-  getPendingHandoffs, shouldMiiaRespond,
-  HANDOFF_MODES, HANDOFF_REASONS, HANDOFF_STATES,
-  DEFAULT_HANDOFF_TIMEOUT_MINS, MAX_ACTIVE_HANDOFFS,
+  requestHandoff,
+  updateHandoffStatus,
+  getActiveHandoffs,
+  getHandoffsByPhone,
+  isHandoffExpired,
+  timeoutExpiredHandoffs,
+  buildHandoffNotificationText,
+  isValidStatus,
+  isValidReason,
+  HANDOFF_STATUSES,
+  HANDOFF_REASONS,
+  DEFAULT_TIMEOUT_MS,
+  MAX_HANDOFFS_PER_QUERY,
   __setFirestoreForTests,
 };
