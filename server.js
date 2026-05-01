@@ -223,6 +223,7 @@ const { runPostprocess, runAIAudit, getFallbackMessage } = require('./core/miia_
 const { startIntegrityEngine, verifyCalendarEvent } = require('./core/integrity_engine');
 const integrityGuards = require('./core/integrity_guards');
 const healthMonitor = require('./core/health_monitor');
+const healthAggregator = require('./core/health_aggregator'); // T81 wire-in
 const actionFeedback = require('./core/action_feedback');
 const { validatePreSend } = require('./core/miia_validator');
 const { shouldMiiaRespond, matchesBusinessKeywords, buildUnknownContactAlert, classifyUnknownContact } = require('./core/contact_gate');
@@ -16141,6 +16142,21 @@ app.get('/api/health/rate-limiter', (req, res) => res.json({
 }));
 
 app.get('/api/health/health-monitor', (req, res) => res.json(healthMonitor.getStats()));
+
+// T81 — /api/health/full: reporte agregado Baileys + AI + Firestore + process (T47 wire-in)
+app.get('/api/health/full', async (req, res) => {
+  try {
+    const report = await healthAggregator.aggregateHealth({
+      tenantManager,
+      shield,
+      firestoreClient: admin.firestore(),
+    });
+    res.json(report);
+  } catch (err) {
+    console.error(`[HEALTH-FULL] ❌ Error: ${err.message}`);
+    res.status(500).json({ status: 'error', error: err.message });
+  }
+});
 
 // ═══ P5 HEALTH ENDPOINTS ═══
 app.get('/api/health/key-pool', (req, res) => res.json(keyPool.getAllStats()));
