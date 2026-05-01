@@ -270,6 +270,7 @@ const businessesRouter = require('./routes/businesses');
 const createConsentRoutes = require('./routes/consent');
 // T92 — Consent manager (getOwnerConsent / setOwnerConsent / hasOwnerConsented)
 const consentManager = require('./core/consent_manager');
+const mmcRetrieval = require('./core/mmc_retrieval');
 // T93 — Key rotation scheduler (checkAndRotateKeys cada 24h)
 const keyRotationScheduler = require('./core/key_rotation_scheduler');
 // T94 — Structured error responses helper
@@ -13053,6 +13054,29 @@ app.post('/api/tenant/:uid/consent', express.json(), async (req, res) => {
     console.error(`[CONSENT-MGR] POST consent error uid=${req.params.uid}: ${e.message}`);
     const code = e.message.includes('invalido') ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR;
     return sendApiError(res, code, e.message);
+  }
+});
+
+
+// ── MMC GET debugging endpoint T102 ──
+app.get('/api/tenant/:uid/memories', async (req, res) => {
+  try {
+    const uid = req.params.uid;
+    const phone = req.query.phone;
+    const limit = parseInt(req.query.limit) || 20;
+    const minScore = parseFloat(req.query.minScore) || 0.2;
+
+    if (!uid) return sendApiError(res, ERROR_CODES.BAD_REQUEST, 'uid requerido');
+    if (!phone) return sendApiError(res, ERROR_CODES.BAD_REQUEST, 'query param phone requerido');
+    if (limit < 1 || limit > 100) return sendApiError(res, ERROR_CODES.VALIDATION_ERROR, 'limit debe estar entre 1 y 100');
+    if (minScore < 0 || minScore > 1) return sendApiError(res, ERROR_CODES.VALIDATION_ERROR, 'minScore debe estar entre 0 y 1');
+
+    const memories = await mmcRetrieval.getTopMemories(uid, phone, { maxResults: limit, minScore });
+    console.log(`[MMC-ENDPOINT] GET memories uid=${uid.substring(0,8)} phone=${phone} count=${memories.length}`);
+    return res.json({ uid, phone, count: memories.length, memories });
+  } catch (e) {
+    console.error(`[MMC-ENDPOINT] Error: ${e.message}`);
+    return sendApiError(res, ERROR_CODES.INTERNAL_ERROR, e.message);
   }
 });
 
