@@ -89,7 +89,7 @@ module.exports = function createF1Routes({ verifyToken }) {
     try {
       const uid = req.user?.uid || req.body.uid;
       if (!uid) return res.status(401).json({ error: 'No autenticado' });
-      const { driver_id, season = '2025' } = req.body;
+      const { driver_id, season = '2026' } = req.body;
       if (!driver_id) return res.status(400).json({ error: 'driver_id requerido' });
 
       // Verificar que el piloto existe
