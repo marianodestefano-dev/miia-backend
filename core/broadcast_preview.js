@@ -10,10 +10,10 @@ const MAX_PREVIEW_RECIPIENTS = 5;
 const PREVIEW_PLACEHOLDER = '[NOMBRE]';
 
 function validateBroadcastMessage(message) {
-  if (!message || typeof message !== 'string') throw new Error('message requerido');
+  if (typeof message !== 'string') return { valid: false, reason: 'message debe ser string' };
   var trimmed = message.trim();
-  if (trimmed.length === 0) throw new Error('message no puede estar vacio');
-  if (trimmed.length > MAX_MESSAGE_LENGTH) throw new Error('message supera ' + MAX_MESSAGE_LENGTH + ' caracteres');
+  if (trimmed.length === 0) return { valid: false, reason: 'message no puede estar vacio' };
+  if (trimmed.length > MAX_MESSAGE_LENGTH) return { valid: false, reason: 'message supera ' + MAX_MESSAGE_LENGTH + ' caracteres' };
   return { valid: true, length: trimmed.length };
 }
 

@@ -7,15 +7,19 @@ const {
 } = require('../core/broadcast_preview');
 
 describe('validateBroadcastMessage', function() {
-  test('lanza si message undefined', function() {
-    expect(function() { validateBroadcastMessage(undefined); }).toThrow('requerido');
+  test('retorna invalid si message undefined', function() {
+    var r = validateBroadcastMessage(undefined);
+    expect(r.valid).toBe(false);
   });
-  test('lanza si message vacio', function() {
-    expect(function() { validateBroadcastMessage('   '); }).toThrow('vacio');
+  test('retorna invalid si message vacio', function() {
+    var r = validateBroadcastMessage('   ');
+    expect(r.valid).toBe(false);
+    expect(r.reason).toContain('vacio');
   });
-  test('lanza si message muy largo', function() {
+  test('retorna invalid si message muy largo', function() {
     var long = 'a'.repeat(MAX_MESSAGE_LENGTH + 1);
-    expect(function() { validateBroadcastMessage(long); }).toThrow(String(MAX_MESSAGE_LENGTH));
+    var r = validateBroadcastMessage(long);
+    expect(r.valid).toBe(false);
   });
   test('acepta mensaje valido', function() {
     var r = validateBroadcastMessage('Hola como estas');
