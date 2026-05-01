@@ -94,6 +94,8 @@ const V2_OWNER_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
 // quedan disabled hasta C-410.c con firma textual.
 const safetyFilter = require('../core/safety_filter');
 const consentRoutes = require('../routes/consent');
+// T92 — consent_manager: hasOwnerConsented() para guard antes de responder leads
+const consentManager = require('../core/consent_manager');
 // T79 — §6.19 cache TTL extraído a módulo reutilizable (C-434 §A inline → lib)
 const {
   TTL_DAYS: CONTACT_TYPE_TTL_DAYS,
@@ -2610,6 +2612,28 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
       console.log(`${logPrefix} 🏖️ MODO FINDE activo → respuesta automática a lead ${basePhone}`);
       await sendTenantMessage(tenantState, phone, weekendCheck.autoResponse);
       return;
+    }
+  }
+
+  // ── T92 — Consent guard: si el owner no configuró consent, MIIA no responde a leads ──
+  if (!isSelfChat && (contactType === 'lead' || contactType === 'enterprise_lead' || contactType === 'client')) {
+    try {
+      const consented = await consentManager.hasOwnerConsented(ownerUid);
+      if (!consented) {
+        console.warn(`${logPrefix} [CONSENT-GUARD] Owner ${ownerUid.substring(0,8)} sin consent configurado — skipping lead ${basePhone}`);
+        // Notificar al owner en self-chat solo 1 vez cada 6h para no spam
+        const CONSENT_NOTIFY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+        const lastNotify = ctx._consentNotifyAt || 0;
+        if (Date.now() - lastNotify > CONSENT_NOTIFY_INTERVAL_MS) {
+          ctx._consentNotifyAt = Date.now();
+          const ownerPhone = ctx.ownerPhone || ownerUid;
+          await sendTenantMessage(tenantState, ownerPhone,
+            `⚠️ MIIA: Configurá tu consent antes de responder leads. POST /api/tenant/${ownerUid}/consent con { mode: "A" }`);
+        }
+        return;
+      }
+    } catch (e) {
+      console.warn(`${logPrefix} [CONSENT-GUARD] Error verificando consent: ${e.message} — continuando`);
     }
   }
 

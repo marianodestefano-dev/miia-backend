@@ -268,6 +268,8 @@ const promptCache = require('./ai/prompt_cache');
 const businessesRouter = require('./routes/businesses');
 // C-410 §3 C.10 — Consent disclaimer-mode + exclusions (Mitigación B)
 const createConsentRoutes = require('./routes/consent');
+// T92 — Consent manager (getOwnerConsent / setOwnerConsent / hasOwnerConsented)
+const consentManager = require('./core/consent_manager');
 const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
@@ -13011,6 +13013,32 @@ app.get('/api/tenant/:uid/privacy-reports', async (req, res) => {
     res.json(reports);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Consent management T92 ──
+app.get('/api/tenant/:uid/consent', async (req, res) => {
+  try {
+    const uid = req.params.uid;
+    const consent = await consentManager.getOwnerConsent(uid);
+    if (!consent) return res.json({ uid, hasConsented: false, mode: null });
+    return res.json({ uid, hasConsented: true, ...consent });
+  } catch (e) {
+    console.error(`[CONSENT-MGR] GET consent error uid=${req.params.uid}: ${e.message}`);
+    return res.status(500).json({ error: 'INTERNAL_ERROR', message: e.message });
+  }
+});
+
+app.post('/api/tenant/:uid/consent', express.json(), async (req, res) => {
+  try {
+    const uid = req.params.uid;
+    const result = await consentManager.setOwnerConsent(uid, req.body || {});
+    return res.json(result);
+  } catch (e) {
+    const status = e.message.includes('invalido') ? 400 : 500;
+    const code = status === 400 ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR';
+    console.error(`[CONSENT-MGR] POST consent error uid=${req.params.uid}: ${e.message}`);
+    return res.status(status).json({ error: code, message: e.message });
   }
 });
 
