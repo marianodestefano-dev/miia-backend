@@ -3202,6 +3202,24 @@ MIIA, genera tu respuesta breve, estratégica y humana:`;
   }
 
 
+
+  // === F1.26: Interceptar comandos /f1 en self-chat ===
+  if (isSelfChat && role === 'owner' && messageBody) {
+    try {
+      const { isF1Command, processF1Command } = require('../sports/f1_dashboard/f1_wa_commands');
+      if (isF1Command(messageBody)) {
+        const f1Response = await processF1Command(messageBody, ownerUid);
+        if (f1Response) {
+          console.log(logPrefix + ' [F1-CMD] Comando interceptado: ' + messageBody.substring(0, 40));
+          await safeSendMessage(uid, tenantState.sock, phone, { text: f1Response });
+          return;
+        }
+      }
+    } catch (f1Err) {
+      console.warn(logPrefix + ' [F1-CMD] Error (no bloquea): ' + f1Err.message);
+    }
+  }
+
   // === F1.14: Enriquecimiento de contexto F1 en queries deportivas ===
   if (detectedTopics.includes('deportes')) {
     try {
