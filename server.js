@@ -16151,6 +16151,7 @@ app.get('/api/health/full', async (req, res) => {
       shield,
       firestoreClient: admin.firestore(),
     });
+    console.log(`[HEALTH-FULL] ✅ Report generado en ${report.duration_ms}ms — status: ${report.status}`);
     res.json(report);
   } catch (err) {
     console.error(`[HEALTH-FULL] ❌ Error: ${err.message}`);

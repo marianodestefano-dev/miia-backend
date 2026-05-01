@@ -241,6 +241,16 @@ describe('T47 §E — aggregateHealth', () => {
     expect(r.subsystems.firestore.status).toBe('unknown');
     expect(r.subsystems.process.status).toBe('ok');
   });
+
+  // T85 — integracion: deps null explicito no lanza excepcion
+  test('deps null explicito → no lanza excepcion, retorna status valido', async () => {
+    const r = await ha.aggregateHealth({ tenantManager: null, shield: null, firestoreClient: null });
+    expect(r).toBeTruthy();
+    expect(typeof r.status).toBe('string');
+    expect(['ok', 'degraded', 'critical', 'error', 'unknown']).toContain(r.status);
+    expect(r.subsystems).toBeDefined();
+    expect(typeof r.duration_ms).toBe('number');
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════
