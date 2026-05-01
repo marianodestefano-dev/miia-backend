@@ -1470,6 +1470,41 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     }
   }
 
+  // ── PASO 1c3: Comando "MIIA ignorar +57XXX" — Marcar contacto como bot/ignorado (T82) ──
+  // Owner responde a la alerta de bot detectado para ignorar permanentemente.
+  if (isSelfChat && role === 'owner' && messageBody) {
+    const ignoreMatch = messageBody.match(/^MIIA\s+(ignor[aá]r?|bloquear|no\s+hablar(?:\s+m[aá]s)?\s+con)\s*\+?([\d\s\-]+\d)/i);
+    if (ignoreMatch) {
+      const rawPhone = ignoreMatch[2].replace(/[\s\-]/g, '');
+      const phoneJid = `${rawPhone}@s.whatsapp.net`;
+      console.log(`${logPrefix} 🤖 BOT-IGNORE: Owner marca ${rawPhone} como bot/ignorado permanente`);
+      try {
+        await db().collection('users').doc(uid).collection('contact_index').doc(rawPhone).set({
+          status: 'ignored',
+          type: 'bot',
+          markedByOwner: true,
+          markedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        const ctxIgnore = tenantContexts.get(uid);
+        if (ctxIgnore) {
+          delete ctxIgnore.contactTypes[phoneJid];
+          delete ctxIgnore.contactTypes[`${rawPhone}@s.whatsapp.net`];
+          if (ctxIgnore.contactTypesMeta) {
+            delete ctxIgnore.contactTypesMeta[phoneJid];
+            delete ctxIgnore.contactTypesMeta[`${rawPhone}@s.whatsapp.net`];
+          }
+        }
+        loopWatcher.resetLoop(uid, phoneJid);
+        await sendTenantMessage(tenantState, phone, `🤖 Listo. Marqué a +${rawPhone} como bot/ignorado permanente. No le hablaré nunca más.\n\nSi fue un error: *MIIA retomá con +${rawPhone}*`);
+      } catch (e) {
+        console.error(`${logPrefix} ❌ Error marcando ${rawPhone} como bot:`, e.message);
+        await sendTenantMessage(tenantState, phone, `❌ Error al marcar +${rawPhone} como ignorado. Intentá de nuevo.`);
+      }
+      return;
+    }
+  }
+
   // ── PASO 1d: APROBACIÓN UNIFICADA DE AGENDA — Owner responde en self-chat ──
   // Detecta: "aprobar", "agendar igual", "mover igual", "alternativa", "rechazar", "mover a las X"
   // Busca en pending_appointments (status=waiting_approval) y ejecuta la acción.
@@ -6070,13 +6105,27 @@ async function sendTenantMessage(tenantState, phone, content) {
     if (!loopCheck.allowed) {
       if (loopCheck.loopDetected) {
         console.error(`[TMH:${tenantState.uid}] 🚨 LOOP DETECTADO con ${phone}: ${loopCheck.count} msgs combinados en <30s. PAUSADO INDEFINIDAMENTE.`);
-        // Alertar al owner en self-chat
+        // T82 — Notificación bot detectado al owner (mejorada: nombre + opción ignorar permanente)
         const ownerJid = `${sockBase}@s.whatsapp.net`;
-        const alertMsg = `🚨 *ALERTA ANTI-LOOP*\n\nDetecté un posible loop con el contacto ${targetBase}.\n${loopCheck.count} mensajes combinados en menos de 30 segundos.\n\nPausé las respuestas a ese contacto. No le voy a hablar más hasta que me ordenes retomar.\n\nSi querés que retome: escribime\n   MIIA retomá con +${targetBase}\n\nSi preferís no hablar más con ese número: no hagas nada. Me quedo callada.`;
+        const ctxForBot = tenantContexts.get(tenantState.uid);
+        const botContactName = ctxForBot?.leadNames?.[phone] || ctxForBot?.leadNames?.[`${targetBase}@s.whatsapp.net`] || null;
+        const botContactDisplay = botContactName ? `*${botContactName}* (+${targetBase})` : `*+${targetBase}*`;
+        const alertMsg = [
+          `🤖 *POSIBLE BOT DETECTADO*`,
+          ``,
+          `${botContactDisplay} envió ${loopCheck.count} mensajes en menos de 30 segundos — patrón típico de sistema automatizado.`,
+          ``,
+          `Pausé las respuestas para protegerte.`,
+          ``,
+          `*¿Qué hacer?*`,
+          `▶ Retomar si era humano: *MIIA retomá con +${targetBase}*`,
+          `🚫 Ignorar para siempre (bot/spam): *MIIA ignorar +${targetBase}*`,
+          `⏸ No hagas nada para dejarlo pausado.`
+        ].join('\n');
         try {
           await tenantState.sock.sendMessage(ownerJid, { text: alertMsg });
         } catch (alertErr) {
-          console.error(`[TMH:${tenantState.uid}] ⚠️ Error enviando alerta anti-loop:`, alertErr.message);
+          console.error(`[TMH:${tenantState.uid}] ⚠️ Error enviando alerta bot detectado:`, alertErr.message);
         }
       } else {
         console.warn(`[TMH:${tenantState.uid}] 🚫 LOOP PAUSA ACTIVA: ${phone} pausado INDEFINIDAMENTE. Mensaje NO enviado. Owner debe escribir "MIIA retomá con +${targetBase}".`);
