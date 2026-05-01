@@ -378,6 +378,53 @@ function contactRecord(uid, phone) {
   _contactLimits[key].push(Date.now());
 }
 
+/**
+ * Dashboard de rate limits para un tenant especifico.
+ * T88: endpoint GET /api/tenant/:uid/rate-limits (Wi mapa Lista Vi-V).
+ *
+ * @param {string} uid - UID del tenant
+ * @param {number} [dailyLimit] - Limite diario (default 250)
+ * @returns {{ uid_masked, level, contacts, circuit_breakers, generated_at }}
+ */
+function getTenantDashboard(uid, dailyLimit = DEFAULT_DAILY_LIMIT) {
+  const { level, count, pct, remaining } = getLevel(uid, dailyLimit);
+
+  // Per-contact stats: solo los activos en la ventana de 30s
+  const contacts = [];
+  const prefix = `${uid}:`;
+  const now = Date.now();
+  for (const [key, timestamps] of Object.entries(_contactLimits)) {
+    if (!key.startsWith(prefix)) continue;
+    const phone = key.slice(prefix.length);
+    const recentTs = timestamps.filter(t => t >= now - CONTACT_WINDOW_MS);
+    if (recentTs.length === 0) continue;
+    const last4 = phone.replace(/@[a-z.]+$/, '').slice(-4);
+    contacts.push({
+      phone_masked: `***${last4}`,
+      count_30s: recentTs.length,
+      max_30s: CONTACT_MAX_DEFAULT,
+      pct_30s: Math.min(100, Math.round((recentTs.length / CONTACT_MAX_DEFAULT) * 100)),
+    });
+  }
+
+  return {
+    uid_masked: uid.length > 8 ? `${uid.slice(0, 8)}...` : uid,
+    level: {
+      name: level.name,
+      emoji: level.emoji,
+      count_24h: count,
+      pct_24h: pct,
+      remaining_24h: remaining,
+      daily_limit: dailyLimit,
+      allow_leads: level.allowLeads,
+      allow_family: level.allowFamily,
+    },
+    contacts: contacts.sort((a, b) => b.count_30s - a.count_30s),
+    circuit_breakers: getCircuitStatus(),
+    generated_at: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   // Rate limiter original
   recordOutgoing,
@@ -387,6 +434,7 @@ module.exports = {
   getLevelChangeMessage,
   checkLevelChange,
   getMetrics,
+  getTenantDashboard,
   LEVELS,
   DEFAULT_DAILY_LIMIT,
   // Circuit breaker

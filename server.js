@@ -12899,6 +12899,20 @@ app.get('/api/tenant/:uid/weekend-mode', (req, res) => {
   res.json(weekendMode.getWeekendState(req.params.uid));
 });
 
+// T88 — Rate limiter dashboard (Wi mapa Lista Vi-V)
+// GET /api/tenant/:uid/rate-limits: nivel 24h, contactos activos ventana 30s, circuit breakers
+app.get('/api/tenant/:uid/rate-limits', (req, res) => {
+  const uid = req.params.uid;
+  try {
+    const dashboard = rateLimiter.getTenantDashboard(uid);
+    console.log(`[RATE-DASHBOARD] Dashboard generado para ${uid.slice(0, 8)}... — nivel: ${dashboard.level.name}`);
+    res.json(dashboard);
+  } catch (err) {
+    console.error(`[RATE-DASHBOARD] Error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/tenant/:uid/weekend-mode', express.json(), (req, res) => {
   const tz = req.body.timezone || 'America/Bogota';
   const result = weekendMode.processWeekendResponse(req.params.uid, req.body.action || 'finde off', tz);
