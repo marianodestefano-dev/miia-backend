@@ -9,6 +9,25 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+
+// F1.15 — Retry con backoff para scraping de resultados
+const MAX_SCRAPE_RETRIES = 3;
+
+async function _withScrapeRetry(fn) {
+  let lastErr;
+  for (let i = 0; i < MAX_SCRAPE_RETRIES; i++) {
+    try { return await fn(); } catch (err) {
+      lastErr = err;
+      if (i < MAX_SCRAPE_RETRIES - 1) {
+        const delay = 2000 * Math.pow(2, i);
+        console.warn('[F1-SCRAPER] Retry ' + (i+1) + '/' + MAX_SCRAPE_RETRIES + ': ' + err.message);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 const BASE_URL = 'https://www.formula1.com';
 const REQUEST_DELAY_MS = 5000;
 let _lastRequestAt = 0;

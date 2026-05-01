@@ -23,6 +23,28 @@ const CIRCUIT_BREAKER_PAUSE_MS = 60000;
 const CRITICAL_THRESHOLD = 10;
 
 // ─── Estado del scraper ───────────────────────────────
+
+// F1.15 — Retry con backoff exponencial
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_BASE_MS = 1000;
+
+async function _withRetry(fn, attempts, baseDelayMs) {
+  attempts = attempts || MAX_RETRY_ATTEMPTS;
+  baseDelayMs = baseDelayMs || RETRY_BASE_MS;
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn(); } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        const delay = baseDelayMs * Math.pow(2, i);
+        console.warn('[F1-LIVE] Retry ' + (i+1) + '/' + attempts + ' en ' + delay + 'ms: ' + err.message);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 const state = {
   isPolling: false,
   pollTimer: null,
@@ -159,7 +181,7 @@ async function _pollLoop() {
       return;
     }
 
-    const liveData = await fetchLiveState();
+    const liveData = await _withRetry(fetchLiveState);
     if (liveData) {
       state.consecutiveFailures = 0;
       state.lastSuccessAt = Date.now();
