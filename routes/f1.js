@@ -3,6 +3,7 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const { paths, validateF1Prefs } = require('../sports/f1_dashboard/f1_schema');
+const { getLiveCache } = require('../sports/f1_dashboard/live_cache');
 
 module.exports = function createF1Routes({ verifyToken }) {
   const router = express.Router();
@@ -137,6 +138,44 @@ module.exports = function createF1Routes({ verifyToken }) {
       res.json({ ok: true, updated: update });
     } catch (err) {
       console.error(`[F1-ROUTES] PATCH prefs: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+
+  // ── GET /api/f1/live/status ──────────────────────────
+  router.get('/live/status', auth, async (req, res) => {
+    try {
+      const cache = getLiveCache();
+      const status = await cache.getRaceStatus();
+      res.json(status);
+    } catch (err) {
+      console.error(`[F1-ROUTES] GET live/status: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/f1/live/positions ───────────────────────
+  router.get('/live/positions', auth, async (req, res) => {
+    try {
+      const cache = getLiveCache();
+      const [positions, status] = await Promise.all([cache.getAllPositions(), cache.getRaceStatus()]);
+      res.json({ isLive: status.isLive, session: status.session, lap: status.lap, totalLaps: status.totalLaps, positions, updatedAt: new Date().toISOString() });
+    } catch (err) {
+      console.error(`[F1-ROUTES] GET live/positions: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/f1/live/driver/:driver_number ───────────
+  router.get('/live/driver/:driver_number', auth, async (req, res) => {
+    try {
+      const cache = getLiveCache();
+      const pos = await cache.getDriverPosition(parseInt(req.params.driver_number, 10));
+      if (!pos) return res.status(404).json({ error: 'Driver no encontrado en cache live' });
+      res.json(pos);
+    } catch (err) {
+      console.error(`[F1-ROUTES] GET live/driver: ${err.message}`);
       res.status(500).json({ error: err.message });
     }
   });
