@@ -272,6 +272,8 @@ const createConsentRoutes = require('./routes/consent');
 const consentManager = require('./core/consent_manager');
 // T93 — Key rotation scheduler (checkAndRotateKeys cada 24h)
 const keyRotationScheduler = require('./core/key_rotation_scheduler');
+// T94 — Structured error responses helper
+const { sendApiError, ERROR_CODES } = require('./core/api_errors');
 const sportEngine = require('./sports/sport_engine');
 const integrationEngine = require('./integrations/integration_engine');
 const morningBriefing = require('./core/morning_briefing');
@@ -10879,7 +10881,7 @@ function requireRole(...allowedRoles) {
     try {
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'No autorizado' });
+        return sendApiError(res, ERROR_CODES.UNAUTHORIZED, 'Token de autorización requerido');
       }
       const idToken = authHeader.substring(7);
       const decoded = await admin.auth().verifyIdToken(idToken);
@@ -10903,9 +10905,9 @@ function requireRole(...allowedRoles) {
       // Admin siempre tiene acceso a todo
       if (role === 'admin') return next();
       if (allowedRoles.includes(role)) return next();
-      return res.status(403).json({ error: 'Acceso denegado', requiredRole: allowedRoles, yourRole: role });
+      return sendApiError(res, ERROR_CODES.FORBIDDEN, 'Acceso denegado', { details: { requiredRole: allowedRoles, yourRole: role } });
     } catch (e) {
-      return res.status(401).json({ error: 'Token inválido', details: e.message });
+      return sendApiError(res, ERROR_CODES.UNAUTHORIZED, 'Token inválido o expirado');
     }
   };
 }
@@ -10914,7 +10916,7 @@ function requireRole(...allowedRoles) {
 app.get('/api/user/role', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return sendApiError(res, ERROR_CODES.UNAUTHORIZED, 'Token de autorización requerido');
     const idToken = authHeader.substring(7);
     const decoded = await admin.auth().verifyIdToken(idToken);
     const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
@@ -10946,7 +10948,7 @@ app.get('/api/tenant/:uid/agent-conversations', requireRole('owner', 'agent'), a
     // Agent: verify they belong to this owner
     const agentDoc = await admin.firestore().collection('users').doc(agentUid).get();
     if (!agentDoc.exists || agentDoc.data().createdBy !== ownerUid) {
-      return res.status(403).json({ error: 'No pertenecés a este tenant' });
+      return sendApiError(res, ERROR_CODES.FORBIDDEN, 'No pertenecés a este tenant');
     }
 
     const assignedLeads = agentDoc.data().assignedLeads || [];
@@ -10976,14 +10978,14 @@ app.put('/api/tenant/:uid/assign-leads', requireRole('owner'), async (req, res) 
   try {
     const { agentUid, leads } = req.body;
     if (!agentUid || !Array.isArray(leads)) {
-      return res.status(400).json({ error: 'agentUid y leads[] son requeridos' });
+      return sendApiError(res, ERROR_CODES.VALIDATION_ERROR, 'agentUid y leads[] son requeridos');
     }
     await admin.firestore().collection('users').doc(agentUid).update({
       assignedLeads: leads
     });
     res.json({ ok: true, assigned: leads.length });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    return sendApiError(res, ERROR_CODES.INTERNAL_ERROR, e.message);
   }
 });
 
@@ -11057,7 +11059,7 @@ app.post('/api/owner/ai-disclosure', express.json(), async (req, res) => {
   try {
     const { uid, enabled, browser_ip, user_agent, screen, language } = req.body;
     if (!uid || typeof enabled !== 'boolean') {
-      return res.status(400).json({ error: 'uid y enabled (boolean) requeridos' });
+      return sendApiError(res, ERROR_CODES.VALIDATION_ERROR, 'uid y enabled (boolean) requeridos');
     }
 
     const serverIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'desconocida';
@@ -11085,7 +11087,7 @@ app.post('/api/owner/ai-disclosure', express.json(), async (req, res) => {
     res.json({ success: true, enabled });
   } catch (e) {
     console.error('[CONSENT-AI] Error:', e.message);
-    res.status(500).json({ error: e.message });
+    return sendApiError(res, ERROR_CODES.INTERNAL_ERROR, e.message);
   }
 });
 
@@ -11535,7 +11537,7 @@ app.get('/api/tenant/:uid/qr', (req, res) => {
 
   if (!status.exists) {
     console.log(`[QR] ❌ Tenant NOT found in map for UID: ${uid}`);
-    return res.status(404).json({ error: 'Tenant no encontrado. Llama a /api/tenant/init primero.' });
+    return sendApiError(res, ERROR_CODES.NOT_FOUND, 'Tenant no encontrado. Llama a /api/tenant/init primero.');
   }
 
   if (!status.hasQR && !status.isReady) {
@@ -11561,7 +11563,7 @@ app.post('/api/tenant/:uid/request-pairing-code', express.json(), async (req, re
 
   try {
     const client = tenantManager.getTenantClient(uid);
-    if (!client) return res.status(404).json({ error: 'WhatsApp no inicializado. Esperá unos segundos e intentá de nuevo.' });
+    if (!client) return sendApiError(res, ERROR_CODES.NOT_FOUND, 'WhatsApp no inicializado. Esperá unos segundos e intentá de nuevo.');
 
     const code = await client.requestPairingCode(phone.replace(/\D/g, ''));
     console.log(`[PAIRING] Código generado para ${uid}: ${code}`);
@@ -11746,7 +11748,7 @@ app.post('/api/tenant/:uid/train', express.json(), (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: 'message requerido' });
   const ok = tenantManager.appendTenantTraining(req.params.uid, message);
-  if (!ok) return res.status(404).json({ error: 'Tenant no encontrado' });
+  if (!ok) return sendApiError(res, ERROR_CODES.NOT_FOUND, 'Tenant no encontrado');
   res.json({ success: true });
 });
 
@@ -13016,7 +13018,7 @@ app.get('/api/tenant/:uid/privacy-report', async (req, res) => {
     res.json(report);
   } catch (e) {
     console.error(`[PRIVACY-REPORT] ❌ API error:`, e.message);
-    res.status(500).json({ error: e.message });
+    return sendApiError(res, ERROR_CODES.INTERNAL_ERROR, e.message);
   }
 });
 
@@ -13038,7 +13040,7 @@ app.get('/api/tenant/:uid/consent', async (req, res) => {
     return res.json({ uid, hasConsented: true, ...consent });
   } catch (e) {
     console.error(`[CONSENT-MGR] GET consent error uid=${req.params.uid}: ${e.message}`);
-    return res.status(500).json({ error: 'INTERNAL_ERROR', message: e.message });
+    return sendApiError(res, ERROR_CODES.INTERNAL_ERROR, e.message);
   }
 });
 
@@ -13048,10 +13050,9 @@ app.post('/api/tenant/:uid/consent', express.json(), async (req, res) => {
     const result = await consentManager.setOwnerConsent(uid, req.body || {});
     return res.json(result);
   } catch (e) {
-    const status = e.message.includes('invalido') ? 400 : 500;
-    const code = status === 400 ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR';
     console.error(`[CONSENT-MGR] POST consent error uid=${req.params.uid}: ${e.message}`);
-    return res.status(status).json({ error: code, message: e.message });
+    const code = e.message.includes('invalido') ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR;
+    return sendApiError(res, code, e.message);
   }
 });
 
