@@ -135,6 +135,29 @@ function createSafeLogger(prefix) {
   };
 }
 
+// installConsoleOverride — global console patch para sanitizar logs en produccion.
+// No-op si NODE_ENV != production o MIIA_DEBUG_VERBOSE === 'true'.
+// Llamada una sola vez en server.js al arrancar. Idempotente.
+let _consoleOverrideInstalled = false;
+function installConsoleOverride() {
+  if (_consoleOverrideInstalled) return;
+  if (process.env.NODE_ENV !== 'production' || process.env.MIIA_DEBUG_VERBOSE === 'true') {
+    _consoleOverrideInstalled = true;
+    return;
+  }
+  const _origLog   = console.log.bind(console);
+  const _origError = console.error.bind(console);
+  const _origWarn  = console.warn.bind(console);
+  const _origInfo  = console.info.bind(console);
+  const _sanitize  = (a) => typeof a === 'string' ? sanitizeText(a) : a;
+  console.log   = (...args) => _origLog(...args.map(_sanitize));
+  console.error = (...args) => _origError(...args.map(_sanitize));
+  console.warn  = (...args) => _origWarn(...args.map(_sanitize));
+  console.info  = (...args) => _origInfo(...args.map(_sanitize));
+  _consoleOverrideInstalled = true;
+}
+
+
 module.exports = {
   maskPhone,
   maskEmail,
@@ -150,4 +173,5 @@ module.exports = {
   PHONE_MASK_KEEP,
   DEFAULT_MAX_MESSAGE_LENGTH,
   VERBOSE_ENV_KEY,
+  installConsoleOverride,
 };
