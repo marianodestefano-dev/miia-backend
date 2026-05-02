@@ -100,11 +100,18 @@ async function getRaceStatus() {
 function clearMemCache() { _memCache.clear(); }
 function isRedisAvailable() { return _redisAvailable; }
 
+// Test-only: resetea estado interno (Redis client + flag)
+function _resetForTests() {
+  _redisClient = null;
+  _redisAvailable = false;
+  _memCache.clear();
+}
+
 // Singleton
 let _instance = null;
 function getLiveCache() {
   if (!_instance) {
-    _instance = { initRedis, setDriverPosition, getDriverPosition, setAllPositions, getAllPositions, setRaceStatus, getRaceStatus, clearMemCache, isRedisAvailable };
+    _instance = { initRedis, setDriverPosition, getDriverPosition, setAllPositions, getAllPositions, setRaceStatus, getRaceStatus, clearMemCache, isRedisAvailable, _resetForTests };
   }
   return _instance;
 }
