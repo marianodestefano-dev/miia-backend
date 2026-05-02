@@ -94,3 +94,9 @@ backups/prompt_engine_v0/
 /scripts/backup_prompt_engine_v0.js
 /scripts/admin/
 /scripts/benchmark/run_estudio_300_batch2.js
+
+# Backup files — nunca trackear en git
+*.bak
+*.bak_*
+backups/*.bak
+backups/*.bak_*
