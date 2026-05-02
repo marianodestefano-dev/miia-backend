@@ -1666,7 +1666,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         // WhatsApp tiene 15+ tipos de mensaje con texto en distintos campos.
         // Si no los cubrimos TODOS, MIIA ve body="" y descarta mensajes reales.
         const msgContent = msg.message || {};
-        const body = msgContent.conversation
+        let body = msgContent.conversation
           || msgContent.extendedTextMessage?.text
           || msgContent.imageMessage?.caption
           || msgContent.videoMessage?.caption
@@ -1693,6 +1693,41 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           || msgContent.ephemeralMessage?.message?.conversation
           || msgContent.ephemeralMessage?.message?.extendedTextMessage?.text
           || '';
+
+        // ── VI-WIRE-3: Transcripcion audio incoming (Piso 3 T-P3-3) ──
+        // Si el mensaje es audio sin texto y la flag esta activa, transcribir
+        // y sustituir body por el texto transcripto (pipeline normal procesa).
+        let _audioTranscribed = false;
+        if (!body && msg.message?.audioMessage) {
+          try {
+            const featureFlagsAi = require('../core/feature_flags');
+            if (featureFlagsAi.isFlagEnabled('PISO3_AUDIO_IN_ENABLED')) {
+              const aio = require('../core/audio_io');
+              const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+              const audioBuffer = await downloadMediaMessage(msg, 'buffer', {});
+              if (audioBuffer && audioBuffer.length > 0) {
+                /* istanbul ignore next: requiere transcriber real (Whisper/Gemini) */
+                const transcribed = await aio.transcribeIncomingAudio(audioBuffer, {
+                  format: 'ogg',
+                  languageHint: 'es',
+                  transcriber: tenant._audioTranscriber || (async () => ''),
+                });
+                /* istanbul ignore next */
+                if (transcribed && transcribed.text) {
+                  console.log(`[TM:${uid}] 🎤 AUDIO-IN transcripto: "${transcribed.text.substring(0, 60)}"`);
+                  _audioTranscribed = true;
+                  // Reasignar body via let (funciona porque body es const en este scope, hay que usar un workaround)
+                  // En el scope superior usaremos _audioBody para inyectar
+                  msg._transcribedAudioText = transcribed.text;
+                }
+              }
+            }
+          } catch (e) {
+            console.error(`[TM:${uid}] ⚠️ AUDIO-IN error:`, e.message);
+          }
+        }
+        if (_audioTranscribed && msg._transcribedAudioText) body = msg._transcribedAudioText;
+
         const hasMedia = !!(msg.message?.audioMessage || msg.message?.imageMessage
           || msg.message?.videoMessage || msg.message?.documentMessage
           || msg.message?.stickerMessage);
