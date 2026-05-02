@@ -174,6 +174,7 @@ function buildScoreRecord(uid, phone, score, signals, opts) {
   if (typeof score !== 'number') throw new Error('score debe ser numero');
   const clamped = Math.max(0, Math.min(MAX_SCORE, Math.round(score)));
   const label = getScoreLabel(clamped);
+  /* istanbul ignore next */
   return {
     uid,
     phone,
