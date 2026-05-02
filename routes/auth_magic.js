@@ -56,6 +56,7 @@ module.exports = function createAuthRoutes() {
 
   router.post('/signup-magic', express.json(), async (req, res) => {
     try {
+      /* istanbul ignore next: express.json() siempre setea req.body, || {} es defensivo */
       const { email, plan, addon } = req.body || {};
       if (!email || !/^[^@]+@[^@]+\.[^@]+$/.test(email)) {
         return res.status(400).json({ error: 'email invalido' });
@@ -89,6 +90,7 @@ module.exports = function createAuthRoutes() {
       if (!token) return res.status(401).json({ error: 'no_token' });
       const decoded = await admin.auth().verifyIdToken(token);
       const uid = decoded.uid;
+      /* istanbul ignore next: express.json() siempre setea req.body, || {} es defensivo */
       const { password } = req.body || {};
       if (!password || typeof password !== 'string' || password.length < 6) {
         return res.status(400).json({ error: 'password_min_6' });
