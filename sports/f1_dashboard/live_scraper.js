@@ -245,8 +245,128 @@ function _resetState() {
   state.raceStatus = { isLive: false, session: null, lap: 0, totalLaps: 0 };
 }
 
+
+// ─── OpenF1 API (MiiaF1.35-40) ──────────────────────────────────────────────
+const OPENF1_BASE_URL = 'https://api.openf1.org';
+
+async function fetchSessionKey() {
+  try {
+    const resp = await axios.get(`${OPENF1_BASE_URL}/v1/sessions`, {
+      timeout: 8000,
+      signal: AbortSignal.timeout(8000),
+    });
+    const sessions = Array.isArray(resp.data) ? resp.data : [];
+    if (sessions.length === 0) return null;
+    return sessions[sessions.length - 1].session_key || null;
+  } catch (err) {
+    console.warn('[F1-LIVE] fetchSessionKey error:', err.message);
+    return null;
+  }
+}
+
+async function fetchIntervals(sessionKey) {
+  if (!sessionKey) return null;
+  try {
+    const resp = await axios.get(
+      `${OPENF1_BASE_URL}/v1/intervals?session_key=${sessionKey}`,
+      { timeout: 8000, signal: AbortSignal.timeout(8000) },
+    );
+    return Array.isArray(resp.data) ? resp.data : null;
+  } catch (err) {
+    console.warn('[F1-LIVE] fetchIntervals error:', err.message);
+    return null;
+  }
+}
+
+async function fetchLaps(sessionKey) {
+  if (!sessionKey) return null;
+  try {
+    const resp = await axios.get(
+      `${OPENF1_BASE_URL}/v1/laps?session_key=${sessionKey}`,
+      { timeout: 8000, signal: AbortSignal.timeout(8000) },
+    );
+    return Array.isArray(resp.data) ? resp.data : null;
+  } catch (err) {
+    console.warn('[F1-LIVE] fetchLaps error:', err.message);
+    return null;
+  }
+}
+
+async function fetchStints(sessionKey) {
+  if (!sessionKey) return null;
+  try {
+    const resp = await axios.get(
+      `${OPENF1_BASE_URL}/v1/stints?session_key=${sessionKey}`,
+      { timeout: 8000, signal: AbortSignal.timeout(8000) },
+    );
+    return Array.isArray(resp.data) ? resp.data : null;
+  } catch (err) {
+    console.warn('[F1-LIVE] fetchStints error:', err.message);
+    return null;
+  }
+}
+
+async function fetchPits(sessionKey) {
+  if (!sessionKey) return null;
+  try {
+    const resp = await axios.get(
+      `${OPENF1_BASE_URL}/v1/pit?session_key=${sessionKey}`,
+      { timeout: 8000, signal: AbortSignal.timeout(8000) },
+    );
+    return Array.isArray(resp.data) ? resp.data : null;
+  } catch (err) {
+    console.warn('[F1-LIVE] fetchPits error:', err.message);
+    return null;
+  }
+}
+
+async function fetchCarData(sessionKey) {
+  if (!sessionKey) return null;
+  try {
+    const resp = await axios.get(
+      `${OPENF1_BASE_URL}/v1/car_data?session_key=${sessionKey}`,
+      { timeout: 8000, signal: AbortSignal.timeout(8000) },
+    );
+    return Array.isArray(resp.data) ? resp.data : null;
+  } catch (err) {
+    console.warn('[F1-LIVE] fetchCarData error:', err.message);
+    return null;
+  }
+}
+
+async function fetchLocation(sessionKey) {
+  if (!sessionKey) return null;
+  try {
+    const resp = await axios.get(
+      `${OPENF1_BASE_URL}/v1/location?session_key=${sessionKey}`,
+      { timeout: 8000, signal: AbortSignal.timeout(8000) },
+    );
+    return Array.isArray(resp.data) ? resp.data : null;
+  } catch (err) {
+    console.warn('[F1-LIVE] fetchLocation error:', err.message);
+    return null;
+  }
+}
+
+async function fetchAllOpenF1(sessionKey) {
+  if (!sessionKey) return null;
+  const [intervals, laps, stints, pits, carData, location] = await Promise.all([
+    fetchIntervals(sessionKey),
+    fetchLaps(sessionKey),
+    fetchStints(sessionKey),
+    fetchPits(sessionKey),
+    fetchCarData(sessionKey),
+    fetchLocation(sessionKey),
+  ]);
+  return { intervals, laps, stints, pits, carData, location };
+}
+
 module.exports = {
   start, stop, getState, isRaceWeekend, fetchLiveState, parsePositionFeed,
   _resetState, _withRetry, _pollLoop, _state: state,
   _constants: { CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_PAUSE_MS, CRITICAL_THRESHOLD, POLL_RACE_MS, POLL_IDLE_MS },
+  // OpenF1 API (MiiaF1.35-40)
+  OPENF1_BASE_URL,
+  fetchSessionKey, fetchIntervals, fetchLaps, fetchStints, fetchPits, fetchCarData, fetchLocation,
+  fetchAllOpenF1,
 };

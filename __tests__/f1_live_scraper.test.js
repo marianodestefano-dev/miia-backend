@@ -508,3 +508,243 @@ describe('_pollLoop — flujo principal + circuit breaker', () => {
     global.Date = realDate;
   });
 });
+
+// -- OpenF1 API (MiiaF1.35-40) --
+
+describe('fetchSessionKey() -- MiiaF1.35 helper', () => {
+  test('array con session_key -> retorna el key', async () => {
+    axios.get.mockResolvedValue({ data: [{ session_key: 9140, type: 'Race' }] });
+    const k = await scraper.fetchSessionKey();
+    expect(k).toBe(9140);
+  });
+
+  test('array vacio -> null', async () => {
+    axios.get.mockResolvedValue({ data: [] });
+    const k = await scraper.fetchSessionKey();
+    expect(k).toBeNull();
+  });
+
+  test('resp.data no es array -> sessions=[] -> null', async () => {
+    axios.get.mockResolvedValue({ data: null });
+    const k = await scraper.fetchSessionKey();
+    expect(k).toBeNull();
+  });
+
+  test('ultimo item sin session_key -> null via || null', async () => {
+    axios.get.mockResolvedValue({ data: [{ type: 'Race' }] });
+    const k = await scraper.fetchSessionKey();
+    expect(k).toBeNull();
+  });
+
+  test('axios throws -> null + warn', async () => {
+    axios.get.mockRejectedValue(new Error('net'));
+    const k = await scraper.fetchSessionKey();
+    expect(k).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('fetchSessionKey'), expect.any(String));
+  });
+});
+
+describe('fetchIntervals() -- MiiaF1.35', () => {
+  test('sessionKey null -> null inmediato', async () => {
+    const r = await scraper.fetchIntervals(null);
+    expect(r).toBeNull();
+    expect(axios.get).not.toHaveBeenCalled();
+  });
+
+  test('sessionKey valido + array -> retorna array', async () => {
+    const data = [{ driver_number: 1, gap_to_leader: 0, interval: null }];
+    axios.get.mockResolvedValue({ data });
+    const r = await scraper.fetchIntervals(9140);
+    expect(r).toEqual(data);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/intervals'), expect.any(Object));
+  });
+
+  test('resp.data no es array -> null', async () => {
+    axios.get.mockResolvedValue({ data: { foo: 1 } });
+    const r = await scraper.fetchIntervals(9140);
+    expect(r).toBeNull();
+  });
+
+  test('axios throws -> null + warn', async () => {
+    axios.get.mockRejectedValue(new Error('net'));
+    const r = await scraper.fetchIntervals(9140);
+    expect(r).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('fetchIntervals'), expect.any(String));
+  });
+});
+
+describe('fetchLaps() -- MiiaF1.36', () => {
+  test('null -> null', async () => {
+    expect(await scraper.fetchLaps(null)).toBeNull();
+  });
+
+  test('valido + array -> array', async () => {
+    const data = [{ driver_number: 1, lap_number: 3, lap_duration: 90.5 }];
+    axios.get.mockResolvedValue({ data });
+    expect(await scraper.fetchLaps(9140)).toEqual(data);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/laps'), expect.any(Object));
+  });
+
+  test('no array -> null', async () => {
+    axios.get.mockResolvedValue({ data: 'bad' });
+    expect(await scraper.fetchLaps(9140)).toBeNull();
+  });
+
+  test('throws -> null', async () => {
+    axios.get.mockRejectedValue(new Error('x'));
+    expect(await scraper.fetchLaps(9140)).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('fetchLaps'), expect.any(String));
+  });
+});
+
+describe('fetchStints() -- MiiaF1.37', () => {
+  test('null -> null', async () => {
+    expect(await scraper.fetchStints(null)).toBeNull();
+  });
+
+  test('valido + array -> array', async () => {
+    const data = [{ driver_number: 1, compound: 'SOFT', lap_start: 1 }];
+    axios.get.mockResolvedValue({ data });
+    expect(await scraper.fetchStints(9140)).toEqual(data);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/stints'), expect.any(Object));
+  });
+
+  test('no array -> null', async () => {
+    axios.get.mockResolvedValue({ data: 42 });
+    expect(await scraper.fetchStints(9140)).toBeNull();
+  });
+
+  test('throws -> null', async () => {
+    axios.get.mockRejectedValue(new Error('x'));
+    expect(await scraper.fetchStints(9140)).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('fetchStints'), expect.any(String));
+  });
+});
+
+describe('fetchPits() -- MiiaF1.38', () => {
+  test('null -> null', async () => {
+    expect(await scraper.fetchPits(null)).toBeNull();
+  });
+
+  test('valido + array -> array', async () => {
+    const data = [{ driver_number: 1, lap_number: 20, pit_duration: 22.5 }];
+    axios.get.mockResolvedValue({ data });
+    expect(await scraper.fetchPits(9140)).toEqual(data);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/pit'), expect.any(Object));
+  });
+
+  test('no array -> null', async () => {
+    axios.get.mockResolvedValue({ data: undefined });
+    expect(await scraper.fetchPits(9140)).toBeNull();
+  });
+
+  test('throws -> null', async () => {
+    axios.get.mockRejectedValue(new Error('x'));
+    expect(await scraper.fetchPits(9140)).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('fetchPits'), expect.any(String));
+  });
+});
+
+describe('fetchCarData() -- MiiaF1.39', () => {
+  test('null -> null', async () => {
+    expect(await scraper.fetchCarData(null)).toBeNull();
+  });
+
+  test('valido + array -> array', async () => {
+    const data = [{ driver_number: 1, speed: 310, rpm: 12500 }];
+    axios.get.mockResolvedValue({ data });
+    expect(await scraper.fetchCarData(9140)).toEqual(data);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/car_data'), expect.any(Object));
+  });
+
+  test('no array -> null', async () => {
+    axios.get.mockResolvedValue({ data: false });
+    expect(await scraper.fetchCarData(9140)).toBeNull();
+  });
+
+  test('throws -> null', async () => {
+    axios.get.mockRejectedValue(new Error('x'));
+    expect(await scraper.fetchCarData(9140)).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('fetchCarData'), expect.any(String));
+  });
+});
+
+describe('fetchLocation() -- MiiaF1.40', () => {
+  test('null -> null', async () => {
+    expect(await scraper.fetchLocation(null)).toBeNull();
+  });
+
+  test('valido + array con coords X,Y -> array', async () => {
+    const data = [{ driver_number: 1, x: 1234, y: -5678 }];
+    axios.get.mockResolvedValue({ data });
+    expect(await scraper.fetchLocation(9140)).toEqual(data);
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/location'), expect.any(Object));
+  });
+
+  test('no array -> null', async () => {
+    axios.get.mockResolvedValue({ data: {} });
+    expect(await scraper.fetchLocation(9140)).toBeNull();
+  });
+
+  test('throws -> null', async () => {
+    axios.get.mockRejectedValue(new Error('x'));
+    expect(await scraper.fetchLocation(9140)).toBeNull();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('fetchLocation'), expect.any(String));
+  });
+});
+
+describe('fetchAllOpenF1() -- MiiaF1.35-40 aggregate', () => {
+  test('null sessionKey -> null', async () => {
+    expect(await scraper.fetchAllOpenF1(null)).toBeNull();
+    expect(axios.get).not.toHaveBeenCalled();
+  });
+
+  test('sessionKey valido -> llama los 6 y retorna objeto completo', async () => {
+    const intervals = [{ driver_number: 1 }];
+    const laps = [{ driver_number: 1, lap_number: 3 }];
+    const stints = [{ driver_number: 1, compound: 'SOFT' }];
+    const pits = [{ driver_number: 1, lap_number: 20 }];
+    const carData = [{ driver_number: 1, speed: 310 }];
+    const location = [{ driver_number: 1, x: 100, y: 200 }];
+
+    axios.get
+      .mockResolvedValueOnce({ data: intervals })
+      .mockResolvedValueOnce({ data: laps })
+      .mockResolvedValueOnce({ data: stints })
+      .mockResolvedValueOnce({ data: pits })
+      .mockResolvedValueOnce({ data: carData })
+      .mockResolvedValueOnce({ data: location });
+
+    const result = await scraper.fetchAllOpenF1(9140);
+    expect(result).toEqual({ intervals, laps, stints, pits, carData, location });
+    expect(axios.get).toHaveBeenCalledTimes(6);
+  });
+
+  test('sessionKey valido + un fetcher falla -> retorna objeto con null parcial', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: [{ driver_number: 1 }] })
+      .mockRejectedValueOnce(new Error('laps fail'))
+      .mockResolvedValueOnce({ data: [{ compound: 'SOFT' }] })
+      .mockResolvedValueOnce({ data: [{ lap_number: 20 }] })
+      .mockResolvedValueOnce({ data: [{ speed: 310 }] })
+      .mockResolvedValueOnce({ data: [{ x: 100, y: 200 }] });
+
+    const result = await scraper.fetchAllOpenF1(9140);
+    expect(result.intervals).toHaveLength(1);
+    expect(result.laps).toBeNull();
+    expect(result.stints).toHaveLength(1);
+  });
+});
