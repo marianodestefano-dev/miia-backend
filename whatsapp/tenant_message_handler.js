@@ -6337,8 +6337,38 @@ async function sendTenantMessage(tenantState, phone, content) {
 
   try {
 
+    // ── VI-WIRE-4: Audio outgoing (Piso 3 T-P3-4) ──
+    // Si flag PISO3_AUDIO_OUT_ENABLED y owner config audio para este contacto:
+    // sintetizar texto via ElevenLabs (inyectable en tenantState._audioSynthesizer)
+    // y enviar como voice note en vez de texto.
+    let _sentAsAudio = false;
+    let sentMsg;
+    try {
+      const featureFlagsAo = require('../core/feature_flags');
+      if (featureFlagsAo.isFlagEnabled('PISO3_AUDIO_OUT_ENABLED') && typeof content === 'string') {
+        const aio = require('../core/audio_io');
+        const useAudio = await aio.shouldUseAudioOutput(tenantState.uid, targetBasePhone);
+        if (useAudio && tenantState._audioSynthesizer) {
+          /* istanbul ignore next: requires real ElevenLabs synthesizer */
+          const audioBuffer = await aio.synthesizeAudioOutput(content, {
+            synthesizer: tenantState._audioSynthesizer,
+            voiceId: tenantState._audioVoiceId,
+          });
+          /* istanbul ignore next */
+          if (audioBuffer && audioBuffer.length > 0) {
+            sentMsg = await tenantState.sock.sendMessage(phone, { audio: audioBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+            _sentAsAudio = true;
+            console.log(`[TMH:${tenantState.uid}] 🔊 AUDIO-OUT enviado a ${phone} (${audioBuffer.length} bytes)`);
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`[TMH:${tenantState.uid}] ⚠️ AUDIO-OUT error, fallback a texto:`, e.message);
+    }
     // Enviar
-    const sentMsg = await tenantState.sock.sendMessage(phone, { text: content });
+    if (!_sentAsAudio) {
+      sentMsg = await tenantState.sock.sendMessage(phone, { text: content });
+    }
     rateLimiter.recordOutgoing(tenantState.uid);
     if (!isSelfTarget) rateLimiter.contactRecord(tenantState.uid, phone);
     try { require('../core/privacy_counters').recordOutgoing(tenantState.uid); } catch (_) {}
