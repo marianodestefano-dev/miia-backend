@@ -86,7 +86,10 @@ function requireF1Addon(req, res, next) {
   const uid = req.user && req.user.uid;
   if (!uid) return res.status(401).json({ error: 'No autenticado' });
 
-  hasF1Addon(uid).then(function(active) {
+  // Indireccion via module.exports para que tests puedan inyectar spy/reject
+  // y validar el catch fail-open (linea ~100). Sin esto el catch es dead code
+  // porque hasF1Addon absorbe todo error internamente.
+  module.exports.hasF1Addon(uid).then(function(active) {
     if (!active) {
       return res.status(402).json({
         error: 'F1 Dashboard requiere add-on ($3 USD/mes)',
