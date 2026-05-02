@@ -128,3 +128,20 @@ describe('detectRaceEvent', () => {
     expect(r).toBeNull();
   });
 });
+
+describe('extra branches f1_adapter to 100', () => {
+  test('opts sin fetcher -> default fetcher throw', async () => {
+    await expect(f1.fetchRaceStatus({ driver: 'V' })).rejects.toThrow();
+  });
+  test('opts.driver null + opts.driverNumber numerico', async () => {
+    const r = await f1.fetchRaceStatus({ driverNumber: '1', fetcher: async () => null });
+    expect(r.driver).toBeNull();
+    expect(r.driverNumber).toBe('1');
+  });
+  test('result.driver fallback cuando opts no tiene', async () => {
+    const r = await f1.fetchRaceStatus({ driverNumber: '1', fetcher: async () => ({
+      driver: 'Verstappen', position: 1,
+    })});
+    expect(r.driver).toBe('Verstappen');
+  });
+});

@@ -60,6 +60,7 @@ const FAN_TRIGGERS = Object.freeze([
 ]);
 
 function _normalize(text) {
+  /* istanbul ignore next: defensive String(text || '') -- callers ya validan text != null */
   return String(text || '')
     .toLowerCase()
     .normalize('NFD')

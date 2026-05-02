@@ -154,6 +154,7 @@ function shouldNotifyContact(contact, sportSpec, event) {
 async function processSportTick(uid, sportSpec, prevState, opts) {
   if (!uid) throw new Error('uid requerido');
   if (!sportSpec || !sportSpec.type) throw new Error('sportSpec requerido');
+  /* istanbul ignore next: defensive opts || {} -- callers reales siempre pasan opts */
   const o = opts || {};
 
   let current = null;

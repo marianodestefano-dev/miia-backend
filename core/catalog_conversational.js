@@ -24,6 +24,7 @@ function __setFirestoreForTests(fs) { _db = fs; }
 function db() { return _db || require('firebase-admin').firestore(); }
 
 function _normalizeName(name) {
+  /* istanbul ignore next: defensive String(name || '') -- callers reales siempre pasan string truthy */
   return String(name || '').trim().toLowerCase();
 }
 

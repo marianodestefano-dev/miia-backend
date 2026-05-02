@@ -210,3 +210,13 @@ describe('setAudioPreferences', () => {
     expect(r.perContact).toEqual({});
   });
 });
+
+describe('FINAL 100% audio_io', () => {
+  test('result objeto sin language ni hint -> unknown', async () => {
+    const r = await aio.transcribeIncomingAudio('audio', {
+      transcriber: async () => ({ text: 'hola' }), // sin language
+      // sin languageHint
+    });
+    expect(r.language).toBe('unknown');
+  });
+});

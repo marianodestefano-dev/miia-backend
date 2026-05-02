@@ -168,3 +168,13 @@ describe('extra branches futbol_adapter', () => {
     expect(r.score.our).toBe(2);
   });
 });
+
+describe('extra branches futbol_adapter to 100', () => {
+  test('struct con our NaN (string no-numero) -> 0', async () => {
+    const r = await fa.fetchMatchStatus('Boca', { fetcher: async () => ({
+      our: 'no-numero', rival: 'tampoco',
+    })});
+    expect(r.score.our).toBe(0);
+    expect(r.score.rival).toBe(0);
+  });
+});

@@ -259,3 +259,28 @@ describe('extra branches sports_orchestrator', () => {
     expect(r.sent).toBe(0);
   });
 });
+
+describe('FINAL 100% sports_orchestrator', () => {
+  test('Gemini prompt usa sportSpec.driver cuando team ausente', async () => {
+    let prompt = null;
+    const gemini = { generate: async (p) => { prompt = p; return 'msg'; } };
+    await so.buildMessageForEvent(
+      { event: 'pit_stop', position: 1 },
+      { type: 'f1', driver: 'Verstappen' }, // sin team
+      '',
+      { geminiClient: gemini }
+    );
+    expect(prompt).toContain('Verstappen');
+  });
+  test('shouldNotifyContact recorre todos sports buscando match', () => {
+    expect(so.shouldNotifyContact(
+      { sports: [
+        { type: 'futbol', team: 'River' },     // no match (type ok, team no)
+        { type: 'f1', driver: 'V' },           // type mismatch
+        { type: 'futbol', team: 'Boca' },      // match
+      ]},
+      { type: 'futbol', team: 'Boca' },
+      {}
+    )).toBe(true);
+  });
+});
