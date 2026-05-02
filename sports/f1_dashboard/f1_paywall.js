@@ -105,4 +105,81 @@ function requireF1Addon(req, res, next) {
   });
 }
 
-module.exports = { hasF1Addon, activateF1Addon, deactivateF1Addon, requireF1Addon, F1_ADDON_ID, F1_ADDON_PRICE_USD };
+
+/**
+ * TEC-MIIAF1-PERMISOS-1: Estado completo F1 access para owner.
+ * Mismo patron que LudoMIIA y MIIADT.
+ *
+ * @param {string} ownerUid
+ * @returns {Promise<{
+ *   active: boolean,
+ *   plan: 'standalone' | 'miia_included' | null,
+ *   expiresAt: string|null,
+ *   source: string,
+ * }>}
+ */
+async function getF1Status(ownerUid) {
+  if (!ownerUid) {
+    return { active: false, plan: null, expiresAt: null, source: 'no_uid' };
+  }
+  try {
+    const db = admin.firestore();
+
+    // 1) MIIA principal activa => miia_included
+    const ownerDoc = await db.doc('owners/' + ownerUid).get();
+    if (ownerDoc.exists) {
+      const data = ownerDoc.data() || {};
+      if (data.miia_subscription_active === true) {
+        return {
+          active: true,
+          plan: 'miia_included',
+          expiresAt: data.miia_subscription_expires_at || null,
+          source: 'miia_included',
+        };
+      }
+      // Legacy: addons array o f1_active
+      if (data.f1_active === true) {
+        return {
+          active: true,
+          plan: 'standalone',
+          expiresAt: data.f1_expires_at || null,
+          source: 'legacy_addon',
+        };
+      }
+      if (Array.isArray(data.addons) && data.addons.includes(F1_ADDON_ID)) {
+        return {
+          active: true,
+          plan: 'standalone',
+          expiresAt: null,
+          source: 'legacy_addons_array',
+        };
+      }
+    }
+
+    // 2) Suscripcion standalone F1 dashboard
+    const subSnap = await db
+      .collection('subscriptions')
+      .where('owner_uid', '==', ownerUid)
+      .where('addon_id', '==', F1_ADDON_ID)
+      .where('status', '==', 'active')
+      .limit(1)
+      .get();
+
+    if (!subSnap.empty) {
+      const sub = subSnap.docs[0].data() || {};
+      return {
+        active: true,
+        plan: 'standalone',
+        expiresAt: sub.expires_at || null,
+        source: 'standalone',
+      };
+    }
+
+    return { active: false, plan: null, expiresAt: null, source: 'inactive' };
+  } catch (err) {
+    return { active: false, plan: null, expiresAt: null, source: 'error', error: err.message };
+  }
+}
+
+
+module.exports = { hasF1Addon, activateF1Addon, deactivateF1Addon, requireF1Addon, getF1Status, F1_ADDON_ID, F1_ADDON_PRICE_USD };

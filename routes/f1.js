@@ -331,5 +331,16 @@ module.exports = function createF1Routes({ verifyToken }) {
     }
   });
 
+
+  // ── TEC-MIIAF1-PERMISOS-1: GET /api/f1/status?uid=<uid> ────────────────────
+  // Estado del addon F1 para un owner. Sin auth (espejo /api/ludomiia/status).
+  router.get('/status', async (req, res) => {
+    const uid = req.query && req.query.uid;
+    if (!uid) return res.status(400).json({ error: 'uid_required' });
+    const { getF1Status } = require('../sports/f1_dashboard/f1_paywall');
+    const status = await getF1Status(uid);
+    res.json(status);
+  });
+
   return router;
 };
