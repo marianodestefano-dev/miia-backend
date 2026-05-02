@@ -66,6 +66,16 @@ function mountRoutes(app, deps = {}) {
     failed.push('f1');
   }
 
+  // ═══ TEC-MIIAF1-BILLING-1: checkout + webhook ═══
+  try {
+    const { createF1BillingRouter } = require('./f1_billing');
+    app.use('/api/f1/billing', createF1BillingRouter());
+    mounted.push('f1_billing');
+  } catch (e) {
+    console.error(`[ROUTES] ❌ Error montando f1_billing: ${e.message}`);
+    failed.push('f1_billing');
+  }
+
 
   // === PROMETHEUS METRICS ===
   try {
