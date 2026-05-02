@@ -172,3 +172,53 @@ describe('getOnboardingState + progress + isComplete', () => {
     expect(ow.isOnboardingComplete({ completedAt: '2026' })).toBe(true);
   });
 });
+
+describe('extra branches onboarding_wizard 100%', () => {
+  test('getWizardState con doc.exists pero sin data fn', async () => {
+    const ow = require('../core/onboarding_wizard');
+    ow.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true }),
+        set: async () => {}
+      })})
+    });
+    const r = await ow.getWizardState('uid_no_data');
+    expect(r.currentStep).toBe('identity');
+  });
+
+  test('submitStep con state sin completedSteps array', async () => {
+    const ow = require('../core/onboarding_wizard');
+    ow.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true, data: () => ({ completedSteps: 'no-array' }) }),
+        set: async () => {}
+      })})
+    });
+    const r = await ow.submitStep('uid_x', 'identity', { ownerName: 'M', email: 'a@b.c' });
+    expect(r.success).toBe(true);
+  });
+
+  test('submitStep con step ya completado no duplica', async () => {
+    const ow = require('../core/onboarding_wizard');
+    ow.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true, data: () => ({ completedSteps: ['identity'] }) }),
+        set: async () => {}
+      })})
+    });
+    const r = await ow.submitStep('uid_y', 'identity', { ownerName: 'M', email: 'a@b.c' });
+    expect(r.state.completedSteps.length).toBe(1);
+  });
+
+  test('submitStep con state sin stepData inicializa', async () => {
+    const ow = require('../core/onboarding_wizard');
+    ow.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true, data: () => ({ completedSteps: [] }) }),
+        set: async () => {}
+      })})
+    });
+    const r = await ow.submitStep('uid_z', 'identity', { ownerName: 'M', email: 'a@b.c' });
+    expect(r.state.stepData).toBeDefined();
+  });
+});

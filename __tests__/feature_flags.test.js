@@ -105,3 +105,69 @@ describe('logFlagsState', () => {
     expect(r.PISO3_CATALOGO_ENABLED).toBe(true);
   });
 });
+
+describe('FF coerce extra branches', () => {
+  test('_coerceBool number 0 -> false', async () => {
+    const ff = require('../core/feature_flags');
+    ff.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true, data: () => ({ tts_enabled: 0 }) }),
+        set: async () => {}
+      })})
+    });
+    ff.clearCache();
+    const flags = await ff.getFlags('uid_x');
+    expect(flags.tts_enabled).toBe(false);
+  });
+  test('_coerceBool number !=0 -> true', async () => {
+    const ff = require('../core/feature_flags');
+    ff.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true, data: () => ({ tts_enabled: 1 }) }),
+        set: async () => {}
+      })})
+    });
+    ff.clearCache();
+    const flags = await ff.getFlags('uid_y');
+    expect(flags.tts_enabled).toBe(true);
+  });
+  test('_coerceBool object/null -> false', async () => {
+    const ff = require('../core/feature_flags');
+    ff.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true, data: () => ({ tts_enabled: null }) }),
+        set: async () => {}
+      })})
+    });
+    ff.clearCache();
+    const flags = await ff.getFlags('uid_z');
+    expect(flags.tts_enabled).toBe(false);
+  });
+});
+
+describe('FF coerce string variants', () => {
+  test.each(['1','on','yes','true'])('"%s" -> true', async (val) => {
+    const ff = require('../core/feature_flags');
+    ff.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true, data: () => ({ tts_enabled: val }) }),
+        set: async () => {}
+      })})
+    });
+    ff.clearCache();
+    const flags = await ff.getFlags('uid_' + val);
+    expect(flags.tts_enabled).toBe(true);
+  });
+  test('doc.exists pero sin data fn -> defaults', async () => {
+    const ff = require('../core/feature_flags');
+    ff.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true }),
+        set: async () => {}
+      })})
+    });
+    ff.clearCache();
+    const flags = await ff.getFlags('uid_no_data_fn');
+    expect(flags.tts_enabled).toBe(false);
+  });
+});
