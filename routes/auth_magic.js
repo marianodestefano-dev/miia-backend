@@ -80,5 +80,27 @@ module.exports = function createAuthRoutes() {
     }
   });
 
+
+  // VI-SETTINGS-1: set/change password
+  router.post('/set-password', express.json(), async (req, res) => {
+    try {
+      const auth = req.headers.authorization || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+      if (!token) return res.status(401).json({ error: 'no_token' });
+      const decoded = await admin.auth().verifyIdToken(token);
+      const uid = decoded.uid;
+      const { password } = req.body || {};
+      if (!password || typeof password !== 'string' || password.length < 6) {
+        return res.status(400).json({ error: 'password_min_6' });
+      }
+      await admin.auth().updateUser(uid, { password });
+      console.log('[AUTH-SETPW] uid=' + uid + ' password_updated');
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('[AUTH-SETPW] error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return router;
 };

@@ -99,7 +99,7 @@ function mountRoutes(app, deps = {}) {
     failed.push('products');
   }
 
-  // === AUTH MAGIC LINK (VI-AUTH-2/3) ===
+  // === AUTH MAGIC LINK (VI-AUTH-2/3 + VI-SETTINGS-1) ===
   try {
     const createAuthRoutes = require('./auth_magic');
     app.use('/api/auth', createAuthRoutes());
@@ -107,6 +107,16 @@ function mountRoutes(app, deps = {}) {
   } catch (e) {
     console.error('[ROUTES] Error montando auth_magic routes:', e.message);
     failed.push('auth_magic');
+  }
+
+  // === BILLING (VI-BILL-1) ===
+  try {
+    const createBillingRoutes = require('./billing');
+    app.use('/api/billing', createBillingRoutes());
+    mounted.push('billing');
+  } catch (e) {
+    console.error('[ROUTES] Error montando billing routes:', e.message);
+    failed.push('billing');
   }
 
   // Resumen
