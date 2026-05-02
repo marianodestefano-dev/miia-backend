@@ -1513,6 +1513,38 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     }
   }
 
+  // ── PASO 1c4: VI-WIRE-2 -- Catalogo conversacional (Piso 3 T-P3-1) ──
+  // Owner agrega producto via self-chat: "MIIA agregalo: Pizza $12000 stock 50"
+  // Detras de feature flag PISO3_CATALOGO_ENABLED. Si no esta activo: skip.
+  if (isSelfChat && role === 'owner' && messageBody) {
+    try {
+      const featureFlags = require('../core/feature_flags');
+      if (featureFlags.isFlagEnabled('PISO3_CATALOGO_ENABLED')) {
+        const cc = require('../core/catalog_conversational');
+        const parsed = cc.parseAddProductCommand(messageBody);
+        if (parsed) {
+          console.log(`${logPrefix} 🛒 CATALOG-ADD: ${parsed.name} $${parsed.price}`);
+          try {
+            const product = await cc.addProduct(uid, parsed);
+            const ackParts = [`✅ Listo, agregado al catalogo:`];
+            ackParts.push(`*${product.name}* — $${product.price} ${product.currency}`);
+            if (product.stock != null) ackParts.push(`Stock: ${product.stock}`);
+            if (product.category) ackParts.push(`Categoria: ${product.category}`);
+            await sendTenantMessage(tenantState, phone, ackParts.join(String.fromCharCode(10)));
+            return;
+          } catch (e) {
+            console.error(`${logPrefix} ❌ CATALOG-ADD error:`, e.message);
+            await sendTenantMessage(tenantState, phone, `❌ No pude agregar el producto: ${e.message}`);
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`${logPrefix} ⚠️ Error en PASO 1c4 catalog:`, e.message);
+      // No-throw: continuar con el resto del pipeline
+    }
+  }
+
   // ── PASO 1d: APROBACIÓN UNIFICADA DE AGENDA — Owner responde en self-chat ──
   // Detecta: "aprobar", "agendar igual", "mover igual", "alternativa", "rechazar", "mover a las X"
   // Busca en pending_appointments (status=waiting_approval) y ejecuta la acción.
