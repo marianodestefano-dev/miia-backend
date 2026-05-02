@@ -139,6 +139,8 @@ process.on('uncaughtException', (err) => {
 // Graceful shutdown: flush TODO a Firestore antes de cerrar (deploy/restart/crash)
 // Esto permite que al arrancar de nuevo, AUTO-INIT reconecte rápido sin perder datos
 process.on('SIGTERM', async () => {
+  /* istanbul ignore next */
+  try { require('./services/modo_deporte_cron').stopCron(); } catch (_) {}
   console.log('[SHUTDOWN] ⚠️ SIGTERM recibido — guardando TODOS los datos antes de morir...');
   const shutdownStart = Date.now();
   try { await saveAffinityToFirestore(); console.log('[SHUTDOWN] ✅ Affinity guardado'); } catch (e) { console.error('[SHUTDOWN] ❌ Error affinity:', e.message); }
@@ -17545,6 +17547,28 @@ server.listen(PORT, () => {
   } catch (safetyErr) {
     console.error(`[SAFETY-SHIELD] ❌ Error inicializando: ${safetyErr.message} — Shield funcionará en modo FAIL-SAFE`);
   }
+  // ═══ MIIA MODO DEPORTE CRON (VI-WIRE-5) ═══
+  // Solo arranca si MIIA_MODO_DEPORTE_ENABLED=1. Default OFF.
+  try {
+    const mdCron = require('./services/modo_deporte_cron');
+    /* istanbul ignore next */
+    if (mdCron.startCron({
+      activeOwners: OWNER_UID ? [OWNER_UID] : [],
+      sender: async (uid, phone, msg) => {
+        try {
+          const tenant = require('./whatsapp/tenant_manager').getTenant(uid);
+          if (tenant) await safeSendMessage(tenant.sock, phone, msg);
+        } catch (e) { console.error('[md_cron] sender error:', e.message); }
+      },
+    })) {
+      /* istanbul ignore next */
+      console.log('[MIIA-MODO-DEPORTE] cron arrancado');
+    }
+  } catch (mdErr) {
+    /* istanbul ignore next */
+    console.error('[MIIA-MODO-DEPORTE] init error:', mdErr.message);
+  }
+
   // ═══ GMAIL CRON — Check periódico de emails (cada 15 min) ═══
   setInterval(async () => {
     if (!OWNER_UID || !OWNER_PHONE) return;
