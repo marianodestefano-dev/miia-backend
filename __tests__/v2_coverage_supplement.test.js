@@ -520,3 +520,50 @@ describe('FINAL istanbul cleanup', () => {
     expect(true).toBe(true);
   });
 });
+
+describe('FINAL push to 100 percent branches (handoff/scorer)', () => {
+  test('handoff_manager L26: initiateHandoff con reason y mode VALIDOS toma true branch', async () => {
+    hm.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({ collection: () => ({ doc: () => ({ set: async () => {} }) }) }) })
+    });
+    const r = await hm.initiateHandoff('uid', '+1', { reason: 'complaint', mode: 'manual', timeoutMins: 15 });
+    expect(r.reason).toBe('complaint');
+    expect(r.mode).toBe('manual');
+  });
+  test('handoff_manager L78: getPendingHandoffs con docs SIN .data property', async () => {
+    hm.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({ collection: () => ({
+        where: () => ({ get: async () => ({ forEach: fn => [{id: 'x'}].forEach(fn) }) }),
+      })})})
+    });
+    const r = await hm.getPendingHandoffs('uid');
+    expect(r.length).toBe(1);
+    expect(r[0]).toEqual({});
+  });
+  test('handoff_manager: getPendingHandoffs sin uid throw', async () => {
+    await expect(hm.getPendingHandoffs(undefined)).rejects.toThrow('uid');
+  });
+  test('lead_scorer L100: checkAlertThreshold sin phone throw', async () => {
+    await expect(ls.checkAlertThreshold('uid', undefined, 50)).rejects.toThrow('phone');
+  });
+  test('lead_scorer L94: getLeadInteractions docs CON .data property real', async () => {
+    ls.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({ collection: () => ({ doc: () => ({ collection: () => ({
+        get: async () => ({ forEach: fn => [{ data: () => ({ type: 'message_sent' }) }].forEach(fn) }),
+      })})})})})
+    });
+    const r = await ls.getLeadInteractions('uid', '+1');
+    expect(r.length).toBe(1);
+    expect(r[0].type).toBe('message_sent');
+  });
+  test('lead_scorer L121: getPendingAlerts docs CON .data property real', async () => {
+    ls.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({ collection: () => ({ doc: () => ({ collection: () => ({
+        where: () => ({ get: async () => ({ forEach: fn => [{ data: () => ({ phone: '+1' }) }].forEach(fn) }) }),
+      })})})})})
+    });
+    const r = await ls.getPendingAlerts('uid');
+    expect(r.length).toBe(1);
+    expect(r[0].phone).toBe('+1');
+  });
+});

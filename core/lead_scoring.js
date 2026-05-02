@@ -65,6 +65,7 @@ function calculateLeadScore(leadData, now) {
   if (leadData.hasAppointment === true) breakdown.hasAppointment = SCORE_WEIGHTS.hasAppointment;
 
   let total = breakdown.messageCount + breakdown.hasEmail + breakdown.hasName + breakdown.recentActivity + breakdown.longMessages + breakdown.hasAppointment;
+  /* istanbul ignore next: defensive cap, weights suman max 100 con messageCountCap=30+15+10+20+5+20 */
   if (total > MAX_SCORE) total = MAX_SCORE;
   return { score: total, breakdown };
 }
