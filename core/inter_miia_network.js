@@ -1,175 +1,79 @@
 'use strict';
-
-/**
- * MIIA - Inter-MIIA Network (T188)
- * Red entre instancias MIIA: referidos, colaboracion, mensajeria interna.
- */
+const { randomUUID } = require('crypto');
 
 let _db = null;
-function __setFirestoreForTests(fs) { _db = fs; }
-function db() { return _db || require('firebase-admin').firestore(); }
+function __setFirestoreForTests(db) { _db = db; }
+function getDb() { return _db || require('../config/firebase').db; }
 
-const NETWORK_EVENT_TYPES = Object.freeze([
-  'referral_sent', 'referral_received', 'collaboration_request',
-  'lead_transfer', 'message_relay', 'partnership',
-]);
+const REPUTATION_LEVELS = Object.freeze(['blocked', 'flagged', 'new', 'verified', 'trusted']);
+const CONSENT_TYPES = Object.freeze(['explicit', 'legitimate_interest', 'denied']);
+const FRAUD_SIGNAL_TYPES = Object.freeze(['spam', 'fake_business', 'identity_theft', 'payment_fraud', 'harassment']);
 
-const NETWORK_STATES = Object.freeze(['pending', 'accepted', 'declined', 'completed']);
-const MAX_REFERRALS_PER_DAY = 20;
-const REFERRAL_REWARD_POINTS = 10;
-
-
-/**
- * Registra un referido de un owner a otro.
- * @param {string} fromUid - owner que refiere
- * @param {string} toUid - owner que recibe el referido
- * @param {string} leadPhone - telefono del lead referido
- * @param {object} [opts] - {message, context}
- * @returns {Promise<{referralId, state, points}>}
- */
-async function sendReferral(fromUid, toUid, leadPhone, opts) {
-  if (!fromUid) throw new Error('fromUid requerido');
-  if (!toUid) throw new Error('toUid requerido');
-  if (!leadPhone) throw new Error('leadPhone requerido');
-  if (fromUid === toUid) throw new Error('fromUid y toUid no pueden ser iguales');
-
-  const options = opts || {};
-  const referralId = fromUid.substring(0, 8) + '_' + toUid.substring(0, 8) + '_' + Date.now();
-
-  const doc = {
-    referralId, fromUid, toUid, leadPhone,
-    state: 'pending',
-    message: options.message || '',
-    context: options.context || {},
-    sentAt: new Date().toISOString(),
-    acceptedAt: null,
-    rewardPoints: REFERRAL_REWARD_POINTS,
-  };
-
-  try {
-    await db()
-      .collection('inter_miia_referrals')
-      .doc(referralId)
-      .set(doc);
-    console.log('[NETWORK] referido enviado from=' + fromUid.substring(0, 8) + ' to=' + toUid.substring(0, 8));
-    return { referralId, state: 'pending', points: REFERRAL_REWARD_POINTS };
-  } catch (e) {
-    console.error('[NETWORK] Error enviando referido: ' + e.message);
-    throw e;
-  }
+async function searchCrossTenant(query, opts) {
+  opts = opts || {};
+  const limit = opts.limit || 10;
+  const minRep = opts.minReputation || 'new';
+  const repOrder = ['blocked', 'flagged', 'new', 'verified', 'trusted'];
+  const minIdx = repOrder.indexOf(minRep);
+  const snap = await getDb().collection('network_directory').get();
+  const results = [];
+  snap.forEach(doc => {
+    const d = doc.data();
+    const repIdx = repOrder.indexOf(d.reputation || 'new');
+    if (repIdx < minIdx || d.status === 'inactive') return;
+    const text = (d.name + ' ' + (d.description || '') + ' ' + (d.category || '')).toLowerCase();
+    const words = (query || '').toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const score = words.length ? words.filter(w => text.includes(w)).length : 1;
+    if (score > 0) results.push({ id: doc.id, ...d, _score: score, _repIdx: repIdx });
+  });
+  results.sort((a, b) => b._score - a._score || b._repIdx - a._repIdx);
+  return results.slice(0, limit).map(({ _score, _repIdx, ...r }) => r);
 }
 
-/**
- * Actualiza el estado de un referido.
- * @param {string} referralId
- * @param {string} state
- */
-async function updateReferralState(referralId, state) {
-  if (!referralId) throw new Error('referralId requerido');
-  if (!state || !NETWORK_STATES.includes(state)) throw new Error('state invalido: ' + state);
-
-  const updates = { state, updatedAt: new Date().toISOString() };
-  if (state === 'accepted') updates.acceptedAt = new Date().toISOString();
-
-  try {
-    await db().collection('inter_miia_referrals').doc(referralId).set(updates, { merge: true });
-    console.log('[NETWORK] referido actualizado id=' + referralId + ' state=' + state);
-  } catch (e) {
-    console.error('[NETWORK] Error actualizando referido: ' + e.message);
-    throw e;
-  }
+async function deriveLead(fromUid, toUid, leadPhone, opts) {
+  opts = opts || {};
+  const consent = opts.consent || 'legitimate_interest';
+  if (!CONSENT_TYPES.includes(consent)) throw new Error('Invalid consent type: ' + consent);
+  const derivation = { id: randomUUID(), fromUid, toUid, leadPhone, consent, context: opts.context || null, sourceMessage: opts.sourceMessage ? opts.sourceMessage.slice(0, 200) : null, status: 'pending', derivedAt: new Date().toISOString() };
+  await getDb().collection('lead_derivations').doc(derivation.id).set(derivation);
+  return derivation;
 }
 
-/**
- * Obtiene los referidos enviados por un owner.
- * @param {string} uid
- * @returns {Promise<object[]>}
- */
-async function getSentReferrals(uid) {
-  if (!uid) throw new Error('uid requerido');
-  try {
-    const snap = await db()
-      .collection('inter_miia_referrals')
-      .where('fromUid', '==', uid)
-      .get();
-    const referrals = [];
-    snap.forEach(doc => referrals.push({ id: doc.id, ...doc.data() }));
-    return referrals;
-  } catch (e) {
-    console.error('[NETWORK] Error leyendo referidos enviados: ' + e.message);
-    return [];
-  }
+async function acceptLeadDerivation(derivationId, toUid) {
+  const ref = getDb().collection('lead_derivations').doc(derivationId);
+  const doc = await ref.get();
+  if (!doc.exists) throw new Error('Derivation not found: ' + derivationId);
+  if (doc.data().toUid !== toUid) throw new Error('Unauthorized');
+  await ref.set({ status: 'accepted', acceptedAt: new Date().toISOString() }, { merge: true });
+  return { derivationId, status: 'accepted' };
 }
 
-/**
- * Obtiene los referidos recibidos por un owner.
- * @param {string} uid
- * @returns {Promise<object[]>}
- */
-async function getReceivedReferrals(uid) {
-  if (!uid) throw new Error('uid requerido');
-  try {
-    const snap = await db()
-      .collection('inter_miia_referrals')
-      .where('toUid', '==', uid)
-      .get();
-    const referrals = [];
-    snap.forEach(doc => referrals.push({ id: doc.id, ...doc.data() }));
-    return referrals;
-  } catch (e) {
-    console.error('[NETWORK] Error leyendo referidos recibidos: ' + e.message);
-    return [];
-  }
+async function recordFraudSignal(uid, targetPhone, signalType) {
+  if (!FRAUD_SIGNAL_TYPES.includes(signalType)) throw new Error('Invalid signal type: ' + signalType);
+  const signal = { id: randomUUID(), reporterUid: uid, targetPhone, signalType, status: 'open', reportedAt: new Date().toISOString() };
+  await getDb().collection('fraud_signals').doc(signal.id).set(signal);
+  return signal;
 }
 
-/**
- * Calcula los puntos de red acumulados por un owner.
- * @param {string} uid
- * @returns {Promise<{totalPoints, sentCount, acceptedCount}>}
- */
-async function getNetworkPoints(uid) {
-  if (!uid) throw new Error('uid requerido');
-  try {
-    const sent = await getSentReferrals(uid);
-    const accepted = sent.filter(r => r.state === 'accepted' || r.state === 'completed');
-    const totalPoints = accepted.length * REFERRAL_REWARD_POINTS;
-    return { totalPoints, sentCount: sent.length, acceptedCount: accepted.length };
-  } catch (e) {
-    console.error('[NETWORK] Error calculando puntos: ' + e.message);
-    return { totalPoints: 0, sentCount: 0, acceptedCount: 0 };
-  }
+async function getBusinessReputation(uid) {
+  const fraudSnap = await getDb().collection('fraud_signals').where('reporterUid', '==', uid).get();
+  const fraudCount = fraudSnap.size || 0;
+  const ownerDoc = await getDb().collection('owners').doc(uid).get();
+  const data = ownerDoc.exists ? ownerDoc.data() : {};
+  const days = data.registeredAt ? Math.floor((Date.now() - new Date(data.registeredAt).getTime()) / 86400000) : 0;
+  let level = fraudCount >= 5 ? 'blocked' : fraudCount >= 3 ? 'flagged' : days > 90 && fraudCount === 0 ? 'trusted' : days > 30 ? 'verified' : 'new';
+  return { uid, reputationLevel: level, fraudSignals: fraudCount, registeredDays: days };
 }
 
-/**
- * Registra un evento de red entre owners.
- * @param {string} fromUid
- * @param {string} toUid
- * @param {string} eventType
- * @param {object} [data]
- */
-async function recordNetworkEvent(fromUid, toUid, eventType, data) {
-  if (!fromUid) throw new Error('fromUid requerido');
-  if (!toUid) throw new Error('toUid requerido');
-  if (!eventType || !NETWORK_EVENT_TYPES.includes(eventType)) throw new Error('eventType invalido: ' + eventType);
-
-  const doc = {
-    fromUid, toUid, eventType,
-    data: data || {},
-    recordedAt: new Date().toISOString(),
-  };
-
-  try {
-    const id = fromUid.substring(0, 8) + '_' + eventType + '_' + Date.now();
-    await db().collection('network_events').doc(id).set(doc);
-  } catch (e) {
-    console.error('[NETWORK] Error registrando evento: ' + e.message);
-    throw e;
-  }
+async function rankBusinesses(category, limit) {
+  limit = limit || 10;
+  const snap = await getDb().collection('network_directory').where('category', '==', category).get();
+  const businesses = [];
+  snap.forEach(doc => businesses.push({ id: doc.id, ...doc.data() }));
+  const score = { trusted: 4, verified: 3, new: 2, flagged: 1, blocked: 0 };
+  businesses.sort((a, b) => (score[b.reputation || 'new'] || 0) - (score[a.reputation || 'new'] || 0));
+  return businesses.slice(0, limit);
 }
 
-module.exports = {
-  sendReferral, updateReferralState, getSentReferrals, getReceivedReferrals,
-  getNetworkPoints, recordNetworkEvent,
-  NETWORK_EVENT_TYPES, NETWORK_STATES, REFERRAL_REWARD_POINTS, MAX_REFERRALS_PER_DAY,
-  __setFirestoreForTests,
-};
+module.exports = { __setFirestoreForTests, REPUTATION_LEVELS, CONSENT_TYPES, FRAUD_SIGNAL_TYPES,
+  searchCrossTenant, deriveLead, acceptLeadDerivation, recordFraudSignal, getBusinessReputation, rankBusinesses };
