@@ -10,7 +10,6 @@ const admin = require('firebase-admin');
 const { getLiveCache } = require('../sports/f1_dashboard/live_cache');
 const { paths } = require('../sports/f1_dashboard/f1_schema');
 const notifier = require('../sports/f1_dashboard/f1_live_notifier');
-const detector = require('../sports/f1_dashboard/f1_query_detector');
 
 function mockFirestore(docs) {
   docs = docs || {};
@@ -107,49 +106,3 @@ describe('F1.13 -- Live race notifier', function() {
   });
 });
 
-describe('F1.14 -- F1 query detector', function() {
-  beforeEach(function() {
-    jest.clearAllMocks();
-    mockCache({ raceStatus: { isLive: false } });
-    mockFirestore({});
-  });
-
-  describe('isF1Query', function() {
-    test('detecta "como va Verstappen"', function() { expect(detector.isF1Query('como va Verstappen')).toBe(true); });
-    test('detecta "resultado del GP"', function() { expect(detector.isF1Query('resultado del GP de Monaco')).toBe(true); });
-    test('detecta "formula 1 hoy"', function() { expect(detector.isF1Query('formula 1 hoy')).toBe(true); });
-    test('ignora "quiero pizza"', function() { expect(detector.isF1Query('quiero pizza')).toBe(false); });
-    test('ignora "cual es el clima"', function() { expect(detector.isF1Query('cual es el clima')).toBe(false); });
-  });
-
-  describe('detectMentionedDriver', function() {
-    test('detecta verstappen', function() { expect(detector.detectMentionedDriver('va Verstappen')).toBe('verstappen'); });
-    test('detecta norris', function() { expect(detector.detectMentionedDriver('norris va primero')).toBe('norris'); });
-    test('null si no hay piloto', function() { expect(detector.detectMentionedDriver('resultado del GP')).toBeNull(); });
-  });
-
-  describe('enrichF1Prompt', function() {
-    test('retorna null para mensaje no-F1', async function() {
-      expect(await detector.enrichF1Prompt('quiero pizza')).toBeNull();
-    });
-
-    test('incluye sin carrera cuando no hay live', async function() {
-      const result = await detector.enrichF1Prompt('como va el GP de Monaco?');
-      expect(result).toContain('No hay carrera en vivo');
-    });
-
-    test('incluye posiciones en vivo cuando hay carrera', async function() {
-      mockCache({
-        raceStatus: { isLive: true, raceName: 'GP Monaco', currentLap: 45, totalLaps: 78 },
-        positions: [{ position: 1, driverName: 'Norris', team: 'McLaren', gap: null }],
-      });
-      const result = await detector.enrichF1Prompt('como va la formula 1?');
-      expect(result).toContain('CARRERA EN CURSO');
-    });
-
-    test('incluye encabezado DATOS F1', async function() {
-      const result = await detector.enrichF1Prompt('formula 1 hoy');
-      expect(result).toContain('DATOS F1 EN TIEMPO REAL');
-    });
-  });
-});

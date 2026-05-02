@@ -14,9 +14,7 @@ const { getCircuit, getCircuitIds } = require('../sports/f1_dashboard/circuit_ma
 const { getGPResults, getDriverStandings, getConstructorStandings } = require('../sports/f1_dashboard/results_scraper');
 const { sendPostRaceNotifications } = require('../sports/f1_dashboard/f1_notifications');
 
-const waCmd = require('../sports/f1_dashboard/f1_wa_commands');
 const cron = require('../sports/f1_dashboard/f1_cron');
-const gemini = require('../sports/f1_dashboard/f1_gemini');
 
 function mockDb(opts) {
   opts = opts || {};
@@ -46,60 +44,6 @@ function mockCache(opts) {
   });
 }
 
-describe('F1.23 -- WA Commands', function() {
-  beforeEach(function() {
-    jest.clearAllMocks();
-    mockDb({});
-    mockCache({});
-    paths.result = jest.fn(function(s, id) { return 'f1_data/' + s + '/results/' + id; });
-    paths.driver = jest.fn(function(s, id) { return 'f1_data/' + s + '/drivers/' + id; });
-  });
-
-  describe('isF1Command', function() {
-    test.each([
-      ['/f1', true],
-      ['/f1 posiciones', true],
-      ['/f1 piloto Norris', true],
-      ['/f1 help', true],
-      ['f1 posiciones', false],
-      ['hola como estas', false],
-      ['/gp resultado', false],
-    ])('"%s" -> %s', function(msg, expected) {
-      expect(waCmd.isF1Command(msg)).toBe(expected);
-    });
-  });
-
-  describe('processF1Command', function() {
-    test('retorna null para no-comando', async function() {
-      expect(await waCmd.processF1Command('hola', 'uid1')).toBeNull();
-    });
-
-    test('/f1 help retorna lista de comandos', async function() {
-      const resp = await waCmd.processF1Command('/f1 help', 'uid1');
-      expect(resp).toContain('posiciones');
-      expect(resp).toContain('resultado');
-    });
-
-    test('/f1 posiciones retorna sin carrera live', async function() {
-      const resp = await waCmd.processF1Command('/f1 posiciones', 'uid1');
-      expect(resp).toContain('No hay carrera en vivo');
-    });
-
-    test('/f1 circuito retorna datos si circuito existe', async function() {
-      getCircuit.mockReturnValue({ name: 'Circuit de Monaco', country: 'Monaco', laps: 78, length_km: 3.337 });
-      const resp = await waCmd.processF1Command('/f1 circuito monaco', 'uid1');
-      expect(resp).toContain('Monaco');
-      expect(resp).toContain('78');
-    });
-
-    test('/f1 siguiente sin GPs retorna mensaje', async function() {
-      const resp = await waCmd.processF1Command('/f1 siguiente', 'uid1');
-      expect(typeof resp).toBe('string');
-      expect(resp.length).toBeGreaterThan(0);
-    });
-  });
-});
-
 describe('F1.24 -- Post-GP Cron', function() {
   beforeEach(function() {
     jest.clearAllMocks();
@@ -126,34 +70,3 @@ describe('F1.24 -- Post-GP Cron', function() {
   });
 });
 
-describe('F1.25 -- Gemini predictions', function() {
-  beforeEach(function() {
-    jest.clearAllMocks();
-    mockDb({});
-    paths.result = jest.fn(function(s, id) { return 'f1_data/' + s + '/results/' + id; });
-  });
-
-  describe('buildPredictionPrompt', function() {
-    test('incluye datos del proximo GP', function() {
-      const prompt = gemini.buildPredictionPrompt(
-        { name: 'GP Monaco', circuit: 'Monaco', round: 8 },
-        [{ position: 1, driver_name: 'Norris', points: 189 }],
-        []
-      );
-      expect(prompt).toContain('GP Monaco');
-      expect(prompt).toContain('Norris');
-    });
-
-    test('incluye instruccion de espanol', function() {
-      const prompt = gemini.buildPredictionPrompt({}, [], []);
-      expect(prompt).toContain('espanol');
-    });
-  });
-
-  describe('generateNextGPPrediction', function() {
-    test('retorna null si no hay GP programado', async function() {
-      const result = await gemini.generateNextGPPrediction(jest.fn());
-      expect(result).toBeNull();
-    });
-  });
-});

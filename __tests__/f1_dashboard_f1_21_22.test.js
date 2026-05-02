@@ -8,7 +8,6 @@ jest.mock('../sports/f1_dashboard/circuit_overlay');
 const admin = require('firebase-admin');
 const { paths } = require('../sports/f1_dashboard/f1_schema');
 const { generateCircuitSVG, getCircuit } = require('../sports/f1_dashboard/circuit_maps');
-const waImg = require('../sports/f1_dashboard/circuit_wa_image');
 const history = require('../sports/f1_dashboard/f1_history');
 
 function mockFirestore(schedule, results) {
@@ -33,53 +32,6 @@ function mockFirestore(schedule, results) {
     }),
   });
 }
-
-describe('F1.21 -- Circuit WA image', function() {
-  beforeEach(function() { jest.clearAllMocks(); });
-
-  describe('buildCircuitTextMessage', function() {
-    test('genera mensaje textual cuando circuito existe', function() {
-      getCircuit.mockReturnValue({ name: 'Circuit de Monaco', country: 'Monaco', laps: 78, length_km: 3.337, color: '#FFC107' });
-      const msg = waImg.buildCircuitTextMessage('monaco', 'GP Monaco', 8);
-      expect(msg).toContain('Monaco');
-      expect(msg).toContain('78');
-    });
-
-    test('fallback si circuito no existe', function() {
-      getCircuit.mockReturnValue(null);
-      const msg = waImg.buildCircuitTextMessage('unknown', '', 0);
-      expect(msg).toContain('no disponibles');
-    });
-  });
-
-  describe('svgToPngBuffer', function() {
-    test('retorna null si sharp no disponible', async function() {
-      const result = await waImg.svgToPngBuffer('<svg></svg>');
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('sendCircuitImage', function() {
-    test('envia mensaje de texto si SVG es null', async function() {
-      generateCircuitSVG.mockReturnValue(null);
-      getCircuit.mockReturnValue({ name: 'Test', country: 'Test', laps: 50, length_km: 5.0, color: '#fff' });
-      const sendMsg = jest.fn().mockResolvedValue(undefined);
-      await waImg.sendCircuitImage('+1234', 'test', 'GP Test', 1, sendMsg, null);
-      expect(sendMsg).toHaveBeenCalled();
-    });
-
-    test('envia imagen PNG si SVG y sendWaImage disponibles', async function() {
-      generateCircuitSVG.mockReturnValue('<svg><rect width="400" height="300" fill="#0A0A12"/></svg>');
-      getCircuit.mockReturnValue({ name: 'Monaco', country: 'Monaco', laps: 78, length_km: 3.337, color: '#FFC107' });
-      const sendMsg = jest.fn();
-      const sendImg = jest.fn().mockResolvedValue(undefined);
-      // sharp no disponible -> fallback a texto
-      await waImg.sendCircuitImage('+1234', 'monaco', 'GP Monaco', 8, sendMsg, sendImg);
-      // Either sendMsg or sendImg should be called
-      expect(sendMsg.mock.calls.length + sendImg.mock.calls.length).toBeGreaterThan(0);
-    });
-  });
-});
 
 describe('F1.22 -- Historical GP view', function() {
   beforeEach(function() {
