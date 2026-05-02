@@ -11735,7 +11735,7 @@ app.post('/api/tenant/:uid/clean-session', rrRequireAuth, rrRequireOwnerOfResour
 });
 
 // GET /api/tenant/:uid/conversations — Get tenant conversations (contacts.html)
-app.get('/api/tenant/:uid/conversations', async (req, res) => {
+app.get('/api/tenant/:uid/conversations', rrRequireAuth, rrRequireOwnerOfResource('uid'), async (req, res) => {
   try {
     const convs = await tenantManager.getTenantConversations(req.params.uid);
     res.json(convs);
@@ -11745,7 +11745,7 @@ app.get('/api/tenant/:uid/conversations', async (req, res) => {
 });
 
 // POST /api/tenant/:uid/train — Add training data for a tenant
-app.post('/api/tenant/:uid/train', express.json(), (req, res) => {
+app.post('/api/tenant/:uid/train', rrRequireAuth, rrRequireOwnerOfResource('uid'), express.json(), (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: 'message requerido' });
   const ok = tenantManager.appendTenantTraining(req.params.uid, message);
