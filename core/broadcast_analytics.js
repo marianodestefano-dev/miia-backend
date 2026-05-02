@@ -1,99 +1,79 @@
 'use strict';
 
 /**
- * MIIA - Broadcast Analytics (T205)
- * Estadisticas de broadcast: entregados, leidos, replies.
+ * broadcast_analytics.js -- T170 (broadcast tasa apertura/respuesta).
+ * recordSent(uid, broadcastId, phone) -> Promise<void>
+ * recordEvent(uid, broadcastId, phone, event) -> Promise<void>  event in ['opened','replied']
+ * getCampaignMetrics(uid, broadcastId) -> Promise<{sent, opened, replied, openRate, replyRate}>
+ * getAllCampaignsSummary(uid, broadcastIds[]) -> Promise<array>
  */
+
+const VALID_EVENTS = Object.freeze(['opened', 'replied']);
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
 function db() { return _db || require('firebase-admin').firestore(); }
 
-const EVENT_TYPES = Object.freeze(['delivered', 'read', 'replied', 'failed', 'opted_out']);
-
-async function recordBroadcastEvent(uid, broadcastId, phone, eventType, meta) {
+async function recordSent(uid, broadcastId, phone) {
   if (!uid) throw new Error('uid requerido');
   if (!broadcastId) throw new Error('broadcastId requerido');
   if (!phone) throw new Error('phone requerido');
-  if (!EVENT_TYPES.includes(eventType)) throw new Error('eventType invalido: ' + eventType);
-  var docId = broadcastId + '_' + phone.replace('+', '') + '_' + eventType;
-  var data = {
-    uid, broadcastId, phone, eventType,
-    meta: meta || {},
-    recordedAt: new Date().toISOString(),
-  };
-  try {
-    await db().collection('broadcast_events').doc(uid).collection('events').doc(docId).set(data, { merge: true });
-  } catch (e) {
-    console.error('[BROADCAST_ANALYTICS] Error guardando evento: ' + e.message);
-    throw e;
-  }
+  await db().collection('owners').doc(uid).collection('broadcasts').doc(broadcastId).set({
+    phone, opened: false, replied: false, sentAt: new Date().toISOString(),
+  });
 }
 
-async function getBroadcastStats(uid, broadcastId) {
+async function recordEvent(uid, broadcastId, phone, event) {
   if (!uid) throw new Error('uid requerido');
   if (!broadcastId) throw new Error('broadcastId requerido');
+  if (!phone) throw new Error('phone requerido');
+  if (!VALID_EVENTS.includes(event)) throw new Error('event invalido: ' + event);
+  const update = { [event]: true, [event + 'At']: new Date().toISOString() };
+  await db().collection('owners').doc(uid).collection('broadcasts').doc(broadcastId).set(update);
+}
+
+async function getCampaignMetrics(uid, broadcastId) {
+  if (!uid) throw new Error('uid requerido');
+  if (!broadcastId) throw new Error('broadcastId requerido');
+  const empty = { sent: 0, opened: 0, replied: 0, openRate: 0, replyRate: 0, broadcastId };
   try {
-    var snap = await db().collection('broadcast_events').doc(uid).collection('events')
-      .where('broadcastId', '==', broadcastId).get();
-    var counts = {};
-    EVENT_TYPES.forEach(function(t) { counts[t] = 0; });
-    var phones = new Set();
-    snap.forEach(function(doc) {
-      var data = doc.data();
-      counts[data.eventType] = (counts[data.eventType] || 0) + 1;
-      phones.add(data.phone);
+    const snap = await db().collection('owners').doc(uid).collection('broadcasts').get();
+    let sent = 0, opened = 0, replied = 0;
+    snap.forEach(d => {
+      const data = d.data ? d.data() : {};
+      sent++;
+      if (data.opened) opened++;
+      if (data.replied) replied++;
     });
-    var delivered = counts.delivered || 0;
-    var read = counts.read || 0;
-    var replied = counts.replied || 0;
     return {
+      sent,
+      opened,
+      replied,
+      openRate: sent > 0 ? opened / sent : 0,
+      replyRate: sent > 0 ? replied / sent : 0,
       broadcastId,
-      counts,
-      uniqueContacts: phones.size,
-      deliveryRate: delivered > 0 ? Math.round((delivered / phones.size) * 100) : 0,
-      readRate: delivered > 0 ? Math.round((read / delivered) * 100) : 0,
-      replyRate: delivered > 0 ? Math.round((replied / delivered) * 100) : 0,
     };
   } catch (e) {
-    console.error('[BROADCAST_ANALYTICS] Error leyendo stats: ' + e.message);
-    var emptyCounts = {};
-    EVENT_TYPES.forEach(function(t) { emptyCounts[t] = 0; });
-    return { broadcastId, counts: emptyCounts, uniqueContacts: 0, deliveryRate: 0, readRate: 0, replyRate: 0 };
+    return empty; // fail-open
   }
 }
 
-async function getOwnerBroadcastSummary(uid, periodDays, nowMs) {
+async function getAllCampaignsSummary(uid, broadcastIds) {
   if (!uid) throw new Error('uid requerido');
-  var days = typeof periodDays === 'number' && periodDays > 0 ? periodDays : 30;
-  var now = typeof nowMs === 'number' ? nowMs : Date.now();
-  var fromDate = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
-  try {
-    var snap = await db().collection('broadcast_events').doc(uid).collection('events')
-      .where('recordedAt', '>=', fromDate).get();
-    var totalEvents = 0;
-    var broadcasts = new Set();
-    var byType = {};
-    EVENT_TYPES.forEach(function(t) { byType[t] = 0; });
-    snap.forEach(function(doc) {
-      var data = doc.data();
-      totalEvents++;
-      broadcasts.add(data.broadcastId);
-      byType[data.eventType] = (byType[data.eventType] || 0) + 1;
-    });
-    return { totalEvents, broadcastCount: broadcasts.size, byType, periodDays: days };
-  } catch (e) {
-    console.error('[BROADCAST_ANALYTICS] Error leyendo summary: ' + e.message);
-    var emptyByType = {};
-    EVENT_TYPES.forEach(function(t) { emptyByType[t] = 0; });
-    return { totalEvents: 0, broadcastCount: 0, byType: emptyByType, periodDays: days };
+  if (!Array.isArray(broadcastIds)) throw new Error('broadcastIds debe ser array');
+  const out = [];
+  for (const id of broadcastIds) {
+    const m = await getCampaignMetrics(uid, id);
+    out.push(m);
   }
+  return out;
 }
 
 module.exports = {
-  recordBroadcastEvent,
-  getBroadcastStats,
-  getOwnerBroadcastSummary,
-  EVENT_TYPES,
+  recordSent,
+  recordEvent,
+  getCampaignMetrics,
+  getAllCampaignsSummary,
+  VALID_EVENTS,
   __setFirestoreForTests,
 };
