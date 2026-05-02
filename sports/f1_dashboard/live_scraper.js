@@ -245,4 +245,8 @@ function _resetState() {
   state.raceStatus = { isLive: false, session: null, lap: 0, totalLaps: 0 };
 }
 
-module.exports = { start, stop, getState, isRaceWeekend, fetchLiveState, parsePositionFeed, _resetState, _constants: { CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_PAUSE_MS, CRITICAL_THRESHOLD } };
+module.exports = {
+  start, stop, getState, isRaceWeekend, fetchLiveState, parsePositionFeed,
+  _resetState, _withRetry, _pollLoop, _state: state,
+  _constants: { CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_PAUSE_MS, CRITICAL_THRESHOLD, POLL_RACE_MS, POLL_IDLE_MS },
+};

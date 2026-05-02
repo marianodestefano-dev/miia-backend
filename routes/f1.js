@@ -243,5 +243,93 @@ module.exports = function createF1Routes({ verifyToken }) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+
+  // ── F1 TELEMETRIA OpenF1 (firma Mariano scope ampliado 2026-05-02) ────────────
+  // Endpoints que sirven datos en tiempo real con telemetria completa.
+  const tel = require('../sports/f1_dashboard/f1_telemetry');
+
+  // GET /api/f1/live/session — sesion actual con tipo (FP1/FP2/FP3/Q/SQ/S/R)
+  router.get('/live/session', auth, async (req, res) => {
+    try {
+      const session = await tel.getCurrentSession();
+      if (!session) return res.json({ session: null, is_live: false });
+      res.json({ session, is_live: tel.isSessionLive(session) });
+    } catch (err) {
+      console.error('[F1-ROUTES] /live/session: ' + err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/f1/live/driver/:driver_number/snapshot — snapshot completo del piloto
+  router.get('/live/driver/:driver_number/snapshot', auth, async (req, res) => {
+    try {
+      const driverNumber = parseInt(req.params.driver_number, 10);
+      if (!driverNumber) return res.status(400).json({ error: 'driver_number invalido' });
+
+      const session = await tel.getCurrentSession();
+      if (!session) return res.json({ snapshot: null, session: null });
+
+      const [intervals, laps, stint, pits, location, telemetry] = await Promise.all([
+        tel.getDriverIntervals(null, session.session_key, driverNumber).catch(() => null),
+        tel.getDriverLapData(null, session.session_key, driverNumber).catch(() => []),
+        tel.getCurrentStint(null, session.session_key, driverNumber).catch(() => null),
+        tel.getDriverPits(null, session.session_key, driverNumber).catch(() => []),
+        tel.getDriverLocation(null, session.session_key, driverNumber).catch(() => null),
+        tel.getDriverTelemetry(null, session.session_key, driverNumber).catch(() => null),
+      ]);
+
+      const snapshot = tel.buildDriverSnapshot({ intervals, laps, stint, pits, location, telemetry });
+      res.json({ snapshot, session, driver_number: driverNumber });
+    } catch (err) {
+      console.error('[F1-ROUTES] /live/driver/snapshot: ' + err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/f1/live/locations — todas las ubicaciones X,Y para overlay circuit
+  router.get('/live/locations', auth, async (req, res) => {
+    try {
+      const session = await tel.getCurrentSession();
+      if (!session) return res.json({ locations: [], session: null });
+
+      const locations = await tel.getAllDriversLocation(null, session.session_key);
+      res.json({ locations, session, count: locations.length });
+    } catch (err) {
+      console.error('[F1-ROUTES] /live/locations: ' + err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/f1/live/driver/:driver_number/telemetry — telemetria sola (rpm, speed, etc.)
+  router.get('/live/driver/:driver_number/telemetry', auth, async (req, res) => {
+    try {
+      const driverNumber = parseInt(req.params.driver_number, 10);
+      if (!driverNumber) return res.status(400).json({ error: 'driver_number invalido' });
+      const session = await tel.getCurrentSession();
+      if (!session) return res.json({ telemetry: null, session: null });
+      const telemetry = await tel.getDriverTelemetry(null, session.session_key, driverNumber);
+      res.json({ telemetry, session_key: session.session_key, driver_number: driverNumber });
+    } catch (err) {
+      console.error('[F1-ROUTES] /live/driver/telemetry: ' + err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/f1/live/driver/:driver_number/laps — historial de vueltas con sectores
+  router.get('/live/driver/:driver_number/laps', auth, async (req, res) => {
+    try {
+      const driverNumber = parseInt(req.params.driver_number, 10);
+      if (!driverNumber) return res.status(400).json({ error: 'driver_number invalido' });
+      const session = await tel.getCurrentSession();
+      if (!session) return res.json({ laps: [], fastest_lap: null });
+      const laps = await tel.getDriverLapData(null, session.session_key, driverNumber);
+      const fastest_lap = tel.getFastestLap(laps);
+      res.json({ laps, fastest_lap, session_key: session.session_key });
+    } catch (err) {
+      console.error('[F1-ROUTES] /live/driver/laps: ' + err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 };

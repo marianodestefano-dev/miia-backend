@@ -56,7 +56,7 @@ async function _throttledGet(url) {
  */
 async function getCalendar(season) {
   try {
-    const html = await _throttledGet(`${BASE_URL}/en/racing/${season}.html`);
+    const html = await _withScrapeRetry(() => _throttledGet(`${BASE_URL}/en/racing/${season}.html`));
     const $ = cheerio.load(html);
     const gps = [];
 
@@ -95,7 +95,7 @@ async function getCalendar(season) {
 async function getGPResults(gpId, season) {
   try {
     const url = `${BASE_URL}/en/results/${season}/races`;
-    const html = await _throttledGet(url);
+    const html = await _withScrapeRetry(() => _throttledGet(url));
     const $ = cheerio.load(html);
 
     const positions = [];
@@ -131,7 +131,7 @@ async function getGPResults(gpId, season) {
 async function getDriverStandings(season) {
   try {
     const url = `${BASE_URL}/en/results/${season}/drivers.html`;
-    const html = await _throttledGet(url);
+    const html = await _withScrapeRetry(() => _throttledGet(url));
     const $ = cheerio.load(html);
     const standings = [];
 
@@ -167,7 +167,7 @@ async function getDriverStandings(season) {
 async function getConstructorStandings(season) {
   try {
     const url = `${BASE_URL}/en/results/${season}/constructors.html`;
-    const html = await _throttledGet(url);
+    const html = await _withScrapeRetry(() => _throttledGet(url));
     const $ = cheerio.load(html);
     const standings = [];
 
@@ -197,4 +197,5 @@ module.exports = {
   getConstructorStandings,
   _throttledGet,
   _resetThrottle,
+  _withScrapeRetry,
 };

@@ -31,6 +31,17 @@ function setupCheerio(html) {
   axios.get.mockResolvedValueOnce({ data: html });
 }
 
+// Acelerar setTimeout: tras wire-in de _withScrapeRetry (F1.15), reintentos
+// agregan 2000+4000ms de waits internos. Sin acelerar, tests con axios fallido
+// exceden timeout 5s. AbortSignal.timeout no afecta porque axios esta mockeado.
+const _origSetTimeout = global.setTimeout;
+beforeAll(() => {
+  global.setTimeout = function (cb, _ms) { return _origSetTimeout(cb, 0); };
+});
+afterAll(() => {
+  global.setTimeout = _origSetTimeout;
+});
+
 describe('F1.2 — Scraper resultados post-carrera', () => {
 
   beforeEach(() => {
