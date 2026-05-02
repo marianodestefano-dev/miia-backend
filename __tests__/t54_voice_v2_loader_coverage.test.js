@@ -15,8 +15,8 @@ describe('T54 §A — isV2EligibleUid', () => {
   test('MIIA CENTER UID → true', () => {
     expect(v.isV2EligibleUid(v.MIIA_CENTER_UID)).toBe(true);
   });
-  test('Personal UID → false (etapa 1 scope)', () => {
-    expect(v.isV2EligibleUid(v.OWNER_PERSONAL_UID)).toBe(false);
+  test('Personal UID → true (etapa 2 firma 2026-05-02)', () => {
+    expect(v.isV2EligibleUid(v.OWNER_PERSONAL_UID)).toBe(true);
   });
   test('UID random → false', () => {
     expect(v.isV2EligibleUid('random_xyz')).toBe(false);
@@ -27,8 +27,8 @@ describe('T54 §A — isV2EligibleUid', () => {
 });
 
 describe('T54 §B — resolveV2ChatType', () => {
-  test('UID NO eligible → unknown', () => {
-    expect(v.resolveV2ChatType({ uid: v.OWNER_PERSONAL_UID, contactType: 'lead' })).toBe('unknown');
+  test('UID random NO eligible → unknown', () => {
+    expect(v.resolveV2ChatType({ uid: 'random_other_owner', contactType: 'lead' })).toBe('unknown');
   });
   test('isSelfChat true + UID CENTER → owner_selfchat', () => {
     expect(v.resolveV2ChatType({ uid: v.MIIA_CENTER_UID, isSelfChat: true })).toBe('owner_selfchat');

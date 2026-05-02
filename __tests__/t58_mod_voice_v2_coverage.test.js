@@ -51,7 +51,7 @@ describe('T58 §B — buildVoiceV2Block: capas fallback', () => {
     expect(r).toBeNull();
   });
 
-  test('context.uid Personal (no eligible) → null', () => {
+  test('context.uid Personal + miia_lead → null (chatType es CENTER-only, Personal no usa miia_lead)', () => {
     const r = mv.buildVoiceV2Block({
       chatType: 'miia_lead',
       ownerProfile: { name: 'M', businessName: 'A' },

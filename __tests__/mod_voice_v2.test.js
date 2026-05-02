@@ -140,7 +140,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       });
     });
 
-    test('Personal profile + miia_client → null (ETAPA 1 no elegible)', () => {
+    test('Personal profile (sin uid) + miia_client → null (marker no-CENTER)', () => {
       const out = buildVoiceV2Block({
         chatType: 'miia_client',
         ownerProfile: personalProfile,
@@ -187,13 +187,15 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       });
     });
 
-    test('selfchat + uid=Personal → null (V1 puro)', () => {
+    test('selfchat + uid=Personal → block Personal seed (etapa 2)', () => {
       const out = buildVoiceV2Block({
         chatType: 'selfchat',
         ownerProfile: personalProfile,
         context: { uid: OWNER_PERSONAL_UID }
       });
-      expect(out).toBeNull();
+      expect(out).not.toBeNull();
+      expect(out.meta.owner).toBe('personal');
+      expect(out.meta.source).toMatch(/voice_seed_personal\.md/);
     });
 
     test('selfchat + CENTER profile puro (name=MIIA) sin uid → marker suficiente', () => {
@@ -219,7 +221,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
 
   // ─────────────────────────────────────────────────────────────────────
   describe('buildVoiceV2Block() — chatType=miia_lead + Personal profile', () => {
-    test('Personal profile → null (ETAPA 1 no elegible)', () => {
+    test('Personal profile (sin uid) → null (marker no-CENTER)', () => {
       const out = buildVoiceV2Block({
         chatType: 'miia_lead',
         ownerProfile: personalProfile,
@@ -297,7 +299,7 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
 
   // ─────────────────────────────────────────────────────────────────────
   describe('buildVoiceV2Block() — defensa en profundidad guard UID', () => {
-    test('CENTER profile pero uid=Personal → null (guard C-388)', () => {
+    test('CENTER profile pero uid=Personal + miia_lead → null (miia_lead es CENTER-only)', () => {
       const out = buildVoiceV2Block({
         chatType: 'miia_lead',
         ownerProfile: centerProfile,
@@ -392,15 +394,16 @@ describe('mod_voice_v2 — COMMIT 2 A1 (C-397 §5)', () => {
       });
     });
 
-    test('assemblePrompt(selfchat + Personal uid) → V1 puro', () => {
+    test('assemblePrompt(selfchat + Personal uid) → V2 Personal (etapa 2)', () => {
       const result = assemblePrompt({
         chatType: 'selfchat',
         messageBody: 'hola',
         ownerProfile: { name: 'Mariano De Stefano', businessName: 'MediLink', role: 'médico' },
         context: { uid: OWNER_PERSONAL_UID, isAdmin: true }
       });
-      expect(result.meta.modulesLoaded).not.toContain('mod_voice_v2');
-      expect(result.meta.v2).toBeNull();
+      expect(result.meta.modulesLoaded).toContain('mod_voice_v2');
+      expect(result.meta.v2).not.toBeNull();
+      expect(result.meta.v2.owner).toBe('personal');
     });
 
     test('assemblePrompt(miia_client + CENTER) → COMMIT 4 activa V2 con §2.2', () => {

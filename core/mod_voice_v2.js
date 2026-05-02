@@ -40,7 +40,10 @@
 const {
   loadVoiceDNAForGroup,
   loadVoiceDNAForCenter,
-  isV2EligibleUid
+  loadVoiceDNAForPersonal,
+  isV2EligibleUid,
+  MIIA_CENTER_UID,
+  OWNER_PERSONAL_UID
 } = require('./voice_v2_loader');
 
 /**
@@ -101,27 +104,23 @@ function buildVoiceV2Block(args) {
     //   2. Si context.uid ausente → fallback al marker del profile.
     //      * Motivo: en paths tipo miia_lead el caller pasa MIIA_SALES_PROFILE
     //        directo, sin merge. El marker es confiable ahí.
-    let isCenter;
+    // Determinar dominio: CENTER, PERSONAL u otro.
+    let domain = 'unknown';
     if (context && typeof context.uid === 'string' && context.uid.length > 0) {
-      // Señal primaria: uid
-      if (!isV2EligibleUid(context.uid)) {
-        return null; // guard ETAPA 1 C-388 D.1
-      }
-      isCenter = true;
+      if (context.uid === MIIA_CENTER_UID) domain = 'center';
+      else if (context.uid === OWNER_PERSONAL_UID) domain = 'personal';
+      else if (!isV2EligibleUid(context.uid)) return null; // tenant random no eligible
     } else {
-      // Fallback: marker del profile
-      isCenter = isMiiaCenterProfile(ownerProfile);
+      // Fallback: marker del profile (sin uid). Asume CENTER si marker positivo, sino unknown.
+      if (isMiiaCenterProfile(ownerProfile)) domain = 'center';
     }
 
-    if (isCenter) {
-      // CENTER → voice_seed_center.md §2.x según centerSubreg
+    if (domain === 'center') {
+      // CENTER → voice_seed_center.md §2.x
       const dna = loadVoiceDNAForCenter(centerSubreg, {
         contactName: context && context.contactName
       });
-      // CAPA 1 — loader falló o bloque vacío.
-      if (!dna || dna.fallback || !dna.systemBlock) {
-        return null;
-      }
+      if (!dna || dna.fallback || !dna.systemBlock) return null;
       return {
         block: dna.systemBlock,
         meta: {
@@ -133,8 +132,28 @@ function buildVoiceV2Block(args) {
       };
     }
 
-    // Personal owner → ETAPA 1 NO elegible (C-388 D.1 firma Mariano 2026-04-22).
-    // Retornar null → caller usa V1 puro (buildOwnerLeadPrompt clásico).
+    if (domain === 'personal') {
+      // Etapa 2 §2-bis (firma Mariano 2026-05-02 08:48 COT) -- MIIA Personal.
+      // Personal aqui solo soporta 'selfchat' (chatTypes miia_lead/miia_client son CENTER-only).
+      // Para family/ale/medilink_team/lead/client de Personal el caller debe usar
+      // loadVoiceDNAForPersonal directamente con su chatType (no via miia_lead/miia_client).
+      if (chatType !== 'selfchat') return null;
+      const dna = loadVoiceDNAForPersonal('owner_selfchat', {
+        contactName: context && context.contactName
+      });
+      if (!dna || dna.fallback || !dna.systemBlock) return null;
+      return {
+        block: dna.systemBlock,
+        meta: {
+          source: dna.source,
+          subregistro: dna.subregistro,
+          chatType,
+          owner: 'personal'
+        }
+      };
+    }
+
+    // Otro caso (random tenant sin marker CENTER, sin uid eligible) -> V1 puro.
     return null;
   } catch (err) {
     // CAPA 4 — cualquier excepción = fallback a V1, nunca crashear el pipeline.

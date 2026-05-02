@@ -4,11 +4,14 @@
  * Verifica que los 4 componentes V2 (loader + splitter + emoji + auditor) funcionan
  * end-to-end SIN llamar a Gemini real (el smoke valida pipeline lógico, no LLM).
  *
- * SCOPE ETAPA 1 (firmado Mariano C-388 D.1 verbatim):
- *   - Solo MIIA CENTER (UID A5pMESWlfmPWCoCPRbwy85EzUzy2) usa V2.
- *   - Subregistros activos en MIIA CENTER: lead / client / follow_up_cold / owner_selfchat.
- *   - Subregistros INACTIVOS en MIIA CENTER: family / friend_* / ale_pareja / medilink_team.
- *   - MIIA Personal (bq2...) corre V1 puro hasta etapa 2 (firma futura).
+ * SCOPE ETAPA 2 (firmado Mariano 2026-05-02 08:48 COT):
+ *   - MIIA CENTER (A5p...) y MIIA Personal (bq2...) usan V2 con dominios separados.
+ *   - CENTER: solo subregistros producto (lead / client / follow_up_cold / owner_selfchat).
+ *           CENTER NO incluye family / ale / medilink_team (etapa 3 reduce CENTER a 4 prof).
+ *   - Personal: catalogo completo (family / friend_argentino / friend_colombiano /
+ *               ale_pareja / medilink_team / lead / client / follow_up_cold / owner_selfchat).
+ *   - SEPARACION DOMINIOS: Personal lee voice_seed_personal.md, CENTER lee voice_seed_center.md.
+ *     NUNCA mezclar entre dominios.
  *
  * Si CUALQUIER caso falla → exit code 1 → push BLOQUEADO.
  *
@@ -212,36 +215,90 @@ console.log('INY-2 — RF#8 admite IA en chat con lead → CRÍTICO');
 console.log('');
 
 // ════════════════════════════════════════════════════════════════
-// INY-3 — GUARD UID: UID Personal o random → resolveV2ChatType='unknown' (V1 puro)
+// INY-3 — GUARD UID etapa 2: CENTER y Personal son V2-eligible. Random NO.
 // ════════════════════════════════════════════════════════════════
-console.log('INY-3 — GUARD UID: solo MIIA CENTER pasa, Personal y random caen a unknown');
+console.log('INY-3 — GUARD UID etapa 2: CENTER + Personal eligible, random unknown');
 {
-  // 3.1 — isV2EligibleUid solo true para MIIA CENTER
+  // 3.1 — isV2EligibleUid: CENTER y Personal ambos true
   check('INY3.1 isV2EligibleUid(CENTER) → true', isV2EligibleUid(MIIA_CENTER_UID) === true, `got: ${isV2EligibleUid(MIIA_CENTER_UID)}`);
-  check('INY3.2 isV2EligibleUid(PERSONAL bq2) → false', isV2EligibleUid(OWNER_PERSONAL_UID) === false, `got: ${isV2EligibleUid(OWNER_PERSONAL_UID)}`);
+  check('INY3.2 isV2EligibleUid(PERSONAL bq2) → true (etapa 2)', isV2EligibleUid(OWNER_PERSONAL_UID) === true, `got: ${isV2EligibleUid(OWNER_PERSONAL_UID)}`);
   check('INY3.3 isV2EligibleUid(random uid) → false', isV2EligibleUid('xyz123randomuid') === false, `got: ${isV2EligibleUid('xyz123randomuid')}`);
   check('INY3.4 isV2EligibleUid(undefined) → false', isV2EligibleUid(undefined) === false, `got: ${isV2EligibleUid(undefined)}`);
   check('INY3.5 isV2EligibleUid(null) → false', isV2EligibleUid(null) === false, `got: ${isV2EligibleUid(null)}`);
 
-  // 3.2 — resolveV2ChatType retorna 'unknown' para UID Personal aunque sea self-chat o lead
-  const r1 = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, isSelfChat: true });
-  check('INY3.6 resolveV2ChatType(uid=PERSONAL, isSelfChat) → unknown (no V2 path)', r1 === 'unknown', `got: ${r1}`);
-
-  const r2 = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'lead', basePhone: '573001234567' });
-  check('INY3.7 resolveV2ChatType(uid=PERSONAL, lead) → unknown', r2 === 'unknown', `got: ${r2}`);
-
+  // 3.2 — random UID sigue dando 'unknown'
   const r3 = resolveV2ChatType({ uid: 'random_other_owner', contactType: 'client', basePhone: '573009998877' });
-  check('INY3.8 resolveV2ChatType(uid=random, client) → unknown', r3 === 'unknown', `got: ${r3}`);
+  check('INY3.6 resolveV2ChatType(uid=random, client) → unknown', r3 === 'unknown', `got: ${r3}`);
 
-  // 3.3 — Subregistros INACTIVOS (family/equipo/ale phone) en MIIA CENTER también dan 'unknown'
+  // 3.3 — SEPARACION DOMINIOS: CENTER NO mezcla family/equipo/ale (esos son de Personal)
   const r4 = resolveV2ChatType({ uid: MIIA_CENTER_UID, contactType: 'familia', basePhone: '5491164431700' });
-  check('INY3.9 resolveV2ChatType(uid=CENTER, familia) → unknown (etapa 1 no incluye family)', r4 === 'unknown', `got: ${r4}`);
+  check('INY3.7 CENTER + familia → unknown (no mezclar dominios)', r4 === 'unknown', `got: ${r4}`);
 
   const r5 = resolveV2ChatType({ uid: MIIA_CENTER_UID, contactType: 'equipo', basePhone: '56994128069' });
-  check('INY3.10 resolveV2ChatType(uid=CENTER, equipo) → unknown (etapa 1 no incluye medilink_team)', r5 === 'unknown', `got: ${r5}`);
+  check('INY3.8 CENTER + equipo → unknown (no mezclar dominios)', r5 === 'unknown', `got: ${r5}`);
 
   const r6 = resolveV2ChatType({ uid: MIIA_CENTER_UID, contactType: 'group', basePhone: '573137501884' });
-  check('INY3.11 resolveV2ChatType(uid=CENTER, group/Ale phone) → unknown (etapa 1 no incluye ale_pareja)', r6 === 'unknown', `got: ${r6}`);
+  check('INY3.9 CENTER + Ale phone → unknown (no mezclar dominios)', r6 === 'unknown', `got: ${r6}`);
+}
+console.log('');
+
+
+// ════════════════════════════════════════════════════════════════
+// T-PERSONAL — etapa 2 §2-bis: subregistros MIIA Personal
+// ════════════════════════════════════════════════════════════════
+console.log('T-PERSONAL — Etapa 2: subregistros Personal mapean correctamente');
+{
+  const { loadVoiceDNAForPersonal, readVoiceSeedPersonal } = require('../core/voice_v2_loader');
+
+  // P.0 — voice_seed_personal.md cargable
+  const seedPersonal = readVoiceSeedPersonal();
+  check('TP.0 readVoiceSeedPersonal devuelve seed > 1000 chars', !!seedPersonal && seedPersonal.length > 1000, 'chars: ' + (seedPersonal ? seedPersonal.length : 0));
+
+  // P.1 — owner_selfchat Personal
+  const cType = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, isSelfChat: true });
+  check('TP.1 PERSONAL + isSelfChat → owner_selfchat', cType === 'owner_selfchat', 'got: ' + cType);
+
+  const dnaSelf = loadVoiceDNAForPersonal('owner_selfchat', { ownerName: 'Mariano' });
+  check('TP.2 loadVoiceDNAForPersonal owner_selfchat fallback=false', dnaSelf.fallback === false, 'fallback: ' + dnaSelf.fallback);
+  check('TP.3 loadVoiceDNAForPersonal owner_selfchat source incluye personal.md', /voice_seed_personal\.md/.test(dnaSelf.source), 'source: ' + dnaSelf.source);
+
+  // P.2 — family
+  const cFamily = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'familia', basePhone: '5491164431700' });
+  check('TP.4 PERSONAL + familia → family', cFamily === 'family', 'got: ' + cFamily);
+  const dnaFam = loadVoiceDNAForPersonal('family');
+  check('TP.5 loadVoiceDNAForPersonal family fallback=false', dnaFam.fallback === false, 'fallback: ' + dnaFam.fallback);
+  check('TP.6 family source apunta a voice_seed_personal.md', /voice_seed_personal\.md/.test(dnaFam.source), 'source: ' + dnaFam.source);
+
+  // P.3 — ale_pareja por phone exacto
+  const cAle = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'group', basePhone: '573137501884' });
+  check('TP.7 PERSONAL + Ale phone → ale_pareja', cAle === 'ale_pareja', 'got: ' + cAle);
+
+  const cAleByType = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'ale_pareja', basePhone: '999' });
+  check('TP.8 PERSONAL + contactType=ale_pareja → ale_pareja', cAleByType === 'ale_pareja', 'got: ' + cAleByType);
+
+  // P.4 — medilink_team
+  const cTeam = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'equipo', basePhone: '56994128069' });
+  check('TP.9 PERSONAL + equipo → medilink_team', cTeam === 'medilink_team', 'got: ' + cTeam);
+
+  // P.5 — lead Personal
+  const cLeadP = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'lead', basePhone: '573001234567' });
+  check('TP.10 PERSONAL + lead → lead', cLeadP === 'lead', 'got: ' + cLeadP);
+
+  // P.6 — friend_argentino
+  const cFriendAR = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'friend_argentino', basePhone: '5491164431700' });
+  check('TP.11 PERSONAL + friend_argentino → friend_argentino', cFriendAR === 'friend_argentino', 'got: ' + cFriendAR);
+
+  // P.7 — friend_colombiano
+  const cFriendCO = resolveV2ChatType({ uid: OWNER_PERSONAL_UID, contactType: 'friend_colombiano', basePhone: '573001234567' });
+  check('TP.12 PERSONAL + friend_colombiano → friend_colombiano', cFriendCO === 'friend_colombiano', 'got: ' + cFriendCO);
+
+  // P.8 — SEPARACION DOMINIOS: cargar Personal NO mezcla con CENTER seed
+  const dnaPLead = loadVoiceDNAForPersonal('lead');
+  check('TP.13 Personal lead source = voice_seed_personal.md (NO mezcla con CENTER)', /voice_seed_personal\.md/.test(dnaPLead.source), 'source: ' + dnaPLead.source);
+
+  // P.9 — chatType desconocido → fallback
+  const dnaUnknown = loadVoiceDNAForPersonal('blablabla');
+  check('TP.14 chatType desconocido → fallback=true', dnaUnknown.fallback === true, 'fallback: ' + dnaUnknown.fallback);
 }
 console.log('');
 

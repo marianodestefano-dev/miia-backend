@@ -38,10 +38,12 @@ const path = require('path');
 
 const VOICE_SEED_PATH = path.join(__dirname, '..', 'prompts', 'v2', 'voice_seed.md');
 const VOICE_SEED_CENTER_PATH = path.join(__dirname, '..', 'prompts', 'v2', 'voice_seed_center.md');
+const VOICE_SEED_PERSONAL_PATH = path.join(__dirname, '..', 'prompts', 'v2', 'voice_seed_personal.md');
 const MODE_DETECTORS_PATH = path.join(__dirname, '..', 'prompts', 'v2', 'mode_detectors.md');
 
 let _voiceSeedCache = null;
 let _voiceSeedCenterCache = null;
+let _voiceSeedPersonalCache = null;
 let _modeDetectorsCache = null;
 let _loadAttempts = 0;
 let _loadFailures = 0;
@@ -102,6 +104,24 @@ function readVoiceSeedCenter() {
     return _voiceSeedCenterCache;
   } catch (err) {
     console.error('[V2-ALERT]', { context: 'voice_v2_loader.readVoiceSeedCenter', error: err.message, path: VOICE_SEED_CENTER_PATH, code: err.code, stack: err.stack });
+    _loadFailures++;
+    return null;
+  }
+}
+
+
+/**
+ * Lee voice_seed_personal.md desde disco (con cache).
+ * Etapa 2 - firma Mariano 2026-05-02 08:48 COT.
+ * @returns {string|null}
+ */
+function readVoiceSeedPersonal() {
+  if (_voiceSeedPersonalCache && process.env.V2_VOICE_NO_CACHE !== 'true') return _voiceSeedPersonalCache;
+  try {
+    _voiceSeedPersonalCache = fs.readFileSync(VOICE_SEED_PERSONAL_PATH, 'utf8');
+    return _voiceSeedPersonalCache;
+  } catch (err) {
+    console.error('[V2-ALERT]', { context: 'voice_v2_loader.readVoiceSeedPersonal', error: err.message, path: VOICE_SEED_PERSONAL_PATH, code: err.code, stack: err.stack });
     _loadFailures++;
     return null;
   }
@@ -184,7 +204,8 @@ function extractByHeader(fullText, header) {
  * @returns {boolean}
  */
 function isV2EligibleUid(uid) {
-  return uid === MIIA_CENTER_UID;
+  // Etapa 2 §2-bis (firma Mariano 2026-05-02 08:48 COT) -- Personal habilitado.
+  return uid === MIIA_CENTER_UID || uid === OWNER_PERSONAL_UID;
 }
 
 /**
@@ -203,31 +224,66 @@ function isV2EligibleUid(uid) {
  * @returns {string} chatType V2 estandarizado, o 'unknown' si no resuelve
  */
 function resolveV2ChatType(opts) {
-  const { uid, isSelfChat, contactType } = opts || {};
+  const obj = opts || {};
+  const uid = obj.uid;
+  const isSelfChat = obj.isSelfChat;
+  const contactType = obj.contactType;
+  const basePhone = obj.basePhone;
 
-  // GUARD CRÍTICO C-388 D.1: solo MIIA CENTER usa V2 en etapa 1
+  // GUARD: solo MIIA CENTER (etapa 1) o MIIA Personal (etapa 2) usan V2
   if (!isV2EligibleUid(uid)) return 'unknown';
 
-  // PASO 1: Self-chat owner (Mariano usando self-chat de MIIA CENTER, ej "PRESENTATE CONMIGO")
+  // PASO 1: Self-chat owner
   if (isSelfChat) return 'owner_selfchat';
 
-  // PASO 2: Mapping desde contactType crudo TMH (solo subregistros profesionales válidos en MIIA CENTER)
-  switch (contactType) {
-    case 'lead':
-    case 'enterprise_lead':
-    case 'miia_lead':           // MIIA CENTER usa miia_lead postprocess (CLAUDE.md §2)
-      return 'lead';
-    case 'client':
-    case 'miia_client':
-      return 'client';
-    case 'follow_up_cold':
-    case 'cold':
-      return 'follow_up_cold';
-    // family / equipo / group / ale_pareja: NO aplican en MIIA CENTER (etapa 1)
-    // → retornar 'unknown' para que caller use V1 (12 reglas MIIA_SALES_PROFILE)
-    default:
-      return 'unknown';
+  // PASO 2 - branching por dominio (NO mezclar):
+  if (uid === MIIA_CENTER_UID) {
+    switch (contactType) {
+      case 'lead':
+      case 'enterprise_lead':
+      case 'miia_lead':
+        return 'lead';
+      case 'client':
+      case 'miia_client':
+        return 'client';
+      case 'follow_up_cold':
+      case 'cold':
+        return 'follow_up_cold';
+      default:
+        return 'unknown';
+    }
   }
+
+  if (uid === OWNER_PERSONAL_UID) {
+    if (basePhone && basePhone === ALE_PHONE) return 'ale_pareja';
+    switch (contactType) {
+      case 'family':
+      case 'familia':
+        return 'family';
+      case 'friend_argentino':
+        return 'friend_argentino';
+      case 'friend_colombiano':
+        return 'friend_colombiano';
+      case 'ale_pareja':
+        return 'ale_pareja';
+      case 'medilink_team':
+      case 'equipo':
+      case 'vivi_team':
+        return 'medilink_team';
+      case 'lead':
+      case 'enterprise_lead':
+        return 'lead';
+      case 'client':
+        return 'client';
+      case 'follow_up_cold':
+      case 'cold':
+        return 'follow_up_cold';
+      default:
+        return 'unknown';
+    }
+  }
+
+  return 'unknown';
 }
 
 /**
@@ -285,6 +341,58 @@ ${baseIdentidad ? baseIdentidad + '\n\n' : ''}${subSection}`;
     subregistro: chatType,
     fallback: false,
     source: `voice_seed.md ${baseHeader}`
+  };
+}
+
+
+/**
+ * Etapa 2 - lee voice_seed_personal.md y devuelve subregistro o snapshot.
+ * Uso: MIIA Personal (UID OWNER_PERSONAL_UID).
+ * SEPARACION DOMINIOS: NUNCA mezclar con CENTER. Personal NO dice ser IA salvo familia.
+ *
+ * @param {string} chatType
+ * @param {object} [opts]
+ * @returns {{systemBlock: string, subregistro: string|null, fallback: boolean, source: string}}
+ */
+function loadVoiceDNAForPersonal(chatType, opts) {
+  opts = opts || {};
+  _loadAttempts++;
+  const t0 = Date.now();
+
+  const seed = readVoiceSeedPersonal();
+  if (!seed) {
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForPersonal', reason: 'voice_seed_personal_unavailable', chatType, attempts: _loadAttempts, failures: _loadFailures, fallback_to: 'V1' });
+    return { systemBlock: '', subregistro: null, fallback: true, source: 'none' };
+  }
+
+  if (chatType === 'owner_selfchat') {
+    const block = '\n\n[VOICE DNA V2 - SNAPSHOT MIIA PERSONAL]\nFuente: prompts/v2/voice_seed_personal.md\nUso: self-chat owner Mariano. Visibilidad de los 7+ subregistros (etapa 2).\n\n' + seed;
+    console.log('[V2][voice_v2_loader] Loaded PERSONAL SNAPSHOT owner_selfchat ' + seed.length + ' chars ' + (Date.now() - t0) + 'ms');
+    return { systemBlock: block, subregistro: 'owner_selfchat_snapshot_personal', fallback: false, source: 'voice_seed_personal.md' };
+  }
+
+  const baseHeader = SUBREGISTRO_HEADERS[chatType];
+  if (!baseHeader) {
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForPersonal', reason: 'unknown_chattype_personal', chatType, fallback_to: 'V1' });
+    return { systemBlock: '', subregistro: null, fallback: true, source: 'unknown_chattype_personal' };
+  }
+
+  const baseIdentidad = opts.skipBaseIdentidad ? '' : extractIdentidadBaseComun(seed);
+  const subSection = extractSubregistro(seed, baseHeader);
+
+  if (!subSection) {
+    console.warn('[V2-ALERT]', { context: 'loadVoiceDNAForPersonal', reason: 'subregistro_missing_personal', chatType, baseHeader, fallback_to: 'V1' });
+    return { systemBlock: '', subregistro: null, fallback: true, source: 'subregistro_missing_personal' };
+  }
+
+  const block = '\n\n[VOICE DNA V2 - chatType=' + chatType + ' (MIIA PERSONAL)]\nFuente: prompts/v2/voice_seed_personal.md (subregistro ' + baseHeader.replace('### ', '').replace(/`/g, '') + ')\nInstruccion: usa EXACTAMENTE el tono, vocativos, aperturas, frases-firma y emojis del subregistro siguiente. NO mezclar con voice_seed_center (otro dominio). Reglas de seccion 1 IDENTIDAD BASE COMUN aplican siempre. PERSONAL NO dice ser IA salvo familia.\n\n' + (baseIdentidad ? baseIdentidad + '\n\n' : '') + subSection;
+
+  console.log('[V2][voice_v2_loader] Loaded PERSONAL chatType=' + chatType + ' subregistro=' + baseHeader + ' ' + block.length + ' chars ' + (Date.now() - t0) + 'ms contact=' + (opts.contactName || '?'));
+  return {
+    systemBlock: block,
+    subregistro: chatType,
+    fallback: false,
+    source: 'voice_seed_personal.md ' + baseHeader
   };
 }
 
@@ -377,16 +485,19 @@ function getLoaderStats() {
 function resetCache() {
   _voiceSeedCache = null;
   _voiceSeedCenterCache = null;
+  _voiceSeedPersonalCache = null;
   _modeDetectorsCache = null;
 }
 
 module.exports = {
   loadVoiceDNAForGroup,
   loadVoiceDNAForCenter,
+  loadVoiceDNAForPersonal,
   resolveV2ChatType,
   isV2EligibleUid,
   readVoiceSeed,
   readVoiceSeedCenter,
+  readVoiceSeedPersonal,
   readModeDetectors,
   extractByHeader,
   getLoaderStats,
