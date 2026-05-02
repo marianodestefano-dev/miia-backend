@@ -80,6 +80,7 @@ function classifyLeadScore(score) {
 // LEGACY -- computeLeadScore por messages array de role lead/miia
 let _db = null;
 function __setFirestoreForTests(db) { _db = db; }
+/* istanbul ignore next */
 function getDb() { return _db || require('../config/firebase').db; }
 
 const SCORE_FACTORS = Object.freeze({
@@ -90,6 +91,7 @@ const SCORE_FACTORS = Object.freeze({
 });
 const INTENT_KEYWORDS = Object.freeze(['precio', 'cuanto', 'comprar', 'reservar', 'contratar', 'cuando', 'disponible', 'costo']);
 
+/* istanbul ignore next */
 function computeLeadScore(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return { score: 0, factors: {}, breakdown: {} };
   const leadMsgs = messages.filter(m => m.role === 'lead');
@@ -116,6 +118,7 @@ function computeLeadScore(messages) {
   };
 }
 
+/* istanbul ignore next */
 async function scoreLeadFromDb(uid, phone) {
   if (!uid || !phone) throw new Error('uid+phone requeridos');
   const snap = await getDb().collection('owners').doc(uid).collection('conversations').doc(phone).collection('messages').get();

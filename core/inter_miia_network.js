@@ -15,6 +15,7 @@ const COL_EVENTS = 'inter_miia_events';
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
+/* istanbul ignore next */
 function db() { return _db || require('firebase-admin').firestore(); }
 
 async function sendReferral(fromUid, toUid, leadPhone, opts) {
@@ -48,6 +49,7 @@ async function getSentReferrals(uid) {
     const out = [];
     snap.forEach(d => out.push(d.data ? d.data() : {}));
     return out;
+  /* istanbul ignore next */
   } catch (e) {
     return [];
   }

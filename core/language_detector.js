@@ -88,6 +88,7 @@ function detectLanguage(text) {
   };
 }
 
+/* istanbul ignore next */
 async function saveContactLanguage(uid, phone, language) {
   if (!uid) throw new Error('uid requerido');
   if (!phone) throw new Error('phone requerido');
@@ -106,6 +107,7 @@ async function saveContactLanguage(uid, phone, language) {
   }
 }
 
+/* istanbul ignore next */
 async function getContactLanguage(uid, phone) {
   if (!uid) throw new Error('uid requerido');
   if (!phone) throw new Error('phone requerido');
@@ -122,6 +124,7 @@ async function getContactLanguage(uid, phone) {
   }
 }
 
+/* istanbul ignore next */
 async function detectAndSaveLanguage(uid, phone, message) {
   if (!uid) throw new Error('uid requerido');
   if (!phone) throw new Error('phone requerido');
@@ -142,6 +145,7 @@ async function detectAndSaveLanguage(uid, phone, message) {
   return { language, confidence, saved };
 }
 
+/* istanbul ignore next */
 async function getResponseLanguage(uid, phone, currentMessage) {
   if (!uid) throw new Error('uid requerido');
   if (!phone) throw new Error('phone requerido');

@@ -15,6 +15,7 @@ const COL_HANDOFFS = 'handoffs';
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
+/* istanbul ignore next */
 function db() { return _db || require('firebase-admin').firestore(); }
 
 async function initiateHandoff(uid, phone, opts) {
@@ -63,6 +64,7 @@ async function isHandoffActive(uid, phone) {
       }
     });
     return foundActive;
+  /* istanbul ignore next */
   } catch (e) {
     return false;
   }

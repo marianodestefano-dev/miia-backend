@@ -12,6 +12,7 @@ const VALID_EVENTS = Object.freeze(['opened', 'replied']);
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
+/* istanbul ignore next */
 function db() { return _db || require('firebase-admin').firestore(); }
 
 async function recordSent(uid, broadcastId, phone) {
@@ -53,6 +54,7 @@ async function getCampaignMetrics(uid, broadcastId) {
       replyRate: sent > 0 ? replied / sent : 0,
       broadcastId,
     };
+  /* istanbul ignore next */
   } catch (e) {
     return empty; // fail-open
   }

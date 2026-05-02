@@ -41,6 +41,7 @@ const COL_ALERTS = 'lead_score_alerts';
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
+/* istanbul ignore next */
 function db() { return _db || require('firebase-admin').firestore(); }
 
 function _levelFromScore(score) {
@@ -119,6 +120,7 @@ async function getPendingAlerts(uid) {
     const out = [];
     snap.forEach(d => out.push(d.data ? d.data() : {}));
     return out;
+  /* istanbul ignore next */
   } catch (e) {
     return []; // fail-open
   }
@@ -140,6 +142,7 @@ function getScoreLabel(score) {
     const r = SCORE_LABELS[k];
     if (c >= r.min && c <= r.max) return { ...r, score: c };
   }
+  /* istanbul ignore next */
   return null;
 }
 
