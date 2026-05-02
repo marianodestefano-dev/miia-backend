@@ -16104,6 +16104,17 @@ app.post('/api/mercadopago/webhook', express.json(), publicSchemas.validate(publ
           plan, plan_start_date: now, plan_end_date: endDate, payment_status: 'active', payment_method: 'mercadopago'
         });
         console.log(`[MP] Plan ${plan} activado para ${uid} (payment ${paymentId})`);
+        // VI-DASH-4: cross-grant addons GRATIS al activar MIIA principal
+        try {
+          const productPerms = require('./core/product_permissions');
+          await productPerms.setProductPermission(uid, 'miia', {
+            active: true, plan, expiresAt: endDate.toISOString(), source: 'standalone',
+          });
+          await productPerms.grantMiiaIncludedAddons(uid, plan);
+          console.log(`[VI-DASH-4] Cross-grant addons GRATIS para ${uid} (plan ${plan})`);
+        } catch (xgErr) {
+          console.error('[VI-DASH-4] Cross-grant fallo (no fatal):', xgErr.message);
+        }
       } else if (payType === 'agent' && uid) {
         await admin.firestore().collection('users').doc(uid).update({
           agents_limit: admin.firestore.FieldValue.increment(1)

@@ -87,6 +87,18 @@ function mountRoutes(app, deps = {}) {
     failed.push('metrics');
   }
 
+  // === PRODUCTS PERMISSIONS (VI-DASH-2) ===
+  try {
+    const createProductsRoutes = require('./products');
+    app.use('/api/products', createProductsRoutes({
+      verifyToken: deps.verifyToken,
+    }));
+    mounted.push('products');
+  } catch (e) {
+    console.error('[ROUTES] Error montando products routes:', e.message);
+    failed.push('products');
+  }
+
   // Resumen
   console.log(`[ROUTES] ✅ Rutas montadas: [${mounted.join(', ')}]${failed.length ? ` ❌ Fallaron: [${failed.join(', ')}]` : ''}`);
   return { mounted, failed };
