@@ -11778,6 +11778,20 @@ app.get('/api/tenants', rrRequireAuth, rrRequireAdmin, async (req, res) => {
   res.json(enriched);
 });
 
+// GET /api/admin/users -- List all users via Admin SDK (bypasses Firestore rules) -- C-422
+app.get('/api/admin/users', rrRequireAuth, rrRequireAdmin, async (req, res) => {
+  try {
+    const snapshot = await admin.firestore().collection('users').get();
+    const users = [];
+    snapshot.forEach(doc => users.push({ uid: doc.id, ...doc.data() }));
+    console.log('[/api/admin/users] ' + users.length + ' users returned');
+    res.json(users);
+  } catch (e) {
+    console.error('[/api/admin/users] ERROR:', e.message);
+    res.status(500).json({ error: 'Failed to load users: ' + e.message });
+  }
+});
+
 // ⭐ NUEVO ENDPOINT - Chat con MIIA desde frontend
 // C-406.b Bloque 1b: rrAuth + rrOwnerOfResource(userId, body) — abuse IA recursos.
 app.post('/api/chat', rrRequireAuth, rrRequireOwnerOfResource('userId', 'body'), async (req, res) => {
