@@ -42,16 +42,16 @@ const LANGUAGE_PATTERNS = Object.freeze({
 });
 
 function detectLanguage(text) {
-  if (!text || typeof text !== 'string') throw new Error('text requerido');
+  if (!text || typeof text !== 'string') return { lang: null, language: null, confidence: 0, scores: {} };
 
   const lower = text.toLowerCase().trim();
   const words = lower.split(/\s+/);
 
   if (words.length < MIN_WORDS_FOR_DETECTION) {
-    return { language: DEFAULT_LANGUAGE, confidence: 0, scores: {} };
+    return { lang: null, language: DEFAULT_LANGUAGE, confidence: 0, scores: {} };
   }
 
-  const scores = {};
+  const scores = { es: 0, en: 0, pt: 0 };
 
   for (const [lang, patterns] of Object.entries(LANGUAGE_PATTERNS)) {
     let score = 0;
@@ -62,11 +62,12 @@ function detectLanguage(text) {
     for (const ch of patterns.chars) {
       if (lower.includes(ch)) score += 2;
     }
-    if (score > 0) scores[lang] = Math.round(score * 10) / 10;
+    scores[lang] = Math.round(score * 10) / 10;
   }
 
-  if (Object.keys(scores).length === 0) {
-    return { language: DEFAULT_LANGUAGE, confidence: 0, scores: {} };
+  const __anyScore = Object.values(scores).some(v => v > 0);
+  if (!__anyScore) {
+    return { lang: null, language: DEFAULT_LANGUAGE, confidence: 0, scores: {} };
   }
 
   const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
@@ -76,10 +77,11 @@ function detectLanguage(text) {
   const confidence = Math.min(topScore / Math.max(totalScore, 1), 1);
 
   if (confidence < CONFIDENCE_THRESHOLD) {
-    return { language: DEFAULT_LANGUAGE, confidence, scores: Object.fromEntries(sorted) };
+    return { lang: DEFAULT_LANGUAGE, language: DEFAULT_LANGUAGE, confidence, scores: Object.fromEntries(sorted) };
   }
 
   return {
+    lang: topLang,
     language: topLang,
     confidence: Math.round(confidence * 100) / 100,
     scores: Object.fromEntries(sorted),
@@ -152,8 +154,36 @@ async function getResponseLanguage(uid, phone, currentMessage) {
   return getContactLanguage(uid, phone);
 }
 
+// T129 helpers
+function tokenize(text) {
+  if (!text || typeof text !== 'string') return [];
+  const lower = text.toLowerCase();
+  const noAccent = lower.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const tokens = noAccent.split(/[^a-z0-9]+/).filter(t => t.length >= 2);
+  return tokens;
+}
+
+function detectDominantLanguage(texts) {
+  if (!Array.isArray(texts) || texts.length === 0) return { lang: null, confidence: 0 };
+  const counts = {};
+  for (const t of texts) {
+    const r = detectLanguage(t);
+    if (r && r.lang) counts[r.lang] = (counts[r.lang] || 0) + 1;
+  }
+  const langs = Object.keys(counts);
+  if (langs.length === 0) return { lang: null, confidence: 0 };
+  let best = langs[0];
+  for (const l of langs) if (counts[l] > counts[best]) best = l;
+  const total = langs.reduce((s, l) => s + counts[l], 0);
+  return { lang: best, confidence: counts[best] / total };
+}
+
+const SUPPORTED_LANGS = SUPPORTED_LANGUAGES || ['es', 'en', 'pt'];
+
+
 module.exports = {
   detectLanguage, saveContactLanguage, getContactLanguage,
+  tokenize, detectDominantLanguage, SUPPORTED_LANGS,
   detectAndSaveLanguage, getResponseLanguage,
   SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE,
   CONFIDENCE_THRESHOLD, MIN_WORDS_FOR_DETECTION,

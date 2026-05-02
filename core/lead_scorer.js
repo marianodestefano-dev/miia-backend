@@ -26,8 +26,14 @@ const INTERACTION_WEIGHTS = Object.freeze({
 
 const VALID_TYPES = Object.freeze(Object.keys(INTERACTION_WEIGHTS));
 const DEFAULT_ALERT_THRESHOLD = 20;
+const MIN_SCORE = 0;
 const MAX_SCORE = 100;
 const SCORE_DECAY_DAYS = 30;
+const SCORING_SIGNALS = Object.freeze([
+  'message_count', 'question_asked', 'price_inquired', 'name_provided',
+  'contact_info_shared', 'appointment_requested', 'replied_quickly',
+  'multiple_sessions', 'catalog_viewed', 'objection_raised',
+]);
 const LEVELS = Object.freeze({ cold: 'cold', interested: 'interested', warm: 'warm', hot: 'hot' });
 
 const COL_INTERACTIONS = 'lead_interactions';
@@ -121,7 +127,7 @@ async function getPendingAlerts(uid) {
 // LEGACY (computeLeadScore basado en signals object)
 const SCORE_LABELS = Object.freeze({
   spam: { min: 0, max: 10, label: 'Spam/Bot', emoji: '🚫' },
-  cold: { min: 11, max: 30, label: 'Frio', emoji: '🔵' },
+  cold: { min: 11, max: 30, label: 'Frío', emoji: '🔵' },
   warm: { min: 31, max: 60, label: 'Interesado', emoji: '🟡' },
   hot: { min: 61, max: 85, label: 'Caliente', emoji: '🔴' },
   ready: { min: 86, max: 100, label: 'Listo para cerrar', emoji: '✅' },
@@ -157,6 +163,35 @@ function computeLeadScore(signals) {
   return Math.max(0, Math.min(MAX_SCORE, Math.round(score)));
 }
 
+
+// Legacy helpers (intent scorer / pricing)
+function buildScoreRecord(uid, phone, score, signals, opts) {
+  if (!uid) throw new Error('uid requerido');
+  if (!phone) throw new Error('phone requerido');
+  if (typeof score !== 'number') throw new Error('score debe ser numero');
+  const clamped = Math.max(0, Math.min(MAX_SCORE, Math.round(score)));
+  const label = getScoreLabel(clamped);
+  return {
+    uid,
+    phone,
+    score: clamped,
+    label: label ? label.label : 'Unknown',
+    category: label ? Object.keys(SCORE_LABELS).find(k => SCORE_LABELS[k].label === label.label) : null,
+    signals: signals || {},
+    notes: (opts && opts.notes) ? String(opts.notes) : null,
+    scoredAt: new Date().toISOString(),
+  };
+}
+
+function computeScoreTrend(currentScore, previousScore) {
+  if (typeof currentScore !== 'number') return 'new';
+  if (typeof previousScore !== 'number') return 'new';
+  const diff = currentScore - previousScore;
+  if (diff > 5) return 'rising';
+  if (diff < -5) return 'falling';
+  return 'stable';
+}
+
 module.exports = {
   // T164/T180/T316 API
   calculateScore,
@@ -166,12 +201,16 @@ module.exports = {
   getPendingAlerts,
   INTERACTION_WEIGHTS,
   DEFAULT_ALERT_THRESHOLD,
+  MIN_SCORE,
   MAX_SCORE,
   SCORE_DECAY_DAYS,
+  SCORING_SIGNALS,
   LEVELS,
   __setFirestoreForTests,
   // Legacy
   computeLeadScore,
   getScoreLabel,
   SCORE_LABELS,
+  buildScoreRecord,
+  computeScoreTrend,
 };
