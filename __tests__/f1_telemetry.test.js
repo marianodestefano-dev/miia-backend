@@ -167,6 +167,18 @@ describe('getDriverIntervals', () => {
     const r = await tel.getDriverIntervals(f, 1, 1);
     expect(r.gap_to_leader).toBeNull();
   });
+  test('row sin interval (nullish ?? null fallback)', async () => {
+    // last.interval undefined → ?? null branch (linea 129)
+    const f = mockFetch([{ gap_to_leader: 1.0, date: '2026-01-01' }]);
+    const r = await tel.getDriverIntervals(f, 1, 1);
+    expect(r.interval).toBeNull();
+  });
+  test('row sin date (|| null fallback)', async () => {
+    // last.date undefined → || null branch (linea 130)
+    const f = mockFetch([{ gap_to_leader: 1.0, interval: 0.5 }]);
+    const r = await tel.getDriverIntervals(f, 1, 1);
+    expect(r.last_seen).toBeNull();
+  });
 });
 
 // ── getDriverLapData ─────────────────────────────────────────────────────────
@@ -358,6 +370,18 @@ describe('getAllDriversLocation', () => {
     const r = await tel.getAllDriversLocation(f, 1, new Date('2026-01-01'));
     expect(r.length).toBe(1);
   });
+  test('row con date EARLIER que existing → no sobrescribe (linea 282 falsy branch)', async () => {
+    // Primer row con date posterior; segundo row mismo driver con date anterior.
+    // Cubre el branch falsy de \`new Date(row.date) > new Date(existing.date)\`.
+    const f = mockFetch([
+      { driver_number: 4, x: 100, y: 100, z: 0, date: '2026-01-01T00:00:05Z' },
+      { driver_number: 4, x: 999, y: 999, z: 0, date: '2026-01-01T00:00:00Z' },
+    ]);
+    const r = await tel.getAllDriversLocation(f, 1);
+    expect(r.length).toBe(1);
+    // Mantiene el primer row (posterior) — no sobrescribe con el anterior
+    expect(r[0].x).toBe(100);
+  });
 });
 
 // ── buildDriverSnapshot ──────────────────────────────────────────────────────
@@ -422,5 +446,20 @@ describe('exports constants', () => {
   });
   test('TYRE_COMPOUNDS contiene SOFT', () => {
     expect(tel.TYRE_COMPOUNDS.SOFT).toBe('Blandos');
+  });
+});
+
+
+// Cobertura adicional: arrow callback () => controller.abort() linea 57
+describe('fetchJson timeout abort coverage', () => {
+  test('timeout dispara controller.abort() callback', async () => {
+    const fetchFn = (_url, opts) => new Promise((_, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    });
+    await expect(tel.fetchJson(fetchFn, 'http://x', 5)).rejects.toThrow(/Timeout/);
   });
 });

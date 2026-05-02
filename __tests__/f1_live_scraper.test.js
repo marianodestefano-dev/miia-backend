@@ -271,6 +271,22 @@ describe('parsePositionFeed(raw)', () => {
     expect(r.positions[0].driver_number).toBe(2);
     expect(r.positions[1].driver_number).toBe(1);
   });
+
+  test('sort multiple entries cubre las 4 combinaciones de fallback', () => {
+    // 3 entries con varias combinaciones: V8 sort callbackeara con varios pares
+    // garantizando que se cubran las ramas truthy/truthy, truthy/falsy, falsy/truthy
+    // del sort callback (a.position || 99) - (b.position || 99).
+    const raw = {
+      Entries: {
+        '5': { Status: 'OnTrack', Position: 1 },   // truthy
+        '6': { Status: 'OnTrack' },                // falsy → 99
+        '7': { Status: 'OnTrack', Position: 2 },   // truthy
+      },
+    };
+    const r = scraper.parsePositionFeed(raw);
+    expect(r.positions.length).toBe(3);
+    expect(r.positions[0].driver_number).toBe(5); // pos 1 first
+  });
 });
 
 // ───── fetchLiveState ─────

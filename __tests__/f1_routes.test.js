@@ -484,6 +484,24 @@ describe('GET /api/f1/circuit*', () => {
     expect(r.status).toBe(200);
     globalThis.__f1LiveCacheState.positions = [{ driver_number: 1, position: 1 }];
   });
+
+  test('/circuit/:id/live positions con TODOS los campos truthy → branches truthy', async () => {
+    globalThis.__f1LiveCacheState.positions = [{
+      number: 4, driverName: 'Norris', teamColor: '#FF8000', x: 100, y: 200, driverId: 'norris',
+    }];
+    const app = makeApp();
+    const r = await request(app).get('/api/f1/circuit/monaco/live');
+    expect(r.status).toBe(200);
+    globalThis.__f1LiveCacheState.positions = [{ driver_number: 1, position: 1 }];
+  });
+
+  test('/circuit/:id/live positions=null → fallback (positions || [])', async () => {
+    globalThis.__f1LiveCacheState.positions = null;
+    const app = makeApp();
+    const r = await request(app).get('/api/f1/circuit/monaco/live');
+    expect(r.status).toBe(200);
+    globalThis.__f1LiveCacheState.positions = [{ driver_number: 1, position: 1 }];
+  });
 });
 
 // ───── /addon /fantasy ─────

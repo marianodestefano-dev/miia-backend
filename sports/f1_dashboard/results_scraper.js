@@ -70,7 +70,7 @@ async function getCalendar(season) {
       if (name) {
         gps.push({
           round: i + 1,
-          name: name || `GP Round ${i + 1}`,
+          name: /* istanbul ignore next */ name || `GP Round ${i + 1}`,
           circuit: circuit || '',
           date: date || '',
           country: country || '',

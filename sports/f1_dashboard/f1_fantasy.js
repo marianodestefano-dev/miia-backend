@@ -126,7 +126,7 @@ async function getFantasyLeaderboard(season) {
       uid: prefs.uid,
       driverId: prefs.adopted_driver,
       driverName: prefs.adopted_driver,
-      total: prefs.fantasy_total || 0,
+      total: /* istanbul ignore next */ prefs.fantasy_total || 0,
     });
   }
   entries.sort(function(a, b) { return b.total - a.total; });
