@@ -1,159 +1,126 @@
 'use strict';
 
 /**
- * MIIA â€” Onboarding Wizard V2 (T154)
- * Wizard de 5 pasos con validacion estricta para setup del owner.
- * Steps: identity -> business -> catalog -> whatsapp -> training
+ * onboarding_wizard.js -- T-P3-2
+ * Backend del wizard de 5 pasos para que un comerciante configure MIIA en <30 min.
+ *
+ * Pasos:
+ *   1. business_info (name, vertical, country)
+ *   2. products (catalogo inicial)
+ *   3. hours (horario atencion)
+ *   4. disclaimer_mode (oculto / a pedido / proactivo)
+ *   5. test_message (probar primer mensaje)
  */
 
-let _db = null;
-function __setFirestoreForTests(fs) { _db = fs; }
-function db() {
-  if (_db) return _db;
-  return require('firebase-admin').firestore();
-}
-
-const WIZARD_STEPS = Object.freeze([
-  'identity', 'business', 'catalog', 'whatsapp', 'training',
+const STEPS = Object.freeze([
+  'business_info',
+  'products',
+  'hours',
+  'disclaimer_mode',
+  'test_message',
 ]);
 
-const STEP_INDEX = Object.freeze(
-  WIZARD_STEPS.reduce((acc, s, i) => { acc[s] = i; return acc; }, {})
-);
+const VERTICALS = Object.freeze([
+  'food', 'retail', 'health', 'beauty', 'fitness', 'education',
+  'services', 'real_estate', 'auto', 'other',
+]);
 
-const STEP_VALIDATORS = {
-  identity: (data) => {
-    const errors = [];
-    if (!data.ownerName || typeof data.ownerName !== 'string') errors.push('ownerName requerido');
-    if (!data.email || !data.email.includes('@')) errors.push('email invalido');
-    return errors;
-  },
-  business: (data) => {
-    const errors = [];
-    if (!data.businessName || typeof data.businessName !== 'string') errors.push('businessName requerido');
-    if (!data.sector) errors.push('sector requerido');
-    if (!data.country || data.country.length < 2) errors.push('country requerido (codigo ISO)');
-    return errors;
-  },
-  catalog: (data) => {
-    const errors = [];
-    if (data.hasCatalog === undefined || data.hasCatalog === null) errors.push('hasCatalog requerido');
-    if (data.hasCatalog && data.productCount !== undefined) {
-      if (typeof data.productCount !== 'number' || data.productCount < 0) errors.push('productCount debe ser numero >= 0');
-    }
-    return errors;
-  },
-  whatsapp: (data) => {
-    const errors = [];
-    if (!data.whatsappPhone) errors.push('whatsappPhone requerido');
-    if (data.whatsappPhone && !/^\+\d{8,15}$/.test(data.whatsappPhone)) errors.push('whatsappPhone formato invalido');
-    return errors;
-  },
-  training: (data) => {
-    const errors = [];
-    if (data.trainingText !== undefined && typeof data.trainingText !== 'string') errors.push('trainingText debe ser string');
-    return errors;
-  },
-};
+const DISCLAIMER_MODES = Object.freeze(['hidden', 'on_request', 'proactive']);
+const COL_ONBOARDING = 'onboarding_state';
 
-/**
- * Obtiene el estado del wizard para un owner.
- */
-async function getWizardState(uid) {
-  if (!uid) throw new Error('uid requerido');
-  try {
-    const snap = await db().collection('onboarding_wizard').doc(uid).get();
-    if (!snap.exists) return _defaultState(uid);
-    return { ...snap.data(), uid };
-  } catch (e) {
-    console.error('[WIZARD] Error leyendo estado uid=' + uid.substring(0,8) + ': ' + e.message);
-    return _defaultState(uid);
+/* istanbul ignore next */
+let _db = null;
+/* istanbul ignore next */
+function __setFirestoreForTests(fs) { _db = fs; }
+/* istanbul ignore next */
+function db() { return _db || require('firebase-admin').firestore(); }
+
+function _validateStepData(stepName, data) {
+  if (!data || typeof data !== 'object') throw new Error('data requerido');
+  if (stepName === 'business_info') {
+    if (!data.name || typeof data.name !== 'string') throw new Error('name requerido');
+    if (!data.vertical) throw new Error('vertical requerido');
+    if (!VERTICALS.includes(data.vertical)) throw new Error('vertical invalida: ' + data.vertical);
   }
+  if (stepName === 'hours') {
+    if (!data.timezone) throw new Error('timezone requerido');
+    if (data.openTime && !/^\d{2}:\d{2}$/.test(data.openTime)) throw new Error('openTime formato HH:MM');
+    if (data.closeTime && !/^\d{2}:\d{2}$/.test(data.closeTime)) throw new Error('closeTime formato HH:MM');
+  }
+  if (stepName === 'disclaimer_mode') {
+    if (!DISCLAIMER_MODES.includes(data.mode)) throw new Error('mode invalido: ' + data.mode);
+  }
+  if (stepName === 'products') {
+    if (!Array.isArray(data.products)) throw new Error('products debe ser array');
+  }
+  if (stepName === 'test_message') {
+    if (!data.targetPhone) throw new Error('targetPhone requerido');
+  }
+  return true;
 }
 
-function _defaultState(uid) {
-  return {
+async function startOnboarding(uid) {
+  if (!uid) throw new Error('uid requerido');
+  const state = {
     uid,
-    currentStep: 'identity',
+    currentStep: 'business_info',
     completedSteps: [],
-    stepData: {},
-    completed: false,
     startedAt: new Date().toISOString(),
     completedAt: null,
   };
+  await db().collection('owners').doc(uid).collection(COL_ONBOARDING).doc('state').set(state);
+  return state;
 }
 
-/**
- * Valida y avanza un paso del wizard.
- * @param {string} uid
- * @param {string} step
- * @param {object} data
- * @returns {Promise<{success, errors, nextStep, state}>}
- */
-async function submitStep(uid, step, data) {
+async function saveStep(uid, stepName, data) {
   if (!uid) throw new Error('uid requerido');
-  if (!WIZARD_STEPS.includes(step)) throw new Error('step invalido: ' + step);
-  if (!data || typeof data !== 'object') throw new Error('data requerido');
-
-  const validator = STEP_VALIDATORS[step];
-  const errors = validator(data);
-  if (errors.length > 0) return { success: false, errors, nextStep: step, state: null };
-
-  const current = await getWizardState(uid);
-  const stepIdx = STEP_INDEX[step];
-  const completedSteps = new Set(current.completedSteps);
-  completedSteps.add(step);
-
-  const nextStep = WIZARD_STEPS[stepIdx + 1] || null;
-  const completed = completedSteps.size === WIZARD_STEPS.length;
-
-  const newState = {
-    uid,
-    currentStep: nextStep || step,
-    completedSteps: Array.from(completedSteps),
-    stepData: { ...current.stepData, [step]: data },
-    completed,
-    startedAt: current.startedAt,
-    completedAt: completed ? new Date().toISOString() : null,
+  if (!STEPS.includes(stepName)) throw new Error('step invalido: ' + stepName);
+  _validateStepData(stepName, data);
+  const ref = db().collection('owners').doc(uid).collection(COL_ONBOARDING).doc('state');
+  const existing = await ref.get();
+  const current = existing && existing.exists && existing.data ? existing.data() : { completedSteps: [] };
+  const completedSteps = Array.isArray(current.completedSteps) ? current.completedSteps.slice() : [];
+  if (!completedSteps.includes(stepName)) completedSteps.push(stepName);
+  const isLast = stepName === STEPS[STEPS.length - 1];
+  const idx = STEPS.indexOf(stepName);
+  const nextStep = !isLast ? STEPS[idx + 1] : null;
+  const update = {
+    [`step_${stepName}`]: data,
+    completedSteps,
+    currentStep: nextStep || stepName,
+    completedAt: isLast ? new Date().toISOString() : null,
+    updatedAt: new Date().toISOString(),
   };
-
-  try {
-    await db().collection('onboarding_wizard').doc(uid).set(newState);
-    console.log('[WIZARD] uid=' + uid.substring(0,8) + ' step=' + step + ' completed=' + completed);
-  } catch (e) {
-    console.error('[WIZARD] Error guardando estado uid=' + uid.substring(0,8) + ': ' + e.message);
-    throw e;
-  }
-
-  return { success: true, errors: [], nextStep, state: newState };
+  await ref.set(update, { merge: true });
+  return { stepName, nextStep, isComplete: isLast };
 }
 
-/**
- * Verifica si el wizard esta completo.
- */
-async function isWizardComplete(uid) {
+async function getOnboardingState(uid) {
   if (!uid) throw new Error('uid requerido');
-  const state = await getWizardState(uid);
-  return state.completed === true;
+  const doc = await db().collection('owners').doc(uid).collection(COL_ONBOARDING).doc('state').get();
+  if (!doc || !doc.exists) return null;
+  return doc.data ? doc.data() : null;
 }
 
-/**
- * Reinicia el wizard.
- */
-async function resetWizard(uid) {
-  if (!uid) throw new Error('uid requerido');
-  const fresh = _defaultState(uid);
-  try {
-    await db().collection('onboarding_wizard').doc(uid).set(fresh);
-    return fresh;
-  } catch (e) {
-    console.error('[WIZARD] Error reseteando uid=' + uid.substring(0,8) + ': ' + e.message);
-    throw e;
-  }
+function calculateProgress(state) {
+  if (!state || !state.completedSteps) return { percent: 0, completed: 0, total: STEPS.length };
+  const completed = Array.isArray(state.completedSteps) ? state.completedSteps.length : 0;
+  return { percent: Math.round((completed / STEPS.length) * 100), completed, total: STEPS.length };
+}
+
+function isOnboardingComplete(state) {
+  if (!state) return false;
+  return !!state.completedAt;
 }
 
 module.exports = {
-  getWizardState, submitStep, isWizardComplete, resetWizard,
-  WIZARD_STEPS, STEP_INDEX, STEP_VALIDATORS,
+  startOnboarding,
+  saveStep,
+  getOnboardingState,
+  calculateProgress,
+  isOnboardingComplete,
+  STEPS,
+  VERTICALS,
+  DISCLAIMER_MODES,
   __setFirestoreForTests,
 };
