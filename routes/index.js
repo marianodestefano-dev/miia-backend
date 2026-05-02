@@ -99,6 +99,16 @@ function mountRoutes(app, deps = {}) {
     failed.push('products');
   }
 
+  // === AUTH MAGIC LINK (VI-AUTH-2/3) ===
+  try {
+    const createAuthRoutes = require('./auth_magic');
+    app.use('/api/auth', createAuthRoutes());
+    mounted.push('auth_magic');
+  } catch (e) {
+    console.error('[ROUTES] Error montando auth_magic routes:', e.message);
+    failed.push('auth_magic');
+  }
+
   // Resumen
   console.log(`[ROUTES] ✅ Rutas montadas: [${mounted.join(', ')}]${failed.length ? ` ❌ Fallaron: [${failed.join(', ')}]` : ''}`);
   return { mounted, failed };
