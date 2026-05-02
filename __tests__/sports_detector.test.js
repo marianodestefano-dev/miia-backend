@@ -178,3 +178,62 @@ describe('getAllContactsBySport', () => {
     expect(r[0].contactName).toBe('Tio');
   });
 });
+
+describe('extra branch coverage sports_detector', () => {
+  test('getSportsForContact con data.sports no array', async () => {
+    const key = PHONE.replace(/[^0-9a-zA-Z_]/g, '_');
+    const ex = {}; ex[key] = { sports: 'not-an-array' };
+    sd.__setFirestoreForTests(makeMockDb({ existingSports: ex }));
+    expect(await sd.getSportsForContact(UID, PHONE)).toEqual([]);
+  });
+
+  test('setSportForContact con existing data.sports no array', async () => {
+    const key = PHONE.replace(/[^0-9a-zA-Z_]/g, '_');
+    const ex = {}; ex[key] = { contactPhone: PHONE, sports: 'broken' };
+    sd.__setFirestoreForTests(makeMockDb({ existingSports: ex }));
+    const r = await sd.setSportForContact(UID, PHONE, { type: 'futbol', team: 'Boca' });
+    expect(r.sports.length).toBe(1);
+  });
+
+  test('removeSportForContact con data.sports no array', async () => {
+    const key = PHONE.replace(/[^0-9a-zA-Z_]/g, '_');
+    const ex = {}; ex[key] = { sports: 'broken' };
+    sd.__setFirestoreForTests(makeMockDb({ existingSports: ex }));
+    const r = await sd.removeSportForContact(UID, PHONE, 'futbol');
+    expect(r).toEqual([]);
+  });
+
+  test('getAllContactsBySport con data.sports no array', async () => {
+    const ex = { x: { contactPhone: '+1', sports: 'broken' } };
+    sd.__setFirestoreForTests(makeMockDb({ existingSports: ex }));
+    expect(await sd.getAllContactsBySport(UID, 'futbol')).toEqual([]);
+  });
+});
+
+describe('extra: doc sin .data property', () => {
+  test('getSportsForContact con doc.exists pero sin data fn', async () => {
+    sd.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({ collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true })
+      })})})})
+    });
+    expect(await sd.getSportsForContact(UID, PHONE)).toEqual([]);
+  });
+  test('removeSportForContact con doc.exists pero sin data fn', async () => {
+    sd.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({ collection: () => ({ doc: () => ({
+        get: async () => ({ exists: true }),
+        set: async () => {}
+      })})})})
+    });
+    expect(await sd.removeSportForContact(UID, PHONE, 'futbol')).toEqual([]);
+  });
+  test('getAllContactsBySport con doc sin data fn', async () => {
+    sd.__setFirestoreForTests({
+      collection: () => ({ doc: () => ({ collection: () => ({
+        get: async () => ({ forEach: fn => [{id:'x'}].forEach(fn) })
+      })})})
+    });
+    expect(await sd.getAllContactsBySport(UID, 'futbol')).toEqual([]);
+  });
+});
