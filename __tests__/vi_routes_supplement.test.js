@@ -52,9 +52,7 @@ jest.mock('firebase-admin', () => {
   return _fb;
 });
 
-jest.mock('nodemailer', () => ({
-  createTransport: () => ({ sendMail: jest.fn(async () => ({ messageId: 'fake' })) }),
-}));
+// nodemailer removed -- magic link envia desde cliente Firebase
 
 const express = require('express');
 const request = require('supertest');
@@ -96,20 +94,9 @@ describe('POST /api/auth/signup-magic', () => {
     expect(r.body.created).toBe(false);
     expect(r.body.exists).toBe(true);
   });
-  test('sin SMTP env: sent=false', async () => {
-    delete process.env.SMTP_HOST;
-    const r = await request(makeApp()).post('/api/auth/signup-magic').send({ email: 'a@b.com' });
-    expect(r.body.sent).toBe(false);
-  });
-  test('con SMTP env: sent=true', async () => {
-    process.env.SMTP_HOST = 'smtp.test';
-    process.env.SMTP_USER = 'u';
-    process.env.SMTP_PASS = 'p';
+  test('siempre retorna sent=true (cliente envia)', async () => {
     const r = await request(makeApp()).post('/api/auth/signup-magic').send({ email: 'a@b.com' });
     expect(r.body.sent).toBe(true);
-    delete process.env.SMTP_HOST;
-    delete process.env.SMTP_USER;
-    delete process.env.SMTP_PASS;
   });
   test('sin email da 400', async () => {
     const r = await request(makeApp()).post('/api/auth/signup-magic').send({});

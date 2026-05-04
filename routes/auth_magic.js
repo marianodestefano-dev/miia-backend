@@ -1,24 +1,21 @@
 'use strict';
 
 /**
- * AUTH ROUTES -- VI-AUTH-2/3 (signup auto Modelo B + magic link)
+ * AUTH ROUTES -- VI-AUTH-2/3 + VI-SETTINGS-1
  *
  * POST /api/auth/signup-magic { email, plan?, addon? }
  *   - crea Firebase user si no existe
- *   - genera signInWithEmailLink y envia mail
- *   - retorna { exists: bool, sent: bool }
+ *   - guarda pending_intent en users/{uid}
+ *   - NO envia mail (lo hace el cliente via firebase.auth().sendSignInLinkToEmail)
+ *   - Railway bloquea SMTP outbound, por eso delegamos al SDK Firebase cliente.
+ *
+ * POST /api/auth/set-password { password }
+ *   - actualiza password del user autenticado
  */
 
 const express = require('express');
 const router = express.Router();
 const admin = require('firebase-admin');
-const nodemailer = require('nodemailer');
-
-const FRONTEND_BASE = process.env.FRONTEND_BASE_URL || 'https://miia-app.com';
-const ACS_LINK_SETTINGS = {
-  url: FRONTEND_BASE + '/login.html?magic=1',
-  handleCodeInApp: true,
-};
 
 async function _findOrCreateUser(email) {
   try {
@@ -33,31 +30,6 @@ async function _findOrCreateUser(email) {
   }
 }
 
-async function _sendMagicLinkMail(email, link) {
-  // SMTP optional: usa SMTP_HOST/SMTP_USER/SMTP_PASS si estan, sino loguea
-  const host = process.env.SMTP_HOST;
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-  if (!host || !user || !pass) {
-    console.log('[AUTH-MAGIC] SMTP no configurado, link:', link);
-    return { sent: false, reason: 'smtp_missing' };
-  }
-  // SMTP_PORT lee env var (465 = SSL/TLS direct, 587 = STARTTLS). secure se deriva del puerto.
-  const port = parseInt(process.env.SMTP_PORT || '465', 10);
-  const secure = port === 465;
-  const transporter = nodemailer.createTransport({
-    host, port, secure, auth: { user, pass },
-    connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000,
-  });
-  await transporter.sendMail({
-    from: 'MIIA <noreply@miia-app.com>',
-    to: email,
-    subject: 'Tu link de acceso a MIIA',
-    html: '<p>Hola,</p><p>Para entrar a MIIA hacé click acá:</p><p><a href="' + link + '">Entrar a MIIA</a></p><p>El link expira en 1 hora.</p>',
-  });
-  return { sent: true };
-}
-
 module.exports = function createAuthRoutes() {
 
   router.post('/signup-magic', express.json(), async (req, res) => {
@@ -69,26 +41,20 @@ module.exports = function createAuthRoutes() {
       }
       const { user, created } = await _findOrCreateUser(email);
 
-      // Persistir intencion de plan/addon para captura post-login
       if (plan || addon) {
         await admin.firestore().collection('users').doc(user.uid).set({
           pending_intent: { plan: plan || null, addon: addon || null, ts: new Date().toISOString() },
         }, { merge: true });
       }
 
-      const link = await admin.auth().generateSignInWithEmailLink(email, ACS_LINK_SETTINGS);
-      const sendResult = await _sendMagicLinkMail(email, link);
-
-      console.log('[AUTH-MAGIC] uid=' + user.uid + ' created=' + created + ' sent=' + sendResult.sent);
-      res.json({ exists: !created, created, sent: sendResult.sent });
+      console.log('[AUTH-MAGIC] uid=' + user.uid + ' created=' + created + ' (cliente envia mail)');
+      res.json({ exists: !created, created, sent: true });
     } catch (e) {
       console.error('[AUTH-MAGIC] error:', e.message);
       res.status(500).json({ error: e.message });
     }
   });
 
-
-  // VI-SETTINGS-1: set/change password
   router.post('/set-password', express.json(), async (req, res) => {
     try {
       const auth = req.headers.authorization || '';
