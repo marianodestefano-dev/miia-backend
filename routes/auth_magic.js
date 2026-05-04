@@ -42,7 +42,13 @@ async function _sendMagicLinkMail(email, link) {
     console.log('[AUTH-MAGIC] SMTP no configurado, link:', link);
     return { sent: false, reason: 'smtp_missing' };
   }
-  const transporter = nodemailer.createTransport({ host, port: 587, secure: false, auth: { user, pass } });
+  // SMTP_PORT lee env var (465 = SSL/TLS direct, 587 = STARTTLS). secure se deriva del puerto.
+  const port = parseInt(process.env.SMTP_PORT || '465', 10);
+  const secure = port === 465;
+  const transporter = nodemailer.createTransport({
+    host, port, secure, auth: { user, pass },
+    connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000,
+  });
   await transporter.sendMail({
     from: 'MIIA <noreply@miia-app.com>',
     to: email,
