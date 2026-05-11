@@ -483,3 +483,155 @@ describe('T293 — inventory_engine: productos + stock + movimientos', () => {
     expect(text).toContain('Stock bajo');
   });
 });
+
+describe('vi_coverage inventory_engine', () => {
+  beforeEach(() => {
+    const { __setFirestoreForTests: setInvDb2 } = require('../core/inventory_engine');
+    setInvDb2(makeMockDb().db);
+  });
+  afterEach(() => {
+    const { __setFirestoreForTests: resetDb } = require('../core/inventory_engine');
+    resetDb(null);
+  });
+  test('no data => data={} right side', () => {
+    const p = buildProductRecord(UID);
+    expect(p.stock).toBe(0);
+    expect(p.status).toBe('out_of_stock');
+  });
+  test('stock=0 status=inactive => top ternary true', () => {
+    const p = buildProductRecord(UID, { stock: 0, status: 'inactive' });
+    expect(p.status).toBe('inactive');
+  });
+  test('stock=0 status=out_of_stock => third && false', () => {
+    const p = buildProductRecord(UID, { stock: 0, status: 'out_of_stock' });
+    expect(p.status).toBe('out_of_stock');
+  });
+  test('sku empty string => auto-generated', () => {
+    const p = buildProductRecord(UID, { sku: '' });
+    expect(p.sku).toMatch(/^SKU/);
+  });
+  test('custom productId => preserved', () => {
+    const p = buildProductRecord(UID, { productId: 'custom_vi_id', sku: 'P1' });
+    expect(p.productId).toBe('custom_vi_id');
+  });
+  test('unitPrice=0 => margin=0 (false branch)', () => {
+    const p = buildProductRecord(UID, { sku: 'ZERO', unitPrice: 0, costPrice: 100, stock: 5 });
+    expect(p.margin).toBe(0);
+  });
+  test('reservedStock number => preserved', () => {
+    const p = buildProductRecord(UID, { sku: 'RS', stock: 10, reservedStock: 3 });
+    expect(p.reservedStock).toBe(3);
+  });
+  test('buildMovementRecord no data => data={}', () => {
+    const m = buildMovementRecord(UID, 'prod_vi');
+    expect(m.quantity).toBe(0);
+    expect(m.type).toBe('adjustment');
+    expect(m.reference).toBeNull();
+    expect(m.notes).toBe('');
+  });
+  test('buildMovementRecord notes string => true branch', () => {
+    const m = buildMovementRecord(UID, 'prod_vi', { type: 'purchase', notes: 'Recibido OK' });
+    expect(m.notes).toBe('Recibido OK');
+  });
+  test('adjustStock Infinity => invalid_quantity', () => {
+    const p = buildProductRecord(UID, { sku: 'ADJ', stock: 5 });
+    expect(() => adjustStock(p, Infinity, 'purchase')).toThrow('invalid_quantity');
+  });
+  test('reserveStock non-number => invalid_quantity', () => {
+    const p = buildProductRecord(UID, { sku: 'RES', stock: 10 });
+    expect(() => reserveStock(p, 'bad')).toThrow('invalid_quantity');
+  });
+  test('reserveStock qty=0 => invalid_quantity', () => {
+    const p = buildProductRecord(UID, { sku: 'RES2', stock: 10 });
+    expect(() => reserveStock(p, 0)).toThrow('invalid_quantity');
+  });
+  test('releaseReservation non-number => invalid_quantity', () => {
+    const p = buildProductRecord(UID, { sku: 'REL', stock: 10 });
+    expect(() => releaseReservation(p, 'bad')).toThrow('invalid_quantity');
+  });
+  test('releaseReservation qty=0 => invalid_quantity', () => {
+    const p = buildProductRecord(UID, { sku: 'REL2', stock: 10 });
+    expect(() => releaseReservation(p, 0)).toThrow('invalid_quantity');
+  });
+  test('computeInventoryStats null => early return', () => {
+    const stats = computeInventoryStats(null);
+    expect(stats.total).toBe(0);
+    expect(stats.avgMargin).toBe(0);
+  });
+  test('buildProductSummaryText unknown status => default icon', () => {
+    const p = buildProductRecord(UID, { sku: 'UNK', stock: 5 });
+    p.status = 'totally_unknown_vi';
+    const text = buildProductSummaryText(p);
+    expect(text).toContain('UNK');
+  });
+  test('buildProductSummaryText margin=0 => no Margen line', () => {
+    const p = buildProductRecord(UID, { sku: 'MARG', stock: 5 });
+    const text = buildProductSummaryText(p);
+    expect(text).not.toContain('Margen');
+  });
+  test('buildProductSummaryText totalSold=0 => no Vendido line', () => {
+    const p = buildProductRecord(UID, { sku: 'SOLD0', stock: 5 });
+    const text = buildProductSummaryText(p);
+    expect(text).not.toContain('Vendido');
+  });
+  test('buildProductSummaryText no tags => no Tags line', () => {
+    const p = buildProductRecord(UID, { sku: 'NOTAGS', stock: 5 });
+    const text = buildProductSummaryText(p);
+    expect(text).not.toContain('Tags');
+  });
+  test('buildProductSummaryText reservedStock>0 => shows reservado', () => {
+    let p = buildProductRecord(UID, { sku: 'RSVD', stock: 10 });
+    p = reserveStock(p, 3);
+    const text = buildProductSummaryText(p);
+    expect(text).toContain('reservado');
+  });
+  test('listProductsByStatus null => ref.get() (falsy branch)', async () => {
+    const p = buildProductRecord(UID, { sku: 'LST1', stock: 5 });
+    await saveProduct(UID, p);
+    const results = await listProductsByStatus(UID, null);
+    expect(results.length).toBeGreaterThan(0);
+  });
+  test('listProductsByStatus empty => []', async () => {
+    const freshMock = makeMockDb();
+    const { __setFirestoreForTests: freshSet } = require('../core/inventory_engine');
+    freshSet(freshMock.db);
+    const results = await listProductsByStatus(UID, 'archived');
+    expect(results).toEqual([]);
+  });
+  test('listLowStockProducts empty => []', async () => {
+    const freshMock = makeMockDb();
+    const { __setFirestoreForTests: freshSet2 } = require('../core/inventory_engine');
+    freshSet2(freshMock.db);
+    const results = await listLowStockProducts('uid_vi_empty_ie_99');
+    expect(results).toEqual([]);
+  });
+  test('listMovementsByProduct empty => []', async () => {
+    const freshMock = makeMockDb();
+    const { __setFirestoreForTests: freshSet3 } = require('../core/inventory_engine');
+    freshSet3(freshMock.db);
+    const results = await listMovementsByProduct(UID, 'prod_vi_no_moves');
+    expect(results).toEqual([]);
+  });
+  test('_db || require firebase fallback right side', async () => {
+    jest.resetModules();
+    const fakeDb = {
+      collection: () => ({
+        doc: () => ({
+          collection: () => ({
+            doc: () => ({
+              set: async () => {},
+              get: async () => ({ exists: false, data: () => undefined }),
+            }),
+            where: () => ({ get: async () => ({ empty: true, forEach: () => {} }) }),
+            get: async () => ({ empty: true, forEach: () => {} }),
+          }),
+        }),
+      }),
+    };
+    const adminMock = { firestore: jest.fn().mockReturnValue(fakeDb) };
+    jest.doMock('firebase-admin', () => adminMock);
+    const { getProduct: getProd } = require('../core/inventory_engine');
+    const result = await getProd(UID, 'prod_vi_fallback');
+    expect(result).toBeNull();
+  });
+});
