@@ -84,4 +84,57 @@ describe('C-WA-FIX-1 — Anti-bot reconexion WhatsApp', () => {
     });
   });
 
+  // ── WATCHDOG V2: threshold COT dinámico (anti-bot C-WA-FIX-1 §2) ──────────────
+  // El WATCHDOG ya no usa sendPresenceUpdate. Usa probe pasivo (ws.readyState + ws.ping TCP-level).
+  // El threshold silentMinutes es DINÁMICO: 10 min de día, 60 min de noche COT (00:00-06:00h).
+  // La lógica COT de tenant_manager.js (L1207-1210) replica exactamente la función de abajo.
+  describe('WATCHDOG V2 — threshold COT dinámico', () => {
+    // Función pura que replica la lógica de tenant_manager.js
+    function calcThreshold(utcHour) {
+      const cotHour = (utcHour - 5 + 24) % 24; // COT = UTC-5 sin DST
+      const isNightCOT = cotHour >= 0 && cotHour < 6;
+      return isNightCOT ? 60 : 10;
+    }
+
+    test('UTC 05:00 → COT 00:00 → isNightCOT=true → threshold=60 min', () => {
+      expect(calcThreshold(5)).toBe(60);
+    });
+
+    test('UTC 06:00 → COT 01:00 → isNightCOT=true → threshold=60 min', () => {
+      expect(calcThreshold(6)).toBe(60);
+    });
+
+    test('UTC 10:59 → COT 05:59 → isNightCOT=true → threshold=60 min', () => {
+      // 10*60+59 = 659 min UTC = 05:59 COT
+      expect(calcThreshold(10)).toBe(60); // 10 UTC → 5 COT → noche
+    });
+
+    test('UTC 11:00 → COT 06:00 → isNightCOT=false → threshold=10 min', () => {
+      // 11 UTC → 6 COT → fuera de rango 0-5h nocturno
+      expect(calcThreshold(11)).toBe(10);
+    });
+
+    test('UTC 15:00 → COT 10:00 → isNightCOT=false → threshold=10 min', () => {
+      expect(calcThreshold(15)).toBe(10);
+    });
+
+    test('UTC 00:00 → COT 19:00 (UTC-5 → 24-5=19) → isNightCOT=false → threshold=10 min', () => {
+      // 0 - 5 + 24 = 19h COT → no es noche
+      expect(calcThreshold(0)).toBe(10);
+    });
+
+    test('UTC 04:59 → COT 23:59 → isNightCOT=false → threshold=10 min', () => {
+      // 4 - 5 + 24 = 23h COT → no es noche
+      expect(calcThreshold(4)).toBe(10);
+    });
+
+    test('umbral: noche COT recorre exactamente UTC 05h-10h (6 horas)', () => {
+      const nightHoursUTC = [5, 6, 7, 8, 9, 10]; // UTC cuando COT es 00-05h
+      const dayHoursUTC   = [0, 1, 2, 3, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
+      nightHoursUTC.forEach(h => expect(calcThreshold(h)).toBe(60));
+      dayHoursUTC.forEach(h => expect(calcThreshold(h)).toBe(10));
+    });
+  });
+
+
 });

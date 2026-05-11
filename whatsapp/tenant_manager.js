@@ -1152,9 +1152,9 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     //   _lastPingOk    — ws.ping() exitoso (solo dice que el WebSocket está abierto)
     //   _lastRealEvent — mensaje real recibido o connection.update (WhatsApp REALMENTE vivo)
     //
-    // Heartbeat: ws.ping() cada 3 min (mantiene Railway proxy feliz)
-    // Watchdog V2: cada 5 min, si no hubo _lastRealEvent en 10 min → prueba activa
-    //   con sendPresenceUpdate(). Si falla → reconecta.
+    // Heartbeat: ws.ping() cada 5 min (mantiene Railway proxy feliz, anti-bot C-WA-FIX-1)
+    // Watchdog V2: cada 5 min, si no hubo _lastRealEvent en 10 min (o 60 min noche COT 00-06h) →
+    //   probe PASIVO (ws.readyState + ws.ping TCP-level, sin sendPresenceUpdate). Si falla → reconecta.
     if (tenant._watchdog) clearInterval(tenant._watchdog);
     if (tenant._heartbeat) clearInterval(tenant._heartbeat);
     if (tenant._activeProbe) clearInterval(tenant._activeProbe);
@@ -1164,7 +1164,7 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
     tenant._lastRealEvent = now;
     tenant._probeFailCount = 0;
 
-    // Heartbeat: ws.ping() cada 3 min — solo mantiene WS vivo para Railway
+    // Heartbeat: ws.ping() cada 5 min — mantiene WS Railway vivo (anti-bot C-WA-FIX-1)
     tenant._heartbeat = setInterval(async () => {
       if (!tenant.isReady || !tenant.sock) return;
       try {
@@ -1180,11 +1180,11 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       } catch (e) {
         console.warn(`[TM:${uid}] ⚠️ Heartbeat ping failed: ${e.message}`);
       }
-    }, 180000); // Cada 3 minutos
+    }, 300000); // Cada 5 minutos (anti-bot C-WA-FIX-1)
 
-    // Watchdog V2 (Active Probe): detecta desconexión fantasma
-    // Cada 5 min revisa si hubo actividad REAL. Si no → sendPresenceUpdate como probe.
-    // Si el probe falla → socket fantasma → reconectar.
+    // Watchdog V2 (Passive Probe, anti-bot C-WA-FIX-1): detecta desconexión fantasma
+    // Cada 5 min revisa si hubo actividad REAL. Si no → probe PASIVO (ws.readyState + ws.ping TCP-level).
+    // NUNCA sendPresenceUpdate (visible a servidores WA). Si probe falla → reconectar.
     setTimeout(() => {
     tenant._watchdog = setInterval(async () => {
       if (!tenant.isReady || !tenant.sock || tenant._reconnecting) return;
@@ -1200,26 +1200,48 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
         return;
       }
 
-      // Caso 2: 10+ min sin actividad real → probe activo
-      if (silentMinutes > 10) {
-        console.log(`[TM:${uid}] 🔍 WATCHDOG-V2: ${Math.round(silentMinutes)}min sin actividad real. Ejecutando probe activo...`);
+      // Caso 2: probe PASIVO si sin actividad real por threshold dinámico (anti-bot C-WA-FIX-1)
+      // NUNCA sendPresenceUpdate — es visible a servidores WA y activa detección de bots.
+      // Probe pasivo: ws.readyState (estado TCP) + ws.ping() TCP-level (invisible a WA).
+      // THRESHOLD: 10 min de día / 60 min de noche COT (00:00-06:00h = UTC 05:00-11:00h)
+      const _utcHour = new Date().getUTCHours();
+      const _cotHour = (_utcHour - 5 + 24) % 24; // COT = UTC-5 (sin DST)
+      const _isNightCOT = _cotHour >= 0 && _cotHour < 6;
+      const _silentThresholdMin = _isNightCOT ? 60 : 10;
+
+      if (silentMinutes > _silentThresholdMin) {
+        console.log(`[TM:${uid}] 🔍 WATCHDOG-V2: ${Math.round(silentMinutes)}min sin actividad (threshold=${_silentThresholdMin}min, nocturno=${_isNightCOT}). Probe PASIVO...`);
         try {
-          // sendPresenceUpdate es la operación más liviana que hace un roundtrip real a WhatsApp
-          // Si falla, la conexión es fantasma
+          // Probe pasivo: ws.readyState + ws.ping() TCP-level — NO va a servidores WA
           await Promise.race([
-            tenant.sock.sendPresenceUpdate('available'),
+            new Promise((resolve, reject) => {
+              const _ws = tenant.sock.ws;
+              const _wsState = _ws?.readyState;
+              if (_wsState !== 1) {
+                reject(new Error(`ws not open (readyState=${_wsState})`));
+                return;
+              }
+              if (typeof _ws.ping === 'function') {
+                _ws.ping(undefined, undefined, (err) => {
+                  if (err) reject(new Error(`ws.ping error: ${err.message}`));
+                  else resolve();
+                });
+              } else {
+                resolve(); // ws OPEN pero sin método ping → asumir vivo
+              }
+            }),
             new Promise((_, reject) => setTimeout(() => reject(new Error('probe timeout')), 15000))
           ]);
-          // Probe exitoso → WhatsApp está vivo, resetear contador
+          // Probe exitoso → socket TCP confirmado vivo
           tenant._probeFailCount = 0;
           tenant._lastRealEvent = Date.now(); // probe confirmó que está vivo
-          console.log(`[TM:${uid}] ✅ WATCHDOG-V2: Probe exitoso — WhatsApp confirmado vivo`);
+          console.log(`[TM:${uid}] ✅ WATCHDOG-V2: Probe pasivo OK — socket TCP vivo`);
         } catch (probeErr) {
           tenant._probeFailCount = (tenant._probeFailCount || 0) + 1;
           console.warn(`[TM:${uid}] ⚠️ WATCHDOG-V2: Probe FALLÓ (#${tenant._probeFailCount}): ${probeErr.message}`);
           // 2 fallos consecutivos → reconectar (evitar falso positivo por timeout puntual)
           if (tenant._probeFailCount >= 2) {
-            console.error(`[TM:${uid}] 🐛 WATCHDOG-V2: ${tenant._probeFailCount} probes fallidos consecutivos. DESCONEXIÓN FANTASMA detectada. Reconectando...`);
+            console.error(`[TM:${uid}] 🐛 WATCHDOG-V2: ${tenant._probeFailCount} probes fallidos consecutivos. DESCONEXIÓN FANTASMA. Reconectando...`);
             forceReconnect(uid, tenant, ioInstance, 'watchdog_ghost_disconnect');
           }
         }
