@@ -42,8 +42,8 @@
 'use strict';
 
 // Config (ajuste C-019)
-const LOOP_THRESHOLD = 10;       // msgs combinados (in+out) en la ventana = loop
-const LOOP_WINDOW_MS = 30_000;   // ventana de deteccion: 30 segundos
+const LOOP_THRESHOLD = 6;        // msgs combinados (in+out) en la ventana = loop (anti-bot WA C-WA-FIX-1)
+const LOOP_WINDOW_MS = 60_000;   // ventana de deteccion: 60 segundos (anti-bot WA C-WA-FIX-1)
 const STALE_CLEANUP_MS = 300_000; // limpiar entries >5 min sin actividad (NO pausados)
 
 // State: { "uid:phone": { count, firstAt, lastAt, paused, pausedAt, autoResetAt, resumedBy } }

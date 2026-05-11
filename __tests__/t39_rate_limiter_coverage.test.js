@@ -396,40 +396,40 @@ describe('T39 §G — contactAllows + contactRecord (per-contact limit)', () => 
     expect(rl.contactAllows(UID('g1'), PH('001'), 'lead')).toBe(true);
   });
 
-  test('G.2 — lead: bloquea al superar 5 en ventana 30s', () => {
+  test('G.2 — lead: bloquea al superar 2 en ventana 60s (anti-bot C-WA-FIX-1)', () => {
     const uid = UID('g2');
     const phone = PH('002');
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 2; i++) {
       expect(rl.contactAllows(uid, phone, 'lead')).toBe(true);
       rl.contactRecord(uid, phone);
     }
     expect(rl.contactAllows(uid, phone, 'lead')).toBe(false);
   });
 
-  test('G.3 — familia: permite hasta 10 en ventana 30s', () => {
+  test('G.3 — familia: permite hasta 5 en ventana 60s (anti-bot C-WA-FIX-1)', () => {
     const uid = UID('g3');
     const phone = PH('003');
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 5; i++) {
       expect(rl.contactAllows(uid, phone, 'familia')).toBe(true);
       rl.contactRecord(uid, phone);
     }
     expect(rl.contactAllows(uid, phone, 'familia')).toBe(false);
   });
 
-  test('G.4 — equipo: mismo limite que familia (10)', () => {
+  test('G.4 — equipo: mismo limite que familia (5) (anti-bot C-WA-FIX-1)', () => {
     const uid = UID('g4');
     const phone = PH('004');
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 5; i++) {
       expect(rl.contactAllows(uid, phone, 'equipo')).toBe(true);
       rl.contactRecord(uid, phone);
     }
     expect(rl.contactAllows(uid, phone, 'equipo')).toBe(false);
   });
 
-  test('G.5 — unknown contactType: limite 5 (default)', () => {
+  test('G.5 — unknown contactType: limite 2 (default) (anti-bot C-WA-FIX-1)', () => {
     const uid = UID('g5');
     const phone = PH('005');
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 2; i++) {
       expect(rl.contactAllows(uid, phone, 'unknown')).toBe(true);
       rl.contactRecord(uid, phone);
     }
@@ -465,10 +465,10 @@ describe('T39 §G — contactAllows + contactRecord (per-contact limit)', () => 
     jest.useRealTimers();
   });
 
-  test('G.8 — CONTACT_MAX_FAMILY=10, CONTACT_MAX_DEFAULT=5 exportados correctamente', () => {
-    expect(rl.CONTACT_MAX_FAMILY).toBe(10);
-    expect(rl.CONTACT_MAX_DEFAULT).toBe(5);
-    expect(rl.CONTACT_WINDOW_MS).toBe(30_000);
+  test('G.8 — CONTACT_MAX_FAMILY=5, CONTACT_MAX_DEFAULT=2, CONTACT_WINDOW_MS=60000 (anti-bot C-WA-FIX-1)', () => {
+    expect(rl.CONTACT_MAX_FAMILY).toBe(5);
+    expect(rl.CONTACT_MAX_DEFAULT).toBe(2);
+    expect(rl.CONTACT_WINDOW_MS).toBe(60_000);
   });
 });
 
@@ -524,10 +524,10 @@ describe('T39 §I — edge cases + reset al reiniciar', () => {
     expect(r.remaining).toBe(0);
   });
 
-  test('I.4 — contactAllows sin contactType (undefined) → usa limite default 5', () => {
+  test('I.4 — contactAllows sin contactType (undefined) → usa limite default 2 (anti-bot C-WA-FIX-1)', () => {
     const uid = UID('i4');
     const phone = '549111@s.whatsapp.net';
-    for (let i = 0; i < 5; i++) rl.contactRecord(uid, phone);
+    for (let i = 0; i < 2; i++) rl.contactRecord(uid, phone);
     expect(rl.contactAllows(uid, phone, undefined)).toBe(false);
   });
 

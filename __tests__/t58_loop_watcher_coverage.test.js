@@ -49,7 +49,7 @@ describe('T58 §A — recordMessage', () => {
     } finally { console.error = orig; }
   });
 
-  test('ventana expirada (>30s) → reset contador a 1', () => {
+  test('ventana expirada (>60s) → reset contador a 1 (anti-bot C-WA-FIX-1)', () => {
     const uid = uniqUid('window_expire');
     const phone = '+57305';
     // Manipular tiempo via Date.now mock
@@ -59,9 +59,9 @@ describe('T58 §A — recordMessage', () => {
     try {
       lw.recordMessage(uid, phone, {}); // count=1
       lw.recordMessage(uid, phone, {}); // count=2
-      mockTime += 35_000; // avanzar 35s
+      mockTime += 65_000; // avanzar 65s (ventana ahora es 60s C-WA-FIX-1)
       const r = lw.recordMessage(uid, phone, {});
-      expect(r.count).toBe(1); // resetead0 a 1
+      expect(r.count).toBe(1); // reseteado a 1
     } finally { Date.now = origNow; }
   });
 
@@ -245,10 +245,10 @@ describe('T58 §E — getPausedContacts', () => {
 });
 
 describe('T58 §F — Constantes', () => {
-  test('LOOP_THRESHOLD = 10', () => {
-    expect(lw.LOOP_THRESHOLD).toBe(10);
+  test('LOOP_THRESHOLD = 6 (anti-bot C-WA-FIX-1)', () => {
+    expect(lw.LOOP_THRESHOLD).toBe(6);
   });
-  test('LOOP_WINDOW_MS = 30_000', () => {
-    expect(lw.LOOP_WINDOW_MS).toBe(30_000);
+  test('LOOP_WINDOW_MS = 60_000 (anti-bot C-WA-FIX-1)', () => {
+    expect(lw.LOOP_WINDOW_MS).toBe(60_000);
   });
 });

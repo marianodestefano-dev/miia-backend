@@ -345,9 +345,9 @@ function getCircuitStatus() {
 // ═══════════════════════════════════════════════════════════════
 
 const _contactLimits = {}; // { "uid:phone": [timestamp, ...] }
-const CONTACT_WINDOW_MS = 30_000; // Ventana de 30 segundos (ajuste C-019)
-const CONTACT_MAX_FAMILY = 10;    // Familia/equipo: 10 msgs / 30s
-const CONTACT_MAX_DEFAULT = 5;    // Leads/clientes/unknown: 5 msgs / 30s
+const CONTACT_WINDOW_MS = 60_000; // Ventana de 60 segundos (anti-bot WA C-WA-FIX-1)
+const CONTACT_MAX_FAMILY = 5;     // Familia/equipo: 5 msgs / 60s (anti-bot WA C-WA-FIX-1)
+const CONTACT_MAX_DEFAULT = 2;    // Leads/clientes/unknown: 2 msgs / 60s (anti-bot WA C-WA-FIX-1)
 
 /**
  * ¿Se puede enviar un mensaje más a este contacto?

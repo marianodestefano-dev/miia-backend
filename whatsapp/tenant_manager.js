@@ -36,6 +36,10 @@ const { slog } = require('../core/log_sanitizer');
 const tenants = new Map();
 const tenantReconnectAttempts = new Map(); // { uid: attemptCount }
 const tenantCryptoErrors = new Map(); // { uid: { count, windowStart } }
+const tenantDisconnectHistory = new Map(); // { uid: [ts, ...] } anti-bot WA (C-WA-FIX-1)
+const DISCONNECT_HISTORY_WINDOW_MS = 6 * 60 * 60 * 1000; // 6 horas
+const DISCONNECT_COOLING_THRESHOLD = 5; // 5+ disconnects en 6h = cooling mode
+function _randDelay(minMs, maxMs) { return minMs + Math.floor(Math.random() * (maxMs - minMs)); }
 
 // ═══════════════════════════════════════════════════════════════════
 // TRAINING DATA CHUNKING — Supera límite 1MB por campo de Firestore
@@ -1454,15 +1458,36 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
 
           // Code 440 = "Connection Replaced" → hay sockets duplicados.
           // Backoff agresivo para dar tiempo a que WhatsApp libere la sesión.
-          const isConnectionReplaced = statusCode === 440;
-          const baseDelay = isConnectionReplaced
-            ? Math.min(5000 + (attempts * 3000), 30000)   // 440: 8s → 30s
-            : Math.min(1500 + (attempts * 500), 15000);    // otros: 2s → 15s
-          // Jitter aleatorio para evitar reconexiones sincronizadas
-          const jitter = Math.floor(Math.random() * 2000);
-          const delay = baseDelay + jitter;
+          // ═══ ANTI-BOT WA C-WA-FIX-1: delays aleatorios por rango + historial ═══
+          const _now = Date.now();
+          const _dHist = tenantDisconnectHistory.get(uid) || [];
+          const _recent = _dHist.filter(ts => _now - ts < DISCONNECT_HISTORY_WINDOW_MS);
+          _recent.push(_now);
+          tenantDisconnectHistory.set(uid, _recent);
+          const _inCooling = _recent.length > DISCONNECT_COOLING_THRESHOLD;
 
-          console.log(`[TM:${uid}] 🔄 Reconnecting in ${(delay/1000).toFixed(1)}s (attempt #${attempts}, code: ${statusCode})...`);
+          const isConnectionReplaced = statusCode === 440;
+          let delay;
+          if (isConnectionReplaced) {
+            // Code 440: backoff progresivo existente
+            const baseDelay = Math.min(5000 + (attempts * 3000), 30000);
+            delay = baseDelay + Math.floor(Math.random() * 2000);
+          } else if (_inCooling) {
+            // 5+ disconnects en 6h: cooling mode 90-150 min aleatorio
+            delay = _randDelay(90 * 60_000, 150 * 60_000);
+            console.warn(`[TM:${uid}] COOLING-MODE: ${_recent.length} disconnects en 6h -> delay ${Math.round(delay/60000)}min`);
+          } else if (statusCode === 428) {
+            // Code 428 (WA dice "para ya"): 25-50 min aleatorio
+            delay = _randDelay(25 * 60_000, 50 * 60_000);
+          } else if (statusCode === 500 && _recent.length >= 3) {
+            // Code 500 repetido 3+ en 6h: 20-40 min aleatorio
+            delay = _randDelay(20 * 60_000, 40 * 60_000);
+          } else {
+            // Code 500 primer disconnect: 3-8 min aleatorio
+            delay = _randDelay(3 * 60_000, 8 * 60_000);
+          }
+
+          console.log(`[TM:${uid}] RECONNECT: delay=${Math.round(delay/1000)}s attempt=#${attempts} code=${statusCode} recent_disconnects=${_recent.length} cooling=${_inCooling}`);
 
           // ═══ DUAL-ENGINE F1: Registrar fallo y posible switch ═══
           const reasonCode = `code_${statusCode || 'unknown'}`;

@@ -47,27 +47,27 @@ describe('T35 — Loop Watcher reinforcement', () => {
       watcher.resetLoop(uid, phone);
     });
 
-    test('A.2 — 10 msgs en ventana NO dispara loop (threshold > 10)', () => {
+    test('A.2 — 5 msgs en ventana NO dispara loop (threshold > 5) (anti-bot C-WA-FIX-1)', () => {
       const uid = 'uid-A2';
       const phone = '573000000002';
       let r;
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 5; i++) {
         r = watcher.recordMessage(uid, phone, {});
       }
       expect(r.loopDetected).toBe(false);
-      expect(r.count).toBe(10);
+      expect(r.count).toBe(5);
       watcher.resetLoop(uid, phone);
     });
 
-    test('A.3 — 11 msgs en ventana DISPARA loop', () => {
+    test('A.3 — 7 msgs en ventana DISPARA loop (threshold=6) (anti-bot C-WA-FIX-1)', () => {
       const uid = 'uid-A3';
       const phone = '573000000003';
       let r;
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 7; i++) {
         r = watcher.recordMessage(uid, phone, {});
       }
       expect(r.loopDetected).toBe(true);
-      expect(r.count).toBe(11);
+      expect(r.count).toBe(7);
       watcher.resetLoop(uid, phone);
     });
 
