@@ -118,3 +118,23 @@ describe('getAllCampaignsSummary', () => {
     expect(r[1].broadcastId).toBe('bc2');
   });
 });
+
+describe('getCampaignMetrics branch d.data falsy', () => {
+  test('d.data falsy => usa {} (branch ternary false)', async () => {
+    const customDb = {
+      collection: jest.fn().mockReturnValue({
+        doc: jest.fn().mockReturnValue({
+          collection: jest.fn().mockReturnValue({
+            get: jest.fn().mockResolvedValue({
+              forEach: (fn) => fn({ /* no data property */ }),
+            }),
+          }),
+        }),
+      }),
+    };
+    __setFirestoreForTests(customDb);
+    const r = await getCampaignMetrics(UID, BC_ID);
+    expect(r.sent).toBe(1);
+    expect(r.opened).toBe(0);
+  });
+});

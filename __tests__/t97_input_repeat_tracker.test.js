@@ -114,3 +114,11 @@ describe('InputRepeatTracker — getState y clear', () => {
     expect(t.getState('+573005')).toBeNull();
   });
 });
+
+describe('InputRepeatTracker — unpause phone not in state', () => {
+  test('unpause phone sin estado previo => no error (if false branch)', () => {
+    const { InputRepeatTracker } = require('../core/input_repeat_tracker');
+    const t = new InputRepeatTracker();
+    expect(() => t.unpause('+5491199998888')).not.toThrow();
+  });
+});
