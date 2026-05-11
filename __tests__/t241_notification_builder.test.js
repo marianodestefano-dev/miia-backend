@@ -253,3 +253,78 @@ describe('buildDailySummaryText / buildSystemAlertText directo', () => {
     expect(text).toContain('🟡');
   });
 });
+
+describe('vi_coverage branches notification_builder', () => {
+  test('buildNotificationRecord sin data => data={}', () => {
+    const r = buildNotificationRecord(UID, 'new_lead', null);
+    expect(r.data).toEqual({});
+  });
+  test('getRecentNotifications notifs sin createdAt => sort || branches', async () => {
+    const stored = { n1: { type: 'new_lead' }, n2: { type: 'spam_detected', createdAt: '2026-05-01T00:00:00.000Z' } };
+    __setFirestoreForTests(makeMockDb({ stored }));
+    expect((await getRecentNotifications(UID, 20)).length).toBe(2);
+  });
+  test('buildNewLeadText sin name ni phone => Nuevo contacto', () => {
+    expect(buildNewLeadText({})).toContain('Nuevo contacto');
+  });
+  test('buildNewLeadText sin text => sin Mensaje (if text false)', () => {
+    expect(buildNewLeadText({ name: 'Ana' })).not.toContain('Mensaje:');
+  });
+  test('buildNewLeadText texto > 100 => ... (cond-expr[0])', () => {
+    expect(buildNewLeadText({ name: 'J', text: 'A'.repeat(110) })).toContain('...');
+  });
+  test('buildSpamAlertText defaults => Desconocido medium', () => {
+    const t = buildSpamAlertText({});
+    expect(t).toContain('Desconocido');
+    expect(t).toContain('medium');
+  });
+  test('buildSpamAlertText con reason', () => {
+    expect(buildSpamAlertText({ severity: 'low', reason: 'bot' })).toContain('bot');
+  });
+  test('buildHandoffText defaults', () => {
+    const t = buildHandoffText({});
+    expect(t).toContain('Desconocido');
+    expect(t).toContain('solicitud de cliente');
+  });
+  test('buildDailySummaryText defaults => zeros', () => {
+    expect(buildDailySummaryText({})).toContain('0');
+  });
+  test('buildSystemAlertText defaults => sistema + Alerta detectada', () => {
+    const t = buildSystemAlertText({});
+    expect(t).toContain('sistema');
+    expect(t).toContain('Alerta detectada');
+  });
+  test('buildSystemAlertText severity info => verde (not critical not warning)', () => {
+    const t = buildSystemAlertText({ severity: 'info' });
+    expect(t).not.toContain('Rojo');
+    expect(t).not.toContain('Amarillo');
+    expect(t).toContain('sistema');
+  });
+  test('buildNotificationText lead_response con datos (switch[1])', () => {
+    expect(buildNotificationText({ type: 'lead_response', data: { phone: '+1234', text: 'hola' } })).toContain('+1234');
+  });
+  test('buildNotificationText lead_response sin datos (|| fallbacks)', () => {
+    expect(buildNotificationText({ type: 'lead_response', data: {} })).toBeDefined();
+  });
+  test('buildNotificationText weekly_summary (switch[6])', () => {
+    expect(buildNotificationText({ type: 'weekly_summary', data: {} })).toContain('0');
+  });
+  test('buildNotificationText tipo desconocido => default', () => {
+    expect(buildNotificationText({ type: 'unknown_type', data: {} })).toContain('Notificaci');
+  });
+  test('buildNotificationText otp sin action => desconocida', () => {
+    expect(buildNotificationText({ type: 'otp_requested', data: {} })).toContain('desconocida');
+  });
+  test('buildNotificationText broadcast_done sin sent => 0', () => {
+    expect(buildNotificationText({ type: 'broadcast_done', data: {} })).toContain('0');
+  });
+  test('buildNotificationText low_stock sin itemName => Producto', () => {
+    expect(buildNotificationText({ type: 'low_stock', data: {} })).toContain('Producto');
+  });
+  test('buildNotificationText catalog_updated sin itemName', () => {
+    expect(buildNotificationText({ type: 'catalog_updated', data: {} })).toContain('actualizado');
+  });
+  test('buildNotificationText recovery_initiated sin phone', () => {
+    expect(buildNotificationText({ type: 'recovery_initiated', data: {} })).toContain('Recovery');
+  });
+});
