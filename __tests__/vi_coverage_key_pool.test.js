@@ -2,366 +2,365 @@
 
 /**
  * VI-BACKEND-COVERAGE: ai/key_pool.js — 100% branches
+ * Usa __setPoolsForTests() para aislar estado global entre tests.
  */
 
-function fresh() {
-  jest.resetModules();
-  return require('../ai/key_pool');
-}
+const kp = require('../ai/key_pool');
 
-// ── register ──────────────────────────────────────────────────────────────────
+const VALID_KEY = 'sk-test-valid-key-xxxxxxxxxxxx';
+const VALID_KEY2 = 'sk-test-valid-key-yyyyyyyyyyyy';
+const BACKUP_KEY = 'sk-test-backup-key-zzzzzzzzzzzz';
+
+beforeEach(() => {
+  kp.__setPoolsForTests({});
+});
 
 describe('register', () => {
-  test('params invalidos → return temprano', () => {
-    const m = fresh();
-    expect(() => m.register(null, ['key12345678'])).not.toThrow();
-    expect(() => m.register('gemini', null)).not.toThrow();
-    expect(m.hasKeys('gemini')).toBe(false);
+  test('!provider → return (branch !provider)', () => {
+    kp.register('', [VALID_KEY]);
+    expect(kp.hasKeys('')).toBe(false);
   });
 
-  test('primer registro crea pool', () => {
-    const m = fresh();
-    m.register('gemini', ['key1234567890']);
-    expect(m.hasKeys('gemini')).toBe(true);
+  test('!Array.isArray(keys) → return (branch !Array.isArray)', () => {
+    kp.register('gemini', 'not-an-array');
+    expect(kp.hasKeys('gemini')).toBe(false);
   });
 
-  test('segundo registro no duplica keys', () => {
-    const m = fresh();
-    m.register('gemini', ['key1234567890']);
-    m.register('gemini', ['key1234567890']);
-    expect(m.getStats('gemini').total).toBe(1);
+  test('pool ya existe → agrega sin recrear (branch !pools[provider] false)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.register('gemini', [VALID_KEY2]);
+    expect(kp.getStats('gemini').total).toBe(2);
   });
 
-  test('key corta ignorada', () => {
-    const m = fresh();
-    m.register('gemini', ['short']);
-    expect(m.hasKeys('gemini')).toBe(false);
+  test('key null → skip (branch !key)', () => {
+    kp.register('gemini', [null, VALID_KEY]);
+    expect(kp.getStats('gemini').total).toBe(1);
   });
 
-  test('multiples keys validas', () => {
-    const m = fresh();
-    m.register('openai', ['key1234567890', 'key9876543210', 'key0000000001']);
-    expect(m.getStats('openai').total).toBe(3);
+  test('key no string → skip (branch typeof)', () => {
+    kp.register('gemini', [42, VALID_KEY]);
+    expect(kp.getStats('gemini').total).toBe(1);
   });
 
-  test('key undefined/empty ignorada', () => {
-    const m = fresh();
-    m.register('openai', [undefined, '', 'validkey12345']);
-    expect(m.getStats('openai').total).toBe(1);
+  test('key < 10 chars → skip (branch length < 10)', () => {
+    kp.register('gemini', ['short', VALID_KEY]);
+    expect(kp.getStats('gemini').total).toBe(1);
+  });
+
+  test('key duplicada → skip (branch existingKeys.has)', () => {
+    kp.register('gemini', [VALID_KEY, VALID_KEY]);
+    expect(kp.getStats('gemini').total).toBe(1);
+  });
+
+  test('key valida → registrada', () => {
+    kp.register('gemini', [VALID_KEY]);
+    expect(kp.hasKeys('gemini')).toBe(true);
   });
 });
-
-// ── registerBackup ────────────────────────────────────────────────────────────
 
 describe('registerBackup', () => {
-  test('params invalidos', () => {
-    const m = fresh();
-    expect(() => m.registerBackup(null, ['key12345678'])).not.toThrow();
-    expect(() => m.registerBackup('gemini', null)).not.toThrow();
+  test('!provider → return', () => {
+    kp.registerBackup('', [BACKUP_KEY]);
+    expect(kp.hasKeys('')).toBe(false);
   });
 
-  test('registra keys con tier=backup', () => {
-    const m = fresh();
-    m.register('gemini', ['primary1234567']);
-    m.registerBackup('gemini', ['backup12345678']);
-    expect(m.getStats('gemini').total).toBe(2);
+  test('!Array.isArray → return', () => {
+    kp.registerBackup('claude', 'not-array');
+    expect(kp.hasKeys('claude')).toBe(false);
   });
 
-  test('sin pool previo crea pool', () => {
-    const m = fresh();
-    m.registerBackup('groq', ['backupGroq1234']);
-    expect(m.hasKeys('groq')).toBe(true);
+  test('sin pool existente → crea pool (branch !pools[provider])', () => {
+    kp.registerBackup('groq', [BACKUP_KEY]);
+    expect(kp.hasKeys('groq')).toBe(true);
   });
 
-  test('key corta en registerBackup ignorada (linea 93 continue)', () => {
-    const m = fresh();
-    m.registerBackup('gemini', ['short']); // < 10 chars → continue en linea 93
-    expect(m.hasKeys('gemini')).toBe(false);
+  test('pool existente → agrega (branch !pools[provider] false)', () => {
+    kp.register('openai', [VALID_KEY]);
+    kp.registerBackup('openai', [BACKUP_KEY]);
+    expect(kp.getStats('openai').total).toBe(2);
   });
 
-  test('key duplicada en registerBackup ignorada (linea 95 continue)', () => {
-    const m = fresh();
-    m.registerBackup('gemini', ['backup12345678']);
-    m.registerBackup('gemini', ['backup12345678']); // duplicada → continue en linea 95
-    expect(m.getStats('gemini').total).toBe(1);
+  test('key corta → skip', () => {
+    kp.registerBackup('groq', ['short', BACKUP_KEY]);
+    expect(kp.getStats('groq').total).toBe(1);
   });
 
-  test('key undefined en registerBackup ignorada', () => {
-    const m = fresh();
-    m.registerBackup('gemini', [undefined, 'backupValid1234']);
-    expect(m.getStats('gemini').total).toBe(1);
-  });
-});
-
-// ── getKey ────────────────────────────────────────────────────────────────────
-
-describe('getKey', () => {
-  test('provider no registrado → null', () => {
-    const m = fresh();
-    expect(m.getKey('unknown')).toBeNull();
-  });
-
-  test('pool vacio → null', () => {
-    const m = fresh();
-    m.register('gemini', []);
-    expect(m.getKey('gemini')).toBeNull();
-  });
-
-  test('key disponible → retorna key', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    expect(m.getKey('gemini')).toBe('primarykey1234');
-  });
-
-  test('primarias todas en cooldown → usa backup', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.registerBackup('gemini', ['backupkey12345']);
-    for (let i = 0; i < 3; i++) m.markFailed('gemini', 'primarykey1234', '429');
-    expect(m.getKey('gemini')).toBe('backupkey12345');
-  });
-
-  test('todo en cooldown → retorna earliest (primary)', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markFailed('gemini', 'primarykey1234', 'INVALID_KEY');
-    const k = m.getKey('gemini');
-    expect(k).toBe('primarykey1234');
-  });
-
-  test('todo en cooldown sin primary → usa backup earliest', () => {
-    const m = fresh();
-    m.registerBackup('groq', ['backupGroqKey12']);
-    m.markFailed('groq', 'backupGroqKey12', 'INVALID_KEY');
-    const k = m.getKey('groq');
-    expect(k).toBe('backupGroqKey12');
-  });
-
-  test('cooldown expirado → se resetea y retorna', () => {
-    const m = fresh();
-    m.register('groq', ['primaryGroqKey1']);
-    m.markFailed('groq', 'primaryGroqKey1', 'INVALID_KEY');
-    const origNow = Date.now.bind(Date);
-    Date.now = () => origNow() + 2 * 60 * 60 * 1000;
-    const k = m.getKey('groq');
-    Date.now = origNow;
-    expect(k).toBe('primaryGroqKey1');
-  });
-
-  test('multiples keys, key en cooldown → usa siguiente', () => {
-    const m = fresh();
-    m.register('gemini', ['keyaaaaaaaaa1', 'keybbbbbbbbb1']);
-    const key1 = m.getKey('gemini');
-    for (let i = 0; i < 3; i++) m.markFailed('gemini', key1, '429');
-    const key2 = m.getKey('gemini');
-    expect(key2).toBeDefined();
-  });
-
-  test('callback backup dispara solo la primera vez', () => {
-    const m = fresh();
-    m.register('claude', ['primaryclaude1']);
-    m.registerBackup('claude', ['backupclaude12']);
-    const cb = jest.fn();
-    m.onBackupActivated('claude', cb);
-    for (let i = 0; i < 3; i++) m.markFailed('claude', 'primaryclaude1', '429');
-    m.getKey('claude');
-    m.getKey('claude');
-    expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb).toHaveBeenCalledWith('claude');
-  });
-
-  test('callback que lanza → no propaga error', () => {
-    const m = fresh();
-    m.register('mistral', ['primarymistral']);
-    m.registerBackup('mistral', ['backupmistral1']);
-    m.onBackupActivated('mistral', () => { throw new Error('cb-crash'); });
-    for (let i = 0; i < 3; i++) m.markFailed('mistral', 'primarymistral', '429');
-    expect(() => m.getKey('mistral')).not.toThrow();
-  });
-});
-
-// ── markFailed ────────────────────────────────────────────────────────────────
-
-describe('markFailed', () => {
-  test('provider no registrado → no lanza', () => {
-    const m = fresh();
-    expect(() => m.markFailed('nope', 'key', '429')).not.toThrow();
-  });
-
-  test('key no encontrada → no lanza', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    expect(() => m.markFailed('gemini', 'wrongkey', '429')).not.toThrow();
-  });
-
-  test('INVALID_KEY → cooldown 1h', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markFailed('gemini', 'primarykey1234', 'INVALID_KEY');
-    expect(m.getStats('gemini').cooldown).toBe(1);
-  });
-
-  test('401 → cooldown 1h', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markFailed('gemini', 'primarykey1234', '401');
-    expect(m.getStats('gemini').cooldown).toBe(1);
-  });
-
-  test('403 → cooldown 1h', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markFailed('gemini', 'primarykey1234', '403');
-    expect(m.getStats('gemini').cooldown).toBe(1);
-  });
-
-  test('< MAX_CONSECUTIVE_FAILS → sin cooldown', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markFailed('gemini', 'primarykey1234', '429');
-    expect(m.getStats('gemini').cooldown).toBe(0);
-  });
-
-  test('>= MAX_CONSECUTIVE_FAILS → cooldown estandar', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    for (let i = 0; i < 3; i++) m.markFailed('gemini', 'primarykey1234', '429');
-    expect(m.getStats('gemini').cooldown).toBe(1);
-  });
-});
-
-// ── markSuccess ───────────────────────────────────────────────────────────────
-
-describe('markSuccess', () => {
-  test('provider no registrado', () => {
-    const m = fresh();
-    expect(() => m.markSuccess('nope', 'key')).not.toThrow();
-  });
-
-  test('key no encontrada', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    expect(() => m.markSuccess('gemini', 'wrongkey')).not.toThrow();
-  });
-
-  test('fails > 0 → resetea (branch true)', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markFailed('gemini', 'primarykey1234', '429');
-    m.markSuccess('gemini', 'primarykey1234');
-    expect(m.getStats('gemini').stats[0].fails).toBe(0);
-  });
-
-  test('fails = 0 → sin log (branch false)', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markSuccess('gemini', 'primarykey1234');
-    expect(m.getStats('gemini').stats[0].fails).toBe(0);
-  });
-});
-
-// ── getStats / getAllStats / hasKeys ──────────────────────────────────────────
-
-describe('getStats', () => {
-  test('provider no registrado → zeros', () => {
-    const m = fresh();
-    const s = m.getStats('nope');
-    expect(s.total).toBe(0);
-    expect(s.cooldown).toBe(0);
-  });
-
-  test('con keys → stats correctas', () => {
-    const m = fresh();
-    m.register('gemini', ['k1234567890a', 'k1234567890b']);
-    const s = m.getStats('gemini');
-    expect(s.total).toBe(2);
-    expect(s.available).toBe(2);
-    expect(s.stats[0].inCooldown).toBe(false);
-    expect(s.stats[0].cooldownRemaining).toBe(0);
-  });
-
-  test('key en cooldown → inCooldown=true + cooldownRemaining>0', () => {
-    const m = fresh();
-    m.register('gemini', ['primarykey1234']);
-    m.markFailed('gemini', 'primarykey1234', 'INVALID_KEY');
-    const s = m.getStats('gemini');
-    expect(s.stats[0].inCooldown).toBe(true);
-    expect(s.stats[0].cooldownRemaining).toBeGreaterThan(0);
-  });
-});
-
-describe('getAllStats', () => {
-  test('multiples providers', () => {
-    const m = fresh();
-    m.register('gemini', ['k1234567890g']);
-    m.register('openai', ['k1234567890o']);
-    const all = m.getAllStats();
-    expect(all.gemini).toBeDefined();
-    expect(all.openai).toBeDefined();
+  test('key duplicada → skip', () => {
+    kp.register('openai', [VALID_KEY]);
+    kp.registerBackup('openai', [VALID_KEY]);
+    expect(kp.getStats('openai').total).toBe(1);
   });
 });
 
 describe('hasKeys', () => {
-  test('sin provider → false', () => {
-    const m = fresh();
-    expect(m.hasKeys('nope')).toBe(false);
+  test('sin pool → false', () => expect(kp.hasKeys('nonexistent')).toBe(false));
+
+  test('pool vacio → false', () => {
+    kp.__setPoolsForTests({ mistral: { keys: [], index: 0 } });
+    expect(kp.hasKeys('mistral')).toBe(false);
   });
 
-  test('con keys → true', () => {
-    const m = fresh();
-    m.register('gemini', ['key1234567890']);
-    expect(m.hasKeys('gemini')).toBe(true);
+  test('pool con keys → true', () => {
+    kp.register('gemini', [VALID_KEY]);
+    expect(kp.hasKeys('gemini')).toBe(true);
   });
 });
 
-  test('2 primarias en cooldown → reduce false branch (segunda expira despues)', () => {
-    const m = fresh();
-    const now = Date.now();
-    // Inject 2 primaries both in cooldown: key1 expires earlier, key2 expires later
-    m.__setPoolsForTests({
-      gemini: {
-        keys: [
-          { key: 'primaryAaaaa1', tier: 'primary', fails: 3, cooldownUntil: now + 60000, totalCalls: 0, totalFails: 3, lastFail: now },
-          { key: 'primaryBbbbb1', tier: 'primary', fails: 3, cooldownUntil: now + 120000, totalCalls: 0, totalFails: 3, lastFail: now },
-        ],
-        index: 0,
-      },
-    });
-    const k = m.getKey('gemini');
-    // Returns the one that expires soonest (primaryAaaaa1)
-    expect(k).toBe('primaryAaaaa1');
+describe('getKey', () => {
+  test('sin pool → null (branch !pool)', () => {
+    expect(kp.getKey('nonexistent')).toBeNull();
   });
 
-  test('allKeys vacio → earliest null → return null (linea 156)', () => {
-    const m = fresh();
-    const now = Date.now();
-    // Inject a key with unknown tier (neither primary nor backup)
-    m.__setPoolsForTests({
-      gemini: {
-        keys: [
-          { key: 'weirdkey12345', tier: 'unknown', fails: 0, cooldownUntil: null, totalCalls: 0, totalFails: 0, lastFail: null },
-        ],
-        index: 0,
-      },
-    });
-    const k = m.getKey('gemini');
-    expect(k).toBeNull(); // hits line 156
+  test('pool vacio → null (branch keys.length === 0)', () => {
+    kp.__setPoolsForTests({ gemini: { keys: [], index: 0 } });
+    expect(kp.getKey('gemini')).toBeNull();
   });
 
-// ── onBackupActivated ─────────────────────────────────────────────────────────
+  test('primary disponible → retorna key (FASE 1)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    expect(kp.getKey('gemini')).toBe(VALID_KEY.trim());
+  });
+
+  test('primary en cooldown, backup disponible → FASE 2: usa backup + callback', () => {
+    const now = Date.now();
+    kp.__setPoolsForTests({
+      gemini: {
+        keys: [
+          { key: VALID_KEY, fails: 3, lastFail: now, cooldownUntil: now + 60000, totalCalls: 0, totalFails: 3, tier: 'primary' },
+          { key: BACKUP_KEY, fails: 0, lastFail: null, cooldownUntil: null, totalCalls: 0, totalFails: 0, tier: 'backup' },
+        ],
+        index: 0,
+      }
+    });
+    const callbackFn = jest.fn();
+    kp.onBackupActivated('gemini', callbackFn);
+    const key = kp.getKey('gemini');
+    expect(key).toBe(BACKUP_KEY);
+    expect(callbackFn).toHaveBeenCalledWith('gemini');
+  });
+
+  test('callback ya notificado → no dispara 2da vez (branch entry.notified true)', () => {
+    const now = Date.now();
+    kp.__setPoolsForTests({
+      gemini: {
+        keys: [
+          { key: VALID_KEY, fails: 3, cooldownUntil: now + 60000, totalCalls: 0, totalFails: 3, tier: 'primary' },
+          { key: BACKUP_KEY, fails: 0, cooldownUntil: null, totalCalls: 0, totalFails: 0, tier: 'backup' },
+        ],
+        index: 0,
+      }
+    });
+    const cb = jest.fn();
+    kp.onBackupActivated('gemini', cb);
+    kp.getKey('gemini'); // primera vez
+    kp.getKey('gemini'); // segunda → notified=true → no dispara
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  test('callback que lanza error → catch (branch try/catch)', () => {
+    const now = Date.now();
+    kp.__setPoolsForTests({
+      gemini: {
+        keys: [
+          { key: VALID_KEY, fails: 3, cooldownUntil: now + 60000, totalCalls: 0, totalFails: 3, tier: 'primary' },
+          { key: BACKUP_KEY, fails: 0, cooldownUntil: null, totalCalls: 0, totalFails: 0, tier: 'backup' },
+        ],
+        index: 0,
+      }
+    });
+    kp.onBackupActivated('gemini', () => { throw new Error('cb error'); });
+    expect(() => kp.getKey('gemini')).not.toThrow();
+  });
+
+  test('sin backup registrado + _fireBackupCallback sin entry → no error (branch !entry)', () => {
+    const now = Date.now();
+    kp.__setPoolsForTests({
+      mistral: {
+        keys: [
+          { key: VALID_KEY, fails: 3, cooldownUntil: now + 60000, totalCalls: 0, totalFails: 3, tier: 'primary' },
+          { key: BACKUP_KEY, fails: 0, cooldownUntil: null, totalCalls: 0, totalFails: 0, tier: 'backup' },
+        ],
+        index: 0,
+      }
+    });
+    expect(() => kp.getKey('mistral')).not.toThrow();
+  });
+
+  test('FASE 3: allKeys vacío (tier desconocido) → null (branch if(earliest) false → line 156)', () => {
+    kp.__setPoolsForTests({
+      gemini: {
+        keys: [
+          { key: VALID_KEY, fails: 0, cooldownUntil: null, totalCalls: 0, totalFails: 0, tier: 'unknown_tier' },
+        ],
+        index: 0,
+      }
+    });
+    expect(kp.getKey('gemini')).toBeNull();
+  });
+
+  test('FASE 3: todas primarias en cooldown → retorna la que expira antes', () => {
+    const now = Date.now();
+    kp.__setPoolsForTests({
+      gemini: {
+        keys: [
+          { key: VALID_KEY, fails: 3, cooldownUntil: now + 5000, totalCalls: 0, totalFails: 3, tier: 'primary' },
+          { key: VALID_KEY2, fails: 3, cooldownUntil: now + 30000, totalCalls: 0, totalFails: 3, tier: 'primary' },
+        ],
+        index: 0,
+      }
+    });
+    const key = kp.getKey('gemini');
+    expect(key).toBe(VALID_KEY.trim()); // menor cooldown
+  });
+
+  test('FASE 3: solo backups en cooldown → allKeys=backupKeys (branch primaryKeys.length === 0)', () => {
+    const now = Date.now();
+    kp.__setPoolsForTests({
+      gemini: {
+        keys: [
+          { key: BACKUP_KEY, fails: 3, cooldownUntil: now + 5000, totalCalls: 0, totalFails: 3, tier: 'backup' },
+        ],
+        index: 0,
+      }
+    });
+    const key = kp.getKey('gemini');
+    expect(key).toBe(BACKUP_KEY);
+  });
+
+  test('cooldown expirado → reset y retorna key (branch cooldownUntil && now >= cooldownUntil)', () => {
+    const expired = Date.now() - 1000;
+    kp.__setPoolsForTests({
+      gemini: {
+        keys: [
+          { key: VALID_KEY, fails: 2, cooldownUntil: expired, totalCalls: 0, totalFails: 2, tier: 'primary' },
+        ],
+        index: 0,
+      }
+    });
+    const key = kp.getKey('gemini');
+    expect(key).toBe(VALID_KEY.trim());
+    expect(kp.getStats('gemini').stats[0].inCooldown).toBe(false);
+  });
+});
+
+describe('markFailed', () => {
+  test('!pool → return', () => {
+    expect(() => kp.markFailed('nonexistent', VALID_KEY, '429')).not.toThrow();
+  });
+
+  test('!entry → return (key no encontrada)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    expect(() => kp.markFailed('gemini', 'wrong-key', '429')).not.toThrow();
+  });
+
+  test('reason INVALID_KEY → cooldown 1h', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.markFailed('gemini', VALID_KEY.trim(), 'INVALID_KEY');
+    expect(kp.getStats('gemini').stats[0].inCooldown).toBe(true);
+    expect(kp.getStats('gemini').stats[0].cooldownRemaining).toBeGreaterThan(3500);
+  });
+
+  test('reason 401 → cooldown 1h (branch 401)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.markFailed('gemini', VALID_KEY.trim(), '401');
+    expect(kp.getStats('gemini').stats[0].inCooldown).toBe(true);
+  });
+
+  test('reason 403 → cooldown 1h (branch 403)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.markFailed('gemini', VALID_KEY.trim(), '403');
+    expect(kp.getStats('gemini').stats[0].inCooldown).toBe(true);
+  });
+
+  test('fails >= MAX_CONSECUTIVE_FAILS → cooldown 5min', () => {
+    kp.register('gemini', [VALID_KEY]);
+    const k = VALID_KEY.trim();
+    kp.markFailed('gemini', k, '429'); // fails=1
+    kp.markFailed('gemini', k, '429'); // fails=2
+    kp.markFailed('gemini', k, '429'); // fails=3 >= MAX=3 → cooldown
+    expect(kp.getStats('gemini').stats[0].inCooldown).toBe(true);
+    expect(kp.getStats('gemini').stats[0].cooldownRemaining).toBeLessThanOrEqual(300);
+  });
+
+  test('fails < MAX, reason no inválida → solo warn, sin cooldown (else branch)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.markFailed('gemini', VALID_KEY.trim(), '429'); // fails=1 < 3
+    expect(kp.getStats('gemini').stats[0].inCooldown).toBe(false);
+  });
+});
+
+describe('markSuccess', () => {
+  test('!pool → return', () => {
+    expect(() => kp.markSuccess('nonexistent', VALID_KEY)).not.toThrow();
+  });
+
+  test('!entry → return', () => {
+    kp.register('gemini', [VALID_KEY]);
+    expect(() => kp.markSuccess('gemini', 'wrong-key')).not.toThrow();
+  });
+
+  test('entry.fails > 0 → log + reset (branch fails > 0)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    const k = VALID_KEY.trim();
+    kp.markFailed('gemini', k, '429'); // fails=1
+    kp.markSuccess('gemini', k);
+    expect(kp.getStats('gemini').stats[0].fails).toBe(0);
+  });
+
+  test('entry.fails === 0 → reset sin log (branch fails === 0)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.markSuccess('gemini', VALID_KEY.trim());
+    expect(kp.getStats('gemini').stats[0].fails).toBe(0);
+  });
+});
+
+describe('getStats', () => {
+  test('!pool → {total:0,...} (branch !pool)', () => {
+    const s = kp.getStats('nonexistent');
+    expect(s.total).toBe(0);
+    expect(s.stats).toEqual([]);
+  });
+
+  test('key sin cooldown → cooldownRemaining=0 (branch k.cooldownUntil ? ... : 0)', () => {
+    kp.register('gemini', [VALID_KEY]);
+    const s = kp.getStats('gemini');
+    expect(s.stats[0].cooldownRemaining).toBe(0);
+  });
+
+  test('key con cooldown → cooldownRemaining > 0', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.markFailed('gemini', VALID_KEY.trim(), '401');
+    const s = kp.getStats('gemini');
+    expect(s.stats[0].cooldownRemaining).toBeGreaterThan(0);
+    expect(s.stats[0].inCooldown).toBe(true);
+  });
+});
+
+describe('getAllStats', () => {
+  test('sin providers → {}', () => {
+    expect(Object.keys(kp.getAllStats())).toHaveLength(0);
+  });
+
+  test('con providers → tiene ambos', () => {
+    kp.register('gemini', [VALID_KEY]);
+    kp.register('openai', [VALID_KEY2]);
+    const s = kp.getAllStats();
+    expect(s.gemini).toBeDefined();
+    expect(s.openai).toBeDefined();
+  });
+});
 
 describe('onBackupActivated', () => {
-  test('params invalidos → no lanza', () => {
-    const m = fresh();
-    expect(() => m.onBackupActivated(null, jest.fn())).not.toThrow();
-    expect(() => m.onBackupActivated('gemini', null)).not.toThrow();
-    expect(() => m.onBackupActivated('gemini', 'notafunction')).not.toThrow();
+  test('!provider → return (branch !provider)', () => {
+    expect(() => kp.onBackupActivated('', jest.fn())).not.toThrow();
   });
 
-  test('registrado → no dispara hasta backup activado', () => {
-    const m = fresh();
+  test('typeof callback !== function → return (branch typeof)', () => {
+    expect(() => kp.onBackupActivated('gemini', 'not-a-fn')).not.toThrow();
+  });
+
+  test('params validos → registra callback', () => {
     const cb = jest.fn();
-    m.onBackupActivated('gemini', cb);
-    expect(cb).not.toHaveBeenCalled();
+    expect(() => kp.onBackupActivated('claude', cb)).not.toThrow();
   });
 });
