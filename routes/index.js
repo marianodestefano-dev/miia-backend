@@ -119,6 +119,16 @@ function mountRoutes(app, deps = {}) {
     failed.push('billing');
   }
 
+  // === PAYPAL SUBSCRIPTIONS (VI-PAYPAL-INTG) ===
+  try {
+    const { createPayPalRoutes } = require('./paypal');
+    app.use('/api/paypal', createPayPalRoutes());
+    mounted.push('paypal');
+  } catch (e) {
+    console.error('[ROUTES] Error montando paypal routes:', e.message);
+    failed.push('paypal');
+  }
+
   // Resumen
   console.log(`[ROUTES] ✅ Rutas montadas: [${mounted.join(', ')}]${failed.length ? ` ❌ Fallaron: [${failed.join(', ')}]` : ''}`);
   return { mounted, failed };
