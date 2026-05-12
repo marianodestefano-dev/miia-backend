@@ -1,226 +1,103 @@
 'use strict';
 
 /**
- * MIIA Auth/Role Middleware — C-406 Cimientos §3 C.7
- *
- * Spec: specs/01_IDENTIDAD.md §P0-02 + ROADMAP_POST_C398.md §3 C.7.
- *
- * Centraliza validación de Firebase ID token + role-based access control
- * para endpoints Express. Scope mínimo viable C-406: aplicado a endpoints
- * críticos SIN auth previo (export/import/admin-chat/admin/support-chat/
- * admin/migrate-email). Endpoints que ya usan verifyTenantAuth o
- * verifyAdminToken inline en server.js se conservan (deuda C-406.b).
- *
- * Exports:
- *   - requireAuth(req, res, next): valida Firebase ID token. 401 si falta/
- *     inválido. Inyecta req.user = { uid, email, role, claims }.
- *   - requireRole(roleOrRoles): HOF que valida req.user.role. 403 si
- *     mismatch. Admin (role='admin' o ADMIN_EMAILS match) bypasea.
- *   - requireAdmin: atajo para requireRole('admin').
- *   - requireOwner: atajo para requireRole(['owner', 'admin']).
- *   - requireOwnerOfResource(paramName): valida que req.params[paramName]
- *     coincide con req.user.uid. Admin bypasea. 403 si mismatch.
- *
- * NO depende de server.js — usa firebase-admin directamente. Idempotente:
- * si admin.app() no está inicializado, falla con 503 explicativo.
- *
- * Standard: Google + Amazon + Apple + NASA — fail loudly, observable.
+ * C7-REQUIRE-ROLE-MIDDLEWARE
+ * Centraliza validacion de roles de Firebase para endpoints sensibles en server.js.
+ * Reemplaza validaciones inline duplicadas.
  */
 
 const admin = require('firebase-admin');
 
-/**
- * Verifica que Firebase Admin SDK está inicializado.
- * Si no, responde 503 (backend mal configurado).
- */
-function ensureFirebaseAdmin(res) {
-  try {
-    admin.app();
-    return true;
-  } catch (_) {
-    res.status(503).json({
-      error: 'firebase_admin_not_initialized',
-      message: 'Firebase Admin SDK no está inicializado. Verificar FIREBASE_SERVICE_ACCOUNT.',
-    });
-    return false;
-  }
-}
+let _admin = null;
+function __setAdminForTests(a) { _admin = a; }
+function getAdmin() { return _admin || admin; }
 
 /**
- * Extrae el Bearer token del header Authorization.
- * Retorna el token (string) o null si falta/malformado.
+ * requireRole(role) -- Middleware Express
+ * Verifica que el usuario autenticado tiene el rol requerido.
+ * Founder bypasea todos los checks (acceso global).
+ * @param {'owner'|'admin'|'agent'|'founder'} role
+ * @returns {Function} middleware
  */
-function extractBearerToken(req) {
-  const header = req.headers && req.headers.authorization;
-  if (!header || typeof header !== 'string') return null;
-  if (!header.startsWith('Bearer ')) return null;
-  const token = header.slice(7).trim();
-  return token.length > 0 ? token : null;
-}
+function requireRole(role) {
+  return async function(req, res, next) {
+    try {
+      const authHeader = req.headers && req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized', detail: 'Missing Bearer token' });
+      }
+      const token = authHeader.split('Bearer ')[1];
+      const decoded = await getAdmin().auth().verifyIdToken(token);
+      const uid = decoded.uid;
 
-/**
- * Deriva el role del usuario a partir del decoded token + Firestore lookup
- * + ADMIN_EMAILS bypass.
- *
- * Orden de precedencia:
- *   1. ADMIN_EMAILS env var → role='admin'
- *   2. decoded.role (custom claim Firebase) → usar directo
- *   3. Firestore users/{uid}.role → fallback lookup
- *   4. default → 'user'
- *
- * @returns {Promise<string>} role string
- */
-async function resolveUserRole(decoded) {
-  // (1) ADMIN_EMAILS bypass
-  const adminEmails = (process.env.ADMIN_EMAILS || '')
-    .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
-  const email = (decoded.email || '').toLowerCase();
-  if (email && adminEmails.includes(email)) return 'admin';
+      const ownerSnap = await getAdmin().firestore().collection('owners').doc(uid).get();
+      const ownerData = ownerSnap.exists ? ownerSnap.data() : null;
+      const uidRole = ownerData ? ownerData.role : null;
 
-  // (2) custom claim en token
-  if (decoded.role && typeof decoded.role === 'string') return decoded.role;
+      if (uidRole === 'founder') {
+        req.uid = uid;
+        req.uidRole = uidRole;
+        return next();
+      }
 
-  // (3) Firestore lookup
-  try {
-    const doc = await admin.firestore().collection('users').doc(decoded.uid).get();
-    if (doc.exists && doc.data().role) return doc.data().role;
-  } catch (_) {
-    // Firestore no accesible en este entorno → degradar a default
-  }
+      if (uidRole !== role) {
+        return res.status(403).json({ error: 'Forbidden', required: role, actual: uidRole });
+      }
 
-  // (4) default
-  return 'user';
-}
-
-/**
- * Middleware: valida Firebase ID token + inyecta req.user.
- * 401 si token falta/inválido. 503 si Firebase Admin no disponible.
- */
-async function requireAuth(req, res, next) {
-  if (!ensureFirebaseAdmin(res)) return;
-
-  const token = extractBearerToken(req);
-  if (!token) {
-    return res.status(401).json({
-      error: 'missing_token',
-      message: 'Header Authorization: Bearer <token> ausente o malformado.',
-    });
-  }
-
-  try {
-    const decoded = await admin.auth().verifyIdToken(token);
-    const role = await resolveUserRole(decoded);
-    req.user = {
-      uid: decoded.uid,
-      email: decoded.email || null,
-      role,
-      isAdmin: role === 'admin',
-      claims: decoded,
-    };
-    next();
-  } catch (err) {
-    console.warn(`[REQUIRE_ROLE] verifyIdToken failed: ${err.code || err.message}`);
-    return res.status(401).json({
-      error: 'invalid_token',
-      message: 'Token inválido o expirado.',
-    });
-  }
-}
-
-/**
- * Middleware factory: valida que req.user.role esté en la lista `roles`.
- * Debe usarse DESPUÉS de requireAuth (sino req.user es undefined).
- *
- * @param {string|string[]} roleOrRoles - Rol esperado o lista de roles aceptados.
- * @returns {function} middleware Express
- */
-function requireRole(roleOrRoles) {
-  const allowed = Array.isArray(roleOrRoles) ? roleOrRoles : [roleOrRoles];
-  return function requireRoleMiddleware(req, res, next) {
-    if (!req.user) {
-      return res.status(401).json({
-        error: 'not_authenticated',
-        message: 'requireRole debe usarse DESPUÉS de requireAuth.',
-      });
-    }
-    if (!allowed.includes(req.user.role)) {
-      return res.status(403).json({
-        error: 'forbidden',
-        message: `Rol requerido: ${allowed.join(' | ')}. Tu rol: ${req.user.role}.`,
-        required: allowed,
-        actual: req.user.role,
-      });
-    }
-    next();
-  };
-}
-
-/**
- * Middleware factory: valida que `req[source][paramName]` coincida con
- * req.user.uid. Admin bypasea. Debe usarse DESPUÉS de requireAuth.
- *
- * @param {string} paramName - Nombre del campo (ej: 'uid', 'userId').
- * @param {string} source - Origen del campo: 'params' (default) | 'query' | 'body'.
- *   - 'params': leer de req.params (ruta tipo /api/tenant/:uid/...)
- *   - 'query':  leer de req.query (ruta tipo /api/conversations?uid=...)
- *   - 'body':   leer de req.body (POST con uid en payload)
- * @returns {function} middleware Express
- *
- * Backwards compat: signature original `requireOwnerOfResource('uid')`
- * sigue funcionando con default `source='params'` — los 5 endpoints C-406
- * ya migrados (rrRequireOwnerOfResource('uid')) NO requieren cambios.
- *
- * Origen extensión: C-406.b.crit Pieza D (2026-04-25). /api/conversations
- * pasa uid via query string, no params, por eso necesita source='query'.
- */
-function requireOwnerOfResource(paramName = 'uid', source = 'params') {
-  const VALID_SOURCES = ['params', 'query', 'body'];
-  if (!VALID_SOURCES.includes(source)) {
-    throw new Error(`requireOwnerOfResource: source inválido "${source}". Use: ${VALID_SOURCES.join(' | ')}`);
-  }
-  return function requireOwnerOfResourceMiddleware(req, res, next) {
-    if (!req.user) {
-      return res.status(401).json({
-        error: 'not_authenticated',
-        message: 'requireOwnerOfResource debe usarse DESPUÉS de requireAuth.',
-      });
-    }
-    // Admin bypasea ownership check
-    if (req.user.isAdmin === true || req.user.role === 'admin') {
+      req.uid = uid;
+      req.uidRole = uidRole;
       return next();
+    } catch (err) {
+      console.error('[REQUIRE-ROLE] Error:', err.message);
+      return res.status(401).json({ error: 'Unauthorized', detail: err.message });
     }
-    // Leer del source configurado
-    const container = req[source];
-    const resourceUid = container && container[paramName];
-    if (!resourceUid) {
-      return res.status(400).json({
-        error: 'missing_param',
-        message: `Campo "${paramName}" ausente en req.${source}.`,
-        source,
-        paramName,
-      });
-    }
-    if (resourceUid !== req.user.uid) {
-      return res.status(403).json({
-        error: 'forbidden_ownership',
-        message: `No tienes permiso sobre este recurso. ${source}.${paramName}=${resourceUid} ≠ tu uid.`,
-      });
-    }
-    next();
   };
 }
 
-// Atajos de uso común
-const requireAdmin = requireRole('admin');
-const requireOwner = requireRole(['owner', 'admin']);
+/**
+ * requireOwner(ownerUidParam) -- Shorthand requireRole('owner') + uid param check
+ * Verifica que uid del token coincide con el recurso pedido.
+ * @param {string} ownerUidParam - nombre del req.params key (ej: 'uid', 'ownerId')
+ * @returns {Function} middleware
+ */
+function requireOwner(ownerUidParam) {
+  return async function(req, res, next) {
+    try {
+      const authHeader = req.headers && req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized', detail: 'Missing Bearer token' });
+      }
+      const token = authHeader.split('Bearer ')[1];
+      const decoded = await getAdmin().auth().verifyIdToken(token);
+      const uid = decoded.uid;
 
-module.exports = {
-  requireAuth,
-  requireRole,
-  requireAdmin,
-  requireOwner,
-  requireOwnerOfResource,
-  // Exports internos para tests
-  _extractBearerToken: extractBearerToken,
-  _resolveUserRole: resolveUserRole,
-};
+      const ownerSnap = await getAdmin().firestore().collection('owners').doc(uid).get();
+      const ownerData = ownerSnap.exists ? ownerSnap.data() : null;
+      const uidRole = ownerData ? ownerData.role : null;
+
+      if (uidRole === 'founder') {
+        req.uid = uid;
+        req.uidRole = uidRole;
+        return next();
+      }
+
+      if (uidRole !== 'owner') {
+        return res.status(403).json({ error: 'Forbidden', required: 'owner', actual: uidRole });
+      }
+
+      const resourceUid = req.params && req.params[ownerUidParam];
+      if (resourceUid && uid !== resourceUid) {
+        return res.status(403).json({ error: 'Forbidden', detail: 'uid mismatch' });
+      }
+
+      req.uid = uid;
+      req.uidRole = uidRole;
+      return next();
+    } catch (err) {
+      console.error('[REQUIRE-ROLE] Error:', err.message);
+      return res.status(401).json({ error: 'Unauthorized', detail: err.message });
+    }
+  };
+}
+
+module.exports = { requireRole, requireOwner, __setAdminForTests };
