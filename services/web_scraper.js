@@ -41,6 +41,9 @@ let _appendLearning      = null;
 let _lastRunWeek         = '';   // ISO week string "2026-W13"
 let _isRunning           = false;
 let scraperPendingResults = [];  // resultados pendientes de enviar a Mariano en el briefing
+// EXTRA #3 (2026-05-12): persistencia Firestore para que no se pierda en redeploy
+let _trainingStore       = null;
+let _ownerUid            = null;
 
 // ─────────────────────────────────────────────
 // HELPERS
@@ -70,10 +73,15 @@ function stripHTML(html) {
 // INICIALIZACIÓN
 // ─────────────────────────────────────────────
 
-function init({ generateAIContent, appendLearning }) {
+function init({ generateAIContent, appendLearning, trainingStore, ownerUid }) {
   _generateAIContent = generateAIContent;
   _appendLearning    = appendLearning;
-  console.log('[WEB SCRAPER] Módulo regulatorio listo. Ciclo: lunes 02:00 AM Bogotá.');
+  // EXTRA #3: si se inyecta trainingStore + ownerUid, persistimos en Firestore
+  // (sobrevive redeploys Railway). Mantiene compatibilidad con appendLearning legacy.
+  _trainingStore     = trainingStore || null;
+  _ownerUid          = ownerUid || null;
+  console.log('[WEB SCRAPER] Módulo regulatorio listo. Ciclo: lunes 02:00 AM Bogotá.' +
+    (_trainingStore && _ownerUid ? ' (Firestore persistence ON)' : ''));
 }
 
 // ─────────────────────────────────────────────
@@ -136,6 +144,14 @@ ${text}`;
           _appendLearning(`[NORMATIVA AUTO ${source.pais} ${new Date().toLocaleDateString('es-ES')}]\n${result}`, 'SCRAPER');
         }
       } catch(e) { /* ignore */ }
+      // EXTRA #3: persistencia Firestore paralela (no rompe si store no inyectado)
+      if (_trainingStore && _ownerUid && typeof _trainingStore.appendLearning === 'function') {
+        try {
+          await _trainingStore.appendLearning(_ownerUid, 'web_scraper', source.pais, result, null);
+        } catch (e) {
+          console.warn('[WEB SCRAPER] Firestore persist error:', e.message);
+        }
+      }
     }
 
   } catch (e) {
