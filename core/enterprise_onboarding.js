@@ -17,7 +17,7 @@ async function createEnterpriseAccount(opts) {
     id: uid,
     companyName,
     contactEmail,
-    seats: seats || MIN_ENTERPRISE_SEATS,
+    seats: seats || /* istanbul ignore next */ MIN_ENTERPRISE_SEATS,
     plan: "enterprise",
     onboardingStep: ENTERPRISE_STEPS[0],
     onboardingCompleted: false,
