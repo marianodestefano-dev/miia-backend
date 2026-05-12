@@ -7,7 +7,7 @@
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() { return _db || require('firebase-admin').firestore(); }
+function db() { return _db || /* istanbul ignore next */ require('firebase-admin').firestore(); }
 
 const HEALTH_COMPONENTS = Object.freeze([
   'whatsapp', 'firestore', 'gemini', 'scheduler', 'rate_limiter', 'handoff', 'broadcast'
@@ -131,7 +131,63 @@ function generateHealthAlert(component, status, message) {
   };
 }
 
+
+// -- Tenant Health Check / Alertas (R20-B PB.3) ----------------------------
+
+const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+
+function _healthAlertsRef(uid) {
+  return db().collection('owners').doc(uid).collection('health_alerts').doc('status');
+}
+
+/**
+ * Verifica la salud del tenant (heartbeat). Dispara alerta si desconectado.
+ * @param {string} uid
+ * @returns {{ status, lastSeen, alertSent }}
+ */
+async function checkTenantHealth(uid) {
+  if (!uid) throw new Error('uid requerido');
+  const snap = await _healthAlertsRef(uid).get();
+  const data = snap.exists ? snap.data() : {};
+  const lastSeen = data.last_seen || null;
+  const lastAlert = data.last_alert || null;
+  const now = Date.now();
+  let status = 'healthy';
+  let alertSent = false;
+  if (!lastSeen || (now - new Date(lastSeen).getTime()) > DISCONNECT_THRESHOLD_MS) {
+    status = 'disconnected';
+    const canAlert = !lastAlert || (now - new Date(lastAlert).getTime()) >= ALERT_COOLDOWN_MS;
+    if (canAlert) {
+      await sendHealthAlert(uid, 'all');
+      alertSent = true;
+    }
+  }
+  return { status, lastSeen, alertSent };
+}
+
+/**
+ * Envia alerta de salud por el canal indicado.
+ * @param {string} uid
+ * @param {string} channel
+ * @returns {{ ok, channel, alertedAt }}
+ */
+async function sendHealthAlert(uid, channel) {
+  if (!uid) throw new Error('uid requerido');
+  const ch = channel || 'all';
+  const alertedAt = new Date().toISOString();
+  const ref = _healthAlertsRef(uid);
+  const snap = await ref.get();
+  const data = snap.exists ? snap.data() : {};
+  const count = (data.alert_count_24h || 0) + 1;
+  await ref.set({ last_alert: alertedAt, alert_count_24h: count }, { merge: true });
+  console.log('[HEALTH_MONITOR] alerta uid=' + uid.slice(0, 8) + ' ch=' + ch + ' n=' + count);
+  return { ok: true, channel: ch, alertedAt };
+}
+
 module.exports = {
+  checkTenantHealth,
+  sendHealthAlert,
+  ALERT_COOLDOWN_MS,
   recordHealthCheck,
   getComponentHealth,
   getSystemHealthSummary,
