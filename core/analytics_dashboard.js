@@ -184,4 +184,5 @@ module.exports = {
   recordMetric, getMetricSummary, getDashboard, compareMetrics,
   METRIC_TYPES, PERIOD_TYPES, DEFAULT_PERIOD, MAX_HISTORY_DAYS,
   __setFirestoreForTests,
+  __periodToMsForTests: _periodToMs,
 };
