@@ -23,8 +23,13 @@ const SOURCES = [
   { name: 'SSA Mexico',         url: 'https://www.gob.mx/salud',                           pais: 'MEXICO' },
   { name: 'Minsalud Argentina', url: 'https://www.argentina.gob.ar/salud',                 pais: 'ARGENTINA' },
   { name: 'MSP Dom. Rep.',      url: 'https://msp.gob.do/',                                pais: 'REPUBLICA_DOMINICANA' },
-  { name: 'Medilink sitio',     url: 'https://medilink.cl/',                               pais: 'MEDILINK' },
-  { name: 'Medilink ayuda',     url: 'https://ayuda.medilink.cl/',                         pais: 'MEDILINK' },
+  // EXTRA #2 (2026-05-12): URLs Medilink reales son softwaremedilink.com
+  // (no medilink.cl que es otra empresa). Variantes /co/ /cl/ /mx/ + intercom help.
+  { name: 'Medilink LATAM',     url: 'https://www.softwaremedilink.com/',                  pais: 'MEDILINK_LATAM' },
+  { name: 'Medilink CO',        url: 'https://www.softwaremedilink.com/co/',               pais: 'MEDILINK_COLOMBIA' },
+  { name: 'Medilink CL',        url: 'https://www.softwaremedilink.com/cl/',               pais: 'MEDILINK_CHILE' },
+  { name: 'Medilink MX',        url: 'https://www.softwaremedilink.com/mx/',               pais: 'MEDILINK_MEXICO' },
+  { name: 'Medilink ayuda',     url: 'https://intercom.help/softwaremedilink/es/',         pais: 'MEDILINK_HELP' },
 ];
 
 // ─────────────────────────────────────────────
