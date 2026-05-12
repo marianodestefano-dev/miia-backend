@@ -1,152 +1,75 @@
 'use strict';
 
 /**
- * MIIA â€” Catalog Search (T151)
- * Busqueda semantica en catalogo de productos del tenant.
- * Indexa por tokens de nombre, descripcion y categoria.
+ * CAT.2 — Catalog search + prompt injection
+ * searchCatalog(uid, message, limit=5) -> [{name, description, price}]
+ * buildCatalogContext(items) -> string para inyectar en system prompt
  */
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() {
-  if (_db) return _db;
-  return require('firebase-admin').firestore();
-}
-
-const MAX_RESULTS = 20;
-const MIN_SCORE = 0.1;
-
-const STOP_WORDS = new Set([
-  'el','la','los','las','un','una','unos','unas',
-  'de','del','en','a','con','por','para','que','es',
-  'the','a','an','of','in','for','with','is','are',
-]);
+function db() { return _db || require('firebase-admin').firestore(); }
 
 /**
- * Obtiene el catalogo de productos de un tenant.
- * @param {string} uid
- * @returns {Promise<Array<object>>}
+ * Score de relevancia por keyword match
  */
-async function getCatalogProducts(uid) {
-  if (!uid) throw new Error('uid requerido');
+function _scoreItem(item, messageLower) {
+  var score = 0;
+  var keywords = item.keywords || [];
+  for (var i = 0; i < keywords.length; i++) {
+    if (messageLower.includes(keywords[i].toLowerCase())) score += 2;
+  }
+  if (messageLower.includes(item.name.toLowerCase())) score += 3;
+  if (item.category && messageLower.includes(item.category.toLowerCase())) score += 1;
+  return score;
+}
+
+/**
+ * Busca items del catalogo relevantes para el mensaje.
+ * @param {string} uid
+ * @param {string} message
+ * @param {number} [limit=5]
+ * @returns {Promise<Array>}
+ */
+async function searchCatalog(uid, message, limit) {
+  if (!uid || !message) return [];
+  if (limit === undefined) limit = 5;
+
   try {
-    const snap = await db().collection('catalog').doc(uid).collection('products')
-      .where('active', '==', true).get();
-    const products = [];
-    snap.forEach(doc => products.push({ id: doc.id, ...doc.data() }));
-    return products;
+    const snap = await db().collection('owners').doc(uid).collection('catalog')
+      .where('active', '==', true)
+      .get();
+
+    if (snap.empty) return [];
+
+    const msgLower = message.toLowerCase();
+    const scored = snap.docs.map(function(doc) {
+      const d = doc.data();
+      return { item: d, score: _scoreItem(d, msgLower) };
+    });
+
+    scored.sort(function(a, b) { return b.score - a.score; });
+
+    return scored.slice(0, limit).map(function(s) { return s.item; });
   } catch (e) {
-    console.error('[CATALOG] Error leyendo catalogo uid=' + uid.substring(0,8) + ': ' + e.message);
+    console.warn('[CATALOG-SEARCH] Error: ' + e.message);
     return [];
   }
 }
 
 /**
- * Busca productos en el catalogo por query de lenguaje natural.
- * @param {string} uid
- * @param {string} query
- * @param {object} [opts] - { maxResults, minScore, products }
- * @returns {Promise<Array<{id, name, score, product}>>}
+ * Construye el string de contexto de catalogo para inyectar en prompt.
+ * @param {Array} items
+ * @returns {string|null}
  */
-async function searchCatalog(uid, query, opts) {
-  if (!uid) throw new Error('uid requerido');
-  if (!query || typeof query !== 'string') throw new Error('query requerido');
-
-  const maxResults = (opts && opts.maxResults) || MAX_RESULTS;
-  const minScore = (opts && opts.minScore !== undefined) ? opts.minScore : MIN_SCORE;
-
-  // Permitir inyectar productos para tests
-  const products = (opts && opts.products) ? opts.products : await getCatalogProducts(uid);
-  if (products.length === 0) return [];
-
-  const queryTokens = tokenize(query);
-  if (queryTokens.length === 0) return [];
-
-  const results = [];
-  for (const product of products) {
-    const score = scoreProduct(product, queryTokens);
-    if (score >= minScore) {
-      results.push({ id: product.id, name: product.name || '', score, product });
-    }
-  }
-
-  results.sort((a, b) => b.score - a.score);
-  return results.slice(0, maxResults);
+function buildCatalogContext(items) {
+  if (!items || items.length === 0) return null;
+  var parts = items.map(function(item) {
+    var text = item.name + ': ' + item.description;
+    if (item.price != null) text += ' (' + item.currency + ' ' + item.price + ')';
+    return text;
+  });
+  return 'Tienes disponible: ' + parts.join('. ') + '.';
 }
 
-/**
- * Rankea productos por relevancia a una query.
- * @param {Array<object>} products
- * @param {string} query
- * @returns {Array<{id, name, score, product}>}
- */
-function rankByRelevance(products, query) {
-  if (!Array.isArray(products)) throw new Error('products debe ser array');
-  if (!query || typeof query !== 'string') throw new Error('query requerido');
-
-  const queryTokens = tokenize(query);
-  if (queryTokens.length === 0) return [];
-
-  const results = products.map(p => ({
-    id: p.id || '',
-    name: p.name || '',
-    score: scoreProduct(p, queryTokens),
-    product: p,
-  })).filter(r => r.score >= MIN_SCORE);
-
-  results.sort((a, b) => b.score - a.score);
-  return results;
-}
-
-function scoreProduct(product, queryTokens) {
-  const fields = [
-    { text: product.name || '', weight: 3 },
-    { text: product.category || '', weight: 2 },
-    { text: product.description || '', weight: 1 },
-    { text: (product.tags || []).join(' '), weight: 2 },
-  ];
-
-  let totalScore = 0;
-  let totalWeight = 0;
-
-  for (const field of fields) {
-    if (!field.text) continue;
-    const fieldTokens = tokenize(field.text);
-    if (fieldTokens.length === 0) continue;
-    const fieldScore = _computeOverlap(queryTokens, fieldTokens);
-    totalScore += fieldScore * field.weight;
-    totalWeight += field.weight;
-  }
-
-  return totalWeight > 0 ? totalScore / totalWeight : 0;
-}
-
-function _computeOverlap(queryTokens, fieldTokens) {
-  const fieldSet = new Set(fieldTokens);
-  let matches = 0;
-  for (const token of queryTokens) {
-    if (fieldSet.has(token)) matches++;
-    else {
-      // Partial match: check if any field token starts with this token
-      for (const ft of fieldSet) {
-        if (ft.startsWith(token) && token.length >= 3) { matches += 0.5; break; }
-      }
-    }
-  }
-  return queryTokens.length > 0 ? matches / queryTokens.length : 0;
-}
-
-function tokenize(text) {
-  return text.toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove combining diacritics
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(t => t.length >= 2 && !STOP_WORDS.has(t));
-}
-
-module.exports = {
-  getCatalogProducts, searchCatalog, rankByRelevance,
-  tokenize, scoreProduct,
-  MAX_RESULTS, MIN_SCORE,
-  __setFirestoreForTests,
-};
+module.exports = { searchCatalog, buildCatalogContext, _scoreItem, __setFirestoreForTests };
