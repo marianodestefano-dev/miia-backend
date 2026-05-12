@@ -92,3 +92,10 @@ describe('recommendPlan', () => {
     expect(r.reason.length).toBeGreaterThan(0);
   });
 });
+
+describe('recommendPlan default-arg branch', () => {
+  test('recommendPlan() sin argumento => usa {} default (branch usage={} truthy)', () => {
+    const r = recommendPlan();
+    expect(r.recommended).toBe('starter');
+  });
+});

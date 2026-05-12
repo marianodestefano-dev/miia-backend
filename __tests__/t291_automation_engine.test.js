@@ -567,3 +567,172 @@ describe('T291 — automation_engine: reglas trigger+conditions+actions', () => 
     expect(text).toContain('send_coupon');
   });
 });
+
+
+// vi_coverage branches automation_engine
+describe('vi_coverage automation_engine', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { db } = makeMockDb();
+    setAutoDb(db);
+  });
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  test('buildCondition() no args => data={} right-side branch', () => {
+    const c = buildCondition();
+    expect(c.field).toBe('');
+    expect(c.operator).toBe('==');
+    expect(c.value).toBeNull();
+  });
+
+  test('buildCondition field not string => empty string', () => {
+    const c = buildCondition({ field: 123 });
+    expect(c.field).toBe('');
+  });
+
+  test('buildCondition no value => value=null', () => {
+    const c = buildCondition({ field: 'x', operator: '==' });
+    expect(c.value).toBeNull();
+  });
+
+  test('buildActionRecord() no args => send_notification defaults', () => {
+    const a = buildActionRecord();
+    expect(a.type).toBe('send_notification');
+    expect(a.params).toEqual({});
+    expect(a.delayMs).toBe(0);
+  });
+
+  test('buildAutomationRule(uid) no data => custom trigger + empty arrays', () => {
+    const r = buildAutomationRule('uid_vi_01');
+    expect(r.triggerType).toBe('custom');
+    expect(r.conditions).toEqual([]);
+    expect(r.status).toBe('active');
+  });
+
+  test('buildAutomationRule description string => preserved', () => {
+    const r = buildAutomationRule('uid_vi_01', { description: 'Desc real', metadata: { k: 1 } });
+    expect(r.description).toBe('Desc real');
+    expect(r.metadata).toEqual({ k: 1 });
+  });
+
+  test('buildAutomationRule metadata non-object => {}', () => {
+    const r = buildAutomationRule('uid_vi_01', { metadata: 'invalid' });
+    expect(r.metadata).toEqual({});
+  });
+
+  test('evaluateCondition empty field => false (early return)', () => {
+    expect(evaluateCondition({ field: '', operator: '==', value: 'x' }, { '': 'x' })).toBe(false);
+  });
+
+  test('evaluateCondition null context => false', () => {
+    expect(evaluateCondition({ field: 'x', operator: '==', value: 'x' }, null)).toBe(false);
+  });
+
+  test('evaluateCondition op< numeric actual true branch', () => {
+    expect(evaluateCondition({ field: 'age', operator: '<', value: 10 }, { age: 5 })).toBe(true);
+  });
+
+  test('evaluateCondition op< non-numeric => false (left side &&)', () => {
+    expect(evaluateCondition({ field: 'age', operator: '<', value: 10 }, { age: 'cinco' })).toBe(false);
+  });
+
+  test('evaluateCondition contains array => true', () => {
+    expect(evaluateCondition({ field: 'tags', operator: 'contains', value: 'vip' }, { tags: ['vip', 'pro'] })).toBe(true);
+  });
+
+  test('evaluateCondition contains array => false not in array', () => {
+    expect(evaluateCondition({ field: 'tags', operator: 'contains', value: 'xyz' }, { tags: ['vip'] })).toBe(false);
+  });
+
+  test('evaluateCondition not_contains string not found => true', () => {
+    expect(evaluateCondition({ field: 'msg', operator: 'not_contains', value: 'spam' }, { msg: 'hola mundo' })).toBe(true);
+  });
+
+  test('evaluateCondition not_contains string found => false', () => {
+    expect(evaluateCondition({ field: 'msg', operator: 'not_contains', value: 'spam' }, { msg: 'es spam esto' })).toBe(false);
+  });
+
+  test('evaluateCondition not_contains array value present => false', () => {
+    expect(evaluateCondition({ field: 'tags', operator: 'not_contains', value: 'vip' }, { tags: ['vip'] })).toBe(false);
+  });
+
+  test('evaluateCondition not_contains array value absent => true', () => {
+    expect(evaluateCondition({ field: 'tags', operator: 'not_contains', value: 'xyz' }, { tags: ['vip'] })).toBe(true);
+  });
+
+  test('evaluateCondition default invalid operator => false', () => {
+    expect(evaluateCondition({ field: 'x', operator: 'INVALID', value: 'y' }, { x: 'y' })).toBe(false);
+  });
+
+  test('buildExecutionLog() no data => defaults', () => {
+    const log = buildExecutionLog('uid_vi_01', 'rule_x');
+    expect(log.triggerType).toBe('custom');
+    expect(log.contactPhone).toBeNull();
+    expect(log.success).toBe(true);
+    expect(log.durationMs).toBe(0);
+  });
+
+  test('computeAutomationStats durationMs=0 covers falsy || 0 branch', () => {
+    const logs = [
+      { success: true, durationMs: 0, triggerType: 'aaa' },
+      { success: true, durationMs: 200, triggerType: 'aaa' },
+    ];
+    const stats = computeAutomationStats(logs);
+    expect(stats.avgDurationMs).toBe(100);
+  });
+
+  test('buildAutomationSummaryText paused + lastExecutedAt + maxExecutions', () => {
+    const r = { ...buildAutomationRule('uid_vi_01', { name: 'Paused Rule' }), status: 'paused', lastExecutedAt: Date.now(), maxExecutions: 5 };
+    const text = buildAutomationSummaryText(r);
+    expect(text).toContain('Paused Rule');
+    expect(text).toContain('paused');
+    expect(text).toContain('Ultima ejecucion');
+    expect(text).toContain('/5');
+  });
+
+  test('buildAutomationSummaryText archived => archived in text', () => {
+    const r = { ...buildAutomationRule('uid_vi_01', { name: 'Arch Rule' }), status: 'archived' };
+    const text = buildAutomationSummaryText(r);
+    expect(text).toContain('archived');
+  });
+
+  test('listActiveRules empty uid => [] snap.empty true branch', async () => {
+    expect(await listActiveRules('uid_vi_empty_99')).toEqual([]);
+  });
+
+  test('listRulesByTrigger empty uid => [] snap.empty true branch', async () => {
+    expect(await listRulesByTrigger('uid_vi_empty_99', 'lead_received')).toEqual([]);
+  });
+
+  test('listExecutionLogs ruleId=null => get all (cond-expr false branch)', async () => {
+    const result = await listExecutionLogs('uid_vi_empty_99', null);
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toEqual([]);
+  });
+
+  test('listExecutionLogs no ruleId arg => empty snap returns []', async () => {
+    expect(await listExecutionLogs('uid_vi_no_logs')).toEqual([]);
+  });
+
+  test('getDb falls back to firebase-admin when _db=null', async () => {
+    jest.resetModules();
+    const mockDb = {
+      collection: jest.fn().mockReturnValue({
+        doc: jest.fn().mockReturnValue({
+          collection: jest.fn().mockReturnValue({
+            doc: jest.fn().mockReturnValue({
+              get: jest.fn().mockResolvedValue({ exists: false, data: () => null }),
+            }),
+          }),
+        }),
+      }),
+    };
+    const adminMock = { firestore: jest.fn().mockReturnValue(mockDb) };
+    jest.doMock('firebase-admin', () => adminMock);
+    const eng = require('../core/automation_engine');
+    const result = await eng.getAutomationRule('uid', 'ruleXYZ');
+    expect(result).toBeNull();
+    expect(adminMock.firestore).toHaveBeenCalled();
+  });
+});

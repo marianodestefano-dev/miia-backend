@@ -10,7 +10,11 @@
 
 'use strict';
 
-const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args)).catch(() => require('node-fetch')(...args));
+let _testFetch = null;
+const fetch = (...args) => {
+  if (_testFetch) return _testFetch(...args);
+  return import('node-fetch').then(({ default: f }) => f(...args)).catch(() => require('node-fetch')(...args));
+};
 
 const DEFAULT_MODEL = 'gemini-2.5-flash'; // 2.0-flash → 404, 1.5-flash → 404, 2.5-pro → 503
 const RETRY_DELAYS = [8000, 20000, 45000];
@@ -241,4 +245,6 @@ async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
   }
 }
 
-module.exports = { callGemini, callGeminiChat };
+function __setFetchForTests(fn) { _testFetch = fn; }
+
+module.exports = { callGemini, callGeminiChat, __setFetchForTests };

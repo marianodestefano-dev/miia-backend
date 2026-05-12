@@ -134,3 +134,20 @@ describe('dequeueNext y clear', () => {
     expect(q.size()).toBe(0);
   });
 });
+
+describe('_purgeExpired default-arg branch', () => {
+  let q;
+  beforeEach(() => {
+    jest.useFakeTimers();
+    const { MessageQueue } = require('../core/message_queue');
+    q = new MessageQueue({ ttlMs: 1000 });
+  });
+  afterEach(() => { jest.useRealTimers(); });
+
+  test('_purgeExpired() sin args usa Date.now() default (branch nowMs=Date.now() truthy)', () => {
+    q.enqueue('uid1', '+1234', 'msg1');
+    jest.advanceTimersByTime(2000);
+    q._purgeExpired();
+    expect(q.size()).toBe(0);
+  });
+});

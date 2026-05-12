@@ -308,3 +308,15 @@ describe('C-438 §D — _lastActivityTimestamp (helper)', () => {
     expect(detector._lastActivityTimestamp({})).toBe(0);
   });
 });
+
+describe('shouldCloseEpisode options branch', () => {
+  test('options truthy => usa opts.idleThresholdMs (branch options||{} left side)', () => {
+    const ep = {
+      status: 'open',
+      messageIds: ['m1'],
+      startedAt: Date.now() - 500,
+    };
+    const result = detector.shouldCloseEpisode(ep, Date.now(), { idleThresholdMs: 100 });
+    expect(result).toBe(true);
+  });
+});

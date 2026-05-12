@@ -193,6 +193,10 @@ function healthCheck() {
 // Auto-cleanup cada 5 minutos
 setInterval(cleanup, 5 * 60 * 1000);
 
+// ── Test hooks ─────────────────────────────────────────────────────────────────
+function __makeKeyForTests(type, uid) { return makeKey(type, uid); }
+function __evictOldestForTests() { evictOldest(); }
+
 module.exports = {
   TTL,
   get,
@@ -201,5 +205,7 @@ module.exports = {
   invalidateOwner,
   cleanup,
   getStats,
-  healthCheck
+  healthCheck,
+  __makeKeyForTests,
+  __evictOldestForTests
 };

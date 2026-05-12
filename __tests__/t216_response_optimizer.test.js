@@ -148,3 +148,13 @@ describe('estimateQueueDelay', () => {
     expect(r.recommendBatch).toBe(true);
   });
 });
+
+describe('generateLatencyReport empty times branch', () => {
+  test('times=[] => percentages todos 0 (branch times.length>0 false)', () => {
+    const r = generateLatencyReport([]);
+    for (const v of Object.values(r.percentages)) {
+      expect(v).toBe(0);
+    }
+    expect(r.stats.count).toBe(0);
+  });
+});

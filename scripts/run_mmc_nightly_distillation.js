@@ -134,4 +134,5 @@ module.exports = {
   _fetchClosedPending,
   _makeGeminiClientForDistillation,
   MIIA_CENTER_UID,
+  _main: main,
 };

@@ -296,3 +296,81 @@ describe('buildSummaryText', () => {
     expect(text).toContain('price_inquiry');
   });
 });
+
+const { normalizeText } = require('../core/conversation_summary');
+
+describe('vi_coverage branches conversation_summary', () => {
+  test('normalizeText null => empty string (if !text true branch)', () => {
+    expect(normalizeText(null)).toBe('');
+    expect(normalizeText(undefined)).toBe('');
+    expect(normalizeText('')).toBe('');
+  });
+  test('normalizeText numero => empty string (typeof !== string)', () => {
+    expect(normalizeText(42)).toBe('');
+  });
+  test('detectSentiment msg con .message (|| msg.message branch)', () => {
+    const s = detectSentiment([{ message: 'gracias excelente' }]);
+    expect(s.positiveHits).toBeGreaterThan(0);
+  });
+  test('detectSentiment msg con .body (|| msg.body branch)', () => {
+    const s = detectSentiment([{ body: 'gracias perfecto' }]);
+    expect(s.positiveHits).toBeGreaterThan(0);
+  });
+  test('detectSentiment msg vacio {} => || empty string branch', () => {
+    const s = detectSentiment([{}]);
+    expect(s.positiveHits).toBe(0);
+  });
+  test('buildConversationSummary lastMessage como objeto con .text (|| branches)', () => {
+    const msgs = [{ text: 'hola final' }];
+    const s = buildConversationSummary(UID, PHONE, msgs);
+    expect(typeof s.lastMessageSnippet).toBe('string');
+  });
+  test('buildConversationSummary lastMessage objeto sin campos => empty (|| empty string)', () => {
+    const s = buildConversationSummary(UID, PHONE, [{}]);
+    expect(s.lastMessageSnippet).toBe('');
+  });
+  test('getConversationSummary con summaryType valido => filtra por tipo', async () => {
+    const s1 = buildConversationSummary(UID, PHONE, [], { summaryType: 'daily', date: '2026-05-01', createdAt: 1 });
+    const s2 = buildConversationSummary(UID, PHONE, [], { summaryType: 'quick', date: '2026-05-01', createdAt: 2 });
+    __setFirestoreForTests(makeMockDb({ stored: { [s1.recordId]: s1, [s2.recordId]: s2 } }));
+    const r = await getConversationSummary(UID, PHONE, 'daily');
+    expect(r).toBeDefined();
+  });
+  test('getConversationSummary filtered.length === 0 => null', async () => {
+    const s1 = buildConversationSummary(UID, PHONE, [], { summaryType: 'quick', date: '2026-05-01', createdAt: 1 });
+    __setFirestoreForTests(makeMockDb({ stored: { [s1.recordId]: s1 } }));
+    const r = await getConversationSummary(UID, PHONE, 'handoff');
+    expect(r).toBeNull();
+  });
+  test('getSummaryHistory con summaryType valido => filtra', async () => {
+    const s1 = buildConversationSummary(UID, PHONE, [], { summaryType: 'daily', date: '2026-05-01', createdAt: 1 });
+    __setFirestoreForTests(makeMockDb({ stored: { [s1.recordId]: s1 } }));
+    const r = await getSummaryHistory(UID, { summaryType: 'daily' });
+    expect(r.length).toBe(1);
+  });
+  test('buildSummaryText record sin keyMoments => sin Momentos clave', () => {
+    const s = buildConversationSummary(UID, PHONE, [], { date: '2026-05-01' });
+    s.keyMoments = [];
+    const text = buildSummaryText(s);
+    expect(text).not.toContain('Momentos');
+  });
+  test('buildSummaryText sin lastMessageSnippet => sin Ultimo', () => {
+    const s = buildConversationSummary(UID, PHONE, [], { date: '2026-05-01' });
+    s.lastMessageSnippet = '';
+    expect(buildSummaryText(s)).not.toContain('Ultimo');
+  });
+  test('buildSummaryText sentiment muy positivo => very_positive (score >= 0.6)', () => {
+    const s = buildConversationSummary(UID, PHONE, ['gracias excelente perfecto genial buenisimo increible super'], { date: '2026-05-01' });
+    expect(['very_positive', 'positive']).toContain(s.sentiment.label);
+  });
+  test('buildSummaryText sentiment muy negativo => very_negative (score <= -0.6)', () => {
+    const msgs = ['terrible pesimo desastre horrible imposible inaceptable furioso frustrado'];
+    const s = buildConversationSummary(UID, PHONE, msgs, { date: '2026-05-01' });
+    expect(['very_negative', 'negative']).toContain(s.sentiment.label);
+  });
+  test('buildSummaryText sentiment negativo => negative (score <= -0.2)', () => {
+    const msgs = ['molesto decepcionado problema queja'];
+    const s = buildConversationSummary(UID, PHONE, msgs);
+    expect(['negative', 'very_negative', 'neutral']).toContain(s.sentiment.label);
+  });
+});

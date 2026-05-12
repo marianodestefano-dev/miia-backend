@@ -85,20 +85,20 @@ describe('F1.13 -- Live race notifier', function() {
     });
 
     test('retorna null si no hay cambio de posicion', async function() {
-      mockFirestore({ 'f1_data/2025/drivers/norris': { name: 'Lando Norris', team: 'McLaren', number: 4 } });
+      mockFirestore({ 'f1_data/2026/drivers/norris': { name: 'Lando Norris', team: 'McLaren', number: 4 } });
       const result = await notifier.checkDriverPositionChange('uid1', 'norris', [{ driver_number: 4, position: 3 }], { 4: 3 }, 10, 78, 'GP Test');
       expect(result).toBeNull();
     });
 
     test('retorna null si rate limit activo', async function() {
-      mockFirestore({ 'f1_data/2025/drivers/norris': { name: 'Lando Norris', team: 'McLaren', number: 4 } });
+      mockFirestore({ 'f1_data/2026/drivers/norris': { name: 'Lando Norris', team: 'McLaren', number: 4 } });
       notifier._lastNotifiedLap.set('uid1', 10);
       const result = await notifier.checkDriverPositionChange('uid1', 'norris', [{ driver_number: 4, position: 2 }], { 4: 5 }, 12, 78, 'GP Test');
       expect(result).toBeNull();
     });
 
     test('retorna mensaje si hay cambio y rate limit libre', async function() {
-      mockFirestore({ 'f1_data/2025/drivers/norris': { name: 'Lando Norris', team: 'McLaren', number: 4 } });
+      mockFirestore({ 'f1_data/2026/drivers/norris': { name: 'Lando Norris', team: 'McLaren', number: 4 } });
       const result = await notifier.checkDriverPositionChange('uid1', 'norris', [{ driver_number: 4, position: 2 }], { 4: 5 }, 20, 78, 'GP Monaco');
       expect(result).not.toBeNull();
       expect(result).toContain('EN VIVO');

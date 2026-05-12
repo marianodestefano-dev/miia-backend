@@ -9,7 +9,7 @@
 const admin = require('firebase-admin');
 const { paths } = require('./f1_schema');
 
-const CURRENT_SEASON = '2025';
+const CURRENT_SEASON = process.env.F1_SEASON || '2026';
 
 /**
  * Genera el mensaje de notificacion post-carrera para un owner.
@@ -29,8 +29,8 @@ function buildPostRaceMessage(driverName, team, position, points, gpName, worldP
   const lines = [
     `${posEmoji} *F1 | ${gpName}*`,
     `${driverName} (${team}) terminó P${position} — +${points} puntos`,
-    `Mundial: P${worldPosition} con ${worldPoints} puntos`,
   ];
+  if (worldPosition != null) lines.push(`Mundial: P${worldPosition} con ${worldPoints} puntos`);
   if (nextGpName) lines.push(`Próximo: ${nextGpName} · ${nextGpDate}`);
   return lines.join('\n');
 }
@@ -87,11 +87,22 @@ async function sendPostRaceNotifications(gpId, sendWaMessage) {
         if (!driverDoc.exists) { skipped++; continue; }
         const driver = driverDoc.data();
 
+        // Buscar standings reales del piloto
+        let worldPos = null, worldPts = null;
+        try {
+          const standingsDoc = await db.doc(`f1_data/${CURRENT_SEASON}/standings/${prefs.adopted_driver}`).get();
+          if (standingsDoc.exists) {
+            const s = standingsDoc.data();
+            worldPos = s.position != null ? s.position : null;
+            worldPts = s.points != null ? s.points : null;
+          }
+        } catch (_e) { /* standings no disponibles: omitir linea mundial */ }
+
         const msg = buildPostRaceMessage(
           driver.name, driver.team,
           driverResult.position, driverResult.points || 0,
           gp.name,
-          0, 0, // worldPosition/Points: se calcularia con standings reales
+          worldPos, worldPts,
           nextGp?.name || '', nextGp?.date || ''
         );
 

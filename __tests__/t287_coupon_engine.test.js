@@ -423,3 +423,163 @@ describe('T287 — coupon_engine', () => {
     });
   });
 });
+
+
+// vi_coverage branches coupon_engine
+describe('vi_coverage coupon_engine', () => {
+  const { db } = makeMockDb();
+  beforeEach(() => {
+    __setFirestoreForTests(db);
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  // buildCouponRecord: data=data||{} right side
+  test('buildCouponRecord() no data => defaults (data={} branch)', () => {
+    const c = buildCouponRecord('uid_vi');
+    expect(c.type).toBe('percent');
+    expect(c.status).toBe('active');
+    expect(c.metadata).toEqual({});
+  });
+
+  // code auto-generated (ternary false)
+  test('buildCouponRecord no code => generateCouponCode called (ternary false)', () => {
+    const c = buildCouponRecord('uid_vi', { type: 'fixed', discountAmount: 5 });
+    expect(typeof c.code).toBe('string');
+    expect(c.code.length).toBeGreaterThanOrEqual(4);
+  });
+
+  // truthy branches for fields
+  test('buildCouponRecord with all optional fields => truthy branches', () => {
+    const future = Date.now() + 86400000;
+    const c = buildCouponRecord('uid_vi', {
+      type: 'percent',
+      discountPercent: 20,
+      description: 'Descuento especial',
+      name: 'VIP20',
+      currency: 'USD',
+      expiresAt: future,
+      applicableProducts: ['prod1', 'prod2'],
+      excludedProducts: ['excl1'],
+      metadata: { campaign: 'summer' },
+      maxDiscountAmount: 50,
+      minOrderAmount: 100,
+      maxUses: 200,
+      usesPerContact: 3,
+    });
+    expect(c.description).toBe('Descuento especial');
+    expect(c.currency).toBe('USD');
+    expect(c.expiresAt).toBe(future);
+    expect(c.applicableProducts).toEqual(['prod1', 'prod2']);
+    expect(c.metadata).toEqual({ campaign: 'summer' });
+  });
+
+  // metadata non-object => {}
+  test('buildCouponRecord metadata non-object => {}', () => {
+    const c = buildCouponRecord('uid_vi', { metadata: 'bad' });
+    expect(c.metadata).toEqual({});
+  });
+
+  // scheduledAt future => status=scheduled
+  test('buildCouponRecord scheduledAt future => status=scheduled', () => {
+    const future = Date.now() + 3600000;
+    const c = buildCouponRecord('uid_vi', { scheduledAt: future });
+    expect(c.status).toBe('scheduled');
+    expect(c.scheduledAt).toBe(future);
+  });
+
+  // validateCoupon opts=opts||{}
+  test('validateCoupon no opts => opts={} default', () => {
+    const coupon = buildCouponRecord('uid_vi', { code: 'VITEST123', status: 'active', maxUses: 100 });
+    coupon.expiresAt = Date.now() + 86400000;
+    const result = validateCoupon(coupon, 50);
+    expect(result).toHaveProperty('valid');
+  });
+
+  // validateCoupon scheduled coupon with scheduledAt > now
+  test('validateCoupon scheduled coupon not yet active => coupon_not_yet_active error', () => {
+    const future = Date.now() + 3600000;
+    const coupon = buildCouponRecord('uid_vi', { code: 'SCHED123', scheduledAt: future });
+    coupon.expiresAt = Date.now() + 86400000;
+    const result = validateCoupon(coupon, 50, {});
+    expect(result.errors).toContain('coupon_not_yet_active');
+  });
+
+  // computeDiscount: percent type with maxDiscountAmount cap
+  test('computeDiscount percent maxDiscountAmount cap => capped at max', () => {
+    const coupon = buildCouponRecord('uid_vi', { code: 'CAPTEST', type: 'percent', discountPercent: 50, maxDiscountAmount: 10 });
+    const discount = computeDiscount(coupon, 100);
+    expect(discount).toBe(10); // 50% of 100 = 50, capped at 10
+  });
+
+  // computeDiscount: fixed type
+  test('computeDiscount fixed type => discountAmount', () => {
+    const coupon = buildCouponRecord('uid_vi', { code: 'FIXED123', type: 'fixed', discountAmount: 15 });
+    const discount = computeDiscount(coupon, 100);
+    expect(discount).toBe(15);
+  });
+
+  // computeDiscount: free_shipping type
+  test('computeDiscount free_shipping type => 0', () => {
+    const coupon = buildCouponRecord('uid_vi', { code: 'SHIP1234', type: 'free_shipping' });
+    const discount = computeDiscount(coupon, 100);
+    expect(discount).toBe(0);
+  });
+
+  // buildRedemptionRecord no data => data={}
+  test('buildRedemptionRecord() no data => defaults', () => {
+    const r = buildRedemptionRecord('uid_vi', 'coupon1');
+    expect(r.contactPhone).toBeNull();
+    expect(r.orderAmount).toBe(0);
+    expect(r.metadata).toEqual({});
+  });
+
+  // buildRedemptionRecord with all fields => truthy branches
+  test('buildRedemptionRecord with all optional fields', () => {
+    const r = buildRedemptionRecord('uid_vi', 'coupon1', {
+      contactPhone: '+5491155550001',
+      contactName: 'Juan',
+      orderId: 'order_123',
+      orderAmount: 150,
+      discountApplied: 30,
+      finalAmount: 120,
+      metadata: { src: 'wa' },
+    });
+    expect(r.contactPhone).toBe('+5491155550001');
+    expect(r.contactName).toBe('Juan');
+    expect(r.orderAmount).toBe(150);
+    expect(r.metadata).toEqual({ src: 'wa' });
+  });
+
+  // buildCouponSummaryText: percent type with maxDiscountAmount
+  test('buildCouponSummaryText percent + maxDiscountAmount => Maximo line', () => {
+    const c = buildCouponRecord('uid_vi', { code: 'PERC1234', type: 'percent', discountPercent: 20, maxDiscountAmount: 50, minOrderAmount: 100 });
+    c.currentUses = 5;
+    c.maxUses = 100;
+    c.expiresAt = Date.now() + 86400000;
+    c.status = 'active';
+    const text = buildCouponSummaryText(c);
+    expect(text).toContain('20%');
+    expect(text).toContain('Maximo');
+    expect(text).toContain('Pedido minimo');
+  });
+
+  // buildCouponSummaryText: fixed type
+  test('buildCouponSummaryText fixed type => Descuento amount line', () => {
+    const c = buildCouponRecord('uid_vi', { code: 'FIX01234', type: 'fixed', discountAmount: 20 });
+    c.currentUses = 0; c.maxUses = 100; c.expiresAt = Date.now() + 86400000; c.status = 'active';
+    const text = buildCouponSummaryText(c);
+    expect(text).toContain('Descuento');
+    expect(text).toContain('fixed');
+  });
+
+  // buildCouponSummaryText: custom type (else branch)
+  test('buildCouponSummaryText custom/bogo type => Tipo especial branch', () => {
+    const c = buildCouponRecord('uid_vi', { code: 'BOGO1234', type: 'bogo' });
+    c.currentUses = 0; c.maxUses = 100; c.expiresAt = Date.now() + 86400000; c.status = 'expired';
+    const text = buildCouponSummaryText(c);
+    expect(text).toContain('Tipo especial');
+    expect(text).toContain('bogo');
+  });
+});

@@ -91,3 +91,98 @@ describe('C-342 B.8 — Política no-US en follow-up 3d (early-return)', () => {
     expect(wouldSkipFollowUp('+5491164431700')).toBe(false);
   });
 });
+
+
+// vi_coverage branches countries/index
+describe('vi_coverage countries/index', () => {
+  const { getCountryConfig, getCountryByPhone, getCountriesWithModule, COUNTRIES } = require('../countries');
+
+  afterEach(() => {
+    delete COUNTRIES['VI_NOSOURCE'];
+    delete COUNTRIES['VI_NOTNULL'];
+    delete COUNTRIES['VI_WADIFF'];
+    delete COUNTRIES['VI_SRC_NOPLANS'];
+    delete COUNTRIES['VI_USES_SRC'];
+  });
+
+  // BID 26: getCountryByPhone(null) -> if (!phone) return FALLBACK
+  test('getCountryByPhone(null) => FALLBACK (truthy for !phone branch)', () => {
+    const result = getCountryByPhone(null);
+    // FALLBACK is COUNTRIES[INTL] which exists
+    expect(result).toBeDefined();
+  });
+
+  test('getCountryByPhone(undefined) => FALLBACK', () => {
+    const result = getCountryByPhone(undefined);
+    expect(result).toBeDefined();
+  });
+
+  // BID 29+30: getCountriesWithModule
+  test('getCountriesWithModule(wa) => array with at least one code', () => {
+    const result = getCountriesWithModule('wa');
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  test('getCountriesWithModule(nonexistent_xyz) => empty array', () => {
+    const result = getCountriesWithModule('nonexistent_xyz');
+    expect(result).toEqual([]);
+  });
+
+  // BID 11: _fallback points to nonexistent source -> if (!source) return cfg
+  test('getCountryConfig _fallback to nonexistent source => returns original cfg', () => {
+    COUNTRIES['VI_NOSOURCE'] = {
+      code: 'VI_NOSOURCE',
+      pricing: { _fallback: 'DOES_NOT_EXIST_XYZ', plans: { basic: { base: null, adic: null } } },
+      bolsas: {}
+    };
+    const result = getCountryConfig('VI_NOSOURCE');
+    expect(result.code).toBe('VI_NOSOURCE');
+    expect(result.pricing._fallbackResolved).toBeUndefined();
+  });
+
+  // BID 14: _fallback set but plansAreNull=false -> if (!plansAreNull) return cfg
+  test('getCountryConfig _fallback but plans not null => original cfg returned', () => {
+    COUNTRIES['VI_NOTNULL'] = {
+      code: 'VI_NOTNULL',
+      pricing: { _fallback: 'INTL', plans: { basic: { base: 100, adic: 10 } } },
+      bolsas: {}
+    };
+    const result = getCountryConfig('VI_NOTNULL');
+    expect(result.pricing._fallbackResolved).toBeUndefined();
+    expect(result.pricing.plans.basic.base).toBe(100);
+  });
+
+  // BIDs 20, 22: wa ternary false branch (wa._fallback !== fallbackKey)
+  test('getCountryConfig _fallback INTL but bolsas.wa._fallback different => wa ternary false', () => {
+    COUNTRIES['VI_WADIFF'] = {
+      code: 'VI_WADIFF',
+      pricing: { _fallback: 'INTL', plans: { basic: { base: null, adic: null } } },
+      bolsas: {
+        wa: { _fallback: 'AR', ranges: [], prices: [] },
+        firma: { _fallback: 'AR', ranges: [], prices: [] }
+      }
+    };
+    const result = getCountryConfig('VI_WADIFF');
+    expect(result.pricing._fallbackResolved).toBe(true);
+    // wa and firma should use fallback branch (cfg.bolsas.wa) since _fallback !== 'INTL'
+    expect(result.bolsas.wa).toBeDefined();
+  });
+
+  // BIDs 15, 17: source has no plans -> false branch of plans ternary
+  test('getCountryConfig fallback source with no plans => uses original pricing.plans', () => {
+    COUNTRIES['VI_SRC_NOPLANS'] = {
+      code: 'VI_SRC_NOPLANS',
+      pricing: { adicEscalonado: false }  // no plans key
+    };
+    COUNTRIES['VI_USES_SRC'] = {
+      code: 'VI_USES_SRC',
+      pricing: { _fallback: 'VI_SRC_NOPLANS', plans: { basic: { base: null, adic: null } } },
+      bolsas: {}
+    };
+    const result = getCountryConfig('VI_USES_SRC');
+    expect(result.pricing._fallbackResolved).toBe(true);
+    // source has no plans -> ternary false -> use pricing.plans
+    expect(result.pricing.plans.basic.base).toBeNull();
+  });
+});

@@ -298,6 +298,12 @@ function _fireBackupCallback(provider) {
   }
 }
 
+// ── Test hook ─────────────────────────────────────────────────────────────────
+function __setPoolsForTests(newPools) {
+  Object.keys(pools).forEach(k => delete pools[k]);
+  Object.assign(pools, newPools);
+}
+
 module.exports = {
   register,
   registerBackup,
@@ -307,5 +313,6 @@ module.exports = {
   getStats,
   getAllStats,
   hasKeys,
-  onBackupActivated
+  onBackupActivated,
+  __setPoolsForTests
 };

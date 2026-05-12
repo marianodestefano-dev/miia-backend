@@ -553,3 +553,183 @@ describe('T289 — crm_engine: contactos CRM + pipeline + scoring', () => {
     expect(text).toContain('farmacia');
   });
 });
+
+
+// vi_coverage branches crm_engine
+describe('vi_coverage crm_engine', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { db } = makeMockDb();
+    setCrmDb(db);
+  });
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  test('buildCrmContact() no data => data={} default branch', () => {
+    const c = buildCrmContact('uid_vi_crm');
+    expect(c.phone).toBe('');
+    expect(c.stage).toBe('lead');
+    expect(c.status).toBe('active');
+  });
+
+  test('buildCrmContact phone not string => empty phone', () => {
+    const c = buildCrmContact('uid_vi_crm', { phone: 123 });
+    expect(c.phone).toBe('');
+  });
+
+  test('buildCrmContact no contactId => auto-generated', () => {
+    const c = buildCrmContact('uid_vi_crm', { phone: '+5491155550001' });
+    expect(typeof c.contactId).toBe('string');
+    expect(c.contactId.length).toBeGreaterThan(0);
+  });
+
+  test('buildCrmContact status=inactive => preserved', () => {
+    const c = buildCrmContact('uid_vi_crm', { status: 'inactive' });
+    expect(c.status).toBe('inactive');
+  });
+
+  test('buildCrmContact notes string => preserved', () => {
+    const c = buildCrmContact('uid_vi_crm', { notes: 'Nota importante' });
+    expect(c.notes).toBe('Nota importante');
+  });
+
+  test('buildCrmContact lastActivityAt number => preserved', () => {
+    const ts = Date.now();
+    const c = buildCrmContact('uid_vi_crm', { lastActivityAt: ts });
+    expect(c.lastActivityAt).toBe(ts);
+  });
+
+  test('buildCrmContact followUpAt number => preserved', () => {
+    const ts = Date.now() + 86400000;
+    const c = buildCrmContact('uid_vi_crm', { followUpAt: ts });
+    expect(c.followUpAt).toBe(ts);
+  });
+
+  test('buildCrmContact metadata object => merged', () => {
+    const c = buildCrmContact('uid_vi_crm', { metadata: { key: 1 } });
+    expect(c.metadata).toEqual({ key: 1 });
+  });
+
+  test('buildCrmContact metadata non-object string => {}', () => {
+    const c = buildCrmContact('uid_vi_crm', { metadata: 'invalid' });
+    expect(c.metadata).toEqual({});
+  });
+
+  test('updatePipelineStage contact.stage not in VALID_TRANSITIONS => invalid_transition', () => {
+    const contact = { stage: 'unknownstage', contactId: 'c1', tags: [] };
+    expect(() => updatePipelineStage(contact, 'lead')).toThrow('invalid_transition');
+  });
+
+  test('computeLeadScore dealValue 1000-9999 => +5 pts branch', () => {
+    const contact = { stage: 'lead', tags: [], activityCount: 0, dealValue: 5000, email: '', company: '', followUpAt: null, leadScore: 10 };
+    const score = computeLeadScore(contact);
+    expect(score).toBeGreaterThanOrEqual(15); // base 10 + deal 5
+  });
+
+  test('buildActivityRecord() no data => note defaults', () => {
+    const a = buildActivityRecord('uid_vi_crm', 'contact_1');
+    expect(a.type).toBe('note');
+    expect(a.body).toBe('');
+    expect(a.performedBy).toBe('system');
+  });
+
+  test('buildActivityRecord metadata object => merged', () => {
+    const a = buildActivityRecord('uid_vi_crm', 'contact_1', { metadata: { src: 'wa' } });
+    expect(a.metadata).toEqual({ src: 'wa' });
+  });
+
+  test('buildActivityRecord metadata non-object => {}', () => {
+    const a = buildActivityRecord('uid_vi_crm', 'contact_1', { metadata: 'bad' });
+    expect(a.metadata).toEqual({});
+  });
+
+  test('buildFollowUpRecord() no data => defaults', () => {
+    const fu = buildFollowUpRecord('uid_vi_crm', 'contact_1');
+    expect(fu.reason).toBe('');
+    expect(fu.channel).toBe('whatsapp');
+    expect(fu.status).toBe('pending');
+  });
+
+  test('buildCrmSummaryText stage not in stageIcons => fallback icon', () => {
+    const contact = { stage: 'custom_stage', name: 'Test', phone: '+123', email: '', company: '', leadScore: 50, source: 'manual', dealValue: 0, tags: [], activityCount: 0, followUpAt: null };
+    const text = buildCrmSummaryText(contact);
+    expect(text).toContain('CUSTOM_STAGE');
+  });
+
+  test('buildCrmSummaryText name falsy => uses phone', () => {
+    const contact = { stage: 'lead', name: '', phone: '+5491155550001', email: '', company: '', leadScore: 10, source: 'manual', dealValue: 0, tags: [], activityCount: 0, followUpAt: null };
+    const text = buildCrmSummaryText(contact);
+    expect(text).toContain('+5491155550001');
+  });
+
+  test('buildCrmSummaryText no company => no company line', () => {
+    const contact = { stage: 'lead', name: 'Juan', phone: '+123', email: '', company: '', leadScore: 10, source: 'manual', dealValue: 0, tags: [], activityCount: 0, followUpAt: null };
+    const text = buildCrmSummaryText(contact);
+    expect(text).not.toContain('company');
+  });
+
+  test('buildCrmSummaryText no phone => no phone line', () => {
+    const contact = { stage: 'lead', name: 'Juan', phone: '', email: '', company: '', leadScore: 10, source: 'manual', dealValue: 0, tags: [], activityCount: 0, followUpAt: null };
+    const text = buildCrmSummaryText(contact);
+    expect(text).toContain('Juan');
+  });
+
+  test('buildCrmSummaryText with email => email line present', () => {
+    const contact = { stage: 'lead', name: 'Ana', phone: '+123', email: 'ana@example.com', company: '', leadScore: 10, source: 'manual', dealValue: 0, tags: [], activityCount: 0, followUpAt: null };
+    const text = buildCrmSummaryText(contact);
+    expect(text).toContain('ana@example.com');
+  });
+
+  test('buildCrmSummaryText dealValue=0 => no deal line', () => {
+    const contact = { stage: 'lead', name: 'Test', phone: '+123', email: '', company: 'Acme', leadScore: 10, source: 'manual', dealValue: 0, tags: ['vip'], activityCount: 1, followUpAt: null };
+    const text = buildCrmSummaryText(contact);
+    expect(text).not.toContain('Deal:');
+  });
+
+  test('buildCrmSummaryText no tags => no tags line', () => {
+    const contact = { stage: 'lead', name: 'Test', phone: '+123', email: '', company: 'Acme', leadScore: 10, source: 'manual', dealValue: 100, tags: [], activityCount: 0, followUpAt: null };
+    const text = buildCrmSummaryText(contact);
+    expect(text).not.toContain('Tags:');
+  });
+
+  test('buildCrmSummaryText with followUpAt => follow-up line', () => {
+    const fu = Date.now() + 86400000;
+    const contact = { stage: 'lead', name: 'Test', phone: '+123', email: '', company: '', leadScore: 10, source: 'manual', dealValue: 0, tags: [], activityCount: 0, followUpAt: fu };
+    const text = buildCrmSummaryText(contact);
+    expect(text).toContain('Follow-up:');
+  });
+
+  test('listContactsByStage stage=null => get all contacts (cond-expr false)', async () => {
+    const result = await listContactsByStage('uid_vi_empty_99', null);
+    expect(Array.isArray(result)).toBe(true);
+  });
+
+  test('listContactsByStage empty uid => [] snap.empty true', async () => {
+    expect(await listContactsByStage('uid_vi_empty_99', 'lead')).toEqual([]);
+  });
+
+  test('listActivitiesByContact empty => [] snap.empty true', async () => {
+    expect(await listActivitiesByContact('uid_vi_empty_99', 'contact_xyz')).toEqual([]);
+  });
+
+  test('getCrmDb falls back to firebase-admin when _db=null', async () => {
+    jest.resetModules();
+    const mockDb = {
+      collection: jest.fn().mockReturnValue({
+        doc: jest.fn().mockReturnValue({
+          collection: jest.fn().mockReturnValue({
+            doc: jest.fn().mockReturnValue({
+              get: jest.fn().mockResolvedValue({ exists: false, data: () => null }),
+            }),
+          }),
+        }),
+      }),
+    };
+    const adminMock = { firestore: jest.fn().mockReturnValue(mockDb) };
+    jest.doMock('firebase-admin', () => adminMock);
+    const crm = require('../core/crm_engine');
+    const result = await crm.getCrmContact('uid', 'contactXYZ');
+    expect(result).toBeNull();
+    expect(adminMock.firestore).toHaveBeenCalled();
+  });
+});

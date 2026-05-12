@@ -408,3 +408,108 @@ describe('buildInventorySummaryText', () => {
     expect(text).toContain('Sin Stock X');
   });
 });
+
+describe('vi_coverage inventory_tracker -- branch gaps', () => {
+  // buildInventoryRecord
+  test('lowStockThreshold negative => DEFAULT (&&-right false)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { lowStockThreshold: -1 });
+    expect(inv.lowStockThreshold).toBe(DEFAULT_LOW_STOCK_THRESHOLD);
+  });
+  test('overstockThreshold zero => DEFAULT (&&-right false)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { overstockThreshold: 0 });
+    expect(inv.overstockThreshold).toBe(1000);
+  });
+  test('metadata non-object => {} (&&-right false)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { metadata: 'bad' });
+    expect(inv.metadata).toEqual({});
+  });
+  test('createdAt provided => preserved (|| left truthy)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { createdAt: 9999999 });
+    expect(inv.createdAt).toBe(9999999);
+  });
+  // buildMovementRecord
+  test('no data arg => data={} (|| right side)', () => {
+    const m = buildMovementRecord(UID, PRODUCT_ID, 'in', 5);
+    expect(m.notes).toBe('');
+    expect(m.previousQuantity).toBeNull();
+    expect(m.referenceId).toBeNull();
+  });
+  test('qty non-number => 0 (typeof false branch)', () => {
+    const m = buildMovementRecord(UID, PRODUCT_ID, 'in', 'bad');
+    expect(m.quantity).toBe(0);
+  });
+  test('qty Infinity => 0 (isFinite false branch)', () => {
+    const m = buildMovementRecord(UID, PRODUCT_ID, 'in', Infinity);
+    expect(m.quantity).toBe(0);
+  });
+  test('previousQuantity number => preserved (true branch)', () => {
+    const m = buildMovementRecord(UID, PRODUCT_ID, 'in', 5, { previousQuantity: 10 });
+    expect(m.previousQuantity).toBe(10);
+  });
+  test('createdAt in data => preserved (|| left truthy)', () => {
+    const m = buildMovementRecord(UID, PRODUCT_ID, 'in', 5, { createdAt: 12345 });
+    expect(m.createdAt).toBe(12345);
+  });
+  // applyMovement
+  test('unreserved type => suma (switch case unreserved)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { quantity: 10 });
+    const result = applyMovement(inv, { type: 'unreserved', quantity: 3 });
+    expect(result.quantity).toBe(13);
+  });
+  test('default case => quantity unchanged (switch default)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { quantity: 20 });
+    const result = applyMovement(inv, { type: 'vi_unknown_type_99', quantity: 5 });
+    expect(result.quantity).toBe(20);
+  });
+  // listMovements
+  test('productId null => no where filter (if productId false branch)', async () => {
+    const m = buildMovementRecord(UID, 'p_vi_test', 'in', 5);
+    setDb(makeMockDb({ movStored: { [m.movementId]: m } }));
+    const r = await listMovements(UID, null);
+    expect(r.length).toBe(1);
+  });
+  test('empty snap => [] (snap.empty true branch)', async () => {
+    setDb(makeMockDb());
+    const r = await listMovements(UID, 'vi_nonexistent_prod_99');
+    expect(r).toEqual([]);
+  });
+  test('opts.limit truthy => slices (|| left truthy)', async () => {
+    const m1 = buildMovementRecord(UID, 'p_vi', 'in', 1, { createdAt: 100 });
+    const m2 = buildMovementRecord(UID, 'p_vi', 'out', 2, { createdAt: 200 });
+    m2.movementId = m2.movementId + '_b_vi';
+    setDb(makeMockDb({ movStored: { [m1.movementId]: m1, [m2.movementId]: m2 } }));
+    const r = await listMovements(UID, null, { limit: 1 });
+    expect(r.length).toBe(1);
+  });
+  // listLowStockItems
+  test('empty snap => [] (snap.empty true branch)', async () => {
+    setDb(makeMockDb());
+    const r = await listLowStockItems('uid_vi_empty_invtk_99');
+    expect(r).toEqual([]);
+  });
+  // buildInventoryText
+  test('productName empty => uses productId (|| right side)', () => {
+    const inv = buildInventoryRecord(UID, 'prod_vi_abc_xyz');
+    const text = buildInventoryText(inv);
+    expect(text).toContain('prod_vi_abc_xyz');
+  });
+  test('overstock alert => Sobrestock text (overstock branch)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { quantity: 1000, overstockThreshold: 500, productName: 'MuchoX' });
+    const text = buildInventoryText(inv);
+    expect(text).toContain('Sobrestock');
+  });
+  test('reservedQuantity = 0 => no Reservado line (> 0 false branch)', () => {
+    const inv = buildInventoryRecord(UID, PRODUCT_ID, { quantity: 10, productName: 'Y' });
+    const text = buildInventoryText(inv);
+    expect(text).not.toContain('Reservado');
+  });
+  // firebase-admin fallback
+  test('_db || require firebase-admin right side (fallback)', async () => {
+    jest.resetModules();
+    const adminMock = { firestore: jest.fn().mockReturnValue(makeMockDb()) };
+    jest.doMock('firebase-admin', () => adminMock);
+    const { getInventory: getInv } = require('../core/inventory_tracker');
+    const result = await getInv(UID, 'prod_xyz');
+    expect(result).toBeNull();
+  });
+});
