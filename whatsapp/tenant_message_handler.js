@@ -80,6 +80,8 @@ const { resolveV2ChatType, loadVoiceDNAForGroup, isV2EligibleUid } = require('..
 const mmcDetector = require('../core/mmc/episode_detector');
 // C-446-FIX-ADN §C — Re-engagement detector + auditor (Bug 1)
 const reEngagement = require('../core/re_engagement');
+// R15-B — Anti-spam cooldown alertas contactos desconocidos (IDEA #027)
+const unknownAlertCooldown = require('../core/unknown_alert_cooldown');
 // C-446-FIX-ADN §B.2 — Probadita REAL detector + opt-in (Bug 2 v3 conceptual)
 const probaditaReal = require('../core/probadita_real');
 const { splitBySubregistro } = require('../core/split_smart_heuristic');
@@ -689,16 +691,21 @@ async function handleUnknownContactBlock(ctx, basePhone, phone, messageBody, pus
     }
 
     if (!alertAlreadySent) {
-      // Primera vez — enviar alerta al owner
+      // R15-B: cooldown 24h anti-spam (IDEA #027)
+      const _canAlert = await unknownAlertCooldown.shouldSendAlert(ctx.ownerUid, basePhone);
+      // Primera vez (o fuera del cooldown) — enviar alerta al owner
       const alertMsg = buildUnknownContactAlert(basePhone, messageBody, pushName, { isLid });
       const ownerJid = tenantState.sock?.user?.id;
-      if (ownerJid) {
+      if (_canAlert && ownerJid) {
         try {
           await sendTenantMessage(tenantState, ownerJid, alertMsg);
+          await unknownAlertCooldown.markAlertSent(ctx.ownerUid, basePhone);
           console.log(`${logPrefix} 📩 BLOQUEO PRECAUTORIO: ${isLid ? (pushName || 'LID') : basePhone} — alerta enviada al owner`);
         } catch (e) {
           console.error(`${logPrefix} ❌ Error enviando alerta de desconocido al owner:`, e.message);
         }
+      } else if (!_canAlert) {
+        console.log(`${logPrefix} 🔇 ALERT-COOLDOWN: ${basePhone} — cooldown 24h activo, alerta silenciada`);
       }
 
       await contactRef.set({
