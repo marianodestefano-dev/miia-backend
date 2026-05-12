@@ -17,6 +17,31 @@ const fetch = (...args) => {
 };
 
 const DEFAULT_MODEL = 'gemini-2.5-flash'; // 2.0-flash → 404, 1.5-flash → 404, 2.5-pro → 503
+
+// PB.1 — Alerta cuando Gemini falla 3+ veces seguidas en < 5 min (por uid)
+const FAILURE_WINDOW_MS = 5 * 60 * 1000;
+const FAILURE_THRESHOLD = 3;
+const _consecutiveFailures = new Map(); // uid -> { count, firstFailAt }
+let _sendOwnerAlert = null; // inyectable en tests
+
+function _recordGeminiFailure(uid) {
+  if (!uid) return;
+  const now = Date.now();
+  const entry = _consecutiveFailures.get(uid) || { count: 0, firstFailAt: now };
+  if (now - entry.firstFailAt > FAILURE_WINDOW_MS) {
+    entry.count = 0;
+    entry.firstFailAt = now;
+  }
+  entry.count += 1;
+  _consecutiveFailures.set(uid, entry);
+  if (entry.count >= FAILURE_THRESHOLD && typeof _sendOwnerAlert === 'function') {
+    _sendOwnerAlert(uid, '[PB1-ALERTA] Gemini tuvo ' + entry.count + ' fallos seguidos. MIIA puede estar sin responder.');
+  }
+}
+
+function _recordGeminiSuccess(uid) {
+  if (uid) _consecutiveFailures.delete(uid);
+}
 const RETRY_DELAYS = [8000, 20000, 45000];
 const MAX_RETRIES = 3;
 const FETCH_TIMEOUT_MS = 45000; // 45s default — si Gemini no responde, abortar (previene isProcessing stuck)
@@ -108,6 +133,7 @@ async function callGemini(apiKey, prompt, opts = {}) {
         const data = await response.json();
         const text = extractText(data);
         if (!text) throw new Error('No text in Gemini response');
+        _recordGeminiSuccess(opts.uid); // PB.1
         return text;
       }
 
@@ -154,10 +180,11 @@ async function callGemini(apiKey, prompt, opts = {}) {
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
+        _recordGeminiFailure(opts.uid); // PB.1
         throw new Error(`Gemini timeout after ${timeoutMs/1000}s (${retries} retries exhausted)`);
       }
-      if (attempt === retries) throw err;
-      if (err.message.includes('Gemini API error')) throw err;
+      if (err.message && err.message.includes('Gemini API error')) { _recordGeminiFailure(opts.uid); throw err; } // PB.1
+      if (attempt === retries) { _recordGeminiFailure(opts.uid); throw err; } // PB.1
       console.warn(`[GEMINI] Network error — retry in 5s (${attempt + 1}/${retries}): ${err.message}`);
       await new Promise(r => setTimeout(r, 5000));
     }
@@ -246,5 +273,6 @@ async function callGeminiChat(apiKey, messages, systemPrompt, opts = {}) {
 }
 
 function __setFetchForTests(fn) { _testFetch = fn; }
+function __setAlertFn(fn) { _sendOwnerAlert = fn; }
 
-module.exports = { callGemini, callGeminiChat, __setFetchForTests };
+module.exports = { callGemini, callGeminiChat, __setFetchForTests, __setAlertFn };
