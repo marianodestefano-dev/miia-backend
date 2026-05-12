@@ -13,10 +13,7 @@ const VALID_MODES = ['A', 'B', 'C'];
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() {
-  if (_db) return _db;
-  return admin.firestore();
-}
+function db() { return _db || /* istanbul ignore next */ admin.firestore(); }
 
 function consentRef(uid) {
   return db().collection('users').doc(uid).collection('onboarding_consent').doc('v1');
@@ -72,10 +69,77 @@ async function hasOwnerConsented(uid) {
   }
 }
 
+
+// ── Contact Consent (R22-A C.10) ─────────────────────────────────────────────
+
+const crypto = require('crypto');
+
+const CONSENT_VERSION = 'v1';
+const CONSENT_TTL_MS = 30 * 60 * 1000;
+
+function _contactConsentRef(uid, phone) {
+  return db().collection('owners').doc(uid).collection('consents').doc(phone);
+}
+
+function _consentAuditRef(uid, phone) {
+  return db().collection('owners').doc(uid).collection('consent_audit').doc(phone);
+}
+
+async function requestConsent(uid, phone, dataType) {
+  if (!uid || !phone || !dataType) throw new Error('parametros_requeridos');
+  const token = crypto.randomBytes(16).toString('hex');
+  const expiresAt = new Date(Date.now() + CONSENT_TTL_MS).toISOString();
+  await _contactConsentRef(uid, phone).set({
+    pending: { token, dataType, expiresAt, requestedAt: new Date().toISOString() },
+  }, { merge: true });
+  return { token, expiresAt };
+}
+
+async function recordConsent(uid, phone, token, accepted) {
+  if (!uid || !phone || !token) throw new Error('parametros_requeridos');
+  const snap = await _contactConsentRef(uid, phone).get();
+  const data = snap.exists ? snap.data() : {};
+  const pending = data.pending || {};
+  if (!pending.token || pending.token !== token) throw new Error('token_invalido');
+  if (Date.now() > new Date(pending.expiresAt).getTime()) throw new Error('token_expirado');
+  const ts = new Date().toISOString();
+  const record = { accepted: !!accepted, dataType: pending.dataType, ts, version: CONSENT_VERSION };
+  await _contactConsentRef(uid, phone).set(
+    { accepted: !!accepted, dataType: pending.dataType, ts, version: CONSENT_VERSION, pending: null },
+    { merge: true }
+  );
+  await _consentAuditRef(uid, phone).set({ [ts]: record }, { merge: true });
+  console.log('[CONSENT_MGR] ' + (accepted ? 'ACEPTADO' : 'RECHAZADO') + ' uid=' + uid.slice(0, 8) + ' phone=' + phone.slice(-4));
+  return { ok: true };
+}
+
+async function hasConsent(uid, phone, dataType) {
+  if (!uid || !phone) return false;
+  const snap = await _contactConsentRef(uid, phone).get();
+  if (!snap.exists) return false;
+  const data = snap.data();
+  if (!data.accepted) return false;
+  if (dataType && data.dataType !== dataType) return false;
+  return true;
+}
+
+async function revokeConsent(uid, phone) {
+  if (!uid || !phone) throw new Error('parametros_requeridos');
+  await _contactConsentRef(uid, phone).set({ accepted: false, revokedAt: new Date().toISOString() }, { merge: true });
+  console.log('[CONSENT_MGR] revocado uid=' + uid.slice(0, 8) + ' phone=' + phone.slice(-4));
+  return { ok: true };
+}
+
 module.exports = {
   getOwnerConsent,
   setOwnerConsent,
   hasOwnerConsented,
+  requestConsent,
+  recordConsent,
+  hasConsent,
+  revokeConsent,
   VALID_MODES,
+  CONSENT_VERSION,
+  CONSENT_TTL_MS,
   __setFirestoreForTests,
 };
