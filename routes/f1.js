@@ -98,12 +98,12 @@ module.exports = function createF1Routes({ verifyToken }) {
       const driverDoc = await db().doc(paths.driver(season, driver_id)).get();
       if (!driverDoc.exists) return res.status(404).json({ error: 'Piloto no encontrado' });
 
-      const prefs = { uid, adopted_driver: driver_id, updated_at: new Date().toISOString() };
+      const driver = driverDoc.data();
+      const prefs = { uid, adopted_driver: driver_id, adopted_driver_name: driver.name, updated_at: new Date().toISOString() };
       const validation = validateF1Prefs(prefs);
       if (!validation.valid) return res.status(400).json({ error: validation.error });
 
       await db().doc(paths.f1Prefs(uid)).set(prefs, { merge: true });
-      const driver = driverDoc.data();
       console.log(`[F1-ROUTES] Owner ${uid} adopto piloto: ${driver_id}`);
       res.json({ ok: true, adopted: driver_id, driver_name: driver.name, team: driver.team });
     } catch (err) {

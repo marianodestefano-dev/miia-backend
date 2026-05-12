@@ -58,6 +58,7 @@ jest.mock('firebase-admin', () => {
   });
   fsFn.FieldValue = {
     arrayUnion: () => ({}),
+    arrayRemove: () => ({}),
     increment: () => ({}),
   };
   return { firestore: fsFn };
@@ -88,7 +89,7 @@ beforeEach(() => { reset(); jest.clearAllMocks(); });
 
 describe('F1 R5 fantasy edge cases', () => {
   test('updateOwner con prefs existente y fantasy_total', async () => {
-    globalThis.__mockDocs5['f1_data/2025/drivers/norris'] = { name: 'Norris' };
+    globalThis.__mockDocs5['f1_data/2026/drivers/norris'] = { name: 'Norris' };
     globalThis.__mockDocs5['owners/u/f1_prefs/current'] = { fantasy_total: 100 };
     const r = await fantasy.updateOwnerFantasyScore('u', 'norris', 'gp1', {
       positions: [{ driver_id: 'norris', position: 1 }],
@@ -97,7 +98,7 @@ describe('F1 R5 fantasy edge cases', () => {
     expect(r.total !== undefined).toBe(true);
   });
   test('updateOwner total fallback a points cuando prefs sin fantasy_total', async () => {
-    globalThis.__mockDocs5['f1_data/2025/drivers/d'] = { name: 'D' };
+    globalThis.__mockDocs5['f1_data/2026/drivers/d'] = { name: 'D' };
     globalThis.__mockDocs5['owners/u/f1_prefs/current'] = { other: 'x' };
     const r = await fantasy.updateOwnerFantasyScore('u', 'd', 'gp1', {
       positions: [{ driver_id: 'd', position: 5 }],

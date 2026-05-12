@@ -8,7 +8,7 @@
 const admin = require('firebase-admin');
 const { paths } = require('./f1_schema');
 
-const CURRENT_SEASON = '2025';
+const CURRENT_SEASON = process.env.F1_SEASON || '2026';
 
 /**
  * Obtiene los ultimos N GPs completados con sus resultados.

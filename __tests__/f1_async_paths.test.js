@@ -54,6 +54,7 @@ jest.mock('firebase-admin', () => {
   });
   fsFn.FieldValue = {
     arrayUnion: (...args) => ({ __op: 'arrayUnion', args }),
+    arrayRemove: (...args) => ({ __op: 'arrayRemove', args }),
     increment: (n) => ({ __op: 'increment', n }),
   };
   return { firestore: fsFn };

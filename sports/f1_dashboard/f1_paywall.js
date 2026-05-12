@@ -72,7 +72,7 @@ async function activateF1Addon(ownerUid, paymentId, provider) {
 async function deactivateF1Addon(ownerUid) {
   const db = admin.firestore();
   await db.doc('owners/' + ownerUid).set(
-    { f1_active: false },
+    { f1_active: false, addons: admin.firestore.FieldValue.arrayRemove(F1_ADDON_ID) },
     { merge: true }
   );
   console.log('[F1-PAYWALL] Addon F1 desactivado para ' + ownerUid);

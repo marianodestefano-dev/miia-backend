@@ -13,7 +13,7 @@ const { getGPResults, getDriverStandings, getConstructorStandings } = require('.
 const { sendPostRaceNotifications } = require('./f1_notifications');
 const { paths, validateResult } = require('./f1_schema');
 
-const CURRENT_SEASON = '2025';
+const CURRENT_SEASON = process.env.F1_SEASON || '2026';
 
 /**
  * Ejecuta el cron post-GP.
@@ -39,7 +39,7 @@ async function runPostGPCron(gpId, sendWaMessage) {
     try {
       gpResults = await getGPResults(gpId, CURRENT_SEASON);
       if (gpResults && gpResults.positions && gpResults.positions.length) {
-        const validated = validateResult(gpId, gpResults);
+        const validated = validateResult(gpResults);
         await db.doc(paths.result(CURRENT_SEASON, gpId)).set(validated);
         console.log('[F1-CRON] Resultados del GP guardados: ' + gpResults.positions.length + ' pilotos');
       }
