@@ -460,12 +460,109 @@ async function distillNightly(uid, opts) {
   return result;
 }
 
+// ── Bootstrap 14 dias ─────────────────────────────────────────────────────────
+
+const BOOTSTRAP_DAYS = 14;
+
+/**
+ * Bootstrap retroactivo: crea episodios en Capa 2 para las conversaciones
+ * existentes de los ultimos BOOTSTRAP_DAYS dias. No-op si ya bootstrapped.
+ * @param {string} uid
+ * @param {object} [opts] — { contexto }
+ * @returns {Promise<{episodios_creados: number, skipped?: boolean}>}
+ */
+async function bootstrapMMC(uid, opts) {
+  if (!uid || typeof uid !== 'string') throw new Error('uid requerido');
+
+  const o = opts || {};
+
+  const configRef = db().collection('owners').doc(uid)
+    .collection('mmc_config').doc('config');
+  const configSnap = await configRef.get();
+  if (configSnap.exists && configSnap.data().bootstrapped) {
+    console.log('[MMC] bootstrap ya ejecutado uid=' + uid.slice(0, 8));
+    return { episodios_creados: 0, skipped: true };
+  }
+
+  const convRef = db().collection('owners').doc(uid)
+    .collection('miia_persistent').doc('tenant_conversations');
+  const convSnap = await convRef.get();
+
+  let episodios_creados = 0;
+
+  if (convSnap.exists) {
+    const data = convSnap.data();
+    const conversations = data.conversations || {};
+    const cutoff = Date.now() - BOOTSTRAP_DAYS * 24 * 60 * 60 * 1000;
+
+    for (const phone of Object.keys(conversations)) {
+      const conv = conversations[phone];
+      const history = Array.isArray(conv.history) ? conv.history : [];
+      const recent = history.filter((m) => m && m.timestamp && m.timestamp >= cutoff);
+      if (recent.length === 0) continue;
+
+      const mensajes = recent.map((m) => ({ text: (m.text || m.body || ''), timestamp: m.timestamp }));
+      try {
+        await captureEpisode(uid, phone, mensajes, o.contexto || {});
+        episodios_creados++;
+      } catch (e) {
+        console.error('[MMC] bootstrap episode error phone=' + _phoneHash(phone) + ':', e.message);
+      }
+    }
+  }
+
+  await configRef.set({ bootstrapped: true, bootstrappedAt: new Date().toISOString() }, { merge: true });
+  console.log('[MMC] bootstrap uid=' + uid.slice(0, 8) + ' episodios_creados=' + episodios_creados);
+  return { episodios_creados };
+}
+
+// ── Hard-delete batch ──────────────────────────────────────────────────────────
+
+/**
+ * Hard-delete de episodios cuyo hardDeleteAt ya vencio (>= 72h desde soft-delete).
+ * @param {string} uid
+ * @returns {Promise<{eliminados: number}>}
+ */
+async function processHardDeletes(uid) {
+  if (!uid || typeof uid !== 'string') throw new Error('uid requerido');
+
+  const now = Date.now();
+  let snap;
+  try {
+    snap = await _memoryCol(uid).where('deleted', '==', true).get();
+  } catch (e) {
+    console.error('[MMC] processHardDeletes query error uid=' + uid.slice(0, 8) + ':', e.message);
+    throw e;
+  }
+
+  if (snap.empty) return { eliminados: 0 };
+
+  const batch = db().batch();
+  let count = 0;
+
+  for (const doc of snap.docs) {
+    const ep = doc.data();
+    if (!ep.hardDeleteAt || ep.hardDeleteAt > now) continue;
+    batch.delete(doc.ref);
+    count++;
+  }
+
+  if (count > 0) {
+    await batch.commit();
+    console.log('[MMC] processHardDeletes uid=' + uid.slice(0, 8) + ' hard-deleted=' + count);
+  }
+
+  return { eliminados: count };
+}
+
 module.exports = {
   captureEpisode,
   distillNightly,
   getRelevantMemories,
   requestForgetting,
   buildMemoryContext,
+  bootstrapMMC,
+  processHardDeletes,
   MEMORY_ELIGIBLE_CHAT_TYPES,
   FUTURE_DATE_REGEX,
   REMEMBER_THIS_REGEX,

@@ -304,3 +304,25 @@ describe('T51 §N — Constantes ADN_MIIA / VADEMECUM_RULES exportadas', () => {
     expect(typeof pb.COTIZACION_PROTOCOL).toBe('string');
   });
 });
+
+
+// buildContextSection (R14-B)
+describe('buildContextSection', () => {
+  test('retorna vacio para string vacio', () => {
+    expect(pb.buildContextSection('')).toBe('');
+  });
+  test('retorna vacio para null', () => {
+    expect(pb.buildContextSection(null)).toBe('');
+  });
+  test('retorna vacio para solo espacios', () => {
+    expect(pb.buildContextSection('   ')).toBe('');
+  });
+  test('retorna bloque formateado con contenido valido', () => {
+    const r = pb.buildContextSection('[MEMORIA]ok[/MEMORIA]');
+    expect(r).toContain('CONTEXTO DE MEMORIA EPISODICA');
+    expect(r).toContain('[MEMORIA]ok[/MEMORIA]');
+  });
+  test('retorna vacio para tipo no-string (numero)', () => {
+    expect(pb.buildContextSection(42)).toBe('');
+  });
+});

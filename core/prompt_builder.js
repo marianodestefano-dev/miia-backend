@@ -2714,6 +2714,19 @@ Si el lead pregunta por planes, precios, o funcionalidades específicas:
 - 🚨 ANTI-MENTIRA: NUNCA confirmes acciones que no ejecutaste. Sin tag = no se hizo. NUNCA inventes datos del negocio que no estén en tu cerebro.`;
 }
 
+/**
+ * buildContextSection — formatea el bloque de memoria episodica para inyectar
+ * en el prompt. El caller debe pre-calcular memoryContext via mmc_engine.buildMemoryContext.
+ * @param {string} memoryContext — resultado de buildMemoryContext() (mmc_engine.js)
+ * @returns {string} — bloque formateado, o '' si no hay contexto
+ */
+function buildContextSection(memoryContext) {
+  if (!memoryContext || typeof memoryContext !== 'string' || !memoryContext.trim()) {
+    return '';
+  }
+  return '\n\n## CONTEXTO DE MEMORIA EPISODICA\n' + memoryContext + '\n';
+}
+
 module.exports = {
   // Constantes reutilizables
   ADN_MIIA,           // Backward compatible: ADN con defaults genéricos
@@ -2728,6 +2741,9 @@ module.exports = {
   resolveOwnerFirstName,
   DEFAULT_OWNER_PROFILE,
   MIIA_SALES_PROFILE,
+
+  // MMC integration
+  buildContextSection,
 
   // Dispatcher principal
   buildPrompt,

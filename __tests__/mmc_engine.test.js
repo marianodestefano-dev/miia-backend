@@ -1,9 +1,10 @@
 'use strict';
 
 /**
- * Tests R14-A — core/mmc_engine.js
+ * Tests R14-A/B — core/mmc_engine.js
  * 100% branch coverage: captureEpisode, distillNightly (4 condiciones),
- * getRelevantMemories, requestForgetting, buildMemoryContext.
+ * getRelevantMemories, requestForgetting, buildMemoryContext,
+ * bootstrapMMC, processHardDeletes.
  */
 
 // ── Estado global del mock ─────────────────────────────────────────────────
@@ -12,6 +13,9 @@ let mockSetThrows = false;
 let mockBatchThrows = false;
 let mockQueryThrows = false;
 let mockTrainingSnap = { exists: false, data: () => ({}) };
+let mockConfigSnap = { exists: false, data: () => ({}) };
+let mockConvSnap = { exists: false, data: () => ({}) };
+let mockEpisodeSetThrows = false; // falla solo en miia_memory set (captureEpisode)
 let mockAuditAddThrows = false;
 let mockSnapshotSetThrows = false;
 let mockUpdateThrows = false;
@@ -19,6 +23,7 @@ let mockUpdateThrows = false;
 // ── Firestore mock ─────────────────────────────────────────────────────────
 const mockBatch = {
   update: jest.fn(),
+  delete: jest.fn(),
   commit: jest.fn(() => {
     if (mockBatchThrows) return Promise.reject(new Error('BATCH-ERROR'));
     return Promise.resolve();
@@ -33,11 +38,14 @@ const mockFsMock = {
         doc: (id) => ({
           set: (data, opts) => {
             if (sub === 'mmc_snapshots' && mockSnapshotSetThrows) return Promise.reject(new Error('SNAP-ERROR'));
+            if (sub === 'miia_memory' && mockEpisodeSetThrows) return Promise.reject(new Error('EP-SET-ERROR'));
             if (mockSetThrows) return Promise.reject(new Error('SET-ERROR'));
             return Promise.resolve();
           },
           get: () => {
             if (id === 'training_data') return Promise.resolve(mockTrainingSnap);
+            if (id === 'config') return Promise.resolve(mockConfigSnap);
+            if (id === 'tenant_conversations') return Promise.resolve(mockConvSnap);
             return Promise.resolve({ exists: false });
           },
           update: (fields) => {
@@ -105,8 +113,22 @@ const mockFsMock = {
             },
           }),
           get: () => {
-            if (sub === 'miia_persistent') return Promise.resolve(mockTrainingSnap);
-            return Promise.resolve({ exists: false });
+            // 1-where query: processHardDeletes usa .where('deleted','==',true).get()
+            if (mockQueryThrows) return Promise.reject(new Error('QUERY-ERROR'));
+            const docs = mockMemoryDocs
+              .filter((d) => field === 'deleted' ? d.deleted === val : true)
+              .map((d) => ({
+                data: () => d,
+                ref: {
+                  update: (fields) => {
+                    if (mockUpdateThrows) return Promise.reject(new Error('UPDATE-ERROR'));
+                    Object.assign(d, fields);
+                    return Promise.resolve();
+                  },
+                  delete: () => Promise.resolve(),
+                },
+              }));
+            return Promise.resolve({ empty: docs.length === 0, docs, size: docs.length });
           },
           set: (data, opts) => {
             if (sub === 'mmc_snapshots' && mockSnapshotSetThrows) return Promise.reject(new Error('SNAP-ERROR'));
@@ -134,6 +156,8 @@ const {
   getRelevantMemories,
   requestForgetting,
   buildMemoryContext,
+  bootstrapMMC,
+  processHardDeletes,
   MEMORY_ELIGIBLE_CHAT_TYPES,
   __setFirestoreForTests,
   _phoneHash,
@@ -156,7 +180,11 @@ beforeEach(() => {
   mockAuditAddThrows = false;
   mockSnapshotSetThrows = false;
   mockTrainingSnap = { exists: false, data: () => ({}) };
+  mockConfigSnap = { exists: false, data: () => ({}) };
+  mockConvSnap = { exists: false, data: () => ({}) };
+  mockEpisodeSetThrows = false;
   mockBatch.update.mockClear();
+  mockBatch.delete.mockClear();
   mockBatch.commit.mockClear();
 });
 
@@ -729,6 +757,201 @@ describe('distillNightly', () => {
     const r = await distillNightly(UID);
     expect(r.procesados).toBe(1);
     global.fetch = undefined;
+  });
+});
+
+// ── bootstrapMMC ───────────────────────────────────────────────────────────
+describe('bootstrapMMC', () => {
+  it('lanza si uid nulo', async () => {
+    await expect(bootstrapMMC(null)).rejects.toThrow('uid requerido');
+  });
+
+  it('lanza si uid no string', async () => {
+    await expect(bootstrapMMC(123)).rejects.toThrow('uid requerido');
+  });
+
+  it('retorna skipped si ya bootstrapped', async () => {
+    mockConfigSnap = { exists: true, data: () => ({ bootstrapped: true }) };
+    const r = await bootstrapMMC(UID);
+    expect(r).toEqual({ episodios_creados: 0, skipped: true });
+  });
+
+  it('retorna episodios_creados:0 si convSnap no existe', async () => {
+    mockConvSnap = { exists: false };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(0);
+    expect(r.skipped).toBeUndefined();
+  });
+
+  it('retorna episodios_creados:0 si conversations vacio', async () => {
+    mockConvSnap = { exists: true, data: () => ({ conversations: {} }) };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(0);
+  });
+
+  it('data sin campo conversations -> || {} (linea 495 arm 1)', async () => {
+    mockConvSnap = { exists: true, data: () => ({}) }; // sin campo conversations -> undefined -> || {}
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(0);
+  });
+
+  it('mensaje sin text ni body -> usa "" (linea 504 arm 2)', async () => {
+    const recentTs = Date.now() - 1 * 24 * 60 * 60 * 1000;
+    mockConvSnap = {
+      exists: true,
+      data: () => ({
+        conversations: {
+          [PHONE]: { history: [{ timestamp: recentTs }] }, // sin text ni body
+        },
+      }),
+    };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(1);
+  });
+
+  it('retorna episodios_creados:0 si history muy antigua', async () => {
+    const oldTs = Date.now() - 20 * 24 * 60 * 60 * 1000; // 20 dias atras
+    mockConvSnap = {
+      exists: true,
+      data: () => ({
+        conversations: {
+          [PHONE]: { history: [{ text: 'hola', timestamp: oldTs }] },
+        },
+      }),
+    };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(0);
+  });
+
+  it('crea episodios para mensajes recientes', async () => {
+    const recentTs = Date.now() - 2 * 24 * 60 * 60 * 1000; // 2 dias atras
+    mockConvSnap = {
+      exists: true,
+      data: () => ({
+        conversations: {
+          [PHONE]: { history: [{ text: 'hola', timestamp: recentTs }] },
+        },
+      }),
+    };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(1);
+  });
+
+  it('captureEpisode error no bloquea bootstrap (linea 509)', async () => {
+    const recentTs = Date.now() - 1 * 24 * 60 * 60 * 1000;
+    mockEpisodeSetThrows = true; // solo falla el set de miia_memory (captureEpisode)
+    mockConvSnap = {
+      exists: true,
+      data: () => ({
+        conversations: {
+          [PHONE]: { history: [{ text: 'ok', timestamp: recentTs }] },
+        },
+      }),
+    };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(0); // fallo -> no incremento
+    expect(r.skipped).toBeUndefined();   // pero no fallo toda la funcion
+  });
+
+  it('opts null -> usa defaults (o = {})', async () => {
+    mockConvSnap = { exists: false };
+    const r = await bootstrapMMC(UID, null);
+    expect(r.episodios_creados).toBe(0);
+  });
+
+  it('historia no-array -> usa []', async () => {
+    const recentTs = Date.now() - 1 * 24 * 60 * 60 * 1000;
+    mockConvSnap = {
+      exists: true,
+      data: () => ({
+        conversations: {
+          [PHONE]: { history: 'not-array' }, // no es array
+        },
+      }),
+    };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(0); // history vacia -> sin recientes -> skip
+  });
+
+  it('mensaje con body en vez de text -> usa body', async () => {
+    const recentTs = Date.now() - 1 * 24 * 60 * 60 * 1000;
+    mockConvSnap = {
+      exists: true,
+      data: () => ({
+        conversations: {
+          [PHONE]: { history: [{ body: 'hola desde body', timestamp: recentTs }] },
+        },
+      }),
+    };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(1);
+  });
+
+  it('configSnap.exists pero NO bootstrapped -> procede normalmente', async () => {
+    mockConfigSnap = { exists: true, data: () => ({ bootstrapped: false }) };
+    mockConvSnap = { exists: false };
+    const r = await bootstrapMMC(UID);
+    expect(r.episodios_creados).toBe(0);
+    expect(r.skipped).toBeUndefined();
+  });
+});
+
+// ── processHardDeletes ─────────────────────────────────────────────────────
+describe('processHardDeletes', () => {
+  it('lanza si uid nulo', async () => {
+    await expect(processHardDeletes(null)).rejects.toThrow('uid requerido');
+  });
+
+  it('lanza si uid no string', async () => {
+    await expect(processHardDeletes(123)).rejects.toThrow('uid requerido');
+  });
+
+  it('lanza si query falla', async () => {
+    mockQueryThrows = true;
+    await expect(processHardDeletes(UID)).rejects.toThrow('QUERY-ERROR');
+  });
+
+  it('retorna eliminados:0 cuando no hay episodios con deleted=true', async () => {
+    mockMemoryDocs = [
+      { uid: UID, phone: PHONE, episodeId: 'ep1', deleted: false },
+    ];
+    const r = await processHardDeletes(UID);
+    expect(r.eliminados).toBe(0);
+  });
+
+  it('retorna eliminados:0 cuando episodios deleted pero hardDeleteAt futuro', async () => {
+    mockMemoryDocs = [
+      { uid: UID, phone: PHONE, episodeId: 'ep1', deleted: true, hardDeleteAt: Date.now() + 99999 },
+    ];
+    const r = await processHardDeletes(UID);
+    expect(r.eliminados).toBe(0);
+  });
+
+  it('retorna eliminados:0 cuando episodio deleted pero sin hardDeleteAt', async () => {
+    mockMemoryDocs = [
+      { uid: UID, phone: PHONE, episodeId: 'ep1', deleted: true },
+    ];
+    const r = await processHardDeletes(UID);
+    expect(r.eliminados).toBe(0);
+  });
+
+  it('hard-delete episodios con hardDeleteAt vencido', async () => {
+    mockMemoryDocs = [
+      { uid: UID, phone: PHONE, episodeId: 'ep_old', deleted: true, hardDeleteAt: Date.now() - 1000 },
+    ];
+    const r = await processHardDeletes(UID);
+    expect(r.eliminados).toBe(1);
+    expect(mockBatch.delete).toHaveBeenCalled();
+    expect(mockBatch.commit).toHaveBeenCalled();
+  });
+
+  it('mezcla de vencidos y futuros -> elimina solo los vencidos', async () => {
+    mockMemoryDocs = [
+      { uid: UID, phone: PHONE, episodeId: 'ep_ok', deleted: true, hardDeleteAt: Date.now() - 5000 },
+      { uid: UID, phone: PHONE, episodeId: 'ep_future', deleted: true, hardDeleteAt: Date.now() + 99999 },
+    ];
+    const r = await processHardDeletes(UID);
+    expect(r.eliminados).toBe(1);
   });
 });
 
