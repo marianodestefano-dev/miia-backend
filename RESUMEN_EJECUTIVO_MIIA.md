@@ -1,9 +1,53 @@
 # 🚀 RESUMEN EJECUTIVO MIIA — LEE ESTO PRIMERO DESPUÉS DE CADA COMPACTACIÓN
 
-**ÚLTIMA ACTUALIZACIÓN**: 2026-04-03 (SESIÓN 9 — SISTEMA AFFINITY + DISEÑO INTELIGENCIA)
-**ESTADO**: AFFINITY ✅ | IDENTIDAD ✅ | RESET/HARTAZGO ✅ | FIRESTORE PERSIST ✅
-**URGENCIA**: BAJA — Sistema estable, affinity funcionando, planes completos para Bloques B-E
-**STANDARD DE CÓDIGO**: Google + Amazon + APPLE + NASA (fail loudly, exhaustive logging, desing style, zero silent failures) siempre leyendo completamente (CLAUDE.md) y (RESUMEN_EJECUTIVO_MIIA.md)
+**ÚLTIMA ACTUALIZACIÓN**: 2026-05-12 13:45 UTC (SESIÓN POST-C-398 DIAGNOSIS — PROTOCOLO ROTO)
+**ESTADO**: V2 ✅ | ETAPA 2 ✅ (Migrado a MIIA Personal) | CIMIENTOS PARCIAL ⏳ | **PROTOCOLO RUPTURA 🔴**
+**URGENCIA**: **CRÍTICA** — El sistema de convenciones Vi↔Wi↔Mariano no se está siguiendo. Archivos de estado desactualizados 20-32 días. Debugging no configurado.
+**STANDARD DE CÓDIGO**: Google + Amazon + APPLE + NASA (fail loudly, exhaustive logging, design style, zero silent failures) — **OBLIGACIÓN**: leer CLAUDE.md completo antes de cualquier acción
+
+---
+
+## ⚡ SESIÓN 12 (Mayo 12, 2026 — PROTOCOLO DIAGNOSIS + DEBUGGING SETUP + CHECKPOINT ACTUALIZADO)
+
+**PROBLEMA CRÍTICO DETECTADO:**
+Las instancias Vi/Wi NO estaban cerrando sesión correctamente. Obligación CLAUDE.md §1 no se ejecutaba:
+- ❌ RESUMEN_EJECUTIVO_MIIA.md sin actualizar 32 días (última: 2026-04-03)
+- ❌ MARIANO_SINCERO_LOG_COMPLETO.md sin actualizar 22 días (última: 2026-04-20)
+- ❌ CHECKPOINT_WI_VI.md con gap de 20 días en estado (última: C-377, 2026-04-22)
+- ❌ `.vscode/launch.json` NO EXISTS → debugging en VS Code imposible
+
+**LO QUE SE HIZO:**
+
+### 1. Diagnosticar protocolo roto
+- Leí CHECKPOINT_WI_VI.md completo (521 líneas)
+- Leí CLAUDE.md attachment (protocolos obligatorios)
+- Leí ROADMAP_POST_C398.md (edificio estructural)
+- Identifiqué que las sesiones previas (C-376/C-377) no ejecutaron obligación §1
+
+### 2. Crear `.vscode/launch.json` (CRÍTICO)
+- ✅ Creado con 3 configuraciones:
+  1. `MIIA Backend (Local)` — debug local `server.js`
+  2. `MIIA Backend (Debug)` — con logs DEBUG=*
+  3. `MIIA Backend (Attach)` — attach a puerto 9229
+- ✅ Ahora VS Code muestra opciones de debugging válidas (no más signo `?`)
+
+### 3. Actualizar RESUMEN_EJECUTIVO_MIIA.md (ESTE ARCHIVO)
+- ✅ Cambié header con fecha/estado actual
+- ✅ Agregué esta sección sesión 12
+
+**ESTADO ACTUAL (2026-05-12):**
+```
+Etapa 2 (V2 → MIIA Personal)   ✅ COMPLETADA (commit 01e085a, 2026-05-02)
+Cimientos (roadmap)             ⏳ PARCIAL (C-398.Z + C-403.B cerrados, C-404+ pendiente)
+Debugging de VS Code            ✅ CONFIGURADO (launch.json creado)
+Protocolo Vi↔Wi↔Mariano         🔴 RUPTURA (archivos no se actualizan, sesiones no cierran)
+```
+
+**PRÓXIMAS ACCIONES INMEDIATAS:**
+1. ⏳ Actualizar MARIANO_SINCERO_LOG_COMPLETO.md con sesiones perdidas (22 días)
+2. ⏳ Registrar esta sesión como nueva CARTA (C-XXX)
+3. ⏳ Ejecutar `python scripts/extract_mariano_sincero_smart.py` (obligación CLAUDE.md §1)
+4. ⏳ Reportar estado real a Mariano
 
 ---
 
