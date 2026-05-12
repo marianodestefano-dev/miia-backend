@@ -34,4 +34,4 @@ function cleanStaleConversations(conversations, olderThanDays) {
   return removed;
 }
 
-module.exports = { cleanStaleConversations };
+module.exports = { cleanStaleConversations, _toTimestamp };

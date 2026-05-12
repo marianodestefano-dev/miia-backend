@@ -1,6 +1,6 @@
 'use strict';
 
-const { cleanStaleConversations } = require('../core/stale_conversations');
+const { cleanStaleConversations, _toTimestamp } = require('../core/stale_conversations');
 const dm = require('../core/daily_metrics');
 const { generateWeeklySummary, isMondayMorningCOT } = require('../core/weekly_summary');
 const { getFallbackMessage, shouldUseFallback, FALLBACK_MESSAGES } = require('../core/gemini_prompt_fallback');
@@ -184,5 +184,163 @@ describe('PB.8 gemini_prompt_fallback', () => {
   });
   test('FALLBACK_MESSAGES >= 4 tipos', () => {
     expect(Object.keys(FALLBACK_MESSAGES).length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+// ── COV: branch gaps PB.5-PB.8 ───────────────────────────────────────────────
+
+describe('PB.5 stale_conversations branch gaps', () => {
+  beforeEach(() => jest.spyOn(console, 'log').mockImplementation(() => {}));
+  afterEach(() => jest.restoreAllMocks());
+
+  test('_toTimestamp: Date object (instanceof Date branch)', () => {
+    // Use updatedAt as a Date object so _toTimestamp hits the instanceof Date branch
+    const now = Date.now();
+    const dateObj = new Date(now - 60 * 24 * 60 * 60 * 1000); // 60 days ago → stale
+    const c = { x: { updatedAt: dateObj } };
+    expect(cleanStaleConversations(c)).toBe(1);
+  });
+
+  test('_toTimestamp: string date (truthy string branch)', () => {
+    // lastActivity as ISO string
+    const now = Date.now();
+    const recentStr = new Date(now - 1000).toISOString(); // 1s ago → not stale
+    const oldStr = new Date(now - 40 * 24 * 60 * 60 * 1000).toISOString(); // 40d ago → stale
+    const c = { fresh: { lastActivity: recentStr }, stale: { lastActivity: oldStr } };
+    expect(cleanStaleConversations(c)).toBe(1);
+    expect(c.stale).toBeUndefined();
+    expect(c.fresh).toBeDefined();
+  });
+
+  test('_toTimestamp: null lastActivity (falsy → 0 branch)', () => {
+    // Explicit null lastActivity and no updatedAt
+    const c = { x: { lastActivity: null, updatedAt: null } };
+    // null || null || 0 → _toTimestamp(0) = 0 → ts < cutoff → removed
+    expect(cleanStaleConversations(c)).toBe(1);
+  });
+});
+
+describe('PB.6 daily_metrics error branch', () => {
+  afterEach(() => { const dm2 = require('../core/daily_metrics'); dm2.__setFirestoreForTests(null); dm2.__setAdminForTests(null); jest.restoreAllMocks(); });
+
+  test('incrementMetric Firestore throws → false', async () => {
+    const dm2 = require('../core/daily_metrics');
+    const mockSet = jest.fn().mockRejectedValue(new Error('Firestore down'));
+    const mockDoc = jest.fn().mockReturnValue({ set: mockSet });
+    const mc = jest.fn().mockReturnValue({ doc: mockDoc });
+    const md = jest.fn().mockReturnValue({ collection: mc });
+    const mo = jest.fn().mockReturnValue({ doc: md });
+    dm2.__setFirestoreForTests({ collection: mo });
+    dm2.__setAdminForTests({ firestore: { FieldValue: { increment: (n) => n } } });
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await dm2.incrementMetric('u1', 'messages_received');
+    expect(result).toBe(false);
+  });
+});
+
+describe('PB.7 weekly_summary wa_reconnects branch', () => {
+  test('wa_reconnects > 0 → aparece en texto', () => {
+    const { text } = generateWeeklySummary([{ wa_reconnects: 3 }]);
+    expect(text).toContain('Reconexiones WA: 3');
+  });
+
+  test('isMondayMorningCOT: domingo 23:59 UTC → lunes 18:59 COT → false', () => {
+    // Sunday 23:59 UTC → COT = 18:59, still Sunday (cotDay=0) → false
+    expect(isMondayMorningCOT(new Date('2026-05-10T23:59:00Z'))).toBe(false);
+  });
+
+  test('isMondayMorningCOT: lunes 03:00 UTC → lunes -2 COT (domingo 22:00 COT) → false', () => {
+    // Monday 03:00 UTC → cotHour = 3-5 = -2 → +24=22, cotDay = (1-1+7)%7 = 0 (Sunday) → false
+    expect(isMondayMorningCOT(new Date('2026-05-11T03:00:00Z'))).toBe(false);
+  });
+});
+
+describe('PB.8 shouldUseFallback: string error branch', () => {
+  test('error es string con timeout → true', () => {
+    // error.message is undefined when error is a plain string
+    expect(shouldUseFallback('timeout exceeded')).toBe(true);
+  });
+
+  test('error es string sin keyword → false', () => {
+    expect(shouldUseFallback('ECONNRESET')).toBe(false);
+  });
+
+  test('getFallbackMessage: follow_up_cold', () => {
+    const { getFallbackMessage: gfm, FALLBACK_MESSAGES: fm } = require('../core/gemini_prompt_fallback');
+    expect(gfm('follow_up_cold')).toBe(fm.follow_up_cold);
+  });
+});
+
+
+describe('PB.5 _toTimestamp: falsy branch (line 13)', () => {
+  test('_toTimestamp(null) => 0 (falsy branch)', () => {
+    expect(_toTimestamp(null)).toBe(0);
+  });
+  test('_toTimestamp(undefined) => 0 (falsy branch)', () => {
+    expect(_toTimestamp(undefined)).toBe(0);
+  });
+  test('_toTimestamp(false) => 0 (falsy branch)', () => {
+    expect(_toTimestamp(false)).toBe(0);
+  });
+});
+
+describe('PB.6 getDailyMetrics branch gaps', () => {
+  let mockGet;
+  beforeEach(() => {
+    const dm3 = require('../core/daily_metrics');
+    mockGet = jest.fn().mockResolvedValue({ exists: true, data: () => ({ messages_received: 1 }) });
+    const mockDoc2 = jest.fn().mockReturnValue({ set: jest.fn(), get: mockGet });
+    const mc2 = jest.fn().mockReturnValue({ doc: mockDoc2 });
+    const md2 = jest.fn().mockReturnValue({ collection: mc2 });
+    const mo2 = jest.fn().mockReturnValue({ doc: md2 });
+    dm3.__setFirestoreForTests({ collection: mo2 });
+    dm3.__setAdminForTests({ firestore: { FieldValue: { increment: (n) => n } } });
+  });
+  afterEach(() => {
+    const dm3 = require('../core/daily_metrics');
+    dm3.__setFirestoreForTests(null);
+    dm3.__setAdminForTests(null);
+  });
+
+  test('getDailyMetrics uid null => null', async () => {
+    const dm3 = require('../core/daily_metrics');
+    expect(await dm3.getDailyMetrics(null)).toBeNull();
+  });
+
+  test('getDailyMetrics sin dateKey => usa hoy', async () => {
+    const dm3 = require('../core/daily_metrics');
+    const result = await dm3.getDailyMetrics('u1'); // no dateKey
+    expect(result).not.toBeNull();
+  });
+});
+
+describe('PB.7 isMondayMorningCOT sin argumento', () => {
+  test('isMondayMorningCOT() sin argumento => no lanza error', () => {
+    // Calls with no arg => uses new Date() internally
+    expect(typeof isMondayMorningCOT()).toBe('boolean');
+  });
+});
+
+
+describe('PB.5 stale_conversations: null entry branch (line 26)', () => {
+  beforeEach(() => jest.spyOn(console, 'log').mockImplementation(() => {}));
+  afterEach(() => jest.restoreAllMocks());
+
+  test('conversations[phone] = null => data defaults to {} => ts=0 => stale', () => {
+    // conversations[phone] || {} hits the falsy branch
+    const c = { orphan: null };
+    expect(cleanStaleConversations(c)).toBe(1);
+    expect(c.orphan).toBeUndefined();
+  });
+});
+
+
+describe('PB.6 getTodayDateKey con argumento (branch line 27)', () => {
+  test('getTodayDateKey con fecha especifica => formato correcto', () => {
+    const dm4 = require('../core/daily_metrics');
+    // Pass specific date: 2026-01-15
+    const specific = new Date('2026-01-15T12:00:00Z').getTime();
+    const key = dm4.getTodayDateKey(specific);
+    expect(key).toBe('2026-01-15');
   });
 });

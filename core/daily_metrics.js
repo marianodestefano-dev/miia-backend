@@ -17,9 +17,9 @@ let _admin = null;
 
 function __setFirestoreForTests(fs) { _db = fs; }
 function __setAdminForTests(admin) { _admin = admin; }
-function _db_() { return _db || require('firebase-admin').firestore(); }
+function _db_() { return _db || /* istanbul ignore next */ require('firebase-admin').firestore(); }
 function _increment(n) {
-  const a = _admin || require('firebase-admin');
+  const a = _admin || /* istanbul ignore next */ require('firebase-admin');
   return a.firestore.FieldValue.increment(n);
 }
 

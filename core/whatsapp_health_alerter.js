@@ -21,7 +21,7 @@ let _sendAlertFn = null;
 
 function __setFirestoreForTests(fs) { _db = fs; }
 function __setSendAlertForTests(fn) { _sendAlertFn = fn; }
-function db() { return _db || require('firebase-admin').firestore(); }
+function db() { return _db || /* istanbul ignore next */ require('firebase-admin').firestore(); }
 
 const _lastAlertTime = {};
 

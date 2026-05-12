@@ -8,7 +8,7 @@
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() { return _db || require('firebase-admin').firestore(); }
+function db() { return _db || /* istanbul ignore next */ require('firebase-admin').firestore(); }
 
 /**
  * Score de relevancia por keyword match

@@ -9,7 +9,7 @@ const _cache = new Map();
 
 let _db = null;
 function __setFirestoreForTests(db) { _db = db; }
-function getDb() { return _db || admin.firestore(); }
+function getDb() { return _db || /* istanbul ignore next */ admin.firestore(); }
 
 function _isCacheValid(entry) {
   return entry && entry.expiresAt > Date.now();

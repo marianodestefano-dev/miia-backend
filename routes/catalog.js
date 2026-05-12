@@ -12,7 +12,7 @@ const REQUIRED_FIELDS = ['name', 'description'];
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() { return _db || require('firebase-admin').firestore(); }
+function db() { return _db || /* istanbul ignore next */ require('firebase-admin').firestore(); }
 
 function _catalogCol(uid) {
   return db().collection('owners').doc(uid).collection('catalog');

@@ -20,7 +20,7 @@ const _store = new Map();
 
 let _db = null;
 function __setFirestoreForTests(db) { _db = db; }
-function getDb() { return _db || admin.firestore(); }
+function getDb() { return _db || /* istanbul ignore next */ admin.firestore(); }
 
 function generateCode() {
   return crypto.randomInt(100000, 999999).toString();

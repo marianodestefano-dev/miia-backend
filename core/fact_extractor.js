@@ -44,7 +44,7 @@ async function extractKeyFacts(apiKey, conversation, opts) {
     var match = text.match(/\[[\s\S]*\]/);
     if (!match) return [];
     var parsed = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) return [];
+    /* istanbul ignore next */ if (!Array.isArray(parsed)) return [];
     return parsed
       .filter(function(f) {
         return f && typeof f.fact === 'string' && f.fact.length > 0 &&

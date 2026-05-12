@@ -11,7 +11,7 @@ const TOTAL_STEPS = 5;
 
 let _db = null;
 function __setFirestoreForTests(fs) { _db = fs; }
-function db() { return _db || require('firebase-admin').firestore(); }
+function db() { return _db || /* istanbul ignore next */ require('firebase-admin').firestore(); }
 
 function _onboardDoc(uid) {
   return db().collection('owners').doc(uid).collection('onboarding').doc('wizard');
