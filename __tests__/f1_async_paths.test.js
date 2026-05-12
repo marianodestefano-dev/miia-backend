@@ -141,21 +141,21 @@ describe('F1 R3 updateOwnerFantasyScore', () => {
     expect(r.points).toBe(0);
   });
   test('driver no en positions', async () => {
-    setDriver('2025', 'norris', { name: 'L Norris' });
+    setDriver('2026', 'norris', { name: 'L Norris' });
     const r = await fantasy.updateOwnerFantasyScore('u', 'norris', 'gp1', {
       positions: [{ driver_id: 'verstappen', position: 1 }],
     });
     expect(r.points).toBe(0);
   });
   test('driver P3', async () => {
-    setDriver('2025', 'norris', { name: 'L Norris' });
+    setDriver('2026', 'norris', { name: 'L Norris' });
     const r = await fantasy.updateOwnerFantasyScore('u', 'norris', 'gp1', {
       positions: [{ driver_id: 'norris', position: 3 }],
     });
     expect(r.points).toBeGreaterThan(0);
   });
   test('via driverId fallback', async () => {
-    setDriver('2025', 'd1', { name: 'D1' });
+    setDriver('2026', 'd1', { name: 'D1' });
     const r = await fantasy.updateOwnerFantasyScore('u', 'd1', 'gp1', {
       positions: [{ driverId: 'd1', position: 1 }],
     });

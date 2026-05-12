@@ -12,7 +12,7 @@
 const admin = require('firebase-admin');
 const { paths } = require('./f1_schema');
 
-const CURRENT_SEASON = '2025';
+const CURRENT_SEASON = process.env.F1_SEASON || '2026';
 
 const F1_POINTS = { 1:25, 2:18, 3:15, 4:12, 5:10, 6:8, 7:6, 8:4, 9:2, 10:1 };
 const BONUS_FASTEST_LAP = 2;
@@ -125,7 +125,7 @@ async function getFantasyLeaderboard(season) {
     entries.push({
       uid: prefs.uid,
       driverId: prefs.adopted_driver,
-      driverName: prefs.adopted_driver,
+      driverName: prefs.adopted_driver_name || prefs.adopted_driver,
       total: /* istanbul ignore next */ prefs.fantasy_total || 0,
     });
   }

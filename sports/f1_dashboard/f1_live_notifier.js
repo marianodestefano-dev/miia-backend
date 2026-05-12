@@ -9,7 +9,7 @@ const admin = require('firebase-admin');
 const { getLiveCache } = require('./live_cache');
 const { paths } = require('./f1_schema');
 
-const CURRENT_SEASON = '2025';
+const CURRENT_SEASON = process.env.F1_SEASON || '2026';
 const LAP_RATE_LIMIT = 5;
 
 const _lastNotifiedLap = new Map();
