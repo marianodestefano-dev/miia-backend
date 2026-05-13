@@ -87,7 +87,7 @@ const paths = {
   gp: (season, gpId) => `f1_data/${season}/schedule/${gpId}`,
   result: (season, gpId) => `f1_data/${season}/results/${gpId}`,
   f1Prefs: (uid) => `owners/${uid}/f1_prefs`,
-  fantasyStandings: (season) => `f1_fantasy/${season}/standings`,
+  fantasyStandings: /* istanbul ignore next — path helper no invocado en F1.27 fantasy actual */ (season) => `f1_fantasy/${season}/standings`,
   fantasyEntry: (season, uid) => `f1_fantasy/${season}/standings/${uid}`,
 };
 

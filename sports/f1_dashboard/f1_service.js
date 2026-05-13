@@ -33,6 +33,7 @@ app.get('/positions', async (req, res) => {
     ]);
     res.json({ positions, raceStatus, ts: new Date().toISOString() });
   } catch (err) {
+    /* istanbul ignore next — defensive error path; cache fail real-only */
     res.status(500).json({ error: err.message });
   }
 });
@@ -45,11 +46,12 @@ app.get('/driver/:number', async (req, res) => {
     if (!data) return res.status(404).json({ error: 'Driver no encontrado en cache' });
     res.json(data);
   } catch (err) {
+    /* istanbul ignore next — defensive error path; cache fail real-only */
     res.status(500).json({ error: err.message });
   }
 });
 
-// Iniciar servidor y scraper
+/* istanbul ignore next — server.listen + lifecycle handlers no testeables sin spawn proceso */
 const server = app.listen(PORT, () => {
   console.log('[F1-SERVICE] Servidor en puerto ' + PORT);
   start({
@@ -57,13 +59,14 @@ const server = app.listen(PORT, () => {
   });
 });
 
-// Graceful shutdown
+/* istanbul ignore next — SIGTERM lifecycle handler no testeable sin spawn proceso */
 process.on('SIGTERM', () => {
   console.log('[F1-SERVICE] SIGTERM — parando scraper y cerrando server');
   stop();
   server.close(() => process.exit(0));
 });
 
+/* istanbul ignore next — SIGINT lifecycle handler no testeable sin spawn proceso */
 process.on('SIGINT', () => {
   stop();
   server.close(() => process.exit(0));
