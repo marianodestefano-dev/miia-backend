@@ -26,6 +26,10 @@ const CONTEXTS = Object.freeze({
   ESTOY_MANEJANDO: 'estoy_manejando',
   EXPLICACION_PLAN_BASICO: 'explicacion_plan_basico',
   AGRADECIMIENTO_POST_CIERRE: 'agradecimiento_post_cierre',
+  // Audios Personalizados firmados Mariano 2026-05-12 (NO MIIA CENTER)
+  LEAD_CUESTIONA_IA: 'lead_cuestiona_ia',
+  COMPRA_CONFIRMADA: 'compra_confirmada',
+  DESPEDIDA_CALIDA: 'despedida_calida',
 });
 
 const VALID_CONTEXTS = Object.freeze(Object.values(CONTEXTS));
@@ -68,6 +72,22 @@ function listAvailableContexts() {
       key: CONTEXTS.AGRADECIMIENTO_POST_CIERRE,
       label: 'Agradecimiento post-cierre',
       suggestedScript: 'Muchas gracias por confiar en nosotros. Cualquier duda, escribime directo. Saludos!',
+    },
+    // Audios Personalizados firmados Mariano 2026-05-12
+    {
+      key: CONTEXTS.LEAD_CUESTIONA_IA,
+      label: 'Lead cuestiona si es IA',
+      suggestedScript: 'Hola Dr/Dra, no soy IA, soy [tu nombre]. Disculpa la demora, en este momento estoy subiendo al ascensor / en transporte. En unos minutos te respondo personalmente.',
+    },
+    {
+      key: CONTEXTS.COMPRA_CONFIRMADA,
+      label: 'Compra confirmada',
+      suggestedScript: 'Confirmado! Ya quedo registrado tu pedido. Recibiras los detalles en los proximos minutos. Gracias por tu confianza.',
+    },
+    {
+      key: CONTEXTS.DESPEDIDA_CALIDA,
+      label: 'Despedida calida',
+      suggestedScript: 'Gracias por escribir! Quedo atento por cualquier consulta. Que tengas excelente dia.',
     },
   ];
 }
@@ -176,8 +196,40 @@ async function shouldSendAudio(uid, context, leadIsNew) {
   return { shouldSend: true, audio };
 }
 
+/**
+ * Detecta si el mensaje del lead cuestiona si MIIA es una IA / bot / automatico.
+ * Patrones espanol (case-insens, acentos opcionales):
+ *   - "sos/eres/sois IA/bot/robot/maquina"
+ *   - "esto es automatico / un bot / una maquina"
+ *   - "hablo con una persona / persona real / humano"
+ *   - "es un sistema / programa"
+ *   - "respondes vos / responde una persona"
+ *
+ * @param {string} message
+ * @returns {boolean}
+ */
+function detectLeadQuestionsIA(message) {
+  if (!message || typeof message !== 'string') return false;
+  const m = message.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  // Pattern set: estructurados por proposito
+  const patterns = [
+    /\b(sos|eres|sois|es|son)\s+(un[a]?\s+)?(ia|inteligencia\s+artificial|bot|robot|m[aá]quina|chatbot|sistema)\b/,
+    /\besto\s+es\s+(un[a]?\s+)?(ia|bot|robot|m[aá]quina|sistema|programa|chatbot|automatico|automatizado)\b/,
+    /\b(hablo|estoy\s+hablando|me\s+responde)\s+con\s+(un[a]?\s+)?(ia|bot|persona|humano|m[aá]quina|robot)\b/,
+    /\b(persona|humano)\s+real\b/,
+    /\b(responde|contesta|escribe)\s+(una?\s+)?(persona|humano|bot|robot)\b/,
+    /\beres\s+real\b/,
+    /\bes\s+autom[aá]tico\b/,
+  ];
+  for (const re of patterns) {
+    if (re.test(m)) return true;
+  }
+  return false;
+}
+
 module.exports = {
   listAvailableContexts,
+  detectLeadQuestionsIA,
   registerAudio,
   getAudiosForOwner,
   getAudioForContext,

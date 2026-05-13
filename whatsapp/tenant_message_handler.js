@@ -2656,6 +2656,27 @@ async function handleTenantMessage(uid, ownerUid, role, phone, messageBody, isSe
     }
   }
 
+  // ── P3.3 Audios Personalizados — wire-in (firma Mariano 2026-05-12) ──
+  // Guard: MIIA_OWNER_VOICE_ENABLED=1 + NO MIIA CENTER (tmh_hooks._isEligibleForOwnerVoice).
+  // Trigger: lead cuestiona si MIIA es IA + owner tiene audio para 'lead_cuestiona_ia'.
+  if (contactType === 'lead' && !isSelfChat) {
+    try {
+      const tmhHooks = require('../core/tmh_hooks');
+      const audioResult = await tmhHooks.maybeSendVoiceOnIAQuestion(ctx.ownerUid, messageBody);
+      if (audioResult && audioResult.shouldSend && audioResult.audio && audioResult.audio.fileUrl) {
+        await tenantState.sock.sendMessage(phone, {
+          audio: { url: audioResult.audio.fileUrl },
+          mimetype: 'audio/mp4',
+          ptt: true,
+        });
+        console.log(`${logPrefix} 🎙️ [P3.3] Audio Personalizado lead_cuestiona_ia enviado a ${basePhone}`);
+        return;
+      }
+    } catch (e) {
+      console.warn(`${logPrefix} [P3.3] hook error: ${e.message}`);
+    }
+  }
+
   // ── T92 — Consent guard: si el owner no configuró consent, MIIA no responde a leads ──
   if (!isSelfChat && (contactType === 'lead' || contactType === 'enterprise_lead' || contactType === 'client')) {
     try {

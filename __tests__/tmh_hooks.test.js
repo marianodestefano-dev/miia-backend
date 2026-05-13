@@ -66,6 +66,7 @@ function makeFirestoreDualMock(ownerVoiceData, forgetEpisodes) {
 
 beforeEach(() => {
   delete process.env.TMH_HOOKS_ALL_UIDS;
+  delete process.env.MIIA_OWNER_VOICE_ENABLED;
   ownerVoiceLib.__setFirestoreForTests(null);
   forgetPipeline.__setFirestoreForTests(null);
   embeddingRetrieval.__setFirestoreForTests(null);
@@ -91,34 +92,117 @@ describe('_isEligibleUidForTests', () => {
   });
 });
 
+// ── _isEligibleForOwnerVoice (firma Mariano 2026-05-12) ───────────────────
+
+describe('_isEligibleForOwnerVoice', () => {
+  test('flag MIIA_OWNER_VOICE_ENABLED OFF -> false (cualquier uid)', () => {
+    expect(tmhHooks._isEligibleForOwnerVoiceForTests(OTHER_UID)).toBe(false);
+    expect(tmhHooks._isEligibleForOwnerVoiceForTests(MIIA_CENTER)).toBe(false);
+  });
+  test('uid null -> false', () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    expect(tmhHooks._isEligibleForOwnerVoiceForTests(null)).toBe(false);
+  });
+  test('flag ON + MIIA CENTER -> false (regla dura Mariano)', () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    expect(tmhHooks._isEligibleForOwnerVoiceForTests(MIIA_CENTER)).toBe(false);
+  });
+  test('flag ON + otro uid -> true', () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    expect(tmhHooks._isEligibleForOwnerVoiceForTests(OTHER_UID)).toBe(true);
+  });
+});
+
 // ── maybeSendOwnerVoice ─────────────────────────────────────────────────────
 
 describe('maybeSendOwnerVoice', () => {
-  test('uid no elegible -> shouldSend=false', async () => {
+  test('flag OFF -> shouldSend=false', async () => {
     const r = await tmhHooks.maybeSendOwnerVoice(OTHER_UID, 'saludo_inicial_calido', true);
     expect(r.shouldSend).toBe(false);
   });
 
-  test('uid MIIA CENTER + audio existente + leadIsNew -> shouldSend=true', async () => {
+  test('flag ON + MIIA CENTER -> shouldSend=false (regla dura Mariano)', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
     ownerVoiceLib.__setFirestoreForTests(makeFirestoreDualMock({
       saludo_inicial_calido: { fileUrl: 'https://s/a.mp3', active: true, durationSec: 10 },
     }, []));
     const r = await tmhHooks.maybeSendOwnerVoice(MIIA_CENTER, 'saludo_inicial_calido', true);
+    expect(r.shouldSend).toBe(false);
+  });
+
+  test('flag ON + otro uid + audio existente + leadIsNew -> shouldSend=true', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    ownerVoiceLib.__setFirestoreForTests(makeFirestoreDualMock({
+      saludo_inicial_calido: { fileUrl: 'https://s/a.mp3', active: true, durationSec: 10 },
+    }, []));
+    const r = await tmhHooks.maybeSendOwnerVoice(OTHER_UID, 'saludo_inicial_calido', true);
     expect(r.shouldSend).toBe(true);
     expect(r.audio.fileUrl).toBe('https://s/a.mp3');
   });
 
-  test('uid MIIA CENTER + lead NO nuevo -> shouldSend=false', async () => {
+  test('flag ON + otro uid + lead NO nuevo -> shouldSend=false', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
     ownerVoiceLib.__setFirestoreForTests(makeFirestoreDualMock({
       saludo_inicial_calido: { fileUrl: 'a', active: true, durationSec: 5 },
     }, []));
-    const r = await tmhHooks.maybeSendOwnerVoice(MIIA_CENTER, 'saludo_inicial_calido', false);
+    const r = await tmhHooks.maybeSendOwnerVoice(OTHER_UID, 'saludo_inicial_calido', false);
     expect(r.shouldSend).toBe(false);
   });
 
-  test('context invalido -> shouldSend=false', async () => {
+  test('flag ON + context invalido -> shouldSend=false', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
     ownerVoiceLib.__setFirestoreForTests(makeFirestoreDualMock({}, []));
-    const r = await tmhHooks.maybeSendOwnerVoice(MIIA_CENTER, 'context_imaginario', true);
+    const r = await tmhHooks.maybeSendOwnerVoice(OTHER_UID, 'context_imaginario', true);
+    expect(r.shouldSend).toBe(false);
+  });
+});
+
+// ── maybeSendVoiceOnIAQuestion (firma Mariano 2026-05-12) ──────────────────
+
+describe('maybeSendVoiceOnIAQuestion', () => {
+  test('flag OFF -> shouldSend=false', async () => {
+    const r = await tmhHooks.maybeSendVoiceOnIAQuestion(OTHER_UID, 'sos IA?');
+    expect(r.shouldSend).toBe(false);
+  });
+
+  test('flag ON + MIIA CENTER -> shouldSend=false (regla dura)', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    const r = await tmhHooks.maybeSendVoiceOnIAQuestion(MIIA_CENTER, 'sos IA?');
+    expect(r.shouldSend).toBe(false);
+  });
+
+  test('flag ON + msg null -> shouldSend=false', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    const r = await tmhHooks.maybeSendVoiceOnIAQuestion(OTHER_UID, null);
+    expect(r.shouldSend).toBe(false);
+  });
+
+  test('flag ON + msg no-string -> shouldSend=false', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    const r = await tmhHooks.maybeSendVoiceOnIAQuestion(OTHER_UID, 123);
+    expect(r.shouldSend).toBe(false);
+  });
+
+  test('flag ON + msg sin pattern IA -> shouldSend=false', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    const r = await tmhHooks.maybeSendVoiceOnIAQuestion(OTHER_UID, 'hola, cuanto cuesta el plan?');
+    expect(r.shouldSend).toBe(false);
+  });
+
+  test('flag ON + msg cuestiona IA + audio existe -> shouldSend=true', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    ownerVoiceLib.__setFirestoreForTests(makeFirestoreDualMock({
+      lead_cuestiona_ia: { fileUrl: 'https://s/ia.mp3', active: true, durationSec: 12 },
+    }, []));
+    const r = await tmhHooks.maybeSendVoiceOnIAQuestion(OTHER_UID, 'sos IA?');
+    expect(r.shouldSend).toBe(true);
+    expect(r.audio.fileUrl).toBe('https://s/ia.mp3');
+  });
+
+  test('flag ON + msg cuestiona IA + audio NO existe -> shouldSend=false', async () => {
+    process.env.MIIA_OWNER_VOICE_ENABLED = '1';
+    ownerVoiceLib.__setFirestoreForTests(makeFirestoreDualMock({}, []));
+    const r = await tmhHooks.maybeSendVoiceOnIAQuestion(OTHER_UID, 'eres un bot?');
     expect(r.shouldSend).toBe(false);
   });
 });

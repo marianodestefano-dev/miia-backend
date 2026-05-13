@@ -36,12 +36,22 @@ const ownerVoiceLib = require('./owner_voice_library');
 
 const MIIA_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
 
-// Guard ETAPA 1: solo MIIA CENTER por default. Mariano firma para
-// ampliar a Personal o tenants externos.
+// Guard ETAPA 1 forget pipeline: solo MIIA CENTER por default.
 function _isEligibleUid(uid) {
   if (!uid) return false;
   if (process.env.TMH_HOOKS_ALL_UIDS === 'true') return true;
   return uid === MIIA_CENTER_UID;
+}
+
+// Guard Owner Voice (firma Mariano 2026-05-12 ~22:00 COT):
+//   "MIIA CENTER NO DEBE ENVIAR AUDIOS DE MI!!! JAMAS"
+// -> MIIA CENTER NO es elegible para Owner Voice. Cualquier otro owner SI.
+// Flag MIIA_OWNER_VOICE_ENABLED=1 requerido para activar (default OFF).
+function _isEligibleForOwnerVoice(uid) {
+  if (!uid) return false;
+  if (process.env.MIIA_OWNER_VOICE_ENABLED !== '1') return false;
+  if (uid === MIIA_CENTER_UID) return false; // Regla dura firma Mariano.
+  return true;
 }
 
 /**
@@ -54,12 +64,42 @@ function _isEligibleUid(uid) {
  * @returns {Promise<{shouldSend, audio}>}
  */
 async function maybeSendOwnerVoice(uid, context, leadIsNew) {
-  if (!_isEligibleUid(uid)) return { shouldSend: false, audio: null };
+  if (!_isEligibleForOwnerVoice(uid)) return { shouldSend: false, audio: null };
   try {
     return await ownerVoiceLib.shouldSendAudio(uid, context, leadIsNew);
   } catch (e) {
     /* istanbul ignore next */
     console.warn('[TMH-HOOKS] maybeSendOwnerVoice error: ' + e.message);
+    return { shouldSend: false, audio: null };
+  }
+}
+
+/**
+ * Detecta si el lead cuestiona si MIIA es IA + si owner tiene audio para
+ * el contexto LEAD_CUESTIONA_IA, retorna { shouldSend, audio }.
+ *
+ * Guard: NO MIIA CENTER (firma Mariano 2026-05-12). MIIA_OWNER_VOICE_ENABLED=1 requerido.
+ *
+ * @param {string} uid
+ * @param {string} leadMessage
+ * @returns {Promise<{shouldSend, audio}>}
+ */
+async function maybeSendVoiceOnIAQuestion(uid, leadMessage) {
+  if (!_isEligibleForOwnerVoice(uid)) return { shouldSend: false, audio: null };
+  if (!leadMessage || typeof leadMessage !== 'string') {
+    return { shouldSend: false, audio: null };
+  }
+  if (!ownerVoiceLib.detectLeadQuestionsIA(leadMessage)) {
+    return { shouldSend: false, audio: null };
+  }
+  try {
+    // Para este trigger, leadIsNew se considera true (el cuestionamiento "soy IA?"
+    // tipicamente viene del lead en sus primeros mensajes).
+    const ctx = ownerVoiceLib.CONTEXTS.LEAD_CUESTIONA_IA;
+    return await ownerVoiceLib.shouldSendAudio(uid, ctx, true);
+  } catch (e) {
+    /* istanbul ignore next */
+    console.warn('[TMH-HOOKS] maybeSendVoiceOnIAQuestion error: ' + e.message);
     return { shouldSend: false, audio: null };
   }
 }
@@ -106,9 +146,15 @@ function _isEligibleUidForTests(uid) {
   return _isEligibleUid(uid);
 }
 
+function _isEligibleForOwnerVoiceForTests(uid) {
+  return _isEligibleForOwnerVoice(uid);
+}
+
 module.exports = {
   maybeSendOwnerVoice,
+  maybeSendVoiceOnIAQuestion,
   maybeHandleForget,
   _isEligibleUidForTests,
+  _isEligibleForOwnerVoiceForTests,
   MIIA_CENTER_UID,
 };
