@@ -18,17 +18,30 @@ describe('T54 §A — isV2EligibleUid', () => {
   test('Personal UID → true (etapa 2 firma 2026-05-02)', () => {
     expect(v.isV2EligibleUid(v.OWNER_PERSONAL_UID)).toBe(true);
   });
-  test('UID random → false', () => {
-    expect(v.isV2EligibleUid('random_xyz')).toBe(false);
+  test('UID random → true (firma Mariano 2026-05-12 23:05 -- TODAS las MIIAs)', () => {
+    expect(v.isV2EligibleUid('random_xyz')).toBe(true);
   });
   test('null → false', () => {
     expect(v.isV2EligibleUid(null)).toBe(false);
   });
+  test('empty string → false', () => {
+    expect(v.isV2EligibleUid('')).toBe(false);
+  });
+  test('non-string → false', () => {
+    expect(v.isV2EligibleUid(123)).toBe(false);
+    expect(v.isV2EligibleUid({})).toBe(false);
+  });
 });
 
 describe('T54 §B — resolveV2ChatType', () => {
-  test('UID random NO eligible → unknown', () => {
-    expect(v.resolveV2ChatType({ uid: 'random_other_owner', contactType: 'lead' })).toBe('unknown');
+  test('UID random + contactType lead → lead (firma Mariano 2026-05-12 23:05 fallback Personal branching)', () => {
+    expect(v.resolveV2ChatType({ uid: 'random_other_owner', contactType: 'lead' })).toBe('lead');
+  });
+  test('UID random + contactType desconocido → unknown', () => {
+    expect(v.resolveV2ChatType({ uid: 'random_other_owner', contactType: 'foobar' })).toBe('unknown');
+  });
+  test('UID null → unknown', () => {
+    expect(v.resolveV2ChatType({ uid: null, contactType: 'lead' })).toBe('unknown');
   });
   test('isSelfChat true + UID CENTER → owner_selfchat', () => {
     expect(v.resolveV2ChatType({ uid: v.MIIA_CENTER_UID, isSelfChat: true })).toBe('owner_selfchat');

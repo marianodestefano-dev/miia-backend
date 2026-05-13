@@ -215,20 +215,23 @@ console.log('INY-2 — RF#8 admite IA en chat con lead → CRÍTICO');
 console.log('');
 
 // ════════════════════════════════════════════════════════════════
-// INY-3 — GUARD UID etapa 2: CENTER y Personal son V2-eligible. Random NO.
+// INY-3 — GUARD UID firma viva Mariano 2026-05-12 ~23:05 COT: V2 a TODAS las MIIAs.
+//   "ACTIVENLO CON MIIACENTER Y PARA TODAS LAS OTRAS MIIAS (INCLUYENDO MI MIIA PERSONAL)"
+// SUPERSEDE temporal Doctrina 3 Etapas §2-bis. Cualquier UID valido → V2 eligible.
+// CENTER usa seed CENTER; otros tenants usan branching Personal (fallback default).
 // ════════════════════════════════════════════════════════════════
-console.log('INY-3 — GUARD UID etapa 2: CENTER + Personal eligible, random unknown');
+console.log('INY-3 — GUARD UID firma 2026-05-12: CENTER + Personal + cualquier UID valido eligible');
 {
-  // 3.1 — isV2EligibleUid: CENTER y Personal ambos true
+  // 3.1 — isV2EligibleUid: CENTER, Personal, y cualquier UID valido true
   check('INY3.1 isV2EligibleUid(CENTER) → true', isV2EligibleUid(MIIA_CENTER_UID) === true, `got: ${isV2EligibleUid(MIIA_CENTER_UID)}`);
-  check('INY3.2 isV2EligibleUid(PERSONAL bq2) → true (etapa 2)', isV2EligibleUid(OWNER_PERSONAL_UID) === true, `got: ${isV2EligibleUid(OWNER_PERSONAL_UID)}`);
-  check('INY3.3 isV2EligibleUid(random uid) → false', isV2EligibleUid('xyz123randomuid') === false, `got: ${isV2EligibleUid('xyz123randomuid')}`);
+  check('INY3.2 isV2EligibleUid(PERSONAL bq2) → true', isV2EligibleUid(OWNER_PERSONAL_UID) === true, `got: ${isV2EligibleUid(OWNER_PERSONAL_UID)}`);
+  check('INY3.3 isV2EligibleUid(random uid) → true (firma 23:05 TODAS las MIIAs)', isV2EligibleUid('xyz123randomuid') === true, `got: ${isV2EligibleUid('xyz123randomuid')}`);
   check('INY3.4 isV2EligibleUid(undefined) → false', isV2EligibleUid(undefined) === false, `got: ${isV2EligibleUid(undefined)}`);
   check('INY3.5 isV2EligibleUid(null) → false', isV2EligibleUid(null) === false, `got: ${isV2EligibleUid(null)}`);
 
-  // 3.2 — random UID sigue dando 'unknown'
+  // 3.2 — random UID con contactType valido → branching Personal default
   const r3 = resolveV2ChatType({ uid: 'random_other_owner', contactType: 'client', basePhone: '573009998877' });
-  check('INY3.6 resolveV2ChatType(uid=random, client) → unknown', r3 === 'unknown', `got: ${r3}`);
+  check('INY3.6 resolveV2ChatType(uid=random, client) → client (fallback Personal branching)', r3 === 'client', `got: ${r3}`);
 
   // 3.3 — SEPARACION DOMINIOS: CENTER NO mezcla family/equipo/ale (esos son de Personal)
   const r4 = resolveV2ChatType({ uid: MIIA_CENTER_UID, contactType: 'familia', basePhone: '5491164431700' });

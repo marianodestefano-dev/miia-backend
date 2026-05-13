@@ -196,16 +196,27 @@ function extractByHeader(fullText, header) {
 }
 
 /**
- * Determina si el UID es elegible para V2 wire-in (etapa 1: SOLO MIIA CENTER).
- * Firma C-388 D.1: ETAPA 1 = MIIA CENTER. ETAPA 2 (firma futura "pasá V2 a mi personal")
- * cambiará este guard a aceptar también OWNER_PERSONAL_UID.
+ * Determina si el UID es elegible para V2 wire-in.
+ *
+ * Firma viva Mariano 2026-05-12 ~23:05 COT (verbatim):
+ *   "ACTIVENLO CON MIIACENTER Y PARA TODAS LAS OTRAS MIIAS (INCLUYENDO MI MIIA PERSONAL)"
+ *   Razon: "yo no voy a usar a miia por ahora, asi que mejor que Vi lo deje listo todo
+ *           para cuando yo pueda probarlo completo"
+ *
+ * SUPERSEDE temporal de la Doctrina 3 Etapas §2-bis CLAUDE.md. Cualquier UID valido
+ * es elegible para V2. Tenants no-CENTER usan branching personal (seed default Mariano
+ * hasta que tengan seed propia configurada en futuro).
+ *
+ * Historial:
+ *   - C-388 D.1 (etapa 1): solo MIIA CENTER.
+ *   - 2026-05-02 ~08:48 (etapa 2): + OWNER_PERSONAL_UID.
+ *   - 2026-05-12 ~23:05 (firma actual): TODAS las MIIAs.
  *
  * @param {string} uid
  * @returns {boolean}
  */
 function isV2EligibleUid(uid) {
-  // Etapa 2 §2-bis (firma Mariano 2026-05-02 08:48 COT) -- Personal habilitado.
-  return uid === MIIA_CENTER_UID || uid === OWNER_PERSONAL_UID;
+  return typeof uid === 'string' && uid.length > 0;
 }
 
 /**
@@ -254,7 +265,9 @@ function resolveV2ChatType(opts) {
     }
   }
 
-  if (uid === OWNER_PERSONAL_UID) {
+  // Personal + cualquier otro UID (firma Mariano 2026-05-12 23:05 -- TODAS las MIIAs).
+  // Tenants futuros heredan branching Personal hasta que tengan seed propia configurada.
+  if (uid === OWNER_PERSONAL_UID || (typeof uid === 'string' && uid.length > 0)) {
     if (basePhone && basePhone === ALE_PHONE) return 'ale_pareja';
     switch (contactType) {
       case 'family':

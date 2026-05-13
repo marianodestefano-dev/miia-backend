@@ -104,12 +104,14 @@ function buildVoiceV2Block(args) {
     //   2. Si context.uid ausente → fallback al marker del profile.
     //      * Motivo: en paths tipo miia_lead el caller pasa MIIA_SALES_PROFILE
     //        directo, sin merge. El marker es confiable ahí.
-    // Determinar dominio: CENTER, PERSONAL u otro.
+    // Determinar dominio: CENTER, PERSONAL u otro tenant.
+    // Firma viva Mariano 2026-05-12 ~23:05 COT: V2 activo para TODAS las MIIAs.
+    // CENTER -> seed CENTER. Personal + cualquier otro tenant -> seed Personal (hasta
+    // que cada tenant configure su seed propia en el futuro).
     let domain = 'unknown';
     if (context && typeof context.uid === 'string' && context.uid.length > 0) {
       if (context.uid === MIIA_CENTER_UID) domain = 'center';
-      else if (context.uid === OWNER_PERSONAL_UID) domain = 'personal';
-      else if (!isV2EligibleUid(context.uid)) return null; // tenant random no eligible
+      else if (isV2EligibleUid(context.uid)) domain = 'personal';
     } else {
       // Fallback: marker del profile (sin uid). Asume CENTER si marker positivo, sino unknown.
       if (isMiiaCenterProfile(ownerProfile)) domain = 'center';
