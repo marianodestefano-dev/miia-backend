@@ -15993,12 +15993,18 @@ app.post('/api/mercadopago/webhook', express.json(), publicSchemas.validate(publ
           plan, plan_start_date: now, plan_end_date: endDate, payment_status: 'active', payment_method: 'mercadopago'
         });
         console.log(`[MP] Plan ${plan} activado para ${uid} (payment ${paymentId})`);
+        // A.3 firma Mariano 2026-05-02: subscriptions_manager.addProductPermission
+        // hace dual-write users/{uid}/subscriptions/miia + product_permissions.
+        try {
+          const subscriptionsManager = require('./core/subscriptions_manager');
+          await subscriptionsManager.addProductPermission(uid, 'miia', plan, endDate.toISOString());
+          console.log(`[MP] subscriptions_manager.addProductPermission uid=${uid} producto=miia`);
+        } catch (subErr) {
+          console.error('[MP] subscriptions_manager fail:', subErr.message);
+        }
         // VI-DASH-4: cross-grant addons GRATIS al activar MIIA principal
         try {
           const productPerms = require('./core/product_permissions');
-          await productPerms.setProductPermission(uid, 'miia', {
-            active: true, plan, expiresAt: endDate.toISOString(), source: 'standalone',
-          });
           await productPerms.grantMiiaIncludedAddons(uid, plan);
           console.log(`[VI-DASH-4] Cross-grant addons GRATIS para ${uid} (plan ${plan})`);
         } catch (xgErr) {
