@@ -239,8 +239,9 @@ module.exports = function createF1Routes({ verifyToken }) {
       res.set('X-MIIAF1-Session', result.sessionKey != null ? String(result.sessionKey) : '');
       res.set('X-MIIAF1-Drivers', String(result.driverCount));
       return res.send(result.svg);
-      /* istanbul ignore next — defensive: getCircuitMeta + buildLiveCircuitSvg ya manejan errors */
+    /* istanbul ignore next — defensive: getCircuitMeta + buildLiveCircuitSvg ya manejan errors */
     } catch (err) {
+      /* istanbul ignore next */
       return res.status(500).json({ error: err.message });
     }
   });

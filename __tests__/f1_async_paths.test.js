@@ -76,6 +76,12 @@ const paywall = require('../sports/f1_dashboard/f1_paywall');
 beforeEach(() => reset());
 
 describe('F1 R3 hasF1Addon', () => {
+  test('ownerUid falsy → false sin DB lookup', async () => {
+    expect(await paywall.hasF1Addon(null)).toBe(false);
+    expect(await paywall.hasF1Addon('')).toBe(false);
+    expect(await paywall.hasF1Addon(undefined)).toBe(false);
+  });
+
   test('owner sin doc false', async () => {
     expect(await paywall.hasF1Addon('uid-no')).toBe(false);
   });
@@ -133,6 +139,23 @@ describe('F1 R3 requireF1Addon middleware', () => {
     const next = jest.fn();
     paywall.requireF1Addon(req, res, next);
     setTimeout(() => { expect(res.status).toHaveBeenCalledWith(402); done(); }, 30);
+  });
+
+  test('req sin user.uid → 401 No autenticado', () => {
+    const req = { user: {} };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+    paywall.requireF1Addon(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  test('req sin user → 401', () => {
+    const req = {};
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+    paywall.requireF1Addon(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(401);
   });
 });
 

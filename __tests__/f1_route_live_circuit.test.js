@@ -144,4 +144,22 @@ describe('GET /api/f1/live/circuit/:circuit_id — SVG live', () => {
     const args = circuitLiveService.buildLiveCircuitSvg.mock.calls[0][0];
     expect(args.adoptedDriverNum).toBeNull();
   });
+
+  test('request sin uid (auth optional/anon) → adoptedDriverNum null sin doc fetch', async () => {
+    // Build app con auth que NO setea req.user.uid
+    const anonAuth = (req, res, next) => { req.user = {}; next(); };
+    const anonApp = express();
+    anonApp.use(express.json());
+    anonApp.use('/api/f1', createF1Routes({ verifyToken: anonAuth }));
+    circuitLiveService.buildLiveCircuitSvg.mockResolvedValue({
+      svg: '<svg/>',
+      isLive: false,
+      sessionKey: null,
+      driverCount: 0,
+    });
+    const r = await request(anonApp).get('/api/f1/live/circuit/monaco');
+    expect(r.status).toBe(200);
+    const args = circuitLiveService.buildLiveCircuitSvg.mock.calls[0][0];
+    expect(args.adoptedDriverNum).toBeNull();
+  });
 });
