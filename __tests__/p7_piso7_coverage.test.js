@@ -285,16 +285,16 @@ describe("P7 -- ludomiia_host", () => {
 // ---------------------------------------------------------------------------
 describe("P7 -- addon_billing", () => {
   test("createAddonCheckout: addon invalido -> throw", async () => {
-    await expect(ab.createAddonCheckout("uid1", "chess_addon", "paddle")).rejects.toThrow("Invalid addon");
+    await expect(ab.createAddonCheckout("uid1", "chess_addon", "paypal")).rejects.toThrow("Invalid addon");
   });
   test("createAddonCheckout: provider invalido -> throw", async () => {
     await expect(ab.createAddonCheckout("uid1", "ludo_miia", "stripe")).rejects.toThrow("Invalid provider");
   });
-  test("createAddonCheckout: valid paddle -> success", async () => {
+  test("createAddonCheckout: valid paypal -> success", async () => {
     ab.__setFirestoreForTests(makeFirestoreSimple());
-    const r = await ab.createAddonCheckout("uid1", "ludo_miia", "paddle");
+    const r = await ab.createAddonCheckout("uid1", "ludo_miia", "paypal");
     expect(r.addonId).toBe("ludo_miia");
-    expect(r.provider).toBe("paddle");
+    expect(r.provider).toBe("paypal");
     expect(r.amountUSD).toBe(5);
     expect(r.status).toBe("pending");
   });

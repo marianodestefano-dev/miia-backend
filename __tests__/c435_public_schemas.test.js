@@ -7,18 +7,18 @@
  *    seguridad in-line. Mariano DeStefano, 2026-04-27."
  * "Seguridad in-line" cubre Zod + validación endpoints públicos.
  *
- * 5 schemas validados (criterio §A C-435: expuestos a internet SIN auth Firebase):
- *   1. paddleWebhookSchema       — passthrough (§F C-435)
- *   2. mercadopagoWebhookSchema  — passthrough (§F C-435)
- *   3. instagramWebhookSchema    — passthrough (§F C-435)
- *   4. enterpriseLeadSchema      — strict (form contacto)
- *   5. consentAdnSchema          — strict (consent owner)
+ * 4 schemas validados (criterio §A C-435: expuestos a internet SIN auth Firebase):
+ *   1. mercadopagoWebhookSchema  — passthrough (§F C-435)
+ *   2. instagramWebhookSchema    — passthrough (§F C-435)
+ *   3. enterpriseLeadSchema      — strict (form contacto)
+ *   4. consentAdnSchema          — strict (consent owner)
+ *
+ * Paddle removido 2026-05-12 (firma Mariano "Paddle FUERA").
  */
 
 'use strict';
 
 const {
-  paddleWebhookSchema,
   mercadopagoWebhookSchema,
   instagramWebhookSchema,
   enterpriseLeadSchema,
@@ -26,50 +26,7 @@ const {
   validate,
 } = require('../core/validation/public_schemas');
 
-// ════════════════════════════════════════════════════════════════════
-// §A — paddleWebhookSchema (passthrough Stripe-like)
-// ════════════════════════════════════════════════════════════════════
-
-describe('C-435 §A — paddleWebhookSchema (passthrough)', () => {
-  test('A.1 — payload válido transaction.completed PASA', () => {
-    const valid = {
-      event_type: 'transaction.completed',
-      occurred_at: '2026-04-27T22:00:00Z',
-      data: { custom_data: { uid: 'abc', plan: 'monthly', type: 'subscription' } },
-    };
-    expect(paddleWebhookSchema.safeParse(valid).success).toBe(true);
-  });
-
-  test('A.2 — payload sin event_type FALLA', () => {
-    const r = paddleWebhookSchema.safeParse({ data: {} });
-    expect(r.success).toBe(false);
-  });
-
-  test('A.3 — event_type vacío FALLA (min 1)', () => {
-    const r = paddleWebhookSchema.safeParse({ event_type: '', data: {} });
-    expect(r.success).toBe(false);
-  });
-
-  test('A.4 — campos extra de Paddle PASAN (passthrough §F)', () => {
-    const valid = {
-      event_type: 'transaction.completed',
-      data: {},
-      // Campos hipotéticos versión nueva Paddle:
-      paddle_version: '2',
-      new_field_xyz: { foo: 'bar' },
-      occurred_at: '2026-04-27T22:00:00Z',
-    };
-    const r = paddleWebhookSchema.safeParse(valid);
-    expect(r.success).toBe(true);
-    expect(r.data.paddle_version).toBe('2');
-    expect(r.data.new_field_xyz).toEqual({ foo: 'bar' });
-  });
-
-  test('A.5 — event_type >100 chars FALLA', () => {
-    const r = paddleWebhookSchema.safeParse({ event_type: 'x'.repeat(101) });
-    expect(r.success).toBe(false);
-  });
-});
+// §A — paddleWebhookSchema ELIMINADO 2026-05-12 (Paddle FUERA firma Mariano)
 
 // ════════════════════════════════════════════════════════════════════
 // §B — mercadopagoWebhookSchema (passthrough)
@@ -313,24 +270,34 @@ describe('C-435 §F — middleware validate()', () => {
     expect(JSON.stringify(res.body)).not.toMatch(/at\s+\w+\s*\(/);
   });
 
-  test('F.3 — body raw JSON (Paddle) parseado correctamente con source=body_raw_json', (done) => {
-    const mw = validate(paddleWebhookSchema, { source: 'body_raw_json', target: 'body_parsed_extra' });
-    const buf = Buffer.from(JSON.stringify({ event_type: 'transaction.completed', data: {} }));
+  test('F.3 — body raw JSON (webhook) parseado correctamente con source=body_raw_json', (done) => {
+    const mw = validate(mercadopagoWebhookSchema, { source: 'body_raw_json', target: 'body_parsed_extra' });
+    const buf = Buffer.from(JSON.stringify({ type: 'payment', data: { id: '123' } }));
     const req = { body: buf };
     const res = mockRes();
     mw(req, res, () => {
-      expect(req.parsedWebhookBody.event_type).toBe('transaction.completed');
+      expect(req.parsedWebhookBody.type).toBe('payment');
       expect(Buffer.isBuffer(req.body)).toBe(true); // body original intacto
       done();
     });
   });
 
   test('F.4 — body raw JSON inválido → 400 Invalid JSON', () => {
-    const mw = validate(paddleWebhookSchema, { source: 'body_raw_json' });
+    const mw = validate(mercadopagoWebhookSchema, { source: 'body_raw_json' });
     const req = { body: Buffer.from('{invalid json') };
     const res = mockRes();
     mw(req, res, () => {});
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toBe('Invalid JSON');
+  });
+
+  test('F.5 — body_raw_json sin req.body (null) usa fallback {}', () => {
+    const mw = validate(mercadopagoWebhookSchema, { source: 'body_raw_json', target: 'body_parsed_extra' });
+    const req = { body: null };
+    const res = mockRes();
+    let called = false;
+    mw(req, res, () => { called = true; });
+    expect(called).toBe(true);
+    expect(req.parsedWebhookBody).toEqual({});
   });
 });

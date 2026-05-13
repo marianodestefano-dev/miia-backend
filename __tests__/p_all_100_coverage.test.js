@@ -69,7 +69,7 @@ describe('P7 Firebase fallback -- addon_billing', function() {
   beforeEach(function() { ab.__setFirestoreForTests(null); });
 
   test('createAddonCheckout usa firebase cuando _db=null', async function() {
-    var r = await ab.createAddonCheckout('uid1', 'ludo_miia', 'paddle');
+    var r = await ab.createAddonCheckout('uid1', 'ludo_miia', 'paypal');
     expect(r).toMatchObject({ uid: 'uid1', addonId: 'ludo_miia' });
   });
 });

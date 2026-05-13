@@ -349,12 +349,7 @@ try {
   console.error('[FIREBASE] Stack:', e.stack);
 }
 
-// PADDLE — procesamiento de pagos
-const { Paddle, Environment, EventName } = require('@paddle/paddle-node-sdk');
-const paddle = new Paddle(process.env.PADDLE_API_KEY || 'placeholder', {
-  environment: process.env.PADDLE_ENV === 'sandbox' ? Environment.sandbox : Environment.production
-});
-const PADDLE_WEBHOOK_SECRET = process.env.PADDLE_WEBHOOK_SECRET || '';
+// Pagos: PayPal + MercadoPago (firma Mariano 2026-05-12 -- Paddle FUERA)
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://www.miia-app.com';
 
 // ============================================
@@ -399,8 +394,6 @@ app.use((req, res, next) => {
   next();
 });
 app.use((req, res, next) => {
-  // Paddle webhook necesita req.body como Buffer crudo para verificar firma
-  if (req.path === '/api/paddle/webhook') return next();
   // T32-FIX: Instagram webhook tambien necesita raw body para HMAC SHA256
   if (req.path === '/api/instagram/webhook' && req.method === 'POST') {
     return express.raw({ type: 'application/json' })(req, res, next);
@@ -15445,7 +15438,7 @@ app.post('/api/admin/support-chat', rrRequireAuth, rrRequireAdmin, express.json(
     if (!message) return res.status(400).json({ error: 'message requerido' });
 
     const systemPrompt = `Eres el asistente técnico de MIIA, un sistema SaaS de ventas por WhatsApp.
-Arquitectura: Backend Node.js en Railway, Frontend estático en Vercel, Firebase Auth + Firestore como DB, Baileys para conexión WhatsApp (WebSocket directo, sin Chrome), Google Gemini API para IA, Paddle para pagos.
+Arquitectura: Backend Node.js en Railway, Frontend estático en Vercel, Firebase Auth + Firestore como DB, Baileys para conexión WhatsApp (WebSocket directo, sin Chrome), Google Gemini API para IA, MercadoPago + PayPal para pagos (LATAM).
 El super admin te consulta sobre problemas técnicos. Responde de forma concisa y técnica en español.
 Si te preguntan sobre una caída, da pasos concretos para diagnosticar (revisar logs de Railway, verificar Firestore, etc).
 URLs útiles: Railway dashboard, Firebase console, GitHub repo, Vercel dashboard.`;
@@ -15680,127 +15673,6 @@ app.post('/api/logout', async (req, res) => {
 });
 
 // ============================================
-// PADDLE CHECKOUT
-// ============================================
-app.post('/api/paddle/subscribe', express.json(), async (req, res) => {
-  try {
-    const { uid, plan } = req.body;
-    if (!uid || !plan) return res.status(400).json({ error: 'uid y plan requeridos' });
-
-    const priceIds = {
-      monthly:   process.env.PADDLE_PRICE_MONTHLY,
-      quarterly: process.env.PADDLE_PRICE_QUARTERLY,
-      semestral: process.env.PADDLE_PRICE_SEMESTRAL,
-      annual:    process.env.PADDLE_PRICE_ANNUAL,
-      familiar:  process.env.PADDLE_PRICE_FAMILIAR,
-      familiar_annual: process.env.PADDLE_PRICE_FAMILIAR_ANNUAL
-    };
-    const priceId = priceIds[plan];
-    if (!priceId) return res.status(400).json({ error: 'plan inválido o price ID no configurado' });
-
-    const transaction = await paddle.transactions.create({
-      items: [{ priceId, quantity: 1 }],
-      customData: { uid, plan, type: 'subscription' },
-      checkout: { url: FRONTEND_URL + '/owner-dashboard.html?sub_success=1' }
-    });
-
-    res.json({ url: transaction.checkout?.url || null, transactionId: transaction.id });
-  } catch (e) {
-    console.error('[PADDLE] subscribe error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/paddle/agent-checkout', express.json(), async (req, res) => {
-  try {
-    const { uid, agentCount } = req.body;
-    if (!uid) return res.status(400).json({ error: 'uid requerido' });
-
-    const priceId = process.env.PADDLE_PRICE_AGENT_EXTRA;
-    if (!priceId) return res.status(500).json({ error: 'PADDLE_PRICE_AGENT_EXTRA no configurado' });
-
-    const transaction = await paddle.transactions.create({
-      items: [{ priceId, quantity: 1 }],
-      customData: { uid, type: 'agent', agentCount: String(agentCount || 0) },
-      checkout: { url: FRONTEND_URL + '/owner-dashboard.html?agent_success=1' }
-    });
-
-    res.json({ url: transaction.checkout?.url || null });
-  } catch (e) {
-    console.error('[PADDLE] agent-checkout error:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ============================================
-// PADDLE WEBHOOK
-// ============================================
-app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  try {
-    const signature = req.headers['paddle-signature'];
-    if (PADDLE_WEBHOOK_SECRET && signature) {
-      const isValid = paddle.webhooks.isSignatureValid(req.body, PADDLE_WEBHOOK_SECRET, signature);
-      if (!isValid) return res.status(401).send('Invalid signature');
-    }
-
-    // C-435 §B/§F — Zod validation post-signature (passthrough permisivo)
-    let event;
-    try {
-      event = JSON.parse(req.body.toString());
-    } catch (_) {
-      return res.status(400).send('Invalid JSON');
-    }
-    const _zParse = publicSchemas.paddleWebhookSchema.safeParse(event);
-    if (!_zParse.success) {
-      console.warn('[PADDLE] webhook schema fail', _zParse.error.issues.slice(0, 3));
-      return res.status(400).json({ error: 'Validation failed', details: _zParse.error.issues.slice(0, 5).map(i => ({ path: i.path.join('.'), message: i.message })) });
-    }
-    event = _zParse.data;
-    const eventType = event.event_type;
-    const data = event.data;
-    const customData = data?.custom_data || {};
-    const { uid, plan, type } = customData;
-
-    if (eventType === 'transaction.completed') {
-      if (type === 'subscription' && plan && uid) {
-        const durations = { monthly: 1, quarterly: 3, semestral: 6, annual: 12 };
-        const months = durations[plan] || 1;
-        const now = new Date();
-        const endDate = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
-        await admin.firestore().collection('users').doc(uid).update({
-          plan, plan_start_date: now, plan_end_date: endDate, payment_status: 'active'
-        });
-        console.log(`[PADDLE] Plan ${plan} activado para ${uid}`);
-      } else if (type === 'agent' && uid) {
-        await admin.firestore().collection('users').doc(uid).update({
-          agents_limit: admin.firestore.FieldValue.increment(1)
-        });
-        console.log(`[PADDLE] Agente extra comprado por ${uid}`);
-      }
-    } else if (eventType === 'subscription.canceled' && uid) {
-      await admin.firestore().collection('users').doc(uid).update({
-        payment_status: 'canceled'
-      });
-      console.log(`[PADDLE] Suscripción cancelada para ${uid}`);
-    }
-
-    res.json({ received: true });
-  } catch (e) {
-    console.error('[PADDLE] webhook error:', e.message);
-    // C-433 §B observability: alerta priorizada por fallos de webhook de pago
-    // (railway logs -s miia-backend | grep -F '[V2-ALERT][PAYMENT-FAIL]')
-    console.error('[V2-ALERT][PAYMENT-FAIL]', {
-      provider: 'paddle',
-      stage: 'webhook',
-      error: e.message,
-      headers_signature_present: !!req.headers['paddle-signature'],
-      body_len: req.body ? req.body.length : 0,
-    });
-    res.status(400).send('Webhook error: ' + e.message);
-  }
-});
-
-// ============================================
 // PAYPAL CHECKOUT
 // ============================================
 const PAYPAL_BASE = process.env.PAYPAL_ENV === 'sandbox'
@@ -15849,7 +15721,7 @@ app.post('/api/paypal/subscribe', express.json(), async (req, res) => {
     res.json({ url: approvalUrl });
   } catch (e) {
     console.error('[PAYPAL] subscribe error:', e.message);
-    // T33-FIX: V2-ALERT structured log (paridad con Paddle/MP)
+    // T33-FIX: V2-ALERT structured log (paridad con MP/PayPal)
     console.error('[V2-ALERT][PAYMENT-FAIL]', {
       provider: 'paypal',
       stage: 'subscribe',
@@ -17648,7 +17520,7 @@ server.listen(PORT, () => {
 
   // ═══ VARIABLES DE ENTORNO (solo estado, NUNCA valores sensibles) ═══
   const SENSITIVE = /key|secret|pass|token|private|credential|api_key|client_id|client_secret|webhook/i;
-  const SAFE_SHOW = ['PORT', 'NODE_ENV', 'RAILWAY_ENVIRONMENT', 'RAILWAY_SERVICE_NAME', 'RAILWAY_PUBLIC_DOMAIN', 'FRONTEND_URL', 'FIREBASE_PROJECT_ID', 'PADDLE_ENV', 'PAYPAL_ENV', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_FROM', 'GOOGLE_REDIRECT_URI', 'ADMIN_EMAILS'];
+  const SAFE_SHOW = ['PORT', 'NODE_ENV', 'RAILWAY_ENVIRONMENT', 'RAILWAY_SERVICE_NAME', 'RAILWAY_PUBLIC_DOMAIN', 'FRONTEND_URL', 'FIREBASE_PROJECT_ID', 'PAYPAL_ENV', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_FROM', 'GOOGLE_REDIRECT_URI', 'ADMIN_EMAILS'];
   console.log('\n🔐 ═══ VARIABLES DE ENTORNO ═══');
   SAFE_SHOW.forEach(k => { if (process.env[k]) console.log(`  ${k}: ${process.env[k]}`); });
   console.log('\n🔑 ═══ CREDENCIALES (solo presencia) ═══');

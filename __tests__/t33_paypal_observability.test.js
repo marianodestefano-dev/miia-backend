@@ -5,11 +5,11 @@
  *
  * Origen: T29 audit identifico GAP — PayPal sin V2-ALERT structured log
  * + sin AbortController. Wi firmo T33 mail [169] [ACK-T28-T31+N4-VI] —
- * "T33 IMPLEMENTAR T29 payments observability — instrumentar Stripe/MP
- * con telemetry".
+ * "T33 IMPLEMENTAR T29 payments observability".
  *
- * NOTA: Stripe deprecado (410 Gone). MP ya tiene V2-ALERT (existente).
- * T33 enfoca en cerrar GAP PayPal (5 endpoints) — paridad con Paddle/MP.
+ * NOTA: Stripe deprecado (410 Gone, removido 3a9c0a0). Paddle removido
+ * 2026-05-12 (firma Mariano "Paddle no vamos a tener como medio de pago").
+ * MP ya tiene V2-ALERT (existente). Solo PayPal + MP activos.
  *
  * §A — Tests estaticos sobre source server.js: AbortSignal.timeout en
  *      5 fetch PayPal + V2-ALERT en 4 catch handlers.
@@ -73,15 +73,13 @@ describe('T33 §A — PayPal AbortController + V2-ALERT', () => {
     expect(PAYPAL_BLOCK).toMatch(/error:\s*['"]capture_not_completed['"]/);
   });
 
-  test('A.8 — Paridad con Paddle: mismo formato V2-ALERT][PAYMENT-FAIL]', () => {
-    // Paddle ya usa el patron — verificar que PayPal lo replica
-    const paddleBlock = SERVER_SOURCE.slice(
-      SERVER_SOURCE.indexOf('// PADDLE WEBHOOK'),
-      SERVER_SOURCE.indexOf('// Endpoints Stripe deprecados')
-    );
-    const paddleAlert = paddleBlock.match(/\[V2-ALERT\]\[PAYMENT-FAIL\]/);
+  test('A.8 — PayPal V2-ALERT][PAYMENT-FAIL] formato presente (Paddle removido 2026-05-12)', () => {
+    // Paddle ya no existe en server.js (firma Mariano 2026-05-12 "Paddle FUERA").
+    // Solo verificamos que PayPal tiene el formato V2-ALERT estandar.
     const paypalAlert = PAYPAL_BLOCK.match(/\[V2-ALERT\]\[PAYMENT-FAIL\]/);
-    expect(paddleAlert).not.toBeNull();
     expect(paypalAlert).not.toBeNull();
+    // Verificacion adicional: Paddle NO debe existir en server.js
+    expect(SERVER_SOURCE).not.toMatch(/PADDLE WEBHOOK/);
+    expect(SERVER_SOURCE).not.toMatch(/\/api\/paddle\/subscribe/);
   });
 });

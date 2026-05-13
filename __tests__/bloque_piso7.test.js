@@ -85,14 +85,14 @@ describe("addon_billing -- T428", () => {
   test("ADDON_PRICE_USD is 5", () => {
     expect(ab.ADDON_PRICE_USD).toBe(5);
   });
-  test("PAYMENT_PROVIDERS frozen with paddle and mercadopago", () => {
+  test("PAYMENT_PROVIDERS frozen with paypal and mercadopago", () => {
     expect(Object.isFrozen(ab.PAYMENT_PROVIDERS)).toBe(true);
-    expect(ab.PAYMENT_PROVIDERS).toContain("paddle");
+    expect(ab.PAYMENT_PROVIDERS).toContain("paypal");
     expect(ab.PAYMENT_PROVIDERS).toContain("mercadopago");
   });
   test("createAddonCheckout -- invalid addon throws", async () => {
     ab.__setFirestoreForTests({ collection: () => makeCol([]) });
-    await expect(ab.createAddonCheckout("uid1", "fake", "paddle")).rejects.toThrow("Invalid addon");
+    await expect(ab.createAddonCheckout("uid1", "fake", "paypal")).rejects.toThrow("Invalid addon");
   });
   test("createAddonCheckout -- invalid provider throws", async () => {
     ab.__setFirestoreForTests({ collection: () => makeCol([]) });
@@ -100,7 +100,7 @@ describe("addon_billing -- T428", () => {
   });
   test("createAddonCheckout -- creates checkout with price 5", async () => {
     ab.__setFirestoreForTests({ collection: () => ({ doc: () => ({ set: async () => {} }) }) });
-    const r = await ab.createAddonCheckout("uid1", "ludo_miia", "paddle");
+    const r = await ab.createAddonCheckout("uid1", "ludo_miia", "paypal");
     expect(r.amountUSD).toBe(5);
     expect(r.status).toBe("pending");
     expect(r.checkoutUrl).toContain("ludo_miia");

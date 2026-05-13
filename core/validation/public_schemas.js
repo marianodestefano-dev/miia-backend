@@ -7,9 +7,8 @@
  *    seguridad in-line. Mariano DeStefano, 2026-04-27."
  * "Seguridad in-line" cubre Zod + validación endpoints publicos.
  *
- * 5 endpoints validados (criterio: expuestos a internet SIN auth Firebase):
- *   1. /api/paddle/webhook       — passthrough (formato variable Paddle)
- *   2. /api/mercadopago/webhook  — passthrough (formato variable MP)
+ * 4 endpoints validados (Paddle removido 2026-05-12) (criterio: expuestos a internet SIN auth Firebase):
+ *   1. /api/mercadopago/webhook  — passthrough (formato variable MP)
  *   3. /api/instagram/webhook    — passthrough (formato Meta variable)
  *   4. /api/enterprise-lead      — strict  (form contacto público)
  *   5. /api/consent/adn          — strict  (consent owner público)
@@ -25,17 +24,6 @@ const { z } = require('zod');
 // ═════════════════════════════════════════════════════════════════════
 // Schemas — Webhooks externos (passthrough permisivo §F C-435)
 // ═════════════════════════════════════════════════════════════════════
-
-/**
- * Paddle webhook — body es Buffer raw (express.raw), JSON.parse adentro.
- * Schema valida la estructura post-parse mínima.
- * Campos extra Paddle = OK (passthrough).
- */
-const paddleWebhookSchema = z.object({
-  event_type: z.string().min(1).max(100),
-  data: z.unknown().optional(),
-  occurred_at: z.string().optional(),
-}).passthrough();
 
 /**
  * MercadoPago webhook — JSON estándar.
@@ -106,14 +94,14 @@ const consentAdnSchema = z.object({
  *
  * Para webhooks con body raw (Buffer), parsea JSON adentro y mete el
  * resultado en req.parsedWebhookBody (no toca req.body original que el
- * handler de Paddle necesita para validar firma).
+ * handler webhook necesita para validar firma).
  */
 function validate(schema, opts = {}) {
   const { source = 'body', target = 'body' } = opts;
   return function zodValidateMiddleware(req, res, next) {
     let raw;
     if (source === 'body_raw_json') {
-      // Paddle: req.body es Buffer porque usa express.raw()
+      // Webhooks raw: req.body es Buffer porque usa express.raw()
       try {
         raw = JSON.parse(req.body && req.body.toString ? req.body.toString() : '{}');
       } catch (e) {
@@ -148,7 +136,6 @@ function validate(schema, opts = {}) {
 
 module.exports = {
   // schemas
-  paddleWebhookSchema,
   mercadopagoWebhookSchema,
   instagramWebhookSchema,
   enterpriseLeadSchema,

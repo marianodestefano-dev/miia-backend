@@ -7,7 +7,7 @@ function getDb() { return _db || require("../config/firebase").db; }
 
 const ADDON_IDS = Object.freeze(["ludo_miia", "miia_dt"]);
 const ADDON_PRICE_USD = 5;
-const PAYMENT_PROVIDERS = Object.freeze(["paddle", "mercadopago"]);
+const PAYMENT_PROVIDERS = Object.freeze(["paypal", "mercadopago"]);
 const PAYMENT_STATUS = Object.freeze(["pending", "completed", "failed", "refunded"]);
 
 async function createAddonCheckout(uid, addonId, provider) {
