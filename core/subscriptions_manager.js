@@ -18,10 +18,13 @@
 
 const admin = require('firebase-admin');
 
-const VALID_PRODUCTS = ['miia', 'miiadt', 'ludomiia', 'miiaf1'];
+const VALID_PRODUCTS = ['miia', 'miiadt', 'ludomiia', 'f1'];
 
 let _fsOverride = null;
 let _nowOverride = null;
+let _skipDualWrite = false;
+
+function __setSkipDualWriteForTests(skip) { _skipDualWrite = skip; }
 
 function __setFirestoreForTests(fs) { _fsOverride = fs; }
 function __setNowForTests(fn) { _nowOverride = fn; }
@@ -68,7 +71,23 @@ async function addProductPermission(uid, product, plan, expiresAt) {
     expiresAt: expiresAt || null,
     activatedAt: _now().toISOString(),
   };
-  return writeSubscription(uid, product, payload);
+  const out = await writeSubscription(uid, product, payload);
+  // Dual-write a product_permissions (compat con dashboard existente VI-DASH-1)
+  /* istanbul ignore next */
+  if (!_skipDualWrite) {
+    try {
+      const productPerms = require('./product_permissions');
+      await productPerms.setProductPermission(uid, product, {
+        active: true,
+        plan: payload.plan,
+        expiresAt: payload.expiresAt,
+        source: 'standalone',
+      });
+    } catch (e) {
+      console.warn('[SUBS-MANAGER] dual-write product_permissions fail:', e.message);
+    }
+  }
+  return out;
 }
 
 async function listActiveProducts(uid) {
@@ -96,4 +115,5 @@ module.exports = {
   VALID_PRODUCTS,
   __setFirestoreForTests,
   __setNowForTests,
+  __setSkipDualWriteForTests,
 };

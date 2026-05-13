@@ -12886,6 +12886,13 @@ app.use('/api/tenant/:uid', businessesRouter);
 app.use('/api/owner/consent', createConsentRoutes());
 
 // ============================================
+// C.6 -- PRODUCT STATUS (firma Mariano 2026-05-02)
+// /api/<producto>/status + /api/products/status (agregado)
+// ============================================
+const { createProductStatusRoutes } = require('./routes/product_status');
+app.use('/api', createProductStatusRoutes());
+
+// ============================================
 // P3 — SLOTS, PRIVACY, WEEKEND, MIGRATION, REPORTS
 // ============================================
 

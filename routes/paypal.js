@@ -20,7 +20,7 @@ const webhookDedup = require('../core/webhook_dedup');
 const PLAN_RESOLVERS = {
   miiadt:   function() { return process.env.PAYPAL_PLAN_MIIADT   || null; },
   ludomiia: function() { return process.env.PAYPAL_PLAN_LUDOMIIA || null; },
-  miiaf1:   function() { return process.env.PAYPAL_PLAN_F1       || null; },
+  f1:       function() { return process.env.PAYPAL_PLAN_F1       || null; },
 };
 const VALID_PRODUCTS = Object.keys(PLAN_RESOLVERS);
 

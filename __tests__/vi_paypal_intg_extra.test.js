@@ -1,7 +1,7 @@
 'use strict';
 /**
  * vi_paypal_intg_extra.test.js -- branches faltantes en routes/paypal.js
- * Cubre: lineas 20-21 (ludomiia/miiaf1 || null falsy), 108 (result.status || null),
+ * Cubre: lineas 20-21 (ludomiia/f1 || null falsy), 108 (result.status || null),
  *         127-128 (event_type || '' / resource || {}), 134 (resource.id || null)
  * Objetivo: 100% branches en routes/paypal.js
  */
@@ -62,10 +62,10 @@ test('EX.1 ludomiia sin plan configurado: 503 plan_not_configured (linea 20 || n
 });
 
 test('EX.2 miiaf1 sin plan configurado: 503 plan_not_configured (linea 21 || null)', async function() {
-  // PAYPAL_PLAN_F1 no seteado -> PLAN_RESOLVERS.miiaf1() -> undefined || null -> null
+  // PAYPAL_PLAN_F1 no seteado -> PLAN_RESOLVERS.f1() -> undefined || null -> null
   const app = makeApp();
   const res = await request(app).post('/api/paypal/subscribe')
-    .set('Authorization', 'Bearer tok').send({ product: 'miiaf1' });
+    .set('Authorization', 'Bearer tok').send({ product: 'f1' });
   expect(res.status).toBe(503);
   expect(res.body.error).toBe('plan_not_configured');
 });

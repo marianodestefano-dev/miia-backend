@@ -45,7 +45,7 @@ function makeDb() {
 function setEnvPlan(product, value) {
   if (product === 'miiadt')   process.env.PAYPAL_PLAN_MIIADT   = value;
   if (product === 'ludomiia') process.env.PAYPAL_PLAN_LUDOMIIA = value;
-  if (product === 'miiaf1')   process.env.PAYPAL_PLAN_F1       = value;
+  if (product === 'f1')       process.env.PAYPAL_PLAN_F1       = value;
 }
 
 beforeEach(function() {
@@ -63,7 +63,7 @@ beforeEach(function() {
 test('VALID_PRODUCTS incluye los 3 productos', function() {
   expect(VALID_PRODUCTS).toContain('miiadt');
   expect(VALID_PRODUCTS).toContain('ludomiia');
-  expect(VALID_PRODUCTS).toContain('miiaf1');
+  expect(VALID_PRODUCTS).toContain('f1');
 });
 
 // ── POST /subscribe ──────────────────────────────────────────────────────────
@@ -126,13 +126,13 @@ describe('POST /api/paypal/subscribe', function() {
   });
 
   test('S.7 PayPal API lanza: 500', async function() {
-    setEnvPlan('miiaf1', 'PLAN-F1-789');
+    setEnvPlan('f1', 'PLAN-F1-789');
     _setPayPalClientForTests(makeClient({
       createSubscription: jest.fn().mockRejectedValue(new Error('paypal_down')),
     }));
     const app = makeApp();
     const res = await request(app).post('/api/paypal/subscribe')
-      .set('Authorization', 'Bearer tok').send({ product: 'miiaf1' });
+      .set('Authorization', 'Bearer tok').send({ product: 'f1' });
     expect(res.status).toBe(500);
     expect(res.body.error).toBe('paypal_down');
   });

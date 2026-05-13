@@ -32,6 +32,7 @@ function makeFirestoreMock(seedSubs) {
 beforeEach(() => {
   subs.__setFirestoreForTests(null);
   subs.__setNowForTests(null);
+  subs.__setSkipDualWriteForTests(true);
 });
 
 describe('subscriptions_manager', () => {
@@ -142,7 +143,7 @@ describe('subscriptions_manager', () => {
         miia:     { active: true },
         miiadt:   { active: true, expiresAt: '2030-01-01' },
         ludomiia: { active: false },
-        miiaf1:   { active: true, expiresAt: '2020-01-01' },
+        f1:   { active: true, expiresAt: '2020-01-01' },
       }));
       subs.__setNowForTests(() => new Date('2026-05-12'));
       const list = await subs.listActiveProducts('uid1');
@@ -158,6 +159,6 @@ describe('subscriptions_manager', () => {
   });
 
   test('VALID_PRODUCTS export', () => {
-    expect(subs.VALID_PRODUCTS).toEqual(['miia', 'miiadt', 'ludomiia', 'miiaf1']);
+    expect(subs.VALID_PRODUCTS).toEqual(['miia', 'miiadt', 'ludomiia', 'f1']);
   });
 });
