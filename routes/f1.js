@@ -213,6 +213,38 @@ module.exports = function createF1Routes({ verifyToken }) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+  // ── Live circuit con trazado REAL + dots OpenF1 (firma Mariano 2026-05-12 ~22:30 COT)
+  // Reemplazo del legacy /circuit/:id/live (que usaba SVG dibujados a mano de Wi).
+  // Mariano firmó: "yo solo quiero poner la carrera en la TV, y abrir MIIAF1 y ver el
+  // circuito, los puntos de colores corriendo alrededor, los tiempos de cada corredor"
+  // + "decido tu recomendacion!!!" (Opción A: bacinger/f1-circuits trazados reales +
+  // OpenF1 location API + dots animados + tooltip click → driver info).
+  const circuitLiveService = require('../sports/f1_dashboard/circuit_live_service');
+  router.get('/live/circuit/:circuit_id', auth, async (req, res) => {
+    try {
+      const uid = req.user && req.user.uid;
+      let adoptedDriverNum = null;
+      if (uid) {
+        const prefDoc = await db().doc('owners/' + uid + '/f1_prefs/current').get();
+        if (prefDoc.exists) adoptedDriverNum = prefDoc.data().adopted_driver_number || null;
+      }
+      const result = await circuitLiveService.buildLiveCircuitSvg({
+        circuitId: req.params.circuit_id,
+        adoptedDriverNum,
+      });
+      if (!result.svg) return res.status(404).json({ error: 'Circuito no encontrado' });
+      res.set('Content-Type', 'image/svg+xml');
+      res.set('Cache-Control', result.isLive ? 'public, max-age=2' : 'public, max-age=300');
+      res.set('X-MIIAF1-Live', result.isLive ? '1' : '0');
+      res.set('X-MIIAF1-Session', result.sessionKey != null ? String(result.sessionKey) : '');
+      res.set('X-MIIAF1-Drivers', String(result.driverCount));
+      return res.send(result.svg);
+      /* istanbul ignore next — defensive: getCircuitMeta + buildLiveCircuitSvg ya manejan errors */
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
 
   // F1.29: Paywall (addon $3/mes dashboard live).
   // ELIMINADO 2026-05-12 (firma Mariano): endpoints fantasy F1 (/fantasy/leaderboard +

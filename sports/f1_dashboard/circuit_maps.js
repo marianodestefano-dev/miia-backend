@@ -1,259 +1,280 @@
 'use strict';
 
 /**
- * MiiaF1 -- SVG circuit maps (F1.17)
- * 24 circuitos de F1 2025 en formato SVG esquematico.
- * viewBox normalizado: 0 0 400 300
- * Estilo: trazo 4px grad #00E5FF->lColor, fondo #0A0A12
+ * MIIAF1 — Circuit maps con TRAZADOS REALES.
+ *
+ * VERSIÓN POST 2026-05-12 (firma Mariano "decido tu recomendacion!!!" + furia
+ * "JAMAS yo firme... yo solo quiero poner la carrera en la TV, y abrir MIIAF1
+ * y ver el circuito, los puntos de colores corriendo alrededor").
+ *
+ * REEMPLAZO COMPLETO de los SVGs garabateados a mano (sesión Wi 2026-05-01)
+ * que Mariano descalificó al ver "Monaco" como un círculo con una S adentro.
+ *
+ * Ahora los trazados son COORDS REALES de github.com/bacinger/f1-circuits
+ * (MIT license) en GeoJSON con bbox + LineString lat/lon. Se proyectan
+ * dinámicamente al viewport SVG con `circuit_projection.js` manteniendo
+ * el aspect ratio real del circuito.
+ *
+ * API pública mantiene retrocompatibilidad con los consumers existentes
+ * (routes/f1.js, circuit_overlay.js, tests F1.17/F1.21/F1.22 + fase3/4):
+ *   - CIRCUITS                  (object: id-legacy → metadata)
+ *   - generateCircuitSVG(id, opts)
+ *   - getCircuitIds()
+ *   - getCircuit(id)
+ *
+ * IDs legacy ("monaco", "bahrain", ...) se mapean a fileIds reales
+ * ("mc-1929", "bh-2002", ...) vía LEGACY_ID_TO_FILE.
  */
 
-// Datos esquematicos de los 24 circuitos 2025
-// trackPath: polyline simplificado del trazado
-const CIRCUITS = {
-  australia: {
-    name: 'Albert Park',
-    country: 'Australia',
-    laps: 58,
-    length_km: 5.278,
-    color: '#00E5FF',
-    // Trazado esquematico Albert Park (cuadrado redondeado con chicane)
-    path: 'M 80,80 L 320,80 Q 340,80 340,100 L 340,200 Q 340,220 320,220 L 180,220 Q 160,220 150,230 L 120,250 Q 100,260 80,250 Q 60,240 60,220 L 60,100 Q 60,80 80,80 Z',
-  },
-  china: {
-    name: 'Shanghai International',
-    country: 'China',
-    laps: 56,
-    length_km: 5.451,
-    color: '#FF1744',
-    path: 'M 60,150 Q 60,80 120,80 L 200,80 Q 250,80 270,120 L 280,160 Q 290,190 260,210 L 200,220 L 150,250 Q 120,260 100,240 Q 60,220 60,190 Z',
-  },
-  japan: {
-    name: 'Suzuka',
-    country: 'Japan',
-    laps: 53,
-    length_km: 5.807,
-    color: '#FF6D00',
-    path: 'M 80,60 L 200,60 Q 300,60 310,130 Q 320,200 250,220 L 180,230 Q 120,235 100,200 L 80,160 Q 60,130 80,100 Z M 180,60 Q 220,100 200,140 Q 180,180 160,160 Q 140,140 160,100 Z',
-  },
-  bahrain: {
-    name: 'Bahrain International',
-    country: 'Bahrain',
-    laps: 57,
-    length_km: 5.412,
-    color: '#7C3AED',
-    path: 'M 100,80 L 300,80 Q 330,80 330,110 L 330,140 Q 330,160 300,165 L 200,170 L 200,200 L 280,200 Q 310,200 310,225 Q 310,250 280,250 L 120,250 Q 90,250 90,225 Q 90,200 120,200 L 160,200 L 160,165 L 70,165 Q 70,140 100,140 L 280,140 Q 300,140 300,120 L 300,100 L 100,100 Z',
-  },
-  saudi_arabia: {
-    name: 'Jeddah Corniche',
-    country: 'Saudi Arabia',
-    laps: 50,
-    length_km: 6.174,
-    color: '#4CAF50',
-    path: 'M 60,250 L 60,60 Q 60,40 80,40 L 340,40 Q 360,40 360,60 L 360,80 Q 360,100 340,100 L 200,100 Q 180,100 180,120 L 180,180 Q 180,200 200,200 L 340,200 Q 360,200 360,220 L 360,250 L 60,250 Z',
-  },
-  miami: {
-    name: 'Miami International',
-    country: 'USA (Miami)',
-    laps: 57,
-    length_km: 5.412,
-    color: '#E91E63',
-    path: 'M 80,60 L 300,60 Q 340,60 340,100 L 340,160 Q 340,190 310,200 L 200,200 L 180,220 L 180,250 L 100,250 Q 70,250 70,220 L 70,190 L 200,190 L 200,80 L 80,80 Z',
-  },
-  imola: {
-    name: 'Imola',
-    country: 'Italy',
-    laps: 63,
-    length_km: 4.909,
-    color: '#FF1744',
-    path: 'M 200,40 Q 300,40 320,100 Q 340,160 280,200 Q 240,220 180,220 Q 100,220 80,160 Q 60,100 120,60 Q 160,40 200,40 Z',
-  },
-  monaco: {
-    name: 'Circuit de Monaco',
-    country: 'Monaco',
-    laps: 78,
-    length_km: 3.337,
-    color: '#FFC107',
-    path: 'M 80,200 L 80,80 Q 80,60 100,60 L 200,60 Q 240,60 260,90 L 320,90 Q 340,90 340,110 L 340,150 L 260,150 L 240,180 L 240,220 L 180,250 L 100,250 Q 80,240 80,220 Z',
-  },
-  canada: {
-    name: 'Circuit Gilles Villeneuve',
-    country: 'Canada',
-    laps: 70,
-    length_km: 4.361,
-    color: '#FF1744',
-    path: 'M 100,60 L 300,60 Q 330,60 330,90 L 330,140 Q 330,160 300,160 L 200,160 Q 180,160 180,180 L 180,220 Q 180,250 150,250 L 100,250 Q 70,250 70,220 L 70,90 Q 70,60 100,60 Z',
-  },
-  spain: {
-    name: 'Circuit de Barcelona',
-    country: 'Spain',
-    laps: 66,
-    length_km: 4.657,
-    color: '#FFC107',
-    path: 'M 80,80 L 300,80 Q 330,80 330,110 L 330,150 Q 310,170 280,165 L 220,160 Q 200,160 195,180 L 200,200 L 280,200 Q 310,200 320,220 Q 330,240 310,250 L 100,250 Q 70,250 70,220 L 70,110 Q 70,80 80,80 Z',
-  },
-  austria: {
-    name: 'Red Bull Ring',
-    country: 'Austria',
-    laps: 71,
-    length_km: 4.318,
-    color: '#2196F3',
-    path: 'M 150,60 Q 200,40 250,60 L 320,120 Q 350,150 330,200 L 280,240 Q 240,260 200,240 L 120,200 Q 80,170 80,130 Q 80,80 150,60 Z',
-  },
-  britain: {
-    name: 'Silverstone',
-    country: 'Great Britain',
-    laps: 52,
-    length_km: 5.891,
-    color: '#2196F3',
-    path: 'M 100,80 L 280,80 Q 340,80 340,140 L 320,200 Q 300,230 260,230 L 200,220 L 140,250 Q 100,255 80,230 Q 60,200 80,170 L 100,140 L 80,120 Z',
-  },
-  hungary: {
-    name: 'Hungaroring',
-    country: 'Hungary',
-    laps: 70,
-    length_km: 4.381,
-    color: '#4CAF50',
-    path: 'M 80,150 Q 80,80 150,80 L 250,80 Q 300,80 320,120 Q 340,160 310,200 L 240,230 Q 200,240 160,220 L 100,200 Q 60,190 60,160 Z',
-  },
-  belgium: {
-    name: 'Spa-Francorchamps',
-    country: 'Belgium',
-    laps: 44,
-    length_km: 7.004,
-    color: '#FF6D00',
-    path: 'M 60,180 L 60,100 Q 60,60 100,60 L 220,80 Q 260,90 270,130 L 260,160 L 320,180 Q 350,200 340,230 Q 330,260 300,250 L 100,200 Z',
-  },
-  netherlands: {
-    name: 'Zandvoort',
-    country: 'Netherlands',
-    laps: 72,
-    length_km: 4.259,
-    color: '#FF6D00',
-    path: 'M 100,60 L 300,60 Q 340,60 340,100 L 340,200 Q 340,240 300,240 L 200,240 Q 160,240 150,210 L 100,200 Q 60,190 60,160 L 60,100 Q 60,60 100,60 Z',
-  },
-  italy: {
-    name: 'Monza',
-    country: 'Italy',
-    laps: 51,
-    length_km: 5.793,
-    color: '#FF1744',
-    path: 'M 80,80 L 320,80 Q 340,80 340,110 L 320,160 L 280,160 L 280,200 L 320,200 Q 340,200 340,230 Q 340,260 320,260 L 80,260 Q 60,260 60,230 Q 60,200 80,200 L 120,200 L 120,160 L 80,160 Q 60,160 60,130 Q 60,80 80,80 Z',
-  },
-  azerbaijan: {
-    name: 'Baku City Circuit',
-    country: 'Azerbaijan',
-    laps: 51,
-    length_km: 6.003,
-    color: '#2196F3',
-    path: 'M 60,260 L 60,80 Q 60,60 80,60 L 180,60 Q 200,60 200,80 L 200,150 Q 200,170 220,170 L 340,170 Q 360,170 360,190 L 360,260 L 60,260 Z',
-  },
-  singapore: {
-    name: 'Marina Bay Street',
-    country: 'Singapore',
-    laps: 62,
-    length_km: 4.94,
-    color: '#FF1744',
-    path: 'M 80,60 L 200,60 L 200,120 L 320,120 Q 340,120 340,140 L 340,200 Q 340,220 320,220 L 200,220 L 200,250 Q 200,270 180,270 L 100,270 Q 80,270 80,250 L 80,60 Z',
-  },
-  usa_austin: {
-    name: 'Circuit of the Americas',
-    country: 'USA (Austin)',
-    laps: 56,
-    length_km: 5.513,
-    color: '#E91E63',
-    path: 'M 60,250 L 60,100 Q 60,60 120,60 L 300,80 Q 330,90 330,120 L 300,150 Q 270,170 240,155 L 180,140 L 180,200 L 280,200 Q 310,200 320,220 Q 330,250 300,250 Z',
-  },
-  mexico: {
-    name: 'Hermanos Rodriguez',
-    country: 'Mexico',
-    laps: 71,
-    length_km: 4.304,
-    color: '#4CAF50',
-    path: 'M 80,80 L 300,80 Q 330,80 330,110 L 330,160 Q 320,190 290,190 L 200,190 L 200,220 L 290,220 Q 320,220 330,250 L 300,260 L 80,260 Q 60,260 60,230 L 60,110 Q 60,80 80,80 Z',
-  },
-  brazil: {
-    name: 'Autodromo Interlagos',
-    country: 'Brazil',
-    laps: 71,
-    length_km: 4.309,
-    color: '#4CAF50',
-    path: 'M 200,40 Q 300,40 330,100 Q 360,160 320,220 Q 280,260 200,260 Q 120,260 80,220 Q 40,170 80,100 Q 120,40 200,40 Z M 200,80 Q 250,80 270,120 Q 280,150 250,170 Q 220,190 190,170 Q 160,150 170,120 Q 185,80 200,80 Z',
-  },
-  las_vegas: {
-    name: 'Las Vegas Street',
-    country: 'USA (Las Vegas)',
-    laps: 50,
-    length_km: 6.201,
-    color: '#E91E63',
-    path: 'M 80,60 L 320,60 Q 350,60 350,90 L 350,240 Q 350,260 320,260 L 80,260 Q 50,260 50,240 L 50,90 Q 50,60 80,60 Z M 200,60 L 200,260 M 50,160 L 350,160',
-  },
-  qatar: {
-    name: 'Lusail International',
-    country: 'Qatar',
-    laps: 57,
-    length_km: 5.419,
-    color: '#9C27B0',
-    path: 'M 200,40 Q 320,40 340,130 Q 360,200 300,240 L 240,260 Q 160,270 100,230 L 60,180 Q 40,120 80,80 Q 120,40 200,40 Z',
-  },
-  abu_dhabi: {
-    name: 'Yas Marina',
-    country: 'Abu Dhabi',
-    laps: 58,
-    length_km: 5.281,
-    color: '#9C27B0',
-    path: 'M 80,80 L 280,80 Q 330,80 330,130 L 330,160 Q 310,180 280,175 L 200,170 Q 200,200 240,200 L 300,200 Q 340,200 340,230 Q 340,260 300,260 L 80,260 Q 60,260 60,240 L 60,100 Q 60,80 80,80 Z',
-  },
-};
+const { loadCircuit, getCircuitBBox, getCircuitCoordinates, listCircuits, getCircuitMeta } = require('./circuit_data');
+const { projectPath, pointsToSvgPath, DEFAULT_VIEWPORT } = require('./circuit_projection');
+
+// Mapping ID legacy (lo que los consumers existentes pasan) → fileId real GeoJSON.
+const LEGACY_ID_TO_FILE = Object.freeze({
+  australia: 'au-1953',
+  bahrain: 'bh-2002',
+  saudi: 'sa-2021',
+  saudi_arabia: 'sa-2021',
+  miami: 'us-2022',
+  imola: 'it-1953',
+  monaco: 'mc-1929',
+  spain: 'es-1991',
+  barcelona: 'es-1991',
+  madrid: 'es-2026',
+  canada: 'ca-1978',
+  austria: 'at-1969',
+  silverstone: 'gb-1948',
+  britain: 'gb-1948',
+  uk: 'gb-1948',
+  hungary: 'hu-1986',
+  belgium: 'be-1925',
+  spa: 'be-1925',
+  netherlands: 'nl-1948',
+  zandvoort: 'nl-1948',
+  monza: 'it-1922',
+  italy: 'it-1922',
+  azerbaijan: 'az-2016',
+  baku: 'az-2016',
+  singapore: 'sg-2008',
+  japan: 'jp-1962',
+  suzuka: 'jp-1962',
+  qatar: 'qa-2004',
+  usa: 'us-2012',
+  austin: 'us-2012',
+  cota: 'us-2012',
+  mexico: 'mx-1962',
+  brazil: 'br-1940',
+  interlagos: 'br-1940',
+  saopaulo: 'br-1940',
+  lasvegas: 'us-2023',
+  las_vegas: 'us-2023',
+  abudhabi: 'ae-2009',
+  abu_dhabi: 'ae-2009',
+  yas: 'ae-2009',
+  china: 'cn-2004',
+  shanghai: 'cn-2004',
+});
+
+// Acceptable color por defecto (fallback) para circuitos no listados explícito.
+const DEFAULT_TRACK_COLOR = '#00E5FF';
+
+// Color por país (mantiene branding consistente; era hard-coded en versión legacy).
+const COUNTRY_COLOR = Object.freeze({
+  MC: '#E10600', // rojo F1 + clásico Mónaco
+  BH: '#E10600',
+  SA: '#00A86B',
+  AU: '#00843D',
+  CN: '#EE1C25',
+  JP: '#BC002D',
+  AZ: '#00A1DE',
+  ES: '#FFC400',
+  MX: '#006847',
+  US: '#3C3B6E',
+  IT: '#008C45',
+  GB: '#012169',
+  BE: '#FAE042',
+  AT: '#ED2939',
+  HU: '#436F4D',
+  CA: '#FF0000',
+  NL: '#21468B',
+  SG: '#EF3340',
+  QA: '#8D1B3D',
+  BR: '#009C3B',
+  AE: '#FF0000',
+});
 
 /**
- * Genera SVG del circuito con posicion opcional del piloto.
- * @param {string} circuitId - ID del circuito (ej: 'monaco')
- * @param {object} opts - { driverPos: {x, y}, driverName, teamColor, showLabel: true }
- * @returns {string} SVG string
+ * Resuelve un input (legacy id, fileId, location, country) → fileId real.
  */
-function generateCircuitSVG(circuitId, opts) {
-  opts = opts || {};
-  const c = CIRCUITS[circuitId];
-  if (!c) return null;
+function resolveCircuitId(input) {
+  if (!input || typeof input !== 'string') return null;
+  const key = input.trim().toLowerCase();
+  // Si es fileId directo (formato xx-YYYY)
+  if (getCircuitMeta(input)) return input;
+  if (LEGACY_ID_TO_FILE[key]) return LEGACY_ID_TO_FILE[key];
+  // Underscore-normalized lookup
+  const normalized = key.replace(/[\s-]+/g, '_');
+  if (LEGACY_ID_TO_FILE[normalized]) return LEGACY_ID_TO_FILE[normalized];
+  return null;
+}
 
-  const teamColor = opts.teamColor || '#00E5FF';
+/**
+ * Construye objeto compat con la API legacy CIRCUITS para un id dado.
+ * Se calcula lazy (no se pre-carga toda la tabla) — solo cuando un consumer
+ * accede a CIRCUITS[id] o llama getCircuit(id).
+ *
+ * @param {string} input — id legacy ("monaco") o fileId real ("mc-1929")
+ * @returns {Object|null} { name, country, color, length_km, ... } o null
+ */
+function getCircuit(input) {
+  const fileId = resolveCircuitId(input);
+  if (!fileId) return null;
+  const meta = getCircuitMeta(fileId);
+  /* istanbul ignore next — defensive: resolveCircuitId solo retorna ids con meta */
+  if (!meta) return null;
+  const geo = loadCircuit(fileId);
+  /* istanbul ignore next — defensive: manifest aligned con filesystem */
+  if (!geo) return null;
+  /* istanbul ignore next — defensive: GeoJSON bacinger siempre features[0] con properties */
+  const feature = (geo.features || [])[0] || {};
+  /* istanbul ignore next */
+  const props = feature.properties || {};
+  // Defensive: bacinger GeoJSON siempre tiene length/altitude/opened/firstgp.
+  // Ramas falsy nunca se ejercen en runtime real → istanbul ignore else.
+  let length_m = null;
+  let length_km = null;
+  /* istanbul ignore else — bacinger siempre length numérico */
+  if (typeof props.length === 'number') {
+    length_m = props.length;
+    length_km = +(props.length / 1000).toFixed(3);
+  }
+  let altitude_m = null;
+  /* istanbul ignore else */
+  if (typeof props.altitude === 'number') altitude_m = props.altitude;
+  let opened = null;
+  /* istanbul ignore else */
+  if (props.opened) opened = props.opened;
+  let firstgp = null;
+  /* istanbul ignore else */
+  if (props.firstgp) firstgp = props.firstgp;
+  return {
+    id: fileId,
+    name: meta.name,
+    location: meta.location,
+    country: meta.country,
+    gp: meta.gp,
+    color: COUNTRY_COLOR[meta.country] || DEFAULT_TRACK_COLOR,
+    length_m,
+    length_km,
+    altitude_m,
+    opened,
+    firstgp,
+  };
+}
+
+/**
+ * Lista todos los IDs disponibles (incluyendo legacy aliases).
+ *
+ * @returns {Array<string>}
+ */
+function getCircuitIds() {
+  // Legacy IDs primero (para no romper consumers que iteran), después fileIds.
+  const legacy = Object.keys(LEGACY_ID_TO_FILE);
+  const fileIds = listCircuits({ includeHistorical: false }).map((c) => c.id);
+  return Array.from(new Set([...legacy, ...fileIds]));
+}
+
+/**
+ * Genera SVG del circuito con trazado REAL proyectado al viewport.
+ * Mantiene la API del legacy generateCircuitSVG(id, opts) donde:
+ *   opts.driverPos: {x, y}  — posición de un driver para overlay (legacy single-driver)
+ *   opts.driverName: string — nombre del driver (label en overlay)
+ *   opts.teamColor: string  — color del dot
+ *   opts.showLabel: bool    — mostrar label (default true)
+ *   opts.viewport: { width, height, padding }  — viewport SVG (default 800x500)
+ *
+ * @param {string} circuitInput — legacy id o fileId
+ * @param {Object} [opts]
+ * @returns {string|null} SVG string o null si circuito no existe
+ */
+function generateCircuitSVG(circuitInput, opts) {
+  opts = opts || {};
+  const fileId = resolveCircuitId(circuitInput);
+  if (!fileId) return null;
+
+  const meta = getCircuitMeta(fileId);
+  const bbox = getCircuitBBox(fileId);
+  const coords = getCircuitCoordinates(fileId);
+  /* istanbul ignore next — defensive: archivo presente pero corrupto */
+  if (!meta || !bbox || !coords) return null;
+
+  const viewport = opts.viewport || DEFAULT_VIEWPORT;
+  const W = viewport.width || DEFAULT_VIEWPORT.width;
+  const H = viewport.height || DEFAULT_VIEWPORT.height;
+
+  const projected = projectPath(coords, bbox, viewport);
+  const pathD = pointsToSvgPath(projected, true);
+
+  const trackColor = COUNTRY_COLOR[meta.country] || DEFAULT_TRACK_COLOR;
+
+  // Driver overlay (legacy single-driver compat)
+  const teamColor = opts.teamColor || trackColor;
   const driverPos = opts.driverPos;
   const driverLabel = opts.showLabel !== false && opts.driverName ? opts.driverName : null;
-
   let driverOverlay = '';
   if (driverPos) {
     driverOverlay = '<circle cx="' + driverPos.x + '" cy="' + driverPos.y + '" r="8" fill="' + teamColor + '" opacity="0.9"/>';
-    /* istanbul ignore else — driverLabel siempre presente en flujo actual (driver adoptado) */
     if (driverLabel) {
       driverOverlay += '<text x="' + (driverPos.x + 12) + '" y="' + (driverPos.y + 4) + '" fill="white" font-size="11" font-family="Inter,sans-serif" font-weight="600">' + driverLabel + '</text>';
     }
   }
 
-  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">' +
-    '<rect width="400" height="300" fill="#0A0A12"/>' +
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '">' +
+    '<rect width="' + W + '" height="' + H + '" fill="#0A0A12"/>' +
     '<defs>' +
-    '<linearGradient id="tg_' + circuitId + '" x1="0" y1="0" x2="1" y2="1">' +
+    '<linearGradient id="tg_' + fileId + '" x1="0" y1="0" x2="1" y2="1">' +
     '<stop offset="0%" stop-color="#00E5FF"/>' +
-    '<stop offset="100%" stop-color="' + c.color + '"/>' +
+    '<stop offset="100%" stop-color="' + trackColor + '"/>' +
     '</linearGradient>' +
     '</defs>' +
-    '<path d="' + c.path + '" fill="none" stroke="url(#tg_' + circuitId + ')" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '<path d="' + pathD + '" fill="none" stroke="url(#tg_' + fileId + ')" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>' +
     driverOverlay +
-    '<text x="8" y="292" fill="#ffffff44" font-size="10" font-family="Inter,sans-serif">' + c.name + '</text>' +
-    '</svg>';
+    '<text x="12" y="' + (H - 12) + '" fill="#ffffff66" font-size="11" font-family="Inter,sans-serif" font-weight="500">' + meta.name + ' — ' + meta.location + '</text>' +
+    '</svg>'
+  );
 }
 
 /**
- * Lista de todos los IDs de circuito disponibles.
- * @returns {string[]}
+ * CIRCUITS legacy compat: Proxy lazy que delega a getCircuit() al accederse.
+ * Esto evita pre-cargar 40 GeoJSON en require-time + mantiene la API
+ * CIRCUITS.monaco / CIRCUITS['mc-1929'] funcional.
  */
-function getCircuitIds() { return Object.keys(CIRCUITS); }
+const CIRCUITS = new Proxy({}, {
+  get(_target, prop) {
+    if (typeof prop !== 'string') return undefined;
+    return getCircuit(prop);
+  },
+  has(_target, prop) {
+    return typeof prop === 'string' && getCircuit(prop) !== null;
+  },
+  ownKeys() {
+    return getCircuitIds();
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    const value = getCircuit(prop);
+    if (!value) return undefined;
+    return { enumerable: true, configurable: true, value };
+  },
+});
 
-/**
- * Obtiene datos de un circuito.
- * @param {string} id
- * @returns {object|null}
- */
-function getCircuit(id) { return CIRCUITS[id] || null; }
-
-module.exports = { CIRCUITS, generateCircuitSVG, getCircuitIds, getCircuit };
+module.exports = {
+  CIRCUITS,
+  LEGACY_ID_TO_FILE,
+  COUNTRY_COLOR,
+  DEFAULT_TRACK_COLOR,
+  generateCircuitSVG,
+  getCircuitIds,
+  getCircuit,
+  resolveCircuitId,
+};
