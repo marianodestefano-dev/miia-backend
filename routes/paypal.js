@@ -16,6 +16,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const subscriptionsManager = require('../core/subscriptions_manager');
 const webhookDedup = require('../core/webhook_dedup');
+const signupOnPayment = require('../core/signup_on_payment');
 
 const PLAN_RESOLVERS = {
   miiadt:   function() { return process.env.PAYPAL_PLAN_MIIADT   || null; },
@@ -128,10 +129,25 @@ function createPayPalRoutes() {
     const payload   = req.body   || {};
     const eventType = payload.event_type || '';
     const resource  = payload.resource  || {};
-    const ownerUid  = resource.custom_id;
+    const customId  = resource.custom_id;
     const eventId   = payload.id || resource.id || null;
     const productHint = resource.plan_id || null;
-    if (!ownerUid) { return res.status(400).json({ error: 'uid_missing' }); }
+    if (!customId) { return res.status(400).json({ error: 'uid_missing' }); }
+    // A.1 -- si custom_id parece email, resolver/crear cuenta Firebase; sino usar como uid (legacy)
+    let ownerUid;
+    let createdAccount = false;
+    if (signupOnPayment.isLikelyEmail(customId)) {
+      try {
+        const ensured = await signupOnPayment.ensureUserFromEmail(customId);
+        ownerUid = ensured.uid;
+        createdAccount = ensured.created;
+      } catch (e) {
+        console.error('[PAYPAL-WEBHOOK] signup_on_payment failed:', e.message);
+        return res.status(500).json({ error: 'signup_failed' });
+      }
+    } else {
+      ownerUid = customId;
+    }
     // A.7 -- dedup idempotente por event_id
     try {
       const dedup = await webhookDedup.markProcessed('paypal', eventId, { uid: ownerUid, eventType });
@@ -155,8 +171,8 @@ function createPayPalRoutes() {
         if (product) {
           await subscriptionsManager.addProductPermission(ownerUid, product, 'monthly', null);
         }
-        console.log('[PAYPAL-WEBHOOK] ACTIVATED uid=' + ownerUid + ' product=' + product);
-        return res.json({ ok: true, action: 'activated', uid: ownerUid, product });
+        console.log('[PAYPAL-WEBHOOK] ACTIVATED uid=' + ownerUid + ' product=' + product + ' created=' + createdAccount);
+        return res.json({ ok: true, action: 'activated', uid: ownerUid, product, accountCreated: createdAccount });
       }
       if (eventType === 'BILLING.SUBSCRIPTION.CANCELLED') {
         await db.collection('users').doc(ownerUid).update({ payment_status: 'cancelled', cancelled_at: new Date().toISOString() });

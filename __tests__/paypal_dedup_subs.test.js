@@ -15,6 +15,7 @@ const {
 } = require('../routes/paypal');
 const webhookDedup = require('../core/webhook_dedup');
 const subscriptionsManager = require('../core/subscriptions_manager');
+const signupOnPayment = require('../core/signup_on_payment');
 
 function makeApp() {
   const app = express();
@@ -66,6 +67,8 @@ beforeEach(() => {
   }));
   webhookDedup.__setFirestoreForTests(null);
   subscriptionsManager.__setFirestoreForTests(null);
+  subscriptionsManager.__setSkipDualWriteForTests(true);
+  signupOnPayment.__setAdminAuthForTests(null);
 });
 
 describe('paypal webhook -- dedup + subscriptions wire-in', () => {
@@ -148,6 +151,87 @@ describe('paypal webhook -- dedup + subscriptions wire-in', () => {
     expect(res.status).toBe(200);
     expect(res.body.action).toBe('cancelled');
     expect(res.body.product).toBe(null);
+  });
+
+  describe('A.1 -- signup on payment via custom_id=email', () => {
+    test('custom_id email + cuenta nueva -> accountCreated=true', async () => {
+      process.env.PAYPAL_PLAN_MIIADT = 'PLAN-MIIADT-001';
+      const fsMock = makeFsMock({}, {});
+      webhookDedup.__setFirestoreForTests(fsMock);
+      subscriptionsManager.__setFirestoreForTests(fsMock);
+      signupOnPayment.__setAdminAuthForTests({
+        getUserByEmail: jest.fn().mockRejectedValue({ code: 'auth/user-not-found' }),
+        createUser: jest.fn().mockResolvedValue({ uid: 'uid-fresh' }),
+      });
+      const app = makeApp();
+      const res = await request(app).post('/api/paypal/webhook').send({
+        id: 'evt-G',
+        event_type: 'BILLING.SUBSCRIPTION.ACTIVATED',
+        resource: { id: 'SUB-G', custom_id: 'nuevo@cliente.com', plan_id: 'PLAN-MIIADT-001' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.uid).toBe('uid-fresh');
+      expect(res.body.accountCreated).toBe(true);
+      expect(res.body.product).toBe('miiadt');
+    });
+
+    test('custom_id email + cuenta existente -> accountCreated=false', async () => {
+      const fsMock = makeFsMock({}, {});
+      webhookDedup.__setFirestoreForTests(fsMock);
+      subscriptionsManager.__setFirestoreForTests(fsMock);
+      signupOnPayment.__setAdminAuthForTests({
+        getUserByEmail: jest.fn().mockResolvedValue({ uid: 'uid-known' }),
+        createUser: jest.fn(),
+      });
+      const app = makeApp();
+      const res = await request(app).post('/api/paypal/webhook').send({
+        id: 'evt-H',
+        event_type: 'BILLING.SUBSCRIPTION.ACTIVATED',
+        resource: { id: 'SUB-H', custom_id: 'conocido@cliente.com' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.uid).toBe('uid-known');
+      expect(res.body.accountCreated).toBe(false);
+    });
+
+    test('custom_id email + signup throws -> 500 signup_failed', async () => {
+      webhookDedup.__setFirestoreForTests(makeFsMock({}, {}));
+      signupOnPayment.__setAdminAuthForTests({
+        getUserByEmail: jest.fn().mockRejectedValue(new Error('firebase-down')),
+        createUser: jest.fn(),
+      });
+      const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const app = makeApp();
+      const res = await request(app).post('/api/paypal/webhook').send({
+        id: 'evt-I',
+        event_type: 'BILLING.SUBSCRIPTION.ACTIVATED',
+        resource: { id: 'SUB-I', custom_id: 'bad@cliente.com' },
+      });
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('signup_failed');
+      err.mockRestore();
+    });
+
+    test('custom_id uid legacy (no email) -> usa directo sin createUser', async () => {
+      const fsMock = makeFsMock({}, {});
+      webhookDedup.__setFirestoreForTests(fsMock);
+      subscriptionsManager.__setFirestoreForTests(fsMock);
+      const createUser = jest.fn();
+      signupOnPayment.__setAdminAuthForTests({
+        getUserByEmail: jest.fn(),
+        createUser,
+      });
+      const app = makeApp();
+      const res = await request(app).post('/api/paypal/webhook').send({
+        id: 'evt-J',
+        event_type: 'BILLING.SUBSCRIPTION.ACTIVATED',
+        resource: { id: 'SUB-J', custom_id: 'uid-legacy-abc' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.uid).toBe('uid-legacy-abc');
+      expect(res.body.accountCreated).toBe(false);
+      expect(createUser).not.toHaveBeenCalled();
+    });
   });
 
   test('dedup error -> warn + sigue procesando (no rompe)', async () => {
