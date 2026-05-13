@@ -42,6 +42,9 @@ let _generateAIContent = null;
 let _onTrainingUpdate  = null;
 let _adnStatePath      = null;
 let _isRunning         = false;
+// EXTRA #3 (2026-05-12): persistencia Firestore para sobrevivir redeploys Railway.
+let _trainingStore     = null;
+let _ownerUid          = null;
 
 // ─────────────────────────────────────────────
 // PERSISTENCIA
@@ -67,11 +70,14 @@ function saveAdnMinerState() {
  * @param {string}   opts.dataDir              - ruta al directorio /data
  * @param {string}   [opts.initialTrainingData]- trainingData previo desde la DB
  */
-function init({ whatsappClient, generateAIContent, onTrainingUpdate, dataDir, initialTrainingData = '' }) {
+function init({ whatsappClient, generateAIContent, onTrainingUpdate, dataDir, initialTrainingData = '', trainingStore, ownerUid }) {
   _client            = whatsappClient;
   _generateAIContent = generateAIContent;
   _onTrainingUpdate  = onTrainingUpdate;
   _adnStatePath      = path.join(dataDir, 'adn_miner_state.json');
+  // EXTRA #3: store Firestore opcional, mantiene compat backward (sin trainingStore = legacy en RAM solo)
+  _trainingStore     = trainingStore || null;
+  _ownerUid          = ownerUid || null;
 
   if (initialTrainingData) trainingData = initialTrainingData;
 
@@ -84,7 +90,8 @@ function init({ whatsappClient, generateAIContent, onTrainingUpdate, dataDir, in
     }
   }
 
-  console.log('[CEREBRO ABSOLUTO] Modulo listo. Minado nocturno: 03:00 AM (Bogotá).');
+  const firestoreNote = (_trainingStore && _ownerUid) ? ' (Firestore persistence ON)' : '';
+  console.log(`[CEREBRO ABSOLUTO] Modulo listo. Minado nocturno: 03:00 AM (Bogotá).${firestoreNote}`);
 }
 
 function updateClient(whatsappClient) {
@@ -319,6 +326,14 @@ function appendLearning(text, source) {
   trainingData += `\n\n[APRENDIZAJE ${src} — ${stamp}]\n${text.trim()}\n`;
   console.log(`[CEREBRO] 🧬 Aprendizaje guardado (${source}): "${text.substring(0, 80)}..." — total: ${trainingData.length} chars`);
   if (_onTrainingUpdate) _onTrainingUpdate(trainingData);
+
+  // EXTRA #3: persistencia Firestore paralela (no rompe si store no inyectado)
+  if (_trainingStore && _ownerUid && typeof _trainingStore.appendLearning === 'function') {
+    _trainingStore.appendLearning(_ownerUid, 'cerebro_absoluto', src, text.trim(), null)
+      .catch(function (e) {
+        console.warn('[CEREBRO] Firestore persist error:', e.message);
+      });
+  }
 }
 
 // ─────────────────────────────────────────────
