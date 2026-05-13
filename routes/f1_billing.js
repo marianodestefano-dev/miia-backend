@@ -1,32 +1,31 @@
 'use strict';
 
 /**
- * routes/f1_billing.js — TEC-MIIAF1-BILLING-1.
+ * routes/f1_billing.js — TEC-MIIAF1-BILLING-1 + F1.30 PAGO REAL [BLOQUE B firma Mariano 2026-05-12].
  *
  * Endpoints checkout + webhook para MiiaF1 $3 USD/mes addon.
- * Mismo patron que LudoMIIA (apps/api-ludomiia/routes/ludomiia-billing.js)
- * y MIIADT (cuando se cree).
+ * Mismo patron que LudoMIIA (apps/api-ludomiia/routes/ludomiia-billing.js).
  *
  * Providers: MercadoPago (LATAM core) + PayPal (resto).
  * Stripe FUERA per memoria firma Mariano 2026-04-30 18:34 COT.
  *
- * Inyeccion via _setProviderResolverForTests + _setDbFactoryForTests.
+ * Cambio F1.30 (2026-05-12 firma Mariano + coord Vi):
+ *   - STUB_PROVIDER eliminado.
+ *   - Default resolver usa lib/monetization/payment-provider.getPaymentProvider(country)
+ *     que devuelve providers reales con SDKs `mercadopago` + `@paypal/checkout-server-sdk`
+ *     instalados.
+ *
+ * Inyeccion via _setProviderResolverForTests + _setDbFactoryForTests para tests
+ * (Jest + coverageProvider=babel, regla Mariano 100% branch coverage 2026-05-02).
  */
 
 const express = require('express');
 const admin = require('firebase-admin');
 const { F1_ADDON_ID, F1_ADDON_PRICE_USD } = require('../sports/f1_dashboard/f1_paywall');
+const { getPaymentProvider } = require('../lib/monetization/payment-provider');
 
-// Stub provider mientras SDKs MercadoPago/PayPal no instalados en miia-backend.
-/* istanbul ignore next */
-const STUB_PROVIDER = {
-  createCheckoutSession: async () => { throw new Error('SDK_NOT_INSTALLED'); },
-  verifyWebhook: async () => false,
-};
-
-/* istanbul ignore next */
-function _defaultProviderResolver(country) { return STUB_PROVIDER; }
-
+/* istanbul ignore next — prod factory; tests inject via _setProviderResolverForTests */
+function _defaultProviderResolver(country) { return getPaymentProvider(country); }
 
 let _resolveProvider = _defaultProviderResolver;
 let _dbFactory = /* istanbul ignore next */ () => admin.firestore();
