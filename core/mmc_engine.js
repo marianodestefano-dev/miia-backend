@@ -27,6 +27,19 @@ let _db = null;
 function db() { /* istanbul ignore next */ if (!_db) _db = admin.firestore(); return _db; }
 function __setFirestoreForTests(fs) { _db = fs; }
 
+// MIGRACION #7 (firma Mariano 2026-05-12): dual-write transitorio
+// owners/{uid}/miia_memory/ (legacy) → users/{uid}/miia_memory/ (canonico spec 13).
+// Lectura sigue desde owners/ hasta cutover (30 dias). Escritura espejo a ambos.
+// Cuando MMC v0.3 quede estable en users/, este wrapper se elimina.
+const ENABLE_DUAL_WRITE = process.env.MMC_DUAL_WRITE !== 'false'; // default ON
+
+function _ownersMemoryCol(uid) {
+  return db().collection('owners').doc(uid).collection('miia_memory');
+}
+function _usersMemoryCol(uid) {
+  return db().collection('users').doc(uid).collection('miia_memory');
+}
+
 // ── Constantes ─────────────────────────────────────────────────────────────
 const MAX_RESUMEN_CHARS = 200;
 const MAX_CONTEXT_EPISODES = 3;
@@ -134,6 +147,16 @@ function _memoryCol(uid) {
 async function _saveEpisode(uid, episode) {
   const ref = _memoryCol(uid).doc(episode.episodeId);
   await ref.set(episode, { merge: false });
+  // #7 dual-write: espejo a users/{uid}/miia_memory/{episodeId}
+  /* istanbul ignore else */
+  if (ENABLE_DUAL_WRITE) {
+    try {
+      await _usersMemoryCol(uid).doc(episode.episodeId).set(episode, { merge: false });
+    } catch (e) {
+      /* istanbul ignore next */
+      console.warn('[MMC] dual-write users/ fallo episodeId=' + episode.episodeId + ': ' + e.message);
+    }
+  }
   return episode.episodeId;
 }
 
