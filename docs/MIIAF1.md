@@ -13,7 +13,6 @@ en el README del módulo F1.
 - **Deploy checklist B.4**: README sección "Deploy checklist Railway B.4"
 - **Endpoints API**: README sección "Endpoints API"
 - **Comandos WhatsApp**: README sección "Comandos WhatsApp (F1.23 + F1.26)"
-- **Fantasy League**: README sección "Fantasy League (F1.27)"
 - **Troubleshooting**: README sección "Troubleshooting"
 - **Tests + cobertura**: README sección "Tests + cobertura"
 

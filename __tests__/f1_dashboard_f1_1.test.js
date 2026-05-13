@@ -146,8 +146,7 @@ describe('F1.1 — Schema Firestore MiiaF1', () => {
       expect(paths.f1Prefs('uid123')).toBe('owners/uid123/f1_prefs');
     });
 
-    test('path fantasyEntry correcto', () => {
-      expect(paths.fantasyEntry('2025', 'uid123')).toBe('f1_fantasy/2025/standings/uid123');
-    });
+    // test path fantasyEntry ELIMINADO 2026-05-12 (firma Mariano).
+    // Fantasy F1 NUNCA fue pedido. Ver feedback_NO_fantasy_F1.md.
   });
 });

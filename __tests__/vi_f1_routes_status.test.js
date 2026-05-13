@@ -54,12 +54,8 @@ jest.mock('../sports/f1_dashboard/circuit_overlay', () => ({
   renderAllDriversOnCircuit: jest.fn().mockReturnValue('<svg/>'),
 }));
 
-jest.mock('../sports/f1_dashboard/f1_fantasy', () => ({
-  calculateFantasyPoints: jest.fn().mockReturnValue({ points: 0, breakdown: {} }),
-  getFantasyLeaderboard: jest.fn().mockResolvedValue([]),
-  updateOwnerFantasyScore: jest.fn().mockResolvedValue({}),
-  F1_POINTS: {},
-}));
+// jest.mock f1_fantasy ELIMINADO 2026-05-12 (firma Mariano).
+// Fantasy F1 NUNCA fue pedido. Ver memoria feedback_NO_fantasy_F1.md.
 
 jest.mock('../sports/f1_dashboard/f1_paywall', () => ({
   hasF1Addon: jest.fn().mockResolvedValue(false),

@@ -223,6 +223,7 @@ function generateCircuitSVG(circuitId, opts) {
   let driverOverlay = '';
   if (driverPos) {
     driverOverlay = '<circle cx="' + driverPos.x + '" cy="' + driverPos.y + '" r="8" fill="' + teamColor + '" opacity="0.9"/>';
+    /* istanbul ignore else — driverLabel siempre presente en flujo actual (driver adoptado) */
     if (driverLabel) {
       driverOverlay += '<text x="' + (driverPos.x + 12) + '" y="' + (driverPos.y + 4) + '" fill="white" font-size="11" font-family="Inter,sans-serif" font-weight="600">' + driverLabel + '</text>';
     }

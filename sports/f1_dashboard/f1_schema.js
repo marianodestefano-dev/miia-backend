@@ -87,8 +87,8 @@ const paths = {
   gp: (season, gpId) => `f1_data/${season}/schedule/${gpId}`,
   result: (season, gpId) => `f1_data/${season}/results/${gpId}`,
   f1Prefs: (uid) => `owners/${uid}/f1_prefs`,
-  fantasyStandings: /* istanbul ignore next — path helper no invocado en F1.27 fantasy actual */ (season) => `f1_fantasy/${season}/standings`,
-  fantasyEntry: (season, uid) => `f1_fantasy/${season}/standings/${uid}`,
+  // ELIMINADO 2026-05-12 (firma Mariano): paths fantasyStandings + fantasyEntry.
+  // Fantasy F1 NUNCA fue pedido por Mariano. Ver memoria feedback_NO_fantasy_F1.md.
 };
 
 module.exports = {

@@ -71,7 +71,7 @@ const setDriver = (season, id, d) => { globalThis.__mockDocs['f1_data/' + season
 const setPrefs = (p) => { globalThis.__mockPrefsGroup.push(p); };
 
 const paywall = require('../sports/f1_dashboard/f1_paywall');
-const fantasy = require('../sports/f1_dashboard/f1_fantasy');
+// require f1_fantasy ELIMINADO 2026-05-12 (firma Mariano). Ver feedback_NO_fantasy_F1.md.
 
 beforeEach(() => reset());
 
@@ -136,60 +136,6 @@ describe('F1 R3 requireF1Addon middleware', () => {
   });
 });
 
-describe('F1 R3 updateOwnerFantasyScore', () => {
-  test('driver no existe -> 0', async () => {
-    const r = await fantasy.updateOwnerFantasyScore('u', 'no-driver', 'gp1', { positions: [] });
-    expect(r.points).toBe(0);
-  });
-  test('driver no en positions', async () => {
-    setDriver('2026', 'norris', { name: 'L Norris' });
-    const r = await fantasy.updateOwnerFantasyScore('u', 'norris', 'gp1', {
-      positions: [{ driver_id: 'verstappen', position: 1 }],
-    });
-    expect(r.points).toBe(0);
-  });
-  test('driver P3', async () => {
-    setDriver('2026', 'norris', { name: 'L Norris' });
-    const r = await fantasy.updateOwnerFantasyScore('u', 'norris', 'gp1', {
-      positions: [{ driver_id: 'norris', position: 3 }],
-    });
-    expect(r.points).toBeGreaterThan(0);
-  });
-  test('via driverId fallback', async () => {
-    setDriver('2026', 'd1', { name: 'D1' });
-    const r = await fantasy.updateOwnerFantasyScore('u', 'd1', 'gp1', {
-      positions: [{ driverId: 'd1', position: 1 }],
-    });
-    expect(r.points).toBe(25);
-  });
-});
-
-describe('F1 R3 getFantasyLeaderboard', () => {
-  test('sin prefs []', async () => {
-    expect(await fantasy.getFantasyLeaderboard()).toEqual([]);
-  });
-  test('skip sin uid', async () => {
-    setPrefs({ adopted_driver: 'd1', fantasy_total: 100 });
-    expect(await fantasy.getFantasyLeaderboard()).toEqual([]);
-  });
-  test('skip sin adopted_driver', async () => {
-    setPrefs({ uid: 'u1', fantasy_total: 100 });
-    expect(await fantasy.getFantasyLeaderboard()).toEqual([]);
-  });
-  test('skip sin fantasy_total', async () => {
-    setPrefs({ uid: 'u1', adopted_driver: 'd1' });
-    expect(await fantasy.getFantasyLeaderboard()).toEqual([]);
-  });
-  test('ordena desc + ranks', async () => {
-    setPrefs({ uid: 'u1', adopted_driver: 'd1', fantasy_total: 50 });
-    setPrefs({ uid: 'u2', adopted_driver: 'd2', fantasy_total: 100 });
-    setPrefs({ uid: 'u3', adopted_driver: 'd3', fantasy_total: 25 });
-    const r = await fantasy.getFantasyLeaderboard();
-    expect(r[0].uid).toBe('u2');
-    expect(r[0].rank).toBe(1);
-    expect(r[2].rank).toBe(3);
-  });
-  test('season custom no rompe', async () => {
-    expect(Array.isArray(await fantasy.getFantasyLeaderboard('2024'))).toBe(true);
-  });
-});
+// describe Fantasy ELIMINADOS 2026-05-12 (firma Mariano).
+// Tests de updateOwnerFantasyScore + getFantasyLeaderboard removidos.
+// Fantasy F1 NUNCA fue pedido. Ver memoria feedback_NO_fantasy_F1.md.

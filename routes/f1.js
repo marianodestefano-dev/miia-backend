@@ -214,8 +214,10 @@ module.exports = function createF1Routes({ verifyToken }) {
   });
 
 
-  // F1.27-F1.31: Fantasy + Paywall endpoints
-  const { calculateFantasyPoints, getFantasyLeaderboard, updateOwnerFantasyScore } = require('../sports/f1_dashboard/f1_fantasy');
+  // F1.29: Paywall (addon $3/mes dashboard live).
+  // ELIMINADO 2026-05-12 (firma Mariano): endpoints fantasy F1 (/fantasy/leaderboard +
+  // /fantasy/me). Fantasy NUNCA fue pedido por Mariano. Ver memoria
+  // feedback_NO_fantasy_F1.md. MIIAF1 = dashboard live puro.
   const { hasF1Addon, requireF1Addon } = require('../sports/f1_dashboard/f1_paywall');
 
   // GET /api/f1/addon/status — verifica si el owner tiene el addon
@@ -223,24 +225,6 @@ module.exports = function createF1Routes({ verifyToken }) {
     const uid = req.user && req.user.uid;
     const active = await hasF1Addon(uid).catch(() => false);
     res.json({ active, addon_id: 'f1_dashboard', price_usd: 3 });
-  });
-
-  // GET /api/f1/fantasy/leaderboard — ranking de fantasy entre owners
-  router.get('/fantasy/leaderboard', auth, async (req, res) => {
-    try {
-      const leaderboard = await getFantasyLeaderboard();
-      res.json({ leaderboard, total: leaderboard.length });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  });
-
-  // GET /api/f1/fantasy/me — puntos fantasy del owner
-  router.get('/fantasy/me', auth, async (req, res) => {
-    try {
-      const uid = req.user && req.user.uid;
-      const prefDoc = await db().doc('owners/' + uid + '/f1_prefs/current').get();
-      const fantasy_total = prefDoc.exists ? (prefDoc.data().fantasy_total || 0) : 0;
-      res.json({ fantasy_total, uid });
-    } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
 

@@ -79,7 +79,7 @@ const reset = () => {
   globalThis.__mockPrefs5 = [];
 };
 
-const fantasy = require('../sports/f1_dashboard/f1_fantasy');
+// require f1_fantasy ELIMINADO 2026-05-12 (firma Mariano). Ver feedback_NO_fantasy_F1.md.
 const history = require('../sports/f1_dashboard/f1_history');
 const cron = require('../sports/f1_dashboard/f1_cron');
 const scraperMock = require('../sports/f1_dashboard/results_scraper');
@@ -87,30 +87,8 @@ const notifMock = require('../sports/f1_dashboard/f1_notifications');
 
 beforeEach(() => { reset(); jest.clearAllMocks(); });
 
-describe('F1 R5 fantasy edge cases', () => {
-  test('updateOwner con prefs existente y fantasy_total', async () => {
-    globalThis.__mockDocs5['f1_data/2026/drivers/norris'] = { name: 'Norris' };
-    globalThis.__mockDocs5['owners/u/f1_prefs/current'] = { fantasy_total: 100 };
-    const r = await fantasy.updateOwnerFantasyScore('u', 'norris', 'gp1', {
-      positions: [{ driver_id: 'norris', position: 1 }],
-    });
-    expect(r.points).toBeGreaterThan(0);
-    expect(r.total !== undefined).toBe(true);
-  });
-  test('updateOwner total fallback a points cuando prefs sin fantasy_total', async () => {
-    globalThis.__mockDocs5['f1_data/2026/drivers/d'] = { name: 'D' };
-    globalThis.__mockDocs5['owners/u/f1_prefs/current'] = { other: 'x' };
-    const r = await fantasy.updateOwnerFantasyScore('u', 'd', 'gp1', {
-      positions: [{ driver_id: 'd', position: 5 }],
-    });
-    expect(r.total !== undefined).toBe(true);
-  });
-  test('getFantasyLeaderboard con fantasy_total 0 falsy → skip', async () => {
-    globalThis.__mockPrefs5.push({ uid: 'u1', adopted_driver: 'd1', fantasy_total: 0 });
-    const r = await fantasy.getFantasyLeaderboard();
-    expect(r).toEqual([]);
-  });
-});
+// describe Fantasy ELIMINADO 2026-05-12 (firma Mariano).
+// Fantasy F1 NUNCA fue pedido. MIIAF1 = dashboard live puro.
 
 describe('F1 R5 history edge cases', () => {
   test('formatPodium positions sin driver_name ni driverId usa dash', () => {

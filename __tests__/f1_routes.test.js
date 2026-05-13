@@ -3,7 +3,7 @@
 /**
  * Tests supertest para routes/f1.js — todos los endpoints F1.
  * Mock firebase-admin, live_cache, f1_telemetry, circuit_maps, circuit_overlay,
- * f1_fantasy, f1_paywall, f1_schema. Usa globalThis para controlar mocks por test.
+ * f1_paywall, f1_schema. Usa globalThis para controlar mocks por test.
  *
  * Endpoints cubiertos:
  *   - GET /api/f1/calendar/:season
@@ -17,7 +17,7 @@
  *   - GET /api/f1/live/status / positions / driver/:n
  *   - GET /api/f1/circuit/:id, /circuits, /circuit/:id/live
  *   - GET /api/f1/addon/status
- *   - GET /api/f1/fantasy/leaderboard, /fantasy/me
+ *   - (eliminado: /api/f1/fantasy/* — firma Mariano 2026-05-12, no fantasy F1)
  *   - GET /api/f1/live/session, /live/driver/:n/snapshot, /live/locations,
  *         /live/driver/:n/telemetry, /live/driver/:n/laps
  */
@@ -115,21 +115,12 @@ jest.mock('../sports/f1_dashboard/circuit_overlay', () => ({
   renderAllDriversOnCircuit: () => globalThis.__f1CircuitState.overlaySvg,
 }));
 
-globalThis.__f1FantasyState = {
-  hasAddon: true,
-  leaderboard: [{ uid: 'u1', points: 100 }],
-};
-
-jest.mock('../sports/f1_dashboard/f1_fantasy', () => ({
-  calculateFantasyPoints: jest.fn(),
-  getFantasyLeaderboard: () => globalThis.__f1FantasyState.throwError
-    ? Promise.reject(new Error('LB-ERR'))
-    : Promise.resolve(globalThis.__f1FantasyState.leaderboard),
-  updateOwnerFantasyScore: jest.fn(),
-}));
+// jest.mock f1_fantasy ELIMINADO 2026-05-12 (firma Mariano). Ver feedback_NO_fantasy_F1.md.
+// State mínimo `__f1AddonState` para mockear paywall (no es fantasy, solo flag del addon).
+globalThis.__f1AddonState = { hasAddon: true };
 
 jest.mock('../sports/f1_dashboard/f1_paywall', () => ({
-  hasF1Addon: () => Promise.resolve(globalThis.__f1FantasyState.hasAddon),
+  hasF1Addon: () => Promise.resolve(globalThis.__f1AddonState.hasAddon),
   requireF1Addon: () => (req, res, next) => next(),
 }));
 
@@ -201,7 +192,7 @@ beforeEach(() => {
   globalThis.__f1FirestoreState.setCalls = [];
   globalThis.__f1FirestoreState.throwError = false;
   globalThis.__f1LiveCacheState.throwError = false;
-  globalThis.__f1FantasyState.throwError = false;
+  // __f1FantasyState ELIMINADO 2026-05-12 firma Mariano (no fantasy F1).
   globalThis.__f1TelState.throwError = false;
   globalThis.__f1TelState.lapsError = false;
   globalThis.__f1TelState.telError = false;
@@ -504,44 +495,13 @@ describe('GET /api/f1/circuit*', () => {
   });
 });
 
-// ───── /addon /fantasy ─────
-describe('GET /addon/status + /fantasy/leaderboard + /fantasy/me', () => {
+// ───── /addon ───── (tests /fantasy/* ELIMINADOS 2026-05-12 firma Mariano)
+describe('GET /addon/status', () => {
   test('/addon/status active', async () => {
     const app = makeApp();
     const r = await request(app).get('/api/f1/addon/status');
     expect(r.status).toBe(200);
     expect(r.body.active).toBe(true);
-  });
-
-  test('/fantasy/leaderboard', async () => {
-    const app = makeApp();
-    const r = await request(app).get('/api/f1/fantasy/leaderboard');
-    expect(r.status).toBe(200);
-    expect(r.body.total).toBeGreaterThanOrEqual(1);
-  });
-
-  test('/fantasy/me con doc', async () => {
-    globalThis.__f1FirestoreState.docData = { fantasy_total: 250 };
-    const app = makeApp();
-    const r = await request(app).get('/api/f1/fantasy/me');
-    expect(r.status).toBe(200);
-    expect(r.body.fantasy_total).toBe(250);
-  });
-
-  test('/fantasy/me sin doc', async () => {
-    globalThis.__f1FirestoreState.docExists = false;
-    const app = makeApp();
-    const r = await request(app).get('/api/f1/fantasy/me');
-    expect(r.status).toBe(200);
-    expect(r.body.fantasy_total).toBe(0);
-  });
-
-  test('/fantasy/me con doc pero fantasy_total ausente → fallback || 0', async () => {
-    globalThis.__f1FirestoreState.docData = {}; // doc exists pero sin fantasy_total
-    const app = makeApp();
-    const r = await request(app).get('/api/f1/fantasy/me');
-    expect(r.status).toBe(200);
-    expect(r.body.fantasy_total).toBe(0);
   });
 });
 
@@ -722,19 +682,7 @@ describe('500 error paths — cobertura catch blocks', () => {
     expect(r.status).toBe(500);
   });
 
-  test('GET /fantasy/leaderboard 500', async () => {
-    globalThis.__f1FantasyState.throwError = true;
-    const app = makeApp();
-    const r = await request(app).get('/api/f1/fantasy/leaderboard');
-    expect(r.status).toBe(500);
-  });
-
-  test('GET /fantasy/me 500', async () => {
-    globalThis.__f1FirestoreState.throwError = true;
-    const app = makeApp();
-    const r = await request(app).get('/api/f1/fantasy/me');
-    expect(r.status).toBe(500);
-  });
+  // Tests /fantasy/leaderboard 500 + /fantasy/me 500 ELIMINADOS 2026-05-12 firma Mariano.
 
   test('GET /live/session 500', async () => {
     globalThis.__f1TelState.throwError = true;
@@ -837,7 +785,7 @@ describe('addon status hasF1Addon catch', () => {
     const r = await request(app).get('/api/f1/addon/status');
     expect(r.status).toBe(200);
     expect(r.body.active).toBe(false);
-    paywall.hasF1Addon = () => Promise.resolve(globalThis.__f1FantasyState.hasAddon);
+    paywall.hasF1Addon = () => Promise.resolve(globalThis.__f1AddonState.hasAddon);
   });
 });
 

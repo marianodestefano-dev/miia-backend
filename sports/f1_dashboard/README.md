@@ -1,7 +1,8 @@
 # MIIAF1 — F1 Dashboard add-on
 
 Add-on $3 USD/mes para MIIA. Dashboard live de F1 con scraping propio,
-fantasy league, comandos WhatsApp y notificaciones por piloto adoptado.
+visualización del circuito + posiciones de autos en tiempo real,
+comandos WhatsApp y notificaciones por piloto adoptado.
 
 **Spec**: `.claude/IDEAS_PENDIENTES.md` IDEA #052 (firmada 2026-04-24 + arranque 2026-05-01).
 **Audit completo Q2 MVP**: `JUEGA-MIIA/.juega_miia/operativo/MEMO_AUDIT_MIIAF1.md` (2026-05-12).
@@ -20,7 +21,6 @@ miia-backend/
 │   ├── f1_live_notifier.js     ← WA durante carrera (rate limit 5 vueltas)
 │   ├── f1_cron.js              ← cron post-GP
 │   ├── f1_history.js           ← historial GPs + driver season history
-│   ├── f1_fantasy.js           ← puntos fantasy + leaderboard cross-tenant
 │   ├── f1_paywall.js           ← hasF1Addon + activate + middleware
 │   ├── f1_telemetry.js         ← OpenF1 telemetry adapter
 │   ├── session_detector.js     ← detecta FP1/FP2/FP3/Q/Race
@@ -143,7 +143,6 @@ confirmó en `[RESPUESTA-VI-MIIAF1]` Q6 2026-05-12).
 | GET | `/api/f1/prefs` | Preferencias owner (piloto adoptado, notif) |
 | POST | `/api/f1/prefs` | Update prefs |
 | GET | `/api/f1/live/positions` | Live positions cache |
-| GET | `/api/f1/fantasy/leaderboard` | Leaderboard cross-tenant (requiere addon) |
 | POST | `/api/f1/billing/checkout` | Iniciar checkout $3/mes |
 | POST | `/api/f1/billing/webhook` | Webhook MP+PayPal |
 
@@ -160,20 +159,6 @@ Owner en su self-chat con MIIA:
 /f1 piloto <name>     → info piloto
 /f1 circuito          → SVG del próximo circuito
 ```
-
-## Fantasy League (F1.27)
-
-Cross-tenant leaderboard global vía `collectionGroup('f1_prefs')` Firestore.
-Mariano firmó P1 OPCIÓN A 2026-05-12: una sola liga global cumple Q2 MVP.
-Ligas privadas multi-grupo NO se implementan en Q2 MVP (Mariano puede firmar
-opción B en el futuro si quiere).
-
-Puntuación por GP del piloto adoptado:
-- Posición: 25/18/15/12/10/8/6/4/2/1 (1°-10°)
-- Vuelta rápida: +2 (si top 10)
-- Pole position: +3
-- Bonus overtake: +5 (si arrancó P5+ y terminó top 3)
-- DNF: 0
 
 ## Troubleshooting
 
@@ -192,11 +177,6 @@ Puntuación por GP del piloto adoptado:
 1. Verificar `PAYPAL_WEBHOOK_ID` matchea el ID generado en PayPal dashboard.
 2. Verificar `PAYPAL_MODE` correcto (sandbox vs production).
 3. Verificar headers `paypal-transmission-*` llegan al endpoint.
-
-### Fantasy leaderboard vacío
-1. Verificar que owners hayan adoptado piloto (`/api/f1/prefs` GET).
-2. Verificar que haya GPs completados con resultados (collection `f1_data/{season}/gps`).
-3. Verificar `f1_cron` corrió post-GP (Firestore `owners/{uid}/f1_fantasy/{gpId}`).
 
 ## Seguridad
 
