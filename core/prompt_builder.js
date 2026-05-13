@@ -2747,6 +2747,32 @@ function buildContextSection(memoryContext) {
   return '\n\n## CONTEXTO DE MEMORIA EPISODICA\n' + memoryContext + '\n';
 }
 
+// #4 Wire-in mod_tonada (firma Mariano 2026-05-12, ETAPA 2 §2-bis CENTER + Personal).
+// Async wrapper: consulta baseline + concatena directiva de tonada al prompt
+// generado por buildOwnerSelfChatPrompt. Sin cambios al prompt sync legacy
+// (callers existentes siguen funcionando).
+async function buildOwnerSelfChatPromptWithTonada(ownerProfile, messageBody, capabilities, opts) {
+  const basePrompt = buildOwnerSelfChatPrompt(ownerProfile, messageBody, capabilities);
+  const o = opts || {};
+  // Resolver UID + chatType para invocar el mod
+  const p = resolveProfile(ownerProfile);
+  const uid = o.uid || (p && p.uid) || null;
+  if (!uid) return basePrompt;
+  try {
+    const promptModTonada = require('./mmc/prompt_mod_tonada');
+    const directive = await promptModTonada.buildTonadaDirective({
+      uid,
+      chatType: o.chatType || 'selfchat',
+    });
+    if (!directive) return basePrompt;
+    return basePrompt + directive;
+  } catch (e) {
+    /* istanbul ignore next */
+    console.warn('[PROMPT-BUILDER] mod_tonada error: ' + e.message);
+    return basePrompt;
+  }
+}
+
 module.exports = {
   // Constantes reutilizables
   ADN_MIIA,           // Backward compatible: ADN con defaults genéricos
@@ -2761,6 +2787,9 @@ module.exports = {
   resolveOwnerFirstName,
   DEFAULT_OWNER_PROFILE,
   MIIA_SALES_PROFILE,
+
+  // #4 mod_tonada wire-in (firma Mariano 2026-05-12 ETAPA 2)
+  buildOwnerSelfChatPromptWithTonada,
 
   // MMC integration
   buildContextSection,
