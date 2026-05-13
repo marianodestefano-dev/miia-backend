@@ -30,6 +30,7 @@ require('dotenv').config({ path: __dirname + '/../.env' });
 
 const admin = require('firebase-admin');
 const distiller = require('../core/mmc/episode_distiller');
+const distillerV3 = require('../core/mmc/episode_distiller_v3'); // #5 wire-in spec 13 v0.3
 const aiGateway = require('../ai/ai_gateway');
 
 const MIIA_CENTER_UID = 'A5pMESWlfmPWCoCPRbwy85EzUzy2';
@@ -104,7 +105,7 @@ async function main() {
     });
 
     const elapsedMs = Date.now() - startTs;
-    console.log(`[MMC-NIGHTLY] done processed=${result.processed} errors=${result.errors.length} elapsed_ms=${elapsedMs}`);
+    console.log(`[MMC-NIGHTLY] distill done processed=${result.processed} errors=${result.errors.length} elapsed_ms=${elapsedMs}`);
 
     if (result.errors.length > 0) {
       console.error('[V2-ALERT][MMC-NIGHTLY-ERRORS]', {
@@ -112,6 +113,45 @@ async function main() {
         errors_count: result.errors.length,
         first_3_errors: result.errors.slice(0, 3),
       });
+    }
+
+    // #5 wire-in (firma Mariano 2026-05-12): enrich V3 spec 13 v0.3.
+    // Para cada episodio recien distilled, agregamos tono/idioma/tonada/
+    // lecciones/cadencia/embedding via episode_distiller_v3.
+    // TODO: pasar mensajes reales desde snapshot diario (CAPA 1).
+    // Por ahora mensajes=[] -> detectores caen a defaults (es/neutro/neutro).
+    /* istanbul ignore else */
+    if (process.env.MMC_ENRICH_V3 !== 'false') {
+      const enrichStart = Date.now();
+      let enriched = 0;
+      let enrichErrors = 0;
+      const fs = await _firestoreInit();
+      const distilledSnap = await fs
+        .collection('users')
+        .doc(MIIA_CENTER_UID)
+        .collection('miia_memory')
+        .where('status', '==', 'distilled')
+        .limit(50)
+        .get();
+      for (const doc of distilledSnap.docs) {
+        const ep = doc.data();
+        if (ep.idiomaDetectado) continue; // ya enriquecido en pase anterior
+        try {
+          await distillerV3.applyEnrichToFirestore(
+            MIIA_CENTER_UID,
+            ep.episodeId || doc.id,
+            [], // TODO: fetchear mensajes reales del snapshot diario
+            ep.summary || '',
+            ep.topic || null
+          );
+          enriched++;
+        } catch (e) {
+          enrichErrors++;
+          console.warn('[MMC-NIGHTLY] enrich v3 fallo ep=' + (ep.episodeId || doc.id) + ': ' + e.message);
+        }
+      }
+      const enrichElapsed = Date.now() - enrichStart;
+      console.log(`[MMC-NIGHTLY] enrich v3 enriched=${enriched} errors=${enrichErrors} elapsed_ms=${enrichElapsed}`);
     }
 
     // Exit clean tras flush logs
