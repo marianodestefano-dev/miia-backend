@@ -59,14 +59,19 @@ beforeEach(() => {
 // ── listAvailableContexts ─────────────────────────────────────────────────────
 
 describe('listAvailableContexts', () => {
-  test('retorna los 4 contextos predefinidos del spec', () => {
+  test('retorna los 7 contextos (4 legacy + 3 firmados Mariano 2026-05-12)', () => {
     const ctxs = listAvailableContexts();
-    expect(ctxs).toHaveLength(4);
+    expect(ctxs).toHaveLength(7);
     const keys = ctxs.map(function (c) { return c.key; });
+    // Legacy
     expect(keys).toContain(CONTEXTS.SALUDO_INICIAL);
     expect(keys).toContain(CONTEXTS.ESTOY_MANEJANDO);
     expect(keys).toContain(CONTEXTS.EXPLICACION_PLAN_BASICO);
     expect(keys).toContain(CONTEXTS.AGRADECIMIENTO_POST_CIERRE);
+    // Firmados Mariano 2026-05-12
+    expect(keys).toContain(CONTEXTS.LEAD_CUESTIONA_IA);
+    expect(keys).toContain(CONTEXTS.COMPRA_CONFIRMADA);
+    expect(keys).toContain(CONTEXTS.DESPEDIDA_CALIDA);
   });
 
   test('cada contexto tiene label y suggestedScript', () => {
@@ -287,11 +292,112 @@ describe('shouldSendAudio', () => {
   });
 });
 
+// ── detectLeadQuestionsIA (firma Mariano 2026-05-12) ───────────────────────
+
+const { detectLeadQuestionsIA } = require('../core/owner_voice_library');
+
+describe('detectLeadQuestionsIA', () => {
+  test('null/undefined/no-string -> false', () => {
+    expect(detectLeadQuestionsIA(null)).toBe(false);
+    expect(detectLeadQuestionsIA(undefined)).toBe(false);
+    expect(detectLeadQuestionsIA(123)).toBe(false);
+    expect(detectLeadQuestionsIA('')).toBe(false);
+  });
+
+  test('"sos IA?" -> true', () => {
+    expect(detectLeadQuestionsIA('sos IA?')).toBe(true);
+  });
+
+  test('"eres un bot?" -> true', () => {
+    expect(detectLeadQuestionsIA('eres un bot?')).toBe(true);
+  });
+
+  test('"esto es automatico" -> true', () => {
+    expect(detectLeadQuestionsIA('esto es automatico')).toBe(true);
+  });
+
+  test('"esto es automatizado" -> true', () => {
+    expect(detectLeadQuestionsIA('esto es automatizado')).toBe(true);
+  });
+
+  test('"hablo con una persona?" -> true', () => {
+    expect(detectLeadQuestionsIA('hablo con una persona?')).toBe(true);
+  });
+
+  test('"una persona real?" -> true', () => {
+    expect(detectLeadQuestionsIA('quiero hablar con una persona real')).toBe(true);
+  });
+
+  test('"responde una persona?" -> true', () => {
+    expect(detectLeadQuestionsIA('responde una persona o un bot?')).toBe(true);
+  });
+
+  test('"eres real?" -> true', () => {
+    expect(detectLeadQuestionsIA('eres real?')).toBe(true);
+  });
+
+  test('"es automatico?" -> true', () => {
+    expect(detectLeadQuestionsIA('Hola, esto es automatico?')).toBe(true);
+  });
+
+  test('"sois una maquina" con tilde -> true (NFD normalize)', () => {
+    expect(detectLeadQuestionsIA('¿sois una máquina?')).toBe(true);
+  });
+
+  test('"sos una inteligencia artificial?" -> true', () => {
+    expect(detectLeadQuestionsIA('sos una inteligencia artificial?')).toBe(true);
+  });
+
+  test('"sos un chatbot?" -> true', () => {
+    expect(detectLeadQuestionsIA('sos un chatbot?')).toBe(true);
+  });
+
+  test('"hola buenas tardes" -> false', () => {
+    expect(detectLeadQuestionsIA('hola buenas tardes')).toBe(false);
+  });
+
+  test('"quiero comprar el plan" -> false', () => {
+    expect(detectLeadQuestionsIA('quiero comprar el plan')).toBe(false);
+  });
+
+  test('"gracias por todo" -> false', () => {
+    expect(detectLeadQuestionsIA('gracias por todo')).toBe(false);
+  });
+
+  test('"me ayudas con un turno?" -> false (no contiene patterns)', () => {
+    expect(detectLeadQuestionsIA('me ayudas con un turno?')).toBe(false);
+  });
+});
+
+// ── Contextos firmados Mariano 2026-05-12 (Audios Personalizados) ──────────
+
+describe('Contextos Audios Personalizados (firma Mariano 2026-05-12)', () => {
+  test('CONTEXTS incluye 3 nuevos firmados', () => {
+    expect(CONTEXTS.LEAD_CUESTIONA_IA).toBe('lead_cuestiona_ia');
+    expect(CONTEXTS.COMPRA_CONFIRMADA).toBe('compra_confirmada');
+    expect(CONTEXTS.DESPEDIDA_CALIDA).toBe('despedida_calida');
+  });
+
+  test('listAvailableContexts retorna las 3 nuevas con label + suggestedScript', () => {
+    const ctxs = listAvailableContexts();
+    const ia = ctxs.find(c => c.key === CONTEXTS.LEAD_CUESTIONA_IA);
+    expect(ia).toBeDefined();
+    expect(ia.label).toMatch(/cuestiona/i);
+    expect(typeof ia.suggestedScript).toBe('string');
+
+    const compra = ctxs.find(c => c.key === CONTEXTS.COMPRA_CONFIRMADA);
+    expect(compra).toBeDefined();
+
+    const despedida = ctxs.find(c => c.key === CONTEXTS.DESPEDIDA_CALIDA);
+    expect(despedida).toBeDefined();
+  });
+});
+
 // ── Constantes ────────────────────────────────────────────────────────────────
 
 describe('Constantes', () => {
-  test('VALID_CONTEXTS tiene 4 entries', () => {
-    expect(VALID_CONTEXTS).toHaveLength(4);
+  test('VALID_CONTEXTS tiene 7 entries (4 legacy + 3 Mariano 2026-05-12)', () => {
+    expect(VALID_CONTEXTS).toHaveLength(7);
   });
   test('MAX_DURATION_SEC = 60', () => {
     expect(MAX_DURATION_SEC).toBe(60);
