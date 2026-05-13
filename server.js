@@ -15967,7 +15967,22 @@ app.post('/api/mercadopago/webhook', express.json(), publicSchemas.validate(publ
     if (payment.status === 'approved') {
       let ref = {};
       try { ref = JSON.parse(payment.external_reference || '{}'); } catch (_) {}
-      const { uid, plan, type: payType } = ref;
+      let { uid, plan, type: payType, email } = ref;
+      let accountCreated = false;
+      // A.1 -- Modelo B Mariano 2026-05-02: si email en external_reference, crear cuenta si no existe
+      if (!uid && email) {
+        try {
+          const signupOnPayment = require('./core/signup_on_payment');
+          if (signupOnPayment.isLikelyEmail(email)) {
+            const ensured = await signupOnPayment.ensureUserFromEmail(email);
+            uid = ensured.uid;
+            accountCreated = ensured.created;
+            console.log(`[MP] A.1 signup_on_payment uid=${uid} created=${accountCreated}`);
+          }
+        } catch (signupErr) {
+          console.error('[MP] A.1 signup fail:', signupErr.message);
+        }
+      }
 
       if (payType === 'subscription' && plan && uid) {
         const durations = { monthly: 1, quarterly: 3, semestral: 6, annual: 12, familiar: 1, familiar_annual: 12 };
