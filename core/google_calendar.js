@@ -80,9 +80,52 @@ async function getAllCalendarIds(uid) {
   const defaultId = data.googleCalendarId || 'primary';
   ids.add(defaultId);
   const calendars = data.calendars || {};
-  if (calendars.personal?.id) ids.add(calendars.personal.id);
-  if (calendars.work?.id) ids.add(calendars.work.id);
+  if (calendars.personal && calendars.personal.id) ids.add(calendars.personal.id);
+  if (calendars.work && calendars.work.id) ids.add(calendars.work.id);
   return [...ids];
+}
+
+/**
+ * EXTRA #4.a (2026-05-12) — Multi-calendar awareness (IDEA #026).
+ * Lee la API real (calendarList.list) para descubrir TODOS los calendarios
+ * VISIBLES del owner, incluidos los compartidos con permiso busy/free
+ * (ej. calendar de trabajo gestionado por JumpCloud).
+ *
+ * Antes: solo los calendarios manualmente configurados en data.calendars.
+ * Después: TODOS los calendarios donde el owner tiene visibility >= 'freeBusyReader'.
+ *
+ * Excluye calendarios escondidos por el owner (selected=false en su Google Calendar UI)
+ * porque eso es señal explícita "no me importan estos para conflictos".
+ *
+ * @param {string} uid
+ * @returns {Promise<string[]>} array de calendarIds (sin duplicados)
+ */
+async function getAllVisibleCalendarIds(uid) {
+  try {
+    const { cal } = await getCalendarClient(uid);
+    const resp = await cal.calendarList.list();
+    const items = (resp.data && resp.data.items) || [];
+    const ids = new Set();
+    for (const c of items) {
+      if (!c || !c.id) continue;
+      if (c.deleted) continue;
+      if (c.hidden) continue;
+      // 'selected' es true por default; lo respetamos. Si owner deselecciono
+      // el calendar en su UI, no lo usamos para conflictos.
+      if (c.selected === false) continue;
+      // accessRole minimo freeBusyReader para chequeo de conflictos
+      const role = c.accessRole || '';
+      if (!['owner', 'writer', 'reader', 'freeBusyReader'].includes(role)) continue;
+      ids.add(c.id);
+    }
+    // Garantizar que primary y el configurado manual esten incluidos como fallback
+    const manualIds = await getAllCalendarIds(uid);
+    for (const id of manualIds) ids.add(id);
+    return [...ids];
+  } catch (e) {
+    console.warn('[GCAL] getAllVisibleCalendarIds fallo (' + e.message + '), fallback a manual');
+    return await getAllCalendarIds(uid);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -223,7 +266,7 @@ async function createCalendarEvent({ summary, dateStr, startHour, endHour, start
 // ═══════════════════════════════════════════════════════════════
 
 async function checkCalendarAvailability(dateStr, uid) {
-  const { cal, calId } = await getCalendarClient(uid);
+  const { cal } = await getCalendarClient(uid);
   let targetDate = new Date(dateStr);
   if (isNaN(targetDate)) targetDate = new Date();
 
@@ -232,20 +275,36 @@ async function checkCalendarAvailability(dateStr, uid) {
   const timeMax = new Date(targetDate);
   timeMax.setHours(18, 0, 0, 0);
 
-  const response = await cal.events.list({
-    calendarId: calId,
-    timeMin: timeMin.toISOString(),
-    timeMax: timeMax.toISOString(),
-    singleEvents: true,
-    orderBy: 'startTime'
-  });
+  // EXTRA #4.a (IDEA #026): consultar TODOS los calendarios visibles, no solo primary
+  const allCalIds = await getAllVisibleCalendarIds(uid);
+  let allEvents = [];
+  for (const cId of allCalIds) {
+    try {
+      const response = await cal.events.list({
+        calendarId: cId,
+        timeMin: timeMin.toISOString(),
+        timeMax: timeMax.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime'
+      });
+      const calEvents = (response.data.items || []).filter(function (e) { return e.status !== 'cancelled'; });
+      allEvents = allEvents.concat(calEvents.map(function (e) {
+        return { item: e, calendarId: cId };
+      }));
+    } catch (e) {
+      console.warn('[CHECK-AVAIL] no pude leer calendario ' + cId + ': ' + e.message);
+    }
+  }
 
-  const events = response.data.items || [];
-  const busySlots = events.map(e => ({
-    start: new Date(e.start.dateTime || e.start.date),
-    end: new Date(e.end.dateTime || e.end.date),
-    title: e.summary
-  }));
+  const busySlots = allEvents.map(function (x) {
+    const e = x.item;
+    return {
+      start: new Date(e.start.dateTime || e.start.date),
+      end: new Date(e.end.dateTime || e.end.date),
+      title: e.summary || '(sin título)',
+      calendarId: x.calendarId,
+    };
+  });
 
   const freeSlots = [];
   for (let h = 9; h < 18; h++) {
@@ -253,11 +312,16 @@ async function checkCalendarAvailability(dateStr, uid) {
     slotStart.setHours(h, 0, 0, 0);
     const slotEnd = new Date(targetDate);
     slotEnd.setHours(h + 1, 0, 0, 0);
-    const overlap = busySlots.some(b => b.start < slotEnd && b.end > slotStart);
-    if (!overlap) freeSlots.push(`${h}:00 - ${h + 1}:00`);
+    const overlap = busySlots.some(function (b) { return b.start < slotEnd && b.end > slotStart; });
+    if (!overlap) freeSlots.push(h + ':00 - ' + (h + 1) + ':00');
   }
 
-  return { date: targetDate.toLocaleDateString('es-ES'), busySlots: busySlots.length, freeSlots };
+  return {
+    date: targetDate.toLocaleDateString('es-ES'),
+    busySlots: busySlots.length,
+    freeSlots,
+    calendarsConsulted: allCalIds.length,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -467,9 +531,11 @@ async function checkSlotAvailability(uid, dateStr, startHour, startMinute, durat
   try {
     const { cal } = await getCalendarClient(uid);
 
-    // ═══ DUAL AGENDA: Consultar TODOS los calendarios del usuario ═══
-    // Un conflicto en CUALQUIER agenda bloquea el horario (persona es una sola)
-    const allCalIds = await getAllCalendarIds(uid);
+    // ═══ DUAL AGENDA + EXTRA #4.a (IDEA #026): Consultar TODOS los calendarios
+    // VISIBLES (no solo los configurados manualmente). Esto detecta calendars
+    // compartidos como el de trabajo Mariano gestionado por JumpCloud (busy/free).
+    // Un conflicto en CUALQUIER agenda bloquea el horario (persona es una sola).
+    const allCalIds = await getAllVisibleCalendarIds(uid);
     const dayStart = new Date(dateStr + 'T06:00:00');
     const dayEnd = new Date(dateStr + 'T23:00:00');
 
@@ -603,6 +669,7 @@ module.exports = {
   getOAuth2Client,
   getCalendarClient,
   getAllCalendarIds,
+  getAllVisibleCalendarIds,
   getScheduleConfig,
   createCalendarEvent,
   checkCalendarAvailability,
