@@ -639,12 +639,19 @@ function getFallbackMessage(vetoReason, chatType) {
   // chatType. En selfchat el owner sabe que habla con MIIA — podemos
   // ser directos y honestos. En leads se mantiene tono genérico
   // y cálido para no romper la ilusión de persona real.
+  //
+  // BUG-021 mitigation (firma Mariano 2026-05-12): si LID no resuelve
+  // post-BadMAC, chatType llega como 'lead' aunque sea el owner. Para no
+  // tratarlo como "primera vez" ("¡Hola! ¿En qué te puedo ayudar?"),
+  // usamos un fallback NEUTRAL que funcione tanto para lead real como
+  // para owner-confundido-con-lead. Causa raíz (LID→JID) sigue requiriendo
+  // ceremonia zona sagrada separada — esto solo mitiga el síntoma.
   const isSelfChat = chatType === 'selfchat' || chatType === 'self';
 
   if (/IDENTIDAD/.test(vetoReason)) {
     return isSelfChat
       ? 'Perdón, no puedo procesar esto como estaba.'
-      : '¡Hola! ¿En qué te puedo ayudar?';
+      : 'Te leo en un momento, dame unos minutos.';
   }
   if (/PROMESA/.test(vetoReason)) {
     return isSelfChat
@@ -667,7 +674,7 @@ function getFallbackMessage(vetoReason, chatType) {
   // DEFAULT
   return isSelfChat
     ? 'No pude procesar este mensaje.'
-    : '¡Hola! ¿En qué te puedo ayudar?';
+    : 'Te leo en un momento, dame unos minutos.';
 }
 
 module.exports = {

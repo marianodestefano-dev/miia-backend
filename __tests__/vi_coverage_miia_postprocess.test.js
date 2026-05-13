@@ -361,8 +361,11 @@ describe('getFallbackMessage', () => {
     expect(pp.getFallbackMessage('IDENTIDAD COMPROMETIDA', 'selfchat')).toContain('procesar');
   });
 
-  test('IDENTIDAD + lead (non-selfchat)', () => {
-    expect(pp.getFallbackMessage('IDENTIDAD COMPROMETIDA', 'lead')).toContain('Hola');
+  test('IDENTIDAD + lead (non-selfchat) → BUG-021 mitigation: neutral fallback', () => {
+    // Fix BUG-021 (firma Mariano 2026-05-12): si owner aparece como lead por
+    // LID no resuelto post-BadMAC, el fallback NO debe sonar "primera vez".
+    // Usamos mensaje neutral que funciona para lead real Y owner-confundido.
+    expect(pp.getFallbackMessage('IDENTIDAD COMPROMETIDA', 'lead')).toContain('Te leo en un momento');
   });
 
   test('PROMESA + selfchat', () => {
@@ -398,8 +401,10 @@ describe('getFallbackMessage', () => {
     expect(pp.getFallbackMessage('TONO: muletillas detectadas', 'selfchat')).toContain('procesar');
   });
 
-  test('DEFAULT + lead', () => {
-    expect(pp.getFallbackMessage('TONO: muletillas detectadas', 'lead')).toContain('Hola');
+  test('DEFAULT + lead → BUG-021 mitigation: neutral fallback', () => {
+    // Fix BUG-021 (firma Mariano 2026-05-12): mensaje neutral en lugar de
+    // "¡Hola! ¿En qué te puedo ayudar?" que sonaba a primera-vez para owner.
+    expect(pp.getFallbackMessage('TONO: muletillas detectadas', 'lead')).toContain('Te leo en un momento');
   });
 });
 

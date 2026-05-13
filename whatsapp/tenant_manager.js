@@ -2471,9 +2471,12 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
           if (!isFromMe && !isSelfChat && body.trim()) {
             // Bug 1 fix (C-173): persistir el JID resuelto (no el raw @lid)
             // para que el recovery post-reconexión use el phone real.
+            // BUG-022 fix (firma Mariano 2026-05-12): persistir isFromMe para que
+            // recovery NO reprocese mensajes del owner como lead aun si BUG-021 vive.
             const ownerPendingPhone = resolvedFrom || from;
             const ownerPendingData = {
-              phone: ownerPendingPhone, body, timestamp: Date.now(), from: ownerPendingPhone, ownerUid: uid, role: 'owner', isOwnerPath: true
+              phone: ownerPendingPhone, body, timestamp: Date.now(), from: ownerPendingPhone, ownerUid: uid, role: 'owner', isOwnerPath: true,
+              isFromMe: !!isFromMe,
             };
             tenant._unrespondedMessages.set(ownerMsgTrackId, ownerPendingData);
             // Fire-and-forget write a Firestore — infalible
@@ -2540,7 +2543,10 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
               timestamp: Date.now(),
               from: from,
               ownerUid,
-              role
+              role,
+              // BUG-022 fix (firma Mariano 2026-05-12): persistir isFromMe
+              // para que recovery NO reprocese mensajes del owner como lead.
+              isFromMe: !!isFromMe,
             };
             tenant._unrespondedMessages.set(msgTrackId, pendingData);
             // Fire-and-forget write a Firestore — NO await para no agregar latencia
@@ -4220,6 +4226,16 @@ async function recoverUnrespondedMessages(uid, tenant) {
     let recovered = 0;
     for (const msg of recent) {
       try {
+        // BUG-022 fix (firma Mariano 2026-05-12): si el msg original tenia
+        // isFromMe=true (mensaje del owner real persistido por error debido
+        // a BUG-021), SKIP — no reprocesar como lead. Borramos del store
+        // para no acumular ruido.
+        if (msg.isFromMe === true) {
+          await admin.firestore().collection('users').doc(uid)
+            .collection('pending_responses').doc(msg.msgId).delete().catch(() => {});
+          console.log(`[TM:${uid}] ⏭️ RECOVERY skip msg fromMe=true (BUG-022 guard): "${(msg.body || '').slice(0, 40)}"`);
+          continue;
+        }
         // Bug 1 fix (C-173): recovery puede haber persistido un @lid
         // si el write ocurrió antes del fix de Gap C. Intentamos
         // resolver antes de reprocesar, y computamos realSelfChat
