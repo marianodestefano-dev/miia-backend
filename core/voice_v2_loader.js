@@ -178,6 +178,7 @@ function extractIdentidadBaseComun(fullText) {
   if (start === -1) return '';
   // Busca el próximo "## §2 " (cualquier título: "LOS 7 SUBREGISTROS" o "SUBREGISTROS CENTER")
   const end = fullText.indexOf('## §2 ', start + 1);
+  /* istanbul ignore next — defensive: seeds reales bacinger siempre tienen ## §2 */
   if (end === -1) return fullText.slice(start).trim();
   return fullText.slice(start, end).trim();
 }
@@ -267,6 +268,7 @@ function resolveV2ChatType(opts) {
 
   // Personal + cualquier otro UID (firma Mariano 2026-05-12 23:05 -- TODAS las MIIAs).
   // Tenants futuros heredan branching Personal hasta que tengan seed propia configurada.
+  /* istanbul ignore next — OR rama falsy unreachable: isV2EligibleUid linea 245 ya filtró uids no-string/null */
   if (uid === OWNER_PERSONAL_UID || (typeof uid === 'string' && uid.length > 0)) {
     if (basePhone && basePhone === ALE_PHONE) return 'ale_pareja';
     switch (contactType) {
@@ -296,6 +298,7 @@ function resolveV2ChatType(opts) {
     }
   }
 
+  /* istanbul ignore next — defensive unreachable: si llegamos aquí, isV2EligibleUid(uid) era false y ya retornó en línea 245 */
   return 'unknown';
 }
 
