@@ -1983,14 +1983,35 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
                 resolvedFrom = `${tenant.ownerPhone}@s.whatsapp.net`;
                 if (!tenant._lidMap) tenant._lidMap = {};
                 tenant._lidMap[lidBase] = resolvedFrom;
+                // BUG-021 fix raiz (firma Mariano 2026-05-12 23:05): persistir TAMBIEN
+                // en _ownerKnownLids para que post-BadMAC reconnect, si el LID viene
+                // antes de que sock.user.lid se popule, podamos resolverlo desde el set.
+                if (!tenant._ownerKnownLids) tenant._ownerKnownLids = new Set();
+                tenant._ownerKnownLids.add(lidBase);
                 console.log(`[TM:${uid}] 🔗 P6-LID: Owner LID matched via sock.user.lid: ${lidBase} → ${resolvedFrom}`);
                 // Persistir inmediatamente (owner LID es crítico)
                 admin.firestore().collection('users').doc(uid)
                   .collection('miia_persistent').doc('lid_map')
-                  .set({ mappings: tenant._lidMap, updatedAt: new Date().toISOString() }, { merge: true })
+                  .set({
+                    mappings: tenant._lidMap,
+                    ownerKnownLids: Array.from(tenant._ownerKnownLids),
+                    updatedAt: new Date().toISOString(),
+                  }, { merge: true })
                   .catch(e => console.error(`[TM:${uid}] ⚠️ Error persistiendo owner LID:`, e.message));
               }
             }
+          }
+
+          // Fuente 3 (BUG-021 fix raiz, firma Mariano 2026-05-12 23:05):
+          // Si el LID no se resolvio por Fuentes 1/2, chequear en _ownerKnownLids
+          // (set persistido con LIDs historicos confirmados como owner). Esto cubre
+          // el caso post-BadMAC donde sock.user.lid tarda en popularse o trae LID
+          // viejo, pero ya vimos este LID resolviendo a owner en una sesion previa.
+          if (resolvedFrom === from && tenant.ownerPhone && tenant._ownerKnownLids?.has(lidBase)) {
+            resolvedFrom = `${tenant.ownerPhone}@s.whatsapp.net`;
+            if (!tenant._lidMap) tenant._lidMap = {};
+            tenant._lidMap[lidBase] = resolvedFrom;
+            console.log(`[TM:${uid}] 🔗 P6-LID: Owner LID matched via _ownerKnownLids (BUG-021 fix): ${lidBase} → ${resolvedFrom}`);
           }
         }
 
@@ -2949,9 +2970,18 @@ async function startBaileysConnection(uid, tenant, ioInstance) {
       const lidDoc = await admin.firestore().collection('users').doc(uid)
         .collection('miia_persistent').doc('lid_map').get();
       if (lidDoc.exists) {
-        const saved = lidDoc.data()?.mappings || {};
+        const docData = lidDoc.data() || {};
+        const saved = docData.mappings || {};
         Object.assign(tenant._lidMap, saved);
         console.log(`[TM:${uid}] 📇 LID-MAP cargado de Firestore: ${Object.keys(saved).length} mappings`);
+        // BUG-021 fix raiz (firma Mariano 2026-05-12 23:05): cargar tambien _ownerKnownLids
+        // para que post-BadMAC podamos resolver LIDs historicos del owner sin esperar a
+        // que sock.user.lid se popule.
+        const ownerLidsArr = Array.isArray(docData.ownerKnownLids) ? docData.ownerKnownLids : [];
+        if (ownerLidsArr.length > 0) {
+          tenant._ownerKnownLids = new Set(ownerLidsArr);
+          console.log(`[TM:${uid}] 📇 OWNER-LIDS cargados (BUG-021): ${ownerLidsArr.length} LIDs historicos`);
+        }
       }
     } catch (e) {
       console.error(`[TM:${uid}] ⚠️ Error cargando lid_map de Firestore:`, e.message);
