@@ -14,6 +14,8 @@
 
 const express = require('express');
 const admin = require('firebase-admin');
+const subscriptionsManager = require('../core/subscriptions_manager');
+const webhookDedup = require('../core/webhook_dedup');
 
 const PLAN_RESOLVERS = {
   miiadt:   function() { return process.env.PAYPAL_PLAN_MIIADT   || null; },
@@ -127,18 +129,42 @@ function createPayPalRoutes() {
     const eventType = payload.event_type || '';
     const resource  = payload.resource  || {};
     const ownerUid  = resource.custom_id;
+    const eventId   = payload.id || resource.id || null;
+    const productHint = resource.plan_id || null;
     if (!ownerUid) { return res.status(400).json({ error: 'uid_missing' }); }
+    // A.7 -- dedup idempotente por event_id
+    try {
+      const dedup = await webhookDedup.markProcessed('paypal', eventId, { uid: ownerUid, eventType });
+      if (dedup.duplicate) {
+        console.log('[PAYPAL-WEBHOOK] DUPLICATE eventId=' + eventId);
+        return res.json({ ok: true, action: 'duplicate_skipped', eventId });
+      }
+    } catch (e) {
+      console.warn('[PAYPAL-WEBHOOK] dedup fail:', e.message);
+    }
+    // resolver producto desde plan_id
+    let product = null;
+    for (const key of Object.keys(PLAN_RESOLVERS)) {
+      const planId = PLAN_RESOLVERS[key]();
+      if (planId && planId === productHint) { product = key; break; }
+    }
     try {
       const db = _dbFactory();
       if (eventType === 'BILLING.SUBSCRIPTION.ACTIVATED') {
         await db.collection('users').doc(ownerUid).update({ payment_status: 'active', paypal_subscription_id: resource.id || null, activated_at: new Date().toISOString() });
-        console.log('[PAYPAL-WEBHOOK] ACTIVATED uid=' + ownerUid);
-        return res.json({ ok: true, action: 'activated', uid: ownerUid });
+        if (product) {
+          await subscriptionsManager.addProductPermission(ownerUid, product, 'monthly', null);
+        }
+        console.log('[PAYPAL-WEBHOOK] ACTIVATED uid=' + ownerUid + ' product=' + product);
+        return res.json({ ok: true, action: 'activated', uid: ownerUid, product });
       }
       if (eventType === 'BILLING.SUBSCRIPTION.CANCELLED') {
         await db.collection('users').doc(ownerUid).update({ payment_status: 'cancelled', cancelled_at: new Date().toISOString() });
+        if (product) {
+          await subscriptionsManager.writeSubscription(ownerUid, product, { active: false, cancelledAt: new Date().toISOString() });
+        }
         console.log('[PAYPAL-WEBHOOK] CANCELLED uid=' + ownerUid);
-        return res.json({ ok: true, action: 'cancelled', uid: ownerUid });
+        return res.json({ ok: true, action: 'cancelled', uid: ownerUid, product });
       }
       if (eventType === 'BILLING.SUBSCRIPTION.PAYMENT.FAILED') {
         await db.collection('users').doc(ownerUid).update({ payment_status: 'payment_failed', last_failed_at: new Date().toISOString() });

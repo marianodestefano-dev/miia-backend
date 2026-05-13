@@ -15793,11 +15793,6 @@ app.post('/api/paddle/webhook', express.raw({ type: 'application/json' }), async
   }
 });
 
-// Endpoints Stripe deprecados
-app.post('/api/stripe/subscribe', (req, res) => res.status(410).json({ error: 'Migrado a Paddle. Usar /api/paddle/subscribe' }));
-app.post('/api/stripe/create-checkout-session', (req, res) => res.status(410).json({ error: 'Migrado a Paddle. Usar /api/paddle/agent-checkout' }));
-app.post('/api/stripe/webhook', (req, res) => res.status(410).send('Webhook Stripe desactivado'));
-
 // ============================================
 // PAYPAL CHECKOUT
 // ============================================
