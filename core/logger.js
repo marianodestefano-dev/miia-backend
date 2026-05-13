@@ -21,6 +21,7 @@
  */
 
 const pino = require('pino');
+const sanitizer = require('./log_sanitizer');
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIG
@@ -76,6 +77,20 @@ function child(bindings) {
 }
 
 /**
+ * EXTRA #4.c (2026-05-12) — Sanitize args antes de logear.
+ * Si NODE_ENV=production y !MIIA_DEBUG_VERBOSE, aplica sanitize() a strings
+ * y sanitizeObject() a objetos. Si dev o verbose, no-op (pasa tal cual).
+ */
+function _sanitizeArgs(args) {
+  if (!sanitizer.isActive || !sanitizer.isActive()) return args;
+  return args.map(function (a) {
+    if (typeof a === 'string') return sanitizer.sanitize(a);
+    if (a && typeof a === 'object' && !(a instanceof Error)) return sanitizer.sanitizeObject(a);
+    return a;
+  });
+}
+
+/**
  * Logger publico con API estandar pino:
  *   trace, debug, info, warn, error, fatal
  *
@@ -83,18 +98,21 @@ function child(bindings) {
  *   logger.info('mensaje simple')
  *   logger.info({ extra: 'meta' }, 'mensaje con metadata')
  *   logger.error(error, 'fallo en X')  // pino auto-serializa Error
+ *
+ * Todos los args pasan por sanitizer.sanitize() si NODE_ENV=production.
  */
 const logger = {
-  trace: (...args) => _logger.trace(...args),
-  debug: (...args) => _logger.debug(...args),
-  info: (...args) => _logger.info(...args),
-  warn: (...args) => _logger.warn(...args),
-  error: (...args) => _logger.error(...args),
-  fatal: (...args) => _logger.fatal(...args),
+  trace: (...args) => _logger.trace(..._sanitizeArgs(args)),
+  debug: (...args) => _logger.debug(..._sanitizeArgs(args)),
+  info: (...args) => _logger.info(..._sanitizeArgs(args)),
+  warn: (...args) => _logger.warn(..._sanitizeArgs(args)),
+  error: (...args) => _logger.error(..._sanitizeArgs(args)),
+  fatal: (...args) => _logger.fatal(..._sanitizeArgs(args)),
   child,
   // Internal: para tests + flush on SIGTERM
   _pino: _logger,
   _config: { SERVICE_NAME, NODE_ENV, LOG_LEVEL, PKG_VERSION, BASELINE_META },
+  _sanitizeArgs,
 };
 
 // ═══════════════════════════════════════════════════════════════
